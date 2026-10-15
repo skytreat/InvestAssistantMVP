@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
+import { writeSystemLog } from '../services/logger.js';
 
 /**
  * 交易 + 持仓 API（T25 + T26）
@@ -57,9 +58,10 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       );
 
       // 写 system_log（trade）
-      db.prepare(
-        `INSERT INTO system_log (log_type, level, message) VALUES ('trade', 'SUCCESS', ?)`
-      ).run(`录入${body.trade_type} ${body.asset_code} qty=${body.quantity} price=${body.price}`);
+      writeSystemLog({
+        logType: 'trade', level: 'SUCCESS',
+        message: `录入${body.trade_type} ${body.asset_code} qty=${body.quantity} price=${body.price}`,
+      });
 
       reply.code(201).send({
         success: true,

@@ -48,7 +48,7 @@ function _crud(app: FastifyInstance, relType: 'watch' | 'candidate') {
     const asset = (request.params as any).asset_code as string;
     const db = ConfigStore.getInstance().db;
     const info = db.prepare(
-      `UPDATE user_asset_rel SET is_deleted = 1, updated_at = datetime('now','localtime')
+      `UPDATE user_asset_rel SET is_deleted = 1
        WHERE user_id = ? AND asset_code = ? AND rel_type = ? AND is_deleted = 0`
     ).run(user.sub, asset, relType);
     if (info.changes === 0) return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
