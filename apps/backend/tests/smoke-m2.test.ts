@@ -24,6 +24,7 @@ import { runAllChecks } from '../src/services/validator.js';
 import { executeAllPlugins } from '../src/services/pluginEngine.js';
 import { importDividendEvents } from '../src/services/exDividendSync.js';
 import { registerCronJobs } from '../src/services/scheduler.js';
+import { duckdbHealthCheck, queryDuckDB } from '../src/db/duckdb.js';
 
 const TEST_PORT = 51101;  // 避开 smoke-m1 的 51100
 
@@ -181,5 +182,67 @@ describe('M2 全链路日志验证', () => {
     const typeList = types.map((t) => t.log_type);
     // 三个直接调用都应该产生日志
     expect(typeList.sort()).toEqual(['datacheck', 'dividend_import', 'plugin_execute']);
+  });
+});
+
+// ========================================================================
+// M2 真实 DuckDB 路径（条件执行）
+// - Windows 开发机无真实 quotes.duckdb → 自动跳过（不影响 8/8 PASS）
+// - OCI 服务器有真实 DuckDB → 追加 3 条 PASS 验证
+// ========================================================================
+describe('M2 真实 DuckDB 路径', () => {
+  let duckdbAvailable = false;
+  let vStockQfqCount = 0;
+  let rawGbbqDividendCount = 0;
+
+  beforeAll(async () => {
+    try {
+      await duckdbHealthCheck();
+      duckdbAvailable = true;
+
+      // 拿一下行情视图的实际行数——验证 DuckDB 里真的有数据
+      const [qfqRow] = await queryDuckDB<{ cnt: number }>(
+        'SELECT COUNT(*) AS cnt FROM v_stock_qfq'
+      );
+      vStockQfqCount = qfqRow?.cnt ?? 0;
+
+      // 拿除权表 category=1 的行数
+      const [divRow] = await queryDuckDB<{ cnt: number }>(
+        'SELECT COUNT(*) AS cnt FROM raw_gbbq WHERE category = 1'
+      );
+      rawGbbqDividendCount = divRow?.cnt ?? 0;
+
+      console.log(`[smoke-m2] DuckDB OK: v_stock_qfq=${vStockQfqCount} rows, raw_gbbq(category=1)=${rawGbbqDividendCount} rows`);
+    } catch (err) {
+      duckdbAvailable = false;
+      console.warn(`[smoke-m2] DuckDB 不可用，跳过真实路径测试: ${String(err)}`);
+    }
+  }, 15000);
+
+  describe.skipIf(!duckdbAvailable)('真实 DuckDB 场景（PASS/WARN 验证）', () => {
+    it('runAllChecks 至少 C1 能正确校验（PASS 或 WARN，取决于行情是否到最新）', async () => {
+      const summaries = await runAllChecks(tradeDate);
+      const c1 = summaries.find((s) => s.checkId === 'C1');
+      expect(c1).toBeDefined();
+      // C1 是最新交易日一致性校验，有行情数据时应该 PASS 或 WARN
+      expect(['PASS', 'WARN']).toContain(c1!.result);
+    });
+
+    it('builtin 插件 50ms 内能返回 signals（无 timeout）', async () => {
+      const result = await executeAllPlugins();
+      // DuckDB 可用时行情查询应该很快 → 插件 50ms 内能跑完
+      expect(result.stats.timeout).toBe(0);
+      // signals 至少应该是空数组（插件执行完了不管有没有信号）
+      expect(Array.isArray(result.signals)).toBe(true);
+    });
+
+    it('除权导入：有除权事件时 eventsProcessed>0，无事件时 0 但不报错', async () => {
+      const result = await importDividendEvents(tradeDate);
+      // DuckDB 可用 + raw_gbbq 有 category=1 数据时应该能抓到
+      // 没有也没关系（当天恰好没有除权），但 errors 应该是 0（不是 DuckDB 不可用导致的异常）
+      expect(result.errors).toBe(0);
+      // 至少 eventsProcessed 是 number 且 >= 0
+      expect(result.eventsProcessed).toBeGreaterThanOrEqual(0);
+    });
   });
 });
