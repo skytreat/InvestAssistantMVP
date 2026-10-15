@@ -1,0 +1,19 @@
+:80 {
+    # HTTP → HTTPS 301
+    redir https://invest.example.com{uri} permanent
+}
+
+:443 {
+    # 反代 Fastify 后端（只监听 127.0.0.1）
+    reverse_proxy 127.0.0.1:8080
+
+    # Let's Encrypt 自动续期
+    tls {
+        acme_email admin@example.com
+    }
+
+    # 前端 SPA 静态资源（Vite build 产物）
+    root * /opt/invol/frontend/dist
+    encode zstd gzip
+    file_server
+}

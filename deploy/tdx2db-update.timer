@@ -1,0 +1,11 @@
+[Unit]
+Description=每天 17:00 触发 tdx2db 行情更新
+
+[Timer]
+OnCalendar=*-*-* 17:00:00
+Persistent=true
+RandomizedDelaySec=30
+Unit=tdx2db.service
+
+[Install]
+WantedBy=timers.target

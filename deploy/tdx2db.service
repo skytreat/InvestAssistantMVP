@@ -1,0 +1,16 @@
+[Unit]
+Description=tdx2db 行情更新
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=invol
+WorkingDirectory=/opt/invol
+ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+StandardOutput=journal
+StandardError=journal
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target
