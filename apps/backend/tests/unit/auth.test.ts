@@ -14,9 +14,9 @@ import {
 } from '../../src/services/auth.js';
 
 describe('auth — hashPassword + verifyPassword', () => {
-  it('正常密码：hashPassword 返回 pbkdf2$ 前缀，verifyPassword 校验通过', () => {
+  it('正常密码：hashPassword 返回 bcrypt $2b$12$ 前缀，verifyPassword 校验通过', () => {
     const hash = hashPassword('hello');
-    expect(hash.startsWith('pbkdf2$')).toBe(true);
+    expect(hash.startsWith('$2b$12$')).toBe(true);
     expect(verifyPassword('hello', hash)).toBe(true);
   });
 

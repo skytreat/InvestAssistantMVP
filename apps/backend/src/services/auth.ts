@@ -1,18 +1,14 @@
 import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 
 /**
  * 最小鉴权工具
- * - 密码哈希：pbkdf2-sha256 + 32字节salt + 310000 迭代（Node 内置，不引 bcrypt）
+ * - 密码哈希：bcrypt cost=12（bcryptjs 纯 JS 实现，跨平台无需原生编译）
  * - JWT：HS256 手写签名/验证（Node 内置，不引 jsonwebtoken）
  *   格式：base64url(header).base64url(payload).base64url(signature)
  *   payload：{ sub: userId, username, role, exp }
  *   过期：1 天
  */
-
-const PBKDF2_ITERATIONS = 310000;
-const SALT_BYTES = 32;
-const HASH_BYTES = 32;
-const HASH_ALGO = 'sha256';
 
 const JWT_SECRET = Buffer.from(
   process.env.JWT_SECRET ?? 'investassistant-mvp-dev-secret-change-me-in-prod-2026',
@@ -30,23 +26,45 @@ function b64urlDecode(s: string): Buffer {
 }
 
 // --- 密码 ---
+// 兼容两种存储格式（渐进式迁移）：
+//   新格式：bcrypt $2b$12$...（bcryptjs 纯 JS，cost=12；bcryptjs 最新版输出 $2b$ 前缀）
+//   旧格式：pbkdf2$iterations$sha256$salt_hex$hash_hex（verifyPassword 保留验证分支）
+
+const BCRYPT_COST = 12;
 
 export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(SALT_BYTES);
-  const derived = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, HASH_BYTES, HASH_ALGO);
-  // 格式：pbkdf2$iterations$algorithm$salt_hex$hash_hex
-  return `pbkdf2$${PBKDF2_ITERATIONS}$${HASH_ALGO}$${salt.toString('hex')}$${derived.toString('hex')}`;
+  return bcrypt.hashSync(password, BCRYPT_COST);
 }
 
 export function verifyPassword(password: string, storedHash: string): boolean {
-  const parts = storedHash.split('$');
-  if (parts.length !== 5 || parts[0] !== 'pbkdf2') return false;
-  const iter = parseInt(parts[1], 10);
-  const algo = parts[2];
-  const salt = Buffer.from(parts[3], 'hex');
-  const expected = Buffer.from(parts[4], 'hex');
-  const derived = crypto.pbkdf2Sync(password, salt, iter, expected.length, algo);
-  return crypto.timingSafeEqual(derived, expected);
+  if (!storedHash) return false;
+
+  // bcrypt 标准前缀：$2a$ / $2b$ / $2y$
+  if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
+    try {
+      return bcrypt.compareSync(password, storedHash);
+    } catch {
+      return false;
+    }
+  }
+
+  // 旧 pbkdf2 格式：pbkdf2$iterations$sha256$salt_hex$hash_hex
+  if (storedHash.startsWith('pbkdf2$')) {
+    const parts = storedHash.split('$');
+    if (parts.length !== 5) return false;
+    const iter = parseInt(parts[1], 10);
+    const algo = parts[2];
+    const salt = Buffer.from(parts[3], 'hex');
+    const expected = Buffer.from(parts[4], 'hex');
+    const derived = crypto.pbkdf2Sync(password, salt, iter, expected.length, algo);
+    try {
+      return crypto.timingSafeEqual(derived, expected);
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 // --- JWT ---
