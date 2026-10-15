@@ -208,6 +208,7 @@ describe('M3 Scheduler + Backup', () => {
     try {
       const { runFullBackup } = await import('../src/services/backup.js');
       const result = await runFullBackup();
+      console.log('DEBUG backup result=', JSON.stringify(result));
       expect(result.sqlite.success).toBe(true);
       // DuckDB 部分：文件存在才跑（但 Windows 上可能被锁，也不影响 SQLite 断言）
       if (DUCKDB_FILE_EXISTS && result.duckdb.success) {
