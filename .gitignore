@@ -18,6 +18,8 @@ npm-debug.log*
 *.db‑wal
 *.db‑shm
 backup/
+data/
+*.duckdb
 
 # env
 .env
