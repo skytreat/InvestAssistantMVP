@@ -10,6 +10,8 @@ import {
   type DailyKline,
 } from './marketData.js';
 import { writeSystemLog } from './logger.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export const PLUGIN_TIMEOUT_MS = 50;
 export const PLUGIN_ALLOWED_PATH = '/opt/invol/plugins/strategies';
@@ -173,6 +175,243 @@ export const builtinPlugins: Plugin[] = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// 磁盘热加载 + 沙盒（SDD §5.3 硬约束：禁止 global/process/require + fs/net）
+// ---------------------------------------------------------------------------
+
+/** 合法插件文件名：小写字母/数字/下划线/中划线，仅限 .js，禁止 ../ 穿越 */
+const PLUGIN_FILENAME_RE = /^[a-z0-9_-]+\.js$/;
+
+/**
+ * 从磁盘目录加载自定义插件（SDD §5.3）
+ *
+ * 安全约束：
+ *   - 目录必须存在，不存在直接返回空数组（不抛错）
+ *   - 文件名必须匹配 ^[a-z0-9_-]+\.js$（防止路径穿越 /../）
+ *   - 加载 try-catch 隔离：单个插件崩了不影响其他
+ *
+ * 加载方式：
+ *   1. fs.readdirSync 列 .js 文件
+ *   2. 对每个文件 fs.readFileSync 读源码
+ *   3. createPluginSandbox(source) 包装成 Plugin 实例
+ *   4. push 到结果数组
+ */
+export function loadPluginsFromDir(
+  dirPath: string = PLUGIN_ALLOWED_PATH,
+): Plugin[] {
+  const loaded: Plugin[] = [];
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dirPath);
+  } catch (err) {
+    // 目录不存在或无权限 → 静默返回空数组（MVP 不开放用户上传）
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'INFO',
+      message: `插件目录不可读，跳过磁盘加载: ${dirPath}`,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return loaded;
+  }
+
+  for (const entry of entries) {
+    // 安全过滤：只允许合法文件名，禁止隐藏文件、.ts/.mjs/.cjs/.json 等
+    if (!PLUGIN_FILENAME_RE.test(entry)) continue;
+
+    const filePath = path.join(dirPath, entry);
+
+    // 二次安全：fs.statSync 确认是普通文件且位于允许目录下（防止符号链接逃逸）
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (err) {
+      console.error(`[pluginEngine] 无法 stat 插件文件 ${entry}:`, err);
+      continue;
+    }
+    if (!stat.isFile()) continue;
+
+    // resolved path 必须以 PLUGIN_ALLOWED_PATH 为前缀（绝对路径防穿越）
+    const resolved = path.resolve(filePath);
+    const allowedResolved = path.resolve(dirPath);
+    if (!resolved.startsWith(allowedResolved + path.sep)) {
+      console.error(
+        `[pluginEngine] 插件路径逃逸被拦截: ${filePath} (resolved=${resolved})`,
+      );
+      continue;
+    }
+
+    let source: string;
+    try {
+      source = fs.readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      console.error(`[pluginEngine] 读取插件 ${entry} 失败:`, err);
+      continue;
+    }
+
+    let plugin: Plugin;
+    try {
+      plugin = createPluginSandbox(source);
+    } catch (err) {
+      console.error(`[pluginEngine] 插件 ${entry} 沙盒创建失败:`, err);
+      continue;
+    }
+
+    loaded.push(plugin);
+  }
+
+  writeSystemLog({
+    logType: 'plugin_execute',
+    level: 'INFO',
+    message: `磁盘插件加载完成 count=${loaded.length} dir=${dirPath}`,
+  });
+
+  return loaded;
+}
+
+/**
+ * 沙盒创建：用 new Function() 包装插件源码，禁止 global/process/require + fs/net
+ *
+ * SDD §5.3 硬约束：
+ *   - globalThis: Proxy 拦截 get，全部返回 undefined
+ *   - process/require/fetch/XMLHttpRequest/setTimeout/setInterval: undefined
+ *   - fs/net/http/https 等 Node 模块：不可 require（require 已 undefined）
+ *
+ * MVP 实现：new Function() + 无沙盒参数 = 源码里直接访问的 global 全是 undefined；
+ *          V2 升级 VM2 做硬隔离。
+ *
+ * 约定：插件源码必须导出一个对象 literal（或函数返回对象），包含：
+ *   - id: string
+ *   - name: string
+ *   - category: 'monitor' | 'filter'
+ *   - execute(ctx, params): Promise<PluginSignal[] | PluginSignal>
+ */
+export function createPluginSandbox(source: string): Plugin {
+  // 受限沙盒：所有危险对象一律 undefined 或 Proxy 吞掉
+  const sandbox: Record<string, unknown> = {
+    // 禁止访问 globalThis 上的任何东西（Proxy get 全返回 undefined）
+    globalThis: new Proxy(
+      {},
+      {
+        get() {
+          return undefined;
+        },
+        set() {
+          // 阻止向沙盒 globalThis 上注入属性
+          return true;
+        },
+      },
+    ),
+    // 全部禁用
+    global: undefined,
+    process: undefined,
+    require: undefined,
+    module: undefined,
+    exports: undefined,
+    fetch: undefined,
+    XMLHttpRequest: undefined,
+    // 保留 console.error 给插件输出调试（仅限 console.*）
+    console,
+    // 保留基础类型
+    Array,
+    Object,
+    Number,
+    String,
+    Boolean,
+    Date,
+    JSON,
+    Math,
+    Promise,
+    Error,
+    Map,
+    Set,
+    performance,
+  };
+
+  // 将源码包进一个 IIFE，用 new Function 构造器注入沙盒
+  // 插件源码约定：最后一个表达式求值结果 = 插件对象
+  const wrappedSource = `
+    "use strict";
+    return (function () {
+      ${source}
+    })();
+  `;
+
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(
+    ...Object.keys(sandbox),
+    wrappedSource,
+  );
+
+  let maybePlugin: unknown;
+  try {
+    maybePlugin = factory(...Object.values(sandbox));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`插件源码执行失败: ${msg}`);
+  }
+
+  // 如果源码导出的是一个返回对象的函数，调用一下
+  if (typeof maybePlugin === 'function') {
+    try {
+      maybePlugin = (maybePlugin as () => unknown)();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`插件导出函数执行失败: ${msg}`);
+    }
+  }
+
+  // 验证接口契约
+  if (
+    maybePlugin === null ||
+    typeof maybePlugin !== 'object'
+  ) {
+    throw new Error('插件必须导出一个对象（含 id/name/category/execute）');
+  }
+  const p = maybePlugin as Record<string, unknown>;
+  if (typeof p.id !== 'string' || !p.id) {
+    throw new Error('插件缺少字符串类型的 id');
+  }
+  if (typeof p.name !== 'string' || !p.name) {
+    throw new Error('插件缺少字符串类型的 name');
+  }
+  if (p.category !== 'monitor' && p.category !== 'filter') {
+    throw new Error(
+      `插件 category 必须是 'monitor' 或 'filter'，实际 ${String(p.category)}`,
+    );
+  }
+  if (typeof p.execute !== 'function') {
+    throw new Error('插件缺少 execute 函数');
+  }
+
+  // 类型收窄为 Plugin 返回
+  return {
+    id: p.id as string,
+    name: p.name as string,
+    description:
+      typeof p.description === 'string'
+        ? (p.description as string)
+        : undefined,
+    category: p.category as 'monitor' | 'filter',
+    paramSchema: Array.isArray(p.paramSchema)
+      ? (p.paramSchema as Plugin['paramSchema'])
+      : undefined,
+    execute: p.execute as Plugin['execute'],
+  };
+}
+
+/**
+ * 合并 builtin + 磁盘加载 → 完整插件列表
+ *
+ * 调用时机：executeAllPlugins() 前调一次
+ *   builtinPlugins 始终有（2 个）
+ *   磁盘加载有则追加，无则只有 builtin
+ */
+export function getAllPlugins(): Plugin[] {
+  const diskPlugins = loadPluginsFromDir();
+  return [...builtinPlugins, ...diskPlugins];
+}
 
 // ---------------------------------------------------------------------------
 // 参数校验
@@ -511,7 +750,8 @@ export interface PluginBatchResult {
  * 自定义插件将来从 PLUGIN_ALLOWED_PATH 加载后追加执行。
  */
 export async function executeAllPlugins(): Promise<PluginBatchResult> {
-  const monitorPlugins = builtinPlugins.filter(p => p.category === 'monitor');
+  // 合并内置 + 磁盘加载（SDD §5.3 磁盘热加载）
+  const monitorPlugins = getAllPlugins().filter(p => p.category === 'monitor');
   const ctx = buildPluginContext();
 
   const stats: PluginBatchStats = {
