@@ -4,16 +4,22 @@
 }
 
 :443 {
-    # 反代 Fastify 后端（只监听 127.0.0.1）
-    reverse_proxy 127.0.0.1:8080
-
     # Let's Encrypt 自动续期
     tls {
         acme_email admin@example.com
     }
 
+    # /api/* 反代到 Fastify 后端（只监听 127.0.0.1:8080）
+    route /api/* {
+        reverse_proxy 127.0.0.1:8080
+    }
+
     # 前端 SPA 静态资源（Vite build 产物）
-    root * /opt/invol/frontend/dist
-    encode zstd gzip
-    file_server
+    # SPA history mode 兜底：所有非文件路径都返回 index.html
+    route /* {
+        root * /opt/invol/frontend/dist
+        try_files {path} /index.html
+        encode zstd gzip
+        file_server
+    }
 }

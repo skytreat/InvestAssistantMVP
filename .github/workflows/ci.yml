@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build backend
+        run: npm run build -w @invest/backend
+
+      - name: Build frontend
+        run: npm run build -w @invest/frontend
+
+      # Core tests — 带 coverage，输出到 packages/core/coverage/
+      - name: Run core tests
+        run: npx vitest run packages/core --coverage
+
+      # Backend unit tests — 带 coverage；--pool=forks + singleFork 保证 ConfigStore 单例隔离
+      - name: Run backend unit tests
+        run: npx vitest run apps/backend/tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
+
+      # Backend integration tests — 同上 fork 策略
+      - name: Run backend integration tests
+        run: npx vitest run apps/backend/tests/integration --pool=forks --poolOptions.forks.singleFork=true
+
+      # Smoke tests — 只跑 m1；m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行
+      - name: Run smoke tests (m1 only)
+        run: npx vitest run apps/backend/tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
+
+      # 合并 coverage 报告到根目录 coverage/ 下，方便上传和统一查看
+      # 两个 workspace 各自生成，不会互相覆盖
+      - name: Consolidate coverage
+        run: |
+          mkdir -p coverage/core coverage/backend
+          cp -r packages/core/coverage/* coverage/core/ 2>/dev/null || true
+          cp -r apps/backend/coverage/* coverage/backend/ 2>/dev/null || true
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 30
