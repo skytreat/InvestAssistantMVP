@@ -4,6 +4,8 @@ import TradeInput from './pages/TradeInput';
 import Signals from './pages/Signals';
 import Admin from './pages/Admin';
 import Login from './pages/Login';
+import Kline from './pages/Kline';
+import StockScan from './pages/StockScan';
 import { useUserStore } from './store/user';
 import { Navbar } from './pages/_shared';
 
@@ -19,7 +21,9 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/trade" element={<TradeInput />} />
         <Route path="/signals" element={<Signals />} />
+        <Route path="/stockscan" element={<StockScan />} />
         <Route path="/admin" element={<Admin />} />
+        <Route path="/kline" element={<Kline />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </div>

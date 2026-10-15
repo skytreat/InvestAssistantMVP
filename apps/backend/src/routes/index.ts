@@ -6,6 +6,8 @@ import { registerTradeRoutes } from './trade.js';
 import { registerSignalRoutes } from './signal.js';
 import { registerAdminRoutes } from './admin.js';
 import { registerWatchRoutes } from './watch.js';
+import { registerKlineRoutes } from './kline.js';
+import { registerStockScanRoutes } from './stockscan.js';
 import { extractToken, verifyToken } from '../services/auth.js';
 
 /**
@@ -48,4 +50,6 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerSignalRoutes(app);
   await registerAdminRoutes(app);
   await registerWatchRoutes(app);
+  await registerKlineRoutes(app);
+  await registerStockScanRoutes(app);
 }
