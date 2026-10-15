@@ -464,32 +464,354 @@ async function checkC10(tradeDate: string): Promise<CheckSummary> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// C11：Tushare 跨源校验（MVP 简化 SKIP）
-// SDD §5.7 C11 有完整 TypeScript 比对口径，但 MVP 简化
+// C11：Tushare 跨源校验（完整实现）
+// SQL + 比对口径来自 SDD §5.7 C11
 // ─────────────────────────────────────────────────────────────────
+
+const C11_SQL = `
+SELECT
+    rk.symbol, rk.open, rk.high, rk.low, rk.close,
+    rb.preclose AS pre_close,
+    rk.volume, rk.amount
+FROM raw_kline_daily rk
+LEFT JOIN raw_basic_daily rb ON rk.symbol = rb.symbol AND rk.date = rb.date
+WHERE rk.date = ?;
+`;
+
+/** DuckDB 本地查询结果行（raw_kline_daily + JOIN raw_basic_daily） */
+interface C11LocalRow {
+  symbol: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  pre_close: number;
+  volume: number;
+  amount: number;
+}
+
+/** Tushare daily 接口返回行（统一成与 LocalRow 相同的字段名） */
+interface TushareDailyRow {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  pre_close: number;
+  volume: number;
+  amount: number;
+}
+
+/** sh600000 → 600000.SH；sz000001 → 000001.SZ；bj430047 → 430047.BJ */
+function convertToTsCode(symbol: string): string {
+  const prefix = symbol.slice(0, 2).toUpperCase();
+  const num = symbol.slice(2);
+  if (prefix === 'SH') return `${num}.SH`;
+  if (prefix === 'SZ') return `${num}.SZ`;
+  if (prefix === 'BJ') return `${num}.BJ`;
+  return symbol;
+}
+
+/** 从 Tushare daily 接口原始响应中按 fields 位置映射一行数据 */
+function parseTushareRow(
+  fields: string[],
+  item: (string | number | null)[],
+): TushareDailyRow {
+  const idx = (name: string) => fields.indexOf(name);
+  const num = (v: unknown): number => Number(v) || 0;
+  return {
+    open: num(item[idx('open')]),
+    high: num(item[idx('high')]),
+    low: num(item[idx('low')]),
+    close: num(item[idx('close')]),
+    pre_close: num(item[idx('pre_close')]),
+    volume: num(item[idx('vol')]),
+    amount: num(item[idx('amount')]),
+  };
+}
+
+/** 调用 Tushare 免费 daily 接口，5 秒超时 */
+async function fetchTushareDaily(
+  tsCode: string,
+  tradeDate: string,
+): Promise<TushareDailyRow | null> {
+  const token = process.env.TUSHARE_TOKEN;
+  if (!token) return null;
+
+  const body = {
+    api_name: 'daily',
+    token,
+    params: {
+      ts_code: tsCode,
+      trade_date: tradeDate.replace(/-/g, ''),
+    },
+    fields: 'ts_code,open,high,low,close,pre_close,vol,amount',
+  };
+
+  const res = await fetch('http://api.tushare.pro', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!res.ok) return null;
+
+  const json = (await res.json()) as {
+    code?: number;
+    data?: { fields?: string[]; items?: (string | number | null)[][] };
+  };
+
+  if (json.code !== 0 || !json.data?.fields || !json.data?.items?.length) {
+    return null;
+  }
+
+  return parseTushareRow(json.data.fields, json.data.items[0]);
+}
+
+/**
+ * DuckDB 本地行 vs Tushare 跨源行字段级比对
+ * - 价格字段（open/high/low/close/preclose）容差 < 0.01 元
+ * - volume/amount 要求精确一致（整数量级，DuckDB 与 Tushare 都不应有浮点漂移）
+ */
+function compareC11Rows(local: C11LocalRow, ts: TushareDailyRow): boolean {
+  const PRICE_TOL = TOLERANCES.TUSHARE_PRICE_DIFF;
+  const priceOk = (v: number, t: number) => Math.abs(v - t) < PRICE_TOL;
+  return (
+    priceOk(local.open, ts.open) &&
+    priceOk(local.high, ts.high) &&
+    priceOk(local.low, ts.low) &&
+    priceOk(local.close, ts.close) &&
+    priceOk(local.pre_close, ts.pre_close) &&
+    Math.abs(local.volume - ts.volume) < 1 &&
+    Math.abs(local.amount - ts.amount) < 1
+  );
+}
 
 async function checkC11(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
+
+  // SKIP 条件 1：token 未配置
+  if (!process.env.TUSHARE_TOKEN) {
+    return {
+      checkId: 'C11',
+      result: 'SKIP',
+      detail: 'TUSHARE_TOKEN 未配置',
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // SKIP 条件 2：DuckDB 无当日数据（可能 tdx2db 未运行或当日非交易日）
+  let localRows: C11LocalRow[];
+  try {
+    localRows = await queryDuckDB<C11LocalRow>(C11_SQL, [tradeDate]);
+  } catch (err) {
+    return {
+      checkId: 'C11',
+      result: 'ERROR',
+      detail: `DuckDB 查询异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
+  }
+
+  if (localRows.length === 0) {
+    return {
+      checkId: 'C11',
+      result: 'SKIP',
+      detail: 'DuckDB 无当日数据（可能 tdx2db 未运行）',
+      durationMs: Date.now() - start,
+    };
+  }
+
+  // 随机抽 30 只（Tushare Free 每日限额）
+  const sampled = [...localRows]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 30);
+
+  let match = 0;
+  let mismatch = 0;
+  let fetchFail = 0;
+  const mismatchDetails: string[] = [];
+
+  for (const row of sampled) {
+    const tsCode = convertToTsCode(row.symbol);
+    try {
+      const tushare = await fetchTushareDaily(tsCode, tradeDate);
+      if (!tushare) {
+        fetchFail++;
+      } else if (compareC11Rows(row, tushare)) {
+        match++;
+      } else {
+        mismatch++;
+        mismatchDetails.push(
+          `${row.symbol}: local_close=${row.close} ts_close=${tushare.close} local_pre=${row.pre_close} ts_pre=${tushare.pre_close}`,
+        );
+      }
+    } catch {
+      fetchFail++;
+    }
+
+    // 100ms 节流，30 只 ≈ 3 秒完成
+    // Tushare Free 每日 500 次 / 每分钟 50 次，100ms 间隔远低于限流阈值
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  let result: CheckResult;
+  let detail: string;
+
+  if (fetchFail >= sampled.length) {
+    result = 'SKIP';
+    detail = 'Tushare API 全部请求失败（可能 token 无效、429 限流或网络异常）';
+  } else if (mismatch === 0) {
+    result = 'PASS';
+    detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）`;
+  } else if (mismatch <= 2) {
+    result = 'WARN';
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${mismatchDetails.join('; ').slice(0, 200)}`;
+  } else {
+    result = 'ERROR';
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${mismatchDetails.join('; ').slice(0, 200)}`;
+  }
+
   return {
     checkId: 'C11',
-    result: 'SKIP',
-    detail: 'MVP 暂未接入 Tushare API',
+    result,
+    detail,
     durationMs: Date.now() - start,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────
-// C12：东财跨源校验（MVP 简化 SKIP）
+// C12：东财跨源校验
+// SDD §5.7 C12 — 抽样 20 只 vs 东财前复权收盘价，容差 0.02 元
 // ─────────────────────────────────────────────────────────────────
+
+const C12_SQL = `
+SELECT symbol, close AS local_qfq_close
+FROM v_stock_qfq
+WHERE date = ?;
+`;
+
+interface C12Row {
+  symbol: string;
+  local_qfq_close: number;
+}
+
+/**
+ * 调东财免费日K接口取前复权收盘价
+ * @param symbol  sh600000 / sz000001 / bj8xxxxx（北交所跳过）
+ * @param tradeDate  YYYY-MM-DD
+ * @returns 前复权收盘价；不支持市场 / 超时 / 非 200 → null
+ */
+async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<number | null> {
+  const prefix = symbol.slice(0, 2).toLowerCase();
+  const code = symbol.slice(2);
+  const market = prefix === 'sh' ? '1' : prefix === 'sz' ? '0' : null;
+  if (!market) return null;
+
+  const begEnd = tradeDate.replace(/-/g, '');
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get` +
+    `?secid=${market}.${code}&fields1=f1,f2,f3,f4,f5,f6` +
+    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61` +
+    `&klt=101&fqt=1&beg=${begEnd}&end=${begEnd}&lmt=1`;
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Referer: 'https://quote.eastmoney.com/',
+      },
+      signal: AbortSignal.timeout(10_000), // 单只 10s 超时
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      data?: { klines?: string[] | null };
+    };
+    const klines = json?.data?.klines;
+    if (!Array.isArray(klines) || klines.length === 0) return null;
+    // "2024-01-02,10.50,10.60,10.40,10.55,1234567,12967890.00,0,3.21,2.05,1.23"
+    const parts = String(klines[0]).split(',');
+    const close = Number(parts[2]);
+    return Number.isFinite(close) ? close : null;
+  } catch {
+    return null;
+  }
+}
 
 async function checkC12(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
-  return {
-    checkId: 'C12',
-    result: 'SKIP',
-    detail: 'MVP 暂未接入东财 API',
-    durationMs: Date.now() - start,
-  };
+  try {
+    const localRows = await queryDuckDB<C12Row>(C12_SQL, [tradeDate]);
+
+    if (localRows.length === 0) {
+      return {
+        checkId: 'C12',
+        result: 'SKIP',
+        detail: 'DuckDB v_stock_qfq 无当日数据',
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // 随机抽 20 只
+    const sampled = [...localRows].sort(() => Math.random() - 0.5).slice(0, 20);
+
+    let match = 0;
+    let mismatch = 0;
+    let fetchFail = 0;
+    const details: string[] = [];
+
+    for (const row of sampled) {
+      const emClose = await fetchEastMoneyQfq(row.symbol, tradeDate);
+      if (emClose === null) {
+        fetchFail++;
+      } else {
+        const diff = Math.abs(row.local_qfq_close - emClose);
+        if (diff < TOLERANCES.EASTMONEY_PRICE_DIFF) {
+          match++;
+        } else {
+          mismatch++;
+          details.push(
+            `${row.symbol}: local=${row.local_qfq_close} em=${emClose} diff=${diff.toFixed(4)}`,
+          );
+        }
+      }
+
+      // 500ms 节流，避免东财限流
+      await new Promise<void>((r) => setTimeout(r, 500));
+    }
+
+    let result: CheckSummary['result'];
+    let detail: string;
+
+    if (fetchFail >= 5) {
+      result = 'SKIP';
+      detail = `东财 API 连续 ${fetchFail} 只请求失败 → 整项 SKIP`;
+    } else if (mismatch === 0) {
+      result = 'PASS';
+      detail = `20 只全 PASS（match=${match} fetchFail=${fetchFail}）`;
+    } else if (mismatch <= 2) {
+      result = 'WARN';
+      detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${details.join('; ').slice(0, 200)}`;
+    } else {
+      result = 'ERROR';
+      detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${details.join('; ').slice(0, 200)}`;
+    }
+
+    return {
+      checkId: 'C12',
+      result,
+      detail,
+      durationMs: Date.now() - start,
+    };
+  } catch (err) {
+    return {
+      checkId: 'C12',
+      result: 'ERROR',
+      detail: `SQL/网络异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
