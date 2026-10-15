@@ -1,8 +1,10 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import schedule from '@fastify/schedule';
 import { ConfigStore } from './config/configStore.js';
 import { duckdbHealthCheck } from './db/duckdb.js';
 import { registerRoutes } from './routes/index.js';
+import { registerCronJobs } from './services/scheduler.js';
 
 /**
  * Fastify 后端入口
@@ -33,6 +35,10 @@ async function bootstrap() {
 
   // 注册路由
   await registerRoutes(app);
+
+  // 注册 @fastify/schedule + 4 段 cron（校验 / 信号 / 除权 / 备份）
+  await app.register(schedule);
+  registerCronJobs(app);
 
   // DuckDB 连接健康检查（不阻塞启动——DuckDB 文件可能还没初始化）
   try {
