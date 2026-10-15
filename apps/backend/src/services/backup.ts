@@ -15,7 +15,8 @@ import { writeSystemLog } from './logger.js';
  * OCI Object Storage rclone copyto：MVP 简化——备份到本地足够（用户手动跑 cron mount 后再扩）
  */
 
-const BACKUP_DIR = process.env.BACKUP_DIR ?? '/opt/invol/backup';
+// 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/backup 覆盖）
+const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup');
 const RETENTION_DAYS = 3;
 
 function _ensureBackupDir(): void {
