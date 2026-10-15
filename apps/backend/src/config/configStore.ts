@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
     remark TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(user_id, asset_code, trade_type, trade_date),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
 );
 CREATE INDEX IF NOT EXISTS idx_trade_user_date ON user_trade_record(user_id, trade_date DESC);
@@ -153,6 +154,111 @@ export class ConfigStore {
 
     // 初始化所有表（幂等，重复运行安全）
     this._db.exec(DDL_SQL);
+
+    // SQLite CREATE TABLE IF NOT EXISTS 对已存在表无效——启动时检测并补齐缺失的 UNIQUE 约束
+    this._ensureTradeRecordUniqueConstraint();
+  }
+
+  /**
+   * 补齐 user_trade_record 的 UNIQUE(user_id, asset_code, trade_type, trade_date) 约束
+   * SDD §5.2 除权自动导入需要幂等防重
+   * SQLite 不能 ALTER TABLE 加 UNIQUE，只能重建：CREATE new → INSERT SELECT → DROP old → RENAME
+   */
+  private _ensureTradeRecordUniqueConstraint(): void {
+    try {
+      // 检查现有表有没有 UNIQUE 约束
+      const hasUnique = this._db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='user_trade_record' AND sql LIKE '%UNIQUE%'")
+        .get();
+      if (hasUnique) return;  // 约束已存在
+
+      // 表为空 → 直接 DROP 再重建（最简单）
+      const count = (this._db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
+      if (count === 0) {
+        this._db.exec('DROP TABLE IF EXISTS user_trade_record');
+        this._db.exec(`
+          CREATE TABLE user_trade_record (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            asset_code TEXT NOT NULL,
+            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
+            trade_date TEXT NOT NULL,
+            quantity REAL NOT NULL CHECK (quantity >= 0),
+            price REAL NOT NULL CHECK (price >= 0),
+            fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
+            trade_reason TEXT,
+            is_auto_import INTEGER NOT NULL DEFAULT 0 CHECK (is_auto_import IN (0, 1)),
+            is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+            review_summary TEXT,
+            system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
+            is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
+            remark TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(user_id, asset_code, trade_type, trade_date),
+            FOREIGN KEY (user_id) REFERENCES user_account(id)
+          )
+        `);
+        this._db.exec('CREATE INDEX idx_trade_user_date ON user_trade_record(user_id, trade_date DESC)');
+        this._db.exec('CREATE INDEX idx_trade_asset ON user_trade_record(user_id, asset_code)');
+        console.log('[ConfigStore] user_trade_record 已补齐 UNIQUE 约束（空表重建）');
+        return;
+      }
+
+      // 表有数据 → 用完整迁移流程：备份表 → 建带约束新表 → 复制数据（跳过重复） → 删旧表 → 重命名
+      console.warn('[ConfigStore] user_trade_record 有数据，迁移补齐 UNIQUE 约束...');
+      this._db.pragma('foreign_keys = OFF');
+      this._db.exec('BEGIN');
+      try {
+        this._db.exec('ALTER TABLE user_trade_record RENAME TO _trade_record_old');
+        this._db.exec(`
+          CREATE TABLE user_trade_record (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            asset_code TEXT NOT NULL,
+            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
+            trade_date TEXT NOT NULL,
+            quantity REAL NOT NULL CHECK (quantity >= 0),
+            price REAL NOT NULL CHECK (price >= 0),
+            fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
+            trade_reason TEXT,
+            is_auto_import INTEGER NOT NULL DEFAULT 0 CHECK (is_auto_import IN (0, 1)),
+            is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+            review_summary TEXT,
+            system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
+            is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
+            remark TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(user_id, asset_code, trade_type, trade_date),
+            FOREIGN KEY (user_id) REFERENCES user_account(id)
+          )
+        `);
+        // INSERT OR IGNORE 跳过重复记录（以先插入的为准）
+        this._db.exec(`
+          INSERT OR IGNORE INTO user_trade_record (
+            user_id, asset_code, trade_type, trade_date, quantity, price, fee,
+            trade_reason, is_auto_import, is_deleted, review_summary,
+            system_followed, is_stop_loss, remark, created_at
+          )
+          SELECT user_id, asset_code, trade_type, trade_date, quantity, price, fee,
+                 trade_reason, is_auto_import, is_deleted, review_summary,
+                 system_followed, is_stop_loss, remark, created_at
+          FROM _trade_record_old
+          ORDER BY id ASC
+        `);
+        this._db.exec('DROP TABLE _trade_record_old');
+        this._db.exec('CREATE INDEX idx_trade_user_date ON user_trade_record(user_id, trade_date DESC)');
+        this._db.exec('CREATE INDEX idx_trade_asset ON user_trade_record(user_id, asset_code)');
+        this._db.exec('COMMIT');
+        console.log('[ConfigStore] user_trade_record UNIQUE 约束补齐成功');
+      } catch (migErr) {
+        this._db.exec('ROLLBACK');
+        throw migErr;
+      } finally {
+        this._db.pragma('foreign_keys = ON');
+      }
+    } catch (err) {
+      console.error('[ConfigStore] UNIQUE 约束补齐失败（不阻塞启动）:', err);
+    }
   }
 
   static getInstance(): ConfigStore {
