@@ -1,14 +1,5 @@
 import { queryDuckDB } from '../db/duckdb.js';
-
-export interface DailyKline {
-  date: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  amount: number;
-}
+import type { DailyKline } from '@invest/core';
 
 /** 带 symbol 的原始行（DuckDB SELECT 出来的结构） */
 type DailyKlineRow = DailyKline & { symbol: string };

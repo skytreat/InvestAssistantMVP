@@ -38,8 +38,21 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     try {
       const body = (request.body ?? {}) as { username?: string; password?: string; role?: 'user' | 'admin' };
       const username = body.username ?? 'admin';
-      const password = body.password ?? 'admin123';
       const role = body.role ?? 'admin';
+
+      // P1-3 Seed 硬编码密码加固：
+      // - production 强制 body.password 必填，禁止默认 'admin123'
+      // - 开发环境保留默认值方便本地调试
+      const isProd = process.env.NODE_ENV === 'production';
+      let password: string;
+      if (body.password?.trim()) {
+        password = body.password.trim();
+      } else if (isProd) {
+        return reply.code(400).send({ success: false, error: 'SEED_PASSWORD_REQUIRED', message: '生产环境必须显式提供初始密码，禁止硬编码默认值' });
+      } else {
+        password = 'admin123';  // 仅开发环境兜底
+      }
+
       if (role !== 'user' && role !== 'admin') {
         return reply.code(400).send({ success: false, error: 'role 只能是 user 或 admin' });
       }

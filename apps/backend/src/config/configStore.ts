@@ -347,7 +347,7 @@ export class ConfigStore {
     return this._dbPath;
   }
 
-  /** 写入 system_log（三层降级的第一层） */
+  /** 写入 system_log（三层降级的第一层 + 独立事务防主流程锁竞争） */
   writeLog(
     logType: string,
     level: string,
@@ -357,10 +357,14 @@ export class ConfigStore {
     logDate?: string,
   ): void {
     try {
-      const stmt = this._db.prepare(
-        'INSERT INTO system_log(log_date, log_type, level, check_item, message, detail) VALUES (?, ?, ?, ?, ?, ?)'
-      );
-      stmt.run(logDate ?? new Date().toISOString().slice(0, 10), logType, level, checkItem ?? null, message, detail ?? null);
+      // SDD §12.5 要求 writeSystemLog 独立事务——
+      // 用闭包事务包装单条 INSERT，避免共享连接池时被其他事务阻塞
+      const writeOne = this._db.transaction(() => {
+        this._db.prepare(
+          'INSERT INTO system_log(log_date, log_type, level, check_item, message, detail) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(logDate ?? new Date().toISOString().slice(0, 10), logType, level, checkItem ?? null, message, detail ?? null);
+      });
+      writeOne();
     } catch (err) {
       // SQLite 不可用时降级到 console.error → systemd journal 捕获
       console.error('[system_log fallback]', { logType, level, message, detail, err });
