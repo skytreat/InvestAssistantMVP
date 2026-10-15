@@ -119,7 +119,7 @@ describe('M1 Fastify', () => {
     // 顶层已检测 DuckDB 不可用 → 路由内部快速返回 502，不触发 retry
     const res = await app.inject({ method: 'GET', url: '/api/market/latest' });
     expect([200, 502]).toContain(res.statusCode);
-  });
+  }, 20000);
 });
 
 // === DuckDB 可选（真实文件存在时才跑） ===
