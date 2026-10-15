@@ -6,7 +6,7 @@
       "name": "Agnes",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "https://apihub.agnes-ai.com/v1",
+        "baseURL": "https://api.agnes-ai.cn/v1",
         "apiKey": "sk-XnubnTh1OgAsc0QSc2V6jKxeOCmxU1vgEwzQvvvQ3FGP0jWo"
       },
       "models": {

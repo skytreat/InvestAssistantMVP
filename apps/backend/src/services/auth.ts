@@ -14,7 +14,7 @@ const JWT_SECRET = Buffer.from(
   process.env.JWT_SECRET ?? 'investassistant-mvp-dev-secret-change-me-in-prod-2026',
   'utf-8'
 );
-const JWT_TTL_SEC = 60 * 60 * 24;  // 1 天
+const JWT_TTL_SEC = 7 * 60 * 60 * 24;  // 7 天（SDD S4 access token）
 
 function b64url(buf: Buffer): string {
   return buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');

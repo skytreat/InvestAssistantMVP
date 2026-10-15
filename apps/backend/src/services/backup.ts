@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 import { ConfigStore } from '../config/configStore.js';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { writeSystemLog } from './logger.js';
@@ -94,19 +95,77 @@ export async function backupDuckDB(): Promise<{ success: boolean; size?: number;
 }
 
 /**
- * 一键双库备份
+ * OCI Object Storage 上传（MVP T30 降级逻辑）
+ *
+ * 前提：服务器上 rclone 已配置好 oci remote（rclone config create oci swift ...）
+ *   - export ENABLE_OCI_BACKUP=true 开启
+ *   - export OCI_REMOTE="oci:invest-assistant-backup" 可覆盖
+ *   - export OCI_MAX_AGE=30d OCI 端对象保留期（rclone copyto --max-age 参数）
+ *
+ * 降级：
+ *   - ENABLE_OCI_BACKUP 未设置 → 直接跳过
+ *   - rclone 执行失败 → 写 WARN 日志，本地保留 3 天继续
+ *   - backup 是独立 cron，不经过 pluginEngine 50ms 沙盒，execSync 阻塞没关系
+ */
+function _uploadToOCI(files: string[]): { success: boolean; uploaded: number; error?: string } {
+  if (process.env.ENABLE_OCI_BACKUP !== 'true') {
+    return { success: true, uploaded: 0 };  // 未开启 → 静默跳过
+  }
+
+  const remote = process.env.OCI_REMOTE ?? 'oci:invest-assistant-backup';
+  let uploaded = 0;
+
+  for (const file of files) {
+    const basename = path.basename(file);
+    try {
+      execSync(`rclone copyto "${file}" "${remote}/${basename}"`, {
+        encoding: 'utf-8', timeout: 120_000, stdio: 'pipe',
+      });
+      uploaded++;
+      writeSystemLog({ logType: 'backup', level: 'INFO', message: 'OCI 上传成功', detail: `file=${basename} remote=${remote}` });
+    } catch (err: any) {
+      const msg = String(err?.stderr ?? err?.message ?? err);
+      writeSystemLog({
+        logType: 'backup', level: 'WARN',
+        message: 'OCI 上传失败（本地备份保留）',
+        detail: `file=${basename} error=${msg.slice(0, 200)}`,
+      });
+    }
+  }
+
+  return { success: true, uploaded };
+}
+
+/**
+ * 一键双库备份 + 可选 OCI 上传
  */
 export async function runFullBackup(): Promise<{
   sqlite: { success: boolean; size?: number };
   duckdb: { success: boolean; size?: number };
   cleanedFiles: number;
+  ociUploaded?: number;
 }> {
   const sqliteResult = await backupSQLite();
   const duckdbResult = await backupDuckDB();
   const cleaned = _deleteOldBackups();
+
+  // OCI 上传（MVP T30）
+  let ociUploaded: number | undefined;
+  try {
+    const files: string[] = [];
+    const date = _date();
+    const sqlitePath = path.join(BACKUP_DIR, `business.db.${date}`);
+    const duckdbPath = path.join(BACKUP_DIR, `v_stock_qfq.${date}.parquet`);
+    if (fs.existsSync(sqlitePath)) files.push(sqlitePath);
+    if (fs.existsSync(duckdbPath)) files.push(duckdbPath);
+    const ociResult = _uploadToOCI(files);
+    ociUploaded = ociResult.uploaded;
+  } catch { /* OCI 上传任何异常不影响主流程 */ }
+
   return {
     sqlite: { success: sqliteResult.success, size: sqliteResult.size },
     duckdb: { success: duckdbResult.success, size: duckdbResult.size },
     cleanedFiles: cleaned,
+    ociUploaded,
   };
 }
