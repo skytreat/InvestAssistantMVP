@@ -7,7 +7,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "https://api.agnes-ai.cn/v1",
-        "apiKey": "sk-XnubnTh1OgAsc0QSc2V6jKxeOCmxU1vgEwzQvvvQ3FGP0jWo"
+        "apiKey": "sk-API-key"
       },
       "models": {
         "agnes-2.5-flash": {},
@@ -20,5 +20,20 @@
     "read": "allow",
     "edit": "allow",
     "glob": "allow"
+  },
+  "agent": {
+    "context": {
+      "exclude": [
+        "node_modules/**",
+        "dist/**",
+        "build/**",
+        ".git/**",
+        "*.db",
+        "*.duckdb"
+      ]
+    }
+  },
+  "ui": {
+    "showSkillLoadInfo": false
   }
 }

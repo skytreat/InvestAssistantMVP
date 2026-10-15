@@ -136,13 +136,17 @@ export default function Admin() {
           {signalLoading ? '执行中...' : '执行信号生成'}
         </button>
         {signalError && <div style={{ color: '#dc2626', marginTop: 8 }}>{signalError}</div>}
-        {signalResult && (
-          <div style={{ marginTop: 8, color: '#16a34a' }}>
-            生成完成：
-            total={signalResult.total ?? '-'} , success={signalResult.success ?? '-'} , timeout=
-            {signalResult.timeout ?? '-'} , error={signalResult.error ?? '-'}
-          </div>
-        )}
+        {signalResult && (() => {
+          const stats = signalResult.stats ?? {};
+          return (
+            <div style={{ marginTop: 8, color: '#16a34a' }}>
+              生成完成：
+              total={stats.total ?? '-'} , success={stats.success ?? '-'} , timeout=
+              {stats.timeout ?? '-'} , error={stats.error ?? '-'} , skip={stats.skip ?? '-'} ,
+              inserted={signalResult.inserted ?? '-'} , skipped={signalResult.skipped ?? '-'}
+            </div>
+          );
+        })()}
       </div>
 
       {/* system_log 分页 */}

@@ -20,7 +20,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       writeSystemLog({ logType: 'trigger_manual', level: 'INFO', message: `${user.username} 手动触发 C1-C12 校验` });
       const date = (request.body as any)?.trade_date ?? getTradeDate();
       const summaries = await runAllChecks(date);
-      reply.send({ success: true, trade_date: date, summaries });
+      reply.send({ success: true, data: { trade_date: date, summaries } });
     } catch (err) {
       reply.code(500).send({ success: false, error: String(err) });
     }
@@ -41,7 +41,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         totalInserted += persist.inserted;
         totalSkipped += persist.skipped;
       }
-      reply.send({ success: true, stats: result.stats, inserted: totalInserted, skipped: totalSkipped, trade_date: tradeDate });
+      reply.send({
+        success: true,
+        data: {
+          stats: result.stats,
+          inserted: totalInserted,
+          skipped: totalSkipped,
+          trade_date: tradeDate,
+        },
+      });
     } catch (err) {
       reply.code(500).send({ success: false, error: String(err) });
     }

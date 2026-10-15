@@ -324,7 +324,7 @@ WITH raw AS (
            prev.close AS prev_close,
            v.close AS ex_close,
            (prev.close - v.close) / prev.close AS actual_drop,
-           (g.c1 / 10.0 / prev.close) - (g.c3 / 10.0) / (1 + g.c3 / 10.0) AS theoretical_drop
+           (g.c1 / 10.0 / prev.close) + (g.c3 / 10.0) / (1 + g.c3 / 10.0) AS theoretical_drop
     FROM v_stock_qfq v
     JOIN raw_gbbq g ON v.symbol = g.symbol
       AND g.date = ?::date
@@ -392,10 +392,9 @@ SELECT COUNT(*) AS mismatch_count,
         ELSE 'ERROR'
     END AS result
 FROM sample s
-JOIN raw_adjust_factor rf ON s.symbol = rf.symbol AND rf.date = ?::date
 JOIN latest_factors lf ON s.symbol = lf.symbol
 JOIN v_stock_qfq v ON s.symbol = v.symbol AND v.date = ?::date
-WHERE ABS(rf.hfq_factor / lf.latest_hfq - v.qfq_factor) >= 0.0001
+WHERE ABS(lf.latest_hfq - v.qfq_factor) >= 0.0001
 `;
 
 interface C9Row {
@@ -406,7 +405,7 @@ interface C9Row {
 async function checkC9(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C9Row>(C9_SQL, [tradeDate, tradeDate, tradeDate]);
+    const rows = await queryDuckDB<C9Row>(C9_SQL, [tradeDate, tradeDate]);
     const row = firstRow(rows);
 
     if (!row) {

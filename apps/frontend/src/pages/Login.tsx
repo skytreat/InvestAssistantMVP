@@ -35,8 +35,9 @@ export default function Login() {
     try {
       const res = await api.post('/auth/login', { username, password });
       if (res.data.success) {
-        const { token: newToken, username: uname, role } = res.data.data;
-        login(newToken, uname, role);
+        const newToken: string = res.data.data.token;
+        const user = res.data.data.user;
+        login(newToken, user.username, user.role);
         navigate('/');
       } else {
         setError(res.data.error ?? '登录失败');

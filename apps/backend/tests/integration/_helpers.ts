@@ -45,8 +45,8 @@ export async function createTestApp(): Promise<TestAppBundle> {
     payload: { username: ADMIN_USER, password: ADMIN_PASS },
   });
   const body = JSON.parse(loginRes.body);
-  const adminToken: string = body.token;
-  const userId: number = body.user.id;
+  const adminToken: string = body.data.token;
+  const userId: number = body.data.user.id;
 
   return { app, db, adminToken, userId };
 }

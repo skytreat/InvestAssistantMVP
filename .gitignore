@@ -39,7 +39,8 @@ docs/web/
 coverage/
 *.lcov
 
-# Cloud functions
-cloud/*/node_modules/
-cloud/*/*.tgz
-cloud/*/dist/
+# opencode
+opencode.jsonc
+*.opencode‑skill.md
+.opencode/*
+!.opencode/skills/.gitkeep

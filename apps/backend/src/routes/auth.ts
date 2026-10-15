@@ -27,8 +27,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const token = signToken({ sub: row.id, username: row.username, role: row.role });
       reply.send({
         success: true,
-        token,
-        user: { id: row.id, username: row.username, role: row.role },
+        data: { token, user: { id: row.id, username: row.username, role: row.role } },
       });
     } catch (err) {
       reply.code(500).send({ success: false, error: String(err) });
@@ -57,8 +56,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const token = signToken({ sub: Number(info.lastInsertRowid), username, role });
       reply.code(201).send({
         success: true,
-        user: { id: info.lastInsertRowid, username, role },
-        token,
+        data: { user: { id: info.lastInsertRowid, username, role }, token },
       });
     } catch (err) {
       reply.code(500).send({ success: false, error: String(err) });

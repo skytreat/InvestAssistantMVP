@@ -64,7 +64,7 @@ beforeAll(async () => {
     payload: { username: ADMIN_USER, password: ADMIN_PASS },
   });
   expect(loginRes.statusCode).toBe(200);
-  (globalThis as any).__SM3_ADMIN_TOKEN__ = JSON.parse(loginRes.body).token;
+  (globalThis as any).__SM3_ADMIN_TOKEN__ = JSON.parse(loginRes.body).data.token;
   console.log('[smoke-m3] login OK, token_len=', (globalThis as any).__SM3_ADMIN_TOKEN__.length);
 
   TRADE_DATE = new Date().toISOString().slice(0, 10);
@@ -84,19 +84,19 @@ describe('M3 Trade + 持仓校验', () => {
   it('买入 sh600000 100 股', async () => {
     const res = await app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, quantity: 100, price: 10.0, fee: 1 },
+      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.position.totalQuantity).toBe(100);
-    expect(body.position.avgCost).toBeCloseTo((1000 + 1) / 100, 4);
+    expect(body.data.position.totalQuantity).toBe(100);
+    expect(body.data.position.avgCost).toBeCloseTo((1000 + 1) / 100, 4);
   });
 
   it('卖出超持仓 → HOLDING_INSUFFICIENT', async () => {
     const res = await app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + '-dup', quantity: 5000, price: 20.0 },
+      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + '-dup', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
     });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
@@ -107,12 +107,12 @@ describe('M3 Trade + 持仓校验', () => {
   it('卖出 50 股后持仓正确', async () => {
     const res = await app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + 'b', quantity: 50, price: 20.0 },
+      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + 'b', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.position.totalQuantity).toBe(50);
+    expect(body.data.position.totalQuantity).toBe(50);
   });
 
   it('GET /api/positions 返回 sh600000', async () => {
@@ -181,7 +181,7 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
     const loginRes = await app.inject({
       method: 'POST', url: '/api/auth/login', payload: { username: 'user1', password: 'pass1' },
     });
-    const userTok = JSON.parse(loginRes.body).token;
+    const userTok = JSON.parse(loginRes.body).data.token;
     const res = await app.inject({
       method: 'POST', url: '/api/admin/run-datacheck',
       headers: { Authorization: `Bearer ${userTok}` },

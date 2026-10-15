@@ -152,7 +152,7 @@ describe('Watch CRUD · 38-42', () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(typeof body.id).toBe('number');
+    expect(typeof body.data.id).toBe('number');
   });
 
   it('相同 asset_code 再 POST 一次 → 409 DUPLICATE', async () => {
@@ -204,7 +204,7 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(typeof body.id).toBe('number');
+    expect(typeof body.data.id).toBe('number');
 
     // 验证数据库里 watch + candidate 共存
     const rows = bundle.db.db.prepare(

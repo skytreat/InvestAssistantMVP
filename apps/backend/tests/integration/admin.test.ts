@@ -42,8 +42,8 @@ describe('Admin · run-datacheck', () => {
     if (res.statusCode === 200) {
       const body = JSON.parse(res.body);
       expect(body.success).toBe(true);
-      expect(Array.isArray(body.summaries)).toBe(true);
-      expect(body.summaries.length).toBeGreaterThan(0);
+      expect(Array.isArray(body.data.summaries)).toBe(true);
+      expect(body.data.summaries.length).toBeGreaterThan(0);
     }
   }, 30000);
 
@@ -68,11 +68,11 @@ describe('Admin · run-signal', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.stats).toBeDefined();
-    expect(typeof body.stats.total).toBe('number');
-    expect(typeof body.stats.success).toBe('number');
-    expect(typeof body.stats.timeout).toBe('number');
-    expect(typeof body.stats.error).toBe('number');
+    expect(body.data.stats).toBeDefined();
+    expect(typeof body.data.stats.total).toBe('number');
+    expect(typeof body.data.stats.success).toBe('number');
+    expect(typeof body.data.stats.timeout).toBe('number');
+    expect(typeof body.data.stats.error).toBe('number');
   }, 30000);
 });
 

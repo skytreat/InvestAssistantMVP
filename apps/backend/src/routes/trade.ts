@@ -22,6 +22,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         quantity: number;
         price: number;
         fee?: number;
+        trade_reason?: string;   // SDD §4.2: buy/sell/reduce/clear 必填；dividend/bonus/transfer 自动填充
         remark?: string;
       };
       const user = (request as any).user as { sub: number; username: string; role: string };
@@ -34,6 +35,23 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       }
       if (!['buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].includes(body.trade_type)) {
         return reply.code(400).send({ success: false, error: 'trade_type 非法' });
+      }
+
+      // SDD §4.2 TRADE_REASON_REQUIRED：buy/sell/reduce/clear 必须填 trade_reason
+      const AUTO_IMPORT_TYPES = new Set(['dividend', 'bonus', 'transfer']);
+      const NEED_REASON_TYPES = new Set(['buy', 'sell', 'reduce', 'clear']);
+      let tradeReason: string | null;
+      if (AUTO_IMPORT_TYPES.has(body.trade_type)) {
+        // 除权自动导入类型：自动填充 reason（SDD §5.8 17:03 cron 调用时不传 reason）
+        tradeReason = body.trade_reason ?? `自动导入 - ${body.trade_date} ${body.trade_type}`;
+      } else if (NEED_REASON_TYPES.has(body.trade_type)) {
+        // 人工交易类型：必填
+        if (!body.trade_reason?.trim()) {
+          return reply.code(400).send({ success: false, error: 'TRADE_REASON_REQUIRED', message: 'trade_reason 必填，说明本次交易原因' });
+        }
+        tradeReason = body.trade_reason.trim();
+      } else {
+        tradeReason = body.trade_reason ?? null;
       }
 
       // T25 核心：减仓类型 sell/reduce/clear 必须先校验持仓充足
@@ -50,11 +68,11 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       const db = ConfigStore.getInstance().db;
       const info = db.prepare(
         `INSERT INTO user_trade_record
-         (user_id, asset_code, trade_type, trade_date, quantity, price, fee, remark)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (user_id, asset_code, trade_type, trade_date, quantity, price, fee, trade_reason, remark)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         user.sub, body.asset_code, body.trade_type, body.trade_date,
-        body.quantity, body.price, body.fee ?? 0, body.remark ?? null
+        body.quantity, body.price, body.fee ?? 0, tradeReason, body.remark ?? null
       );
 
       // 写 system_log（trade）
@@ -65,8 +83,10 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 
       reply.code(201).send({
         success: true,
-        trade_id: info.lastInsertRowid,
-        position: calcPosition(user.sub, body.asset_code),
+        data: {
+          trade_id: info.lastInsertRowid,
+          position: calcPosition(user.sub, body.asset_code),
+        },
       });
     } catch (err: any) {
       // UNIQUE 冲突：同一天同一标的同一方向重复录入
@@ -100,7 +120,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       const user = (request as any).user;
       const assetCode = (request.params as any).asset_code as string;
       const pos = calcPosition(user.sub, assetCode);
-      reply.send({ success: true, asset_code: assetCode, ...pos });
+      reply.send({ success: true, data: { asset_code: assetCode, ...pos } });
     } catch (err) {
       reply.code(500).send({ success: false, error: String(err) });
     }

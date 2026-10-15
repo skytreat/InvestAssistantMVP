@@ -39,10 +39,10 @@ describe('Auth · login', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(typeof body.token).toBe('string');
-    expect(body.token.split('.').length).toBe(3);  // JWT 三段
-    expect(body.user.username).toBe(ADMIN_USER);
-    expect(body.user.role).toBe('admin');
+    expect(typeof body.data.token).toBe('string');
+    expect(body.data.token.split('.').length).toBe(3);  // JWT 三段
+    expect(body.data.user.username).toBe(ADMIN_USER);
+    expect(body.data.user.role).toBe('admin');
   });
 
   it('密码错 → 401', async () => {
@@ -89,8 +89,8 @@ describe('Auth · seed', () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.user.username).toBe(uniqueName);
-    expect(body.token.split('.').length).toBe(3);
+    expect(body.data.user.username).toBe(uniqueName);
+    expect(body.data.token.split('.').length).toBe(3);
   });
 
   it('重复用户名 → 409', async () => {

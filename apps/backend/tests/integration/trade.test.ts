@@ -40,14 +40,15 @@ describe('Trade · 买入 + 持仓查询', () => {
       payload: {
         asset_code: TRADE_CODE, trade_type: 'buy',
         trade_date: TRADE_DATE, quantity: 100, price: 10.0, fee: 5,
+        trade_reason: '集成测试买入',
       },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
-    expect(body.trade_id).toBeGreaterThan(0);
-    expect(body.position.totalQuantity).toBe(100);
-    expect(body.position.avgCost).toBeCloseTo(10.05, 4);  // (1000+5)/100
+    expect(body.data.trade_id).toBeGreaterThan(0);
+    expect(body.data.position.totalQuantity).toBe(100);
+    expect(body.data.position.avgCost).toBeCloseTo(10.05, 4);  // (1000+5)/100
   });
 
   it('GET /api/trades → 列表有刚录的那条', async () => {
@@ -69,7 +70,7 @@ describe('Trade · 买入 + 持仓查询', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.totalQuantity).toBe(100);
+    expect(body.data.totalQuantity).toBe(100);
   });
 });
 
@@ -81,6 +82,7 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
       payload: {
         asset_code: TRADE_CODE, trade_type: 'sell',
         trade_date: TRADE_DATE, quantity: 999, price: 11.0,
+        trade_reason: '测试卖出超持仓',
       },
     });
     expect(res.statusCode).toBe(400);
@@ -97,12 +99,13 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
       payload: {
         asset_code: TRADE_CODE, trade_type: 'sell',
         trade_date: sellDate, quantity: 100, price: 11.0,
+        trade_reason: '测试清仓卖出',
       },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.position.totalQuantity).toBe(0);
-    expect(body.position.realizedPnL).toBeGreaterThan(0);  // 赚了（realizedPnL 大写 L）
+    expect(body.data.position.totalQuantity).toBe(0);
+    expect(body.data.position.realizedPnL).toBeGreaterThan(0);  // 赚了（realizedPnL 大写 L）
   });
 });
 
@@ -161,12 +164,12 @@ describe('Trade · 参数校验', () => {
     await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, quantity: 10, price: 10 },
+      payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, quantity: 10, price: 10, trade_reason: 'dup1' },
     });
     const dup = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, quantity: 20, price: 11 },
+      payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, quantity: 20, price: 11, trade_reason: 'dup2' },
     });
     expect(dup.statusCode).toBe(409);
     const body = JSON.parse(dup.body);

@@ -33,7 +33,7 @@ function _crud(app: FastifyInstance, relType: 'watch' | 'candidate') {
       const info = db.prepare(
         `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)`
       ).run(user.sub, body.asset_code, relType);
-      reply.code(201).send({ success: true, id: info.lastInsertRowid });
+      reply.code(201).send({ success: true, data: { id: info.lastInsertRowid } });
     } catch (err: any) {
       if (String(err).includes('UNIQUE')) {
         return reply.code(409).send({ success: false, error: 'DUPLICATE', message: `${body.asset_code} 已在 ${relType} 列表` });
@@ -52,7 +52,7 @@ function _crud(app: FastifyInstance, relType: 'watch' | 'candidate') {
        WHERE user_id = ? AND asset_code = ? AND rel_type = ? AND is_deleted = 0`
     ).run(user.sub, asset, relType);
     if (info.changes === 0) return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
-    reply.send({ success: true });
+    reply.send({ success: true, data: null });
   });
 }
 
