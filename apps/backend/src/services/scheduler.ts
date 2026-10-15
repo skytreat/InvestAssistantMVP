@@ -8,6 +8,8 @@ import { runAllChecks } from './validator.js';
 import { executeAllPlugins } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
+import { persistSignals, getTradeDate } from './signalService.js';
+import { runFullBackup } from './backup.js';
 
 /**
  * 注册所有 cron 任务（由 server.ts 在 Fastify 启动后调用）
@@ -65,10 +67,28 @@ export function registerCronJobs(app: FastifyInstance): void {
       });
       try {
         const result = await executeAllPlugins();
+        // T27 补：从 result.results 里筛 SUCCESS 的，每个 plugin 单独持久化（保留 pluginId）
+        const tradeDate = getTradeDate();
+        let totalInserted = 0;
+        let totalSkipped = 0;
+        let totalErrors = 0;
+        for (const pluginResult of result.results) {
+          if (pluginResult.status !== 'SUCCESS' || pluginResult.signals.length === 0) continue;
+          const persist = persistSignals(
+            pluginResult.signals,
+            pluginResult.pluginId,
+            'monitor',
+            tradeDate,
+          );
+          totalInserted += persist.inserted;
+          totalSkipped += persist.skipped;
+          totalErrors += persist.errors;
+        }
         writeSystemLog({
           logType: 'signal_generate',
-          level: result.stats.error > 0 || result.stats.timeout > 0 ? 'WARN' : 'SUCCESS',
-          message: `信号生成完成: signals=${result.signals.length} stats=${JSON.stringify(result.stats)}`,
+          level: totalErrors > 0 || result.stats.error > 0 || result.stats.timeout > 0 ? 'WARN' : 'SUCCESS',
+          message: `信号生成完成: signals=${result.signals.length} inserted=${totalInserted} skipped=${totalSkipped} persist_errors=${totalErrors}`,
+          detail: JSON.stringify({ stats: result.stats, tradeDate }),
         });
       } catch (err: any) {
         writeSystemLog({
@@ -105,20 +125,23 @@ export function registerCronJobs(app: FastifyInstance): void {
     { id: 'dividend-import' },
   ));
 
-  // === 17:05 备份（MVP 简化占位） ===
+  // === 17:05 双库备份 ===
   app.scheduler.addCronJob(new CronJob(
     { cronExpression: '5 17 * * 1-5' },
     new AsyncTask('backup', async () => {
-      writeSystemLog({
-        logType: 'backup', level: 'INFO', message: '备份开始（MVP 简化占位）',
-      });
-      // TODO Phase 3 实现：
-      //   1. DuckDB: COPY v_stock_qfq TO parquet
-      //   2. SQLite: PRAGMA wal_checkpoint(TRUNCATE) + VACUUM INTO
-      writeSystemLog({
-        logType: 'backup', level: 'SKIP',
-        message: '备份 MVP 简化占位，Phase 3 实现',
-      });
+      writeSystemLog({ logType: 'backup', level: 'INFO', message: '双库备份开始' });
+      try {
+        const result = await runFullBackup();
+        const anyError = !result.sqlite.success || !result.duckdb.success;
+        writeSystemLog({
+          logType: 'backup',
+          level: anyError ? 'ERROR' : 'SUCCESS',
+          message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} duckdb=${result.duckdb.success ? 'OK' : 'FAIL'} cleaned=${result.cleanedFiles}`,
+          detail: JSON.stringify(result),
+        });
+      } catch (err: any) {
+        writeSystemLog({ logType: 'backup', level: 'ERROR', message: '备份异常', detail: String(err) });
+      }
     }),
     { id: 'backup' },
   ));
