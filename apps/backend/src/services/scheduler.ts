@@ -10,6 +10,7 @@ import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
 import { persistSignals, getTradeDate } from './signalService.js';
 import { runFullBackup } from './backup.js';
+import { insertAssetStatSnapshots } from './assetStat.js';
 
 /**
  * 注册所有 cron 任务（由 server.ts 在 Fastify 启动后调用）
@@ -90,6 +91,22 @@ export function registerCronJobs(app: FastifyInstance): void {
           message: `信号生成完成: signals=${result.signals.length} inserted=${totalInserted} skipped=${totalSkipped} persist_errors=${totalErrors}`,
           detail: JSON.stringify({ stats: result.stats, tradeDate }),
         });
+
+        // T26: 双口径资产快照写入（SDD §5.1 17:02 信号生成最后一步）
+        // 快照失败不影响信号生成主流程（独立 try-catch）
+        try {
+          const snap = await insertAssetStatSnapshots(tradeDate);
+          writeSystemLog({
+            logType: 'signal_generate', level: 'INFO',
+            message: `双口径资产快照写入成功: inserted=${snap.inserted}`,
+            detail: JSON.stringify({ tradeDate }),
+          });
+        } catch (snapErr: any) {
+          writeSystemLog({
+            logType: 'signal_generate', level: 'WARN',
+            message: '双口径资产快照写入失败（不影响主流程）', detail: String(snapErr),
+          });
+        }
       } catch (err: any) {
         writeSystemLog({
           logType: 'signal_generate', level: 'ERROR',

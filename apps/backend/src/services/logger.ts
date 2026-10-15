@@ -13,6 +13,26 @@ export interface SystemLogEntry {
   logDate?: string;   // YYYY-MM-DD，默认今天
 }
 
+// =====================================================================
+// SDD §6 S6 日志脱敏 —— 在 writeSystemLog 内部统一做，三层降级自动脱敏
+// =====================================================================
+
+/** 金额脱敏：末 4 位换 ****，只处理整数部分 ≥ 4 位的金额 */
+function maskAmount(text: string): string {
+  return text.replace(/\b(\d{4,})(\.\d+)?\b/g, (_match, intPart: string, _decPart: string | undefined) => {
+    const maskedInt = intPart.slice(0, -4) + '****';
+    return maskedInt;
+  });
+}
+
+/** 用户标识脱敏：username 保留前 2 位，后面 **** */
+function maskUserId(text: string): string {
+  return text.replace(/(username[:=]\s*)([a-zA-Z0-9_]{2,})/gi, (m, prefix, name: string) => {
+    if (name.length <= 2) return m;
+    return `${prefix}${name.slice(0, 2)}****`;
+  });
+}
+
 /**
  * writeSystemLog 三层降级：
  * 1. 正常：写 SQLite system_log
@@ -23,6 +43,10 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   const { logType, level, message, detail, checkItem, logDate } = entry;
   const date = logDate ?? new Date().toISOString().slice(0, 10);
 
+  // SDD §6 S6 脱敏 —— 三层降级统一使用 safeMessage/safeDetail
+  const safeMessage = maskAmount(maskUserId(message ?? ''));
+  const safeDetail = detail ? maskAmount(maskUserId(detail)) : undefined;
+
   // Level 校验
   const ALLOWED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
   if (!ALLOWED_LEVELS.includes(level)) {
@@ -32,7 +56,7 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   // 第 1 层：正常写 SQLite
   try {
     const config = ConfigStore.getInstance();
-    config.writeLog(logType, level, message, detail, checkItem, date);
+    config.writeLog(logType, level, safeMessage, safeDetail, checkItem, date);
     return;  // 成功，直接返回
   } catch (sqliteErr) {
     console.error('[writeSystemLog] SQLite 不可用，降级到 console.error:', sqliteErr);
@@ -41,7 +65,8 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   // 第 2 层：console.error（systemd journal 自动捕获）
   const journalMsg = JSON.stringify({
     source: 'invest-assistant',
-    logType, level, checkItem, message, detail, date,
+    logType, level, checkItem,
+    message: safeMessage, detail: safeDetail, date,
   });
   console.error(journalMsg);
 

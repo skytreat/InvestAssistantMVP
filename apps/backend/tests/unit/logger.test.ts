@@ -184,4 +184,61 @@ describe('logger — writeSystemLog', () => {
       vi.restoreAllMocks();
     });
   });
+
+  // ---------------------------------------------------------
+  // S6 日志脱敏（SDD §6）
+  // ---------------------------------------------------------
+  describe('logger — S6 脱敏', () => {
+    it('金额 ≥ 10000 → 末 4 位换 ****', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'trade', level: 'SUCCESS',
+        message: '买入 sh600000 qty=12345678 price=9999.99',
+      });
+      const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      expect(row.message).not.toMatch(/12345678/);
+      expect(row.message).not.toMatch(/9999\.99/);
+      expect(row.message).toMatch(/****/);
+    });
+
+    it('金额 < 1000 → 不脱敏', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'trade', level: 'SUCCESS',
+        message: '手续费 50.00 元',
+      });
+      const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      expect(row.message).toMatch(/50/);  // 应该保留
+    });
+
+    it('username 脱敏：保留前 2 位，后面 ****', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'plugin_execute', level: 'INFO',
+        message: 'user login username=admin123 ok',
+      });
+      const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      expect(row.message).not.toMatch(/admin123/);
+      expect(row.message).toMatch(/username=ad\*\*\*\*/);
+    });
+
+    it('短 username (≤2) 不脱敏', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'startup', level: 'INFO',
+        message: 'user=ab connected',
+      });
+      const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      // username=ab 长度为 2，不变
+      expect(row.message).toMatch(/ab/);
+    });
+  });
 });
