@@ -32,7 +32,7 @@ function _date(): string {
   return local.toISOString().slice(0, 10);
 }
 
-function _deleteOldBackups(): number {
+export function _deleteOldBackups(): number {
   _ensureBackupDir();
   const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
   let deleted = 0;
@@ -52,13 +52,16 @@ function _deleteOldBackups(): number {
 
 /**
  * SQLite 热备份（better-sqlite3 db.backup）
+ *
+ * better-sqlite3 v13 起 db.backup() 变为 async，必须 await。
+ * 参见 backup.js:33（backup 返回 Promise，内部 setImmediate 步进 transfer）。
  */
-export function backupSQLite(): { success: boolean; size?: number; error?: string } {
+export async function backupSQLite(): Promise<{ success: boolean; size?: number; error?: string }> {
   try {
     _ensureBackupDir();
     const db = ConfigStore.getInstance().db;
     const out = path.join(BACKUP_DIR, `business.db.${_date()}`);
-    db.backup(out);
+    await db.backup(out);
     const size = fs.statSync(out).size;
     writeSystemLog({ logType: 'backup', level: 'INFO', message: `SQLite 备份成功`, detail: `file=${out} size=${size}` });
     return { success: true, size };
@@ -98,7 +101,7 @@ export async function runFullBackup(): Promise<{
   duckdb: { success: boolean; size?: number };
   cleanedFiles: number;
 }> {
-  const sqliteResult = backupSQLite();
+  const sqliteResult = await backupSQLite();
   const duckdbResult = await backupDuckDB();
   const cleaned = _deleteOldBackups();
   return {
