@@ -115,8 +115,8 @@ CREATE TABLE IF NOT EXISTS system_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     log_date TEXT NOT NULL,
     log_type TEXT NOT NULL CHECK (
-        log_type IN ('tdx2db_update', 'datacheck', 'signal_generate',
-                     'dividend_import', 'backup', 'trigger_manual', 'startup')
+        log_type IN ('tdx2db_update', 'datacheck', 'plugin_execute', 'signal_generate',
+                     'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade')
     ),
     level TEXT NOT NULL CHECK (level IN ('INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS')),
     check_item TEXT,
@@ -157,6 +157,77 @@ export class ConfigStore {
 
     // SQLite CREATE TABLE IF NOT EXISTS 对已存在表无效——启动时检测并补齐缺失的 UNIQUE 约束
     this._ensureTradeRecordUniqueConstraint();
+
+    // system_log 的 CHECK 白名单也需要迁移（smoke-m1 先 init 会建旧 schema，smoke-m2 复用导致 plugin_execute 被拒绝）
+    this._ensureSystemLogCheckConstraint();
+  }
+
+  /**
+   * 补齐 system_log 的 CHECK(log_type IN (...)) 白名单
+   * 新增 plugin_execute / trade 后，旧建的表 CHECK 约束还没包含它们
+   * 检测方式：CREATE TABLE system_log_new (完整 DDL) → ALTER RENAME → INSERT SELECT → DROP
+   */
+  private _ensureSystemLogCheckConstraint(): void {
+    const EXPECTED_TYPES = ['tdx2db_update', 'datacheck', 'plugin_execute', 'signal_generate',
+                            'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade'];
+    const EXPECTED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
+
+    try {
+      const current = this._db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='system_log'")
+        .get() as { sql: string } | undefined;
+      if (!current) return;
+
+      // 检测 CHECK 白名单是否已包含所有期望值
+      const missingType = EXPECTED_TYPES.find(t => !current.sql.includes(`'${t}'`));
+      const missingLevel = EXPECTED_LEVELS.find(l => !current.sql.includes(`'${l}'`));
+      if (!missingType && !missingLevel) return;  // 已是最新 schema
+
+      console.warn(`[ConfigStore] system_log CHECK 约束过旧（缺 type=${missingType ?? '无'} level=${missingLevel ?? '无'}），迁移中...`);
+
+      // 检测是否有数据（没数据直接 DROP 重建更快）
+      const count = (this._db.prepare('SELECT COUNT(*) AS c FROM system_log').get() as { c: number }).c;
+
+      const newDDL = `
+        CREATE TABLE _system_log_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            log_date TEXT NOT NULL,
+            log_type TEXT NOT NULL CHECK (
+                log_type IN ('${EXPECTED_TYPES.join("','")}')
+            ),
+            level TEXT NOT NULL CHECK (level IN ('${EXPECTED_LEVELS.join("','")}')),
+            check_item TEXT,
+            message TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+      `;
+
+      this._db.pragma('foreign_keys = OFF');
+      this._db.exec('BEGIN');
+      try {
+        this._db.exec(newDDL);
+        if (count > 0) {
+          // INSERT OR IGNORE：如果旧数据里有不在白名单的 log_type（理论上不应该），跳过
+          this._db.exec(`
+            INSERT OR IGNORE INTO _system_log_new (id, log_date, log_type, level, check_item, message, detail, created_at)
+            SELECT id, log_date, log_type, level, check_item, message, detail, created_at FROM system_log
+          `);
+        }
+        this._db.exec('DROP TABLE system_log');
+        this._db.exec('ALTER TABLE _system_log_new RENAME TO system_log');
+        this._db.exec('CREATE INDEX idx_system_log_date ON system_log(log_date, log_type, level)');
+        this._db.exec('COMMIT');
+        console.log('[ConfigStore] system_log CHECK 约束迁移成功');
+      } catch (migErr) {
+        this._db.exec('ROLLBACK');
+        throw migErr;
+      } finally {
+        this._db.pragma('foreign_keys = ON');
+      }
+    } catch (err) {
+      console.error('[ConfigStore] system_log CHECK 约束迁移失败（不阻塞启动）:', err);
+    }
   }
 
   /**

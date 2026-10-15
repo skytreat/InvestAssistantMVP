@@ -53,6 +53,7 @@ export function registerCronJobs(app: FastifyInstance): void {
         });
       }
     }),
+    { id: 'datacheck-c1-c12' },
   ));
 
   // === 17:02 插件信号生成 ===
@@ -76,6 +77,7 @@ export function registerCronJobs(app: FastifyInstance): void {
         });
       }
     }),
+    { id: 'signal-generate' },
   ));
 
   // === 17:03 除权自动导入 ===
@@ -100,6 +102,7 @@ export function registerCronJobs(app: FastifyInstance): void {
         });
       }
     }),
+    { id: 'dividend-import' },
   ));
 
   // === 17:05 备份（MVP 简化占位） ===
@@ -117,6 +120,7 @@ export function registerCronJobs(app: FastifyInstance): void {
         message: '备份 MVP 简化占位，Phase 3 实现',
       });
     }),
+    { id: 'backup' },
   ));
 
   writeSystemLog({
