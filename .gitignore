@@ -1,0 +1,43 @@
+# node_modules
+node_modules/
+npm‑debug‑log*
+*.log
+
+# build artifacts
+dist/
+*.tsbuildinfo
+*.exe
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# sqlite db & backup
+*.db
+*.db‑wal
+*.db‑shm
+backup/
+
+# env
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+.trae/
+.DS_Store
+Thumbs.db
+
+# Deprecated docs (do not reference)
+docs/web/
+
+# Test coverage
+coverage/
+*.lcov
+
+# Cloud functions
+cloud/*/node_modules/
+cloud/*/*.tgz
+cloud/*/dist/

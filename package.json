@@ -1,0 +1,13 @@
+{
+  "name": "invest-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
