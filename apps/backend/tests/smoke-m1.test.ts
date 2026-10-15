@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ConfigStore } from '../src/config/configStore.js';
 import { duckdbHealthCheck, queryDuckDB } from '../src/db/duckdb.js';
 import { registerRoutes } from '../src/routes/index.js';
@@ -8,23 +10,16 @@ import { registerRoutes } from '../src/routes/index.js';
 /**
  * smoke-m1.test.ts — Phase 1 M1 里程碑冒烟测试
  *
- * 本地运行：
- *   npm run test  # SQLite + Fastify 必过；DuckDB 不可用时 gracefully skip
- *
- * 服务器部署后：
- *   export DUCKDB_PATH=/opt/invol/quotes.duckdb
- *   npm run test  # DuckDB 校验会自动启用
- *
- * M1 验收覆盖：
- *   ✅ Fastify 监听 127.0.0.1, /api/health → 200
- *   ✅ SQLite WAL + busy_timeout + foreign_keys PRAGMA
- *   ✅ 7 张业务表 + UNIQUE 约束存在
- *   ✅ system_log 可写可读
- *   ⚠️ DuckDB v_stock_qfq 可查询（真实 DuckDB 存在时）
+ * 顶层用 fs.existsSync 快速检测 DuckDB 文件是否存在（不打开连接，不拿锁）
+ * 真实 DuckDB 查询留给 test 内部执行（有独立 timeout）
  */
-
 const HOST = '127.0.0.1';
-const PORT = 51100;  // 测试端口（AGENTS.md smoke 段分配，避开 8080）
+const PORT = 51100;
+
+// 顶层快速检测：只看文件存不存在，不打开 DuckDB 连接（避免文件锁泄漏）
+const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
+const DUCKDB_FILE_EXISTS = fs.existsSync(DUCKDB_PATH);
+console.log(`[smoke-m1] DuckDB path: ${DUCKDB_PATH}, exists=${DUCKDB_FILE_EXISTS}`);
 
 let app: Awaited<ReturnType<typeof Fastify>>;
 let db: ReturnType<typeof ConfigStore>;
@@ -121,6 +116,7 @@ describe('M1 Fastify', () => {
   });
 
   it('/api/market/latest 返回 JSON（DuckDB 不可用时返回 502）', async () => {
+    // 顶层已检测 DuckDB 不可用 → 路由内部快速返回 502，不触发 retry
     const res = await app.inject({ method: 'GET', url: '/api/market/latest' });
     expect([200, 502]).toContain(res.statusCode);
   });
@@ -128,32 +124,28 @@ describe('M1 Fastify', () => {
 
 // === DuckDB 可选（真实文件存在时才跑） ===
 describe('M1 DuckDB（部署后启用）', () => {
-  let duckdbAvailable = false;
-  let skipReason = '';
+  it('健康检查 OR 优雅跳过', async () => {
+    // 顶层已检测：文件不存在 → 直接跳过（不打开 DuckDB，不拿锁）
+    if (!DUCKDB_FILE_EXISTS) {
+      console.log('  ⚠️  SKIP DuckDB: 文件不存在');
+      console.log('     部署后 export DUCKDB_PATH=/opt/invol/quotes.duckdb 启用');
+      return;  // 空通过（无断言）
+    }
 
-  beforeAll(async () => {
+    // 文件存在 → 跑真实 health check（5 秒 timeout，DuckDB 打开失败就 SKIP）
     try {
       await duckdbHealthCheck();
-      duckdbAvailable = true;
     } catch (err: any) {
-      duckdbAvailable = false;
-      skipReason = String(err).substring(0, 80);
+      console.log(`  ⚠️  SKIP DuckDB: ${String(err).substring(0, 80)}`);
+      return;  // 空通过（health check 失败说明文件被锁或损坏）
     }
-  });
 
-  it('健康检查 OR 优雅跳过', async () => {
-    if (!duckdbAvailable) {
-      console.log(`  ⚠️  SKIP DuckDB: ${skipReason}`);
-      console.log('     部署后在 OCI 上 export DUCKDB_PATH=/opt/invol/quotes.duckdb 启用');
-      expect(true).toBe(true);  // skip 不算失败
-      return;
-    }
-    // 真实 DuckDB 存在 → 必须能查 v_stock_qfq
+    // 真实 DuckDB 通 → 查询 v_stock_qfq
     const rows = await queryDuckDB<{ symbol: string; date: string; close: number }>(
       'SELECT symbol, date, close FROM v_stock_qfq ORDER BY date DESC LIMIT 1'
     );
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0].symbol).toMatch(/^(sh|sz)\d{6}$/);
     expect(typeof rows[0].close).toBe('number');
-  });
+  }, 15000);  // 独立 timeout，给 DuckDB 大文件查询留够时间
 });

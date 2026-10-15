@@ -19,6 +19,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import schedule from '@fastify/schedule';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ConfigStore } from '../src/config/configStore.js';
 import { runAllChecks } from '../src/services/validator.js';
 import { executeAllPlugins } from '../src/services/pluginEngine.js';
@@ -26,26 +28,15 @@ import { importDividendEvents } from '../src/services/exDividendSync.js';
 import { registerCronJobs } from '../src/services/scheduler.js';
 import { duckdbHealthCheck, queryDuckDB } from '../src/db/duckdb.js';
 
-const TEST_PORT = 51101;  // 避开 smoke-m1 的 51100
+const TEST_PORT = 51101;
 
-// 顶层同步检测 DuckDB 可用性——describe.skipIf 需要收集阶段就知道值
-// Vitest ESM 模式支持 top-level await，文件加载时就跑完
-let DUCKDB_AVAILABLE = false;
-let V_STOCK_QFQ_COUNT = 0;
-let RAW_GBBQ_DIVIDEND_COUNT = 0;
-try {
-  await duckdbHealthCheck();
-  // health check 通过后再查一次——确认查询链路也通（避免 DuckDB 刚解锁又被锁）
-  const [qfqRow] = await queryDuckDB<{ cnt: bigint }>('SELECT COUNT(*) AS cnt FROM v_stock_qfq');
-  V_STOCK_QFQ_COUNT = Number(qfqRow?.cnt ?? 0n);
-  const [divRow] = await queryDuckDB<{ cnt: bigint }>('SELECT COUNT(*) AS cnt FROM raw_gbbq WHERE category = 1');
-  RAW_GBBQ_DIVIDEND_COUNT = Number(divRow?.cnt ?? 0n);
-  DUCKDB_AVAILABLE = true;  // 两步都过才设为 true
-  console.log(`[smoke-m2] DuckDB OK: v_stock_qfq=${V_STOCK_QFQ_COUNT} rows, raw_gbbq(category=1)=${RAW_GBBQ_DIVIDEND_COUNT} rows`);
-} catch (err) {
-  DUCKDB_AVAILABLE = false;  // 任一步失败都不可用
-  console.warn(`[smoke-m2] DuckDB 不可用，跳过真实路径测试: ${String(err)}`);
-}
+// 顶层快速检测：只看文件存不存在（避免 DuckDB Neo API 文件锁泄漏）
+const _DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
+const DUCKDB_FILE_EXISTS = fs.existsSync(_DUCKDB_PATH);
+console.log(`[smoke-m2] DuckDB path: ${_DUCKDB_PATH}, exists=${DUCKDB_FILE_EXISTS}`);
+
+// 真实 DuckDB 可用性延后到 test 内部检测（有独立 timeout + try-catch）
+const _duckdbWorks = DUCKDB_FILE_EXISTS;
 
 let app: Awaited<ReturnType<typeof Fastify>>;
 let db: ReturnType<typeof ConfigStore>;
@@ -206,30 +197,39 @@ describe('M2 全链路日志验证', () => {
 
 // ========================================================================
 // M2 真实 DuckDB 路径（条件执行）
-// - Windows 开发机: DUCKDB_AVAILABLE=false → 3 个 test 空通过（无断言）
-// - OCI 服务器: DuckDB 全通 → 3 个 test 跑真实断言
+// - Windows 开发机: DUCKDB_FILE_EXISTS=false → 3 个 test 空通过（无断言）
+// - OCI 服务器: DuckDB 文件存在 → 每个 test 内部独立 duckdbHealthCheck 验证后跑真实断言
 // ========================================================================
-const _duckdbWorks = DUCKDB_AVAILABLE;  // 顶层 await 已检测好
 
 describe('M2 真实 DuckDB 路径', () => {
+  // 每个 test 内部独立验证 DuckDB 真能用（有独立 timeout + try-catch，不泄漏文件锁）
+  async function _ensureDuckdbWorks(): Promise<boolean> {
+    if (!_duckdbWorks) return false;  // fs 检测文件就不存在
+    try {
+      await duckdbHealthCheck();
+      return true;
+    } catch {
+      return false;  // 文件存在但被锁 / 损坏 → 跳过
+    }
+  }
+
   it('runAllChecks 至少 C1 能执行（result 是合法值）', async () => {
-    if (!_duckdbWorks) return;  // 无 DuckDB → 空通过
+    if (!(await _ensureDuckdbWorks())) return;
     const summaries = await runAllChecks(tradeDate);
     const c1 = summaries.find((s) => s.checkId === 'C1');
     expect(c1).toBeDefined();
-    // DuckDB 可用时 C1 一定会执行并返回 result（不一定 PASS/WARN，取决于行情是否到最新）
     expect(['PASS', 'WARN', 'ERROR', 'SKIP']).toContain(c1!.result);
   });
 
   it('builtin 插件 50ms 内能返回 signals（无 timeout）', async () => {
-    if (!_duckdbWorks) return;
+    if (!(await _ensureDuckdbWorks())) return;
     const result = await executeAllPlugins();
     expect(result.stats.timeout).toBe(0);
     expect(Array.isArray(result.signals)).toBe(true);
   });
 
   it('除权导入：无异常 errors=0', async () => {
-    if (!_duckdbWorks) return;
+    if (!(await _ensureDuckdbWorks())) return;
     const result = await importDividendEvents(tradeDate);
     expect(result.errors).toBe(0);
     expect(result.eventsProcessed).toBeGreaterThanOrEqual(0);
