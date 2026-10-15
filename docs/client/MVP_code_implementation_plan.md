@@ -4,6 +4,12 @@
 > **架构硬约束**：AGENTS.md 锁死 3 个 workspace（`packages/core` / `apps/backend` / `apps/frontend`）、better-sqlite3 推荐、Node ≥22、禁止前端直接 import core
 > **任务粒度**：1-3 人天；每个 Phase 最后一条 commit 打 `fix:` 或 `test:` 前缀后验收清卡
 > **里程碑边界**：M1/M2/M3/M4 各阶段最后一条 commit → 验收清卡
+> **Commit 规范**：
+> - **每个 T 任务一个 commit**（T1 / T2 / ... / T43 各自独立提交），禁止多个半拉子攒一个大 commit
+> - commit message 前缀：`feat:` 新功能 / `fix:` 修复 / `refactor:` 重构 / `test:` 测试 / `docs:` 文档 / `build:` 构建
+> - 格式：`<prefix>: T<编号> <任务一句话描述>`，例：`feat: T3 移动加权成本算法 core 包实现`
+> - **smoke-mX.test.ts 实装后单独一条 commit**（T12/T24/T36/T43 各自独立）
+> - **每个 M 里程碑最后一条 commit** 必须是 `fix:` 或 `docs:` 或 `test:` 前缀（收尾整理），打 tag `M1`/`M2`/`M3`/`M4`
 
 ---
 
