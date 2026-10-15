@@ -231,7 +231,7 @@ describe('M2 真实 DuckDB 路径', () => {
   it('除权导入：无异常 errors=0', async () => {
     if (!(await _ensureDuckdbWorks())) return;
     const result = await importDividendEvents(tradeDate);
-    console.log('[smoke-m2] dividend result:', JSON.stringify(result));
+    console.error('[smoke-m2] dividend result:', JSON.stringify(result));
     expect(result.errors).toBe(0);
     expect(result.eventsProcessed).toBeGreaterThanOrEqual(0);
   });
