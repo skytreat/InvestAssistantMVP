@@ -51,12 +51,24 @@ describe('marketData — isTradingDay', () => {
     const result = await isTradingDay('2026-10-15');
     expect(typeof result).toBe('boolean');
   });
+
+  it('raw_holidays 表不存在时不抛错，返回 false', async () => {
+    // data/quotes.duckdb 为空时 raw_holidays 不存在，应降级返回 false
+    const result = await isTradingDay('2099-01-01');
+    expect(result).toBe(false);
+  });
 });
 
 describe('marketData — getLatestTradingDay', () => {
-  it('调用 getLatestTradingDay 不抛错，返回 DuckDBDateValue 或 null', async () => {
+  it('调用 getLatestTradingDay 不抛错，返回 string 或 null', async () => {
     const result = await getLatestTradingDay('2026-10-15');
-    // DuckDB Neo API 返回 DuckDBDateValue 对象（有 .days 属性）或 null
-    expect(result !== undefined).toBe(true);
+    // DuckDB date 列返回 DuckDBDateValue，兼容处理
+    expect(result === null || typeof result === 'string' || typeof result === 'object').toBe(true);
+  });
+
+  it('raw_holidays 表不存在时不抛错，返回 null', async () => {
+    // 用早于所有假日的日期确保查不到任何匹配行
+    const result = await getLatestTradingDay('1900-01-01');
+    expect(result).toBeNull();
   });
 });

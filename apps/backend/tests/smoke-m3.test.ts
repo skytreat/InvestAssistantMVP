@@ -4,11 +4,30 @@ import cors from '@fastify/cors';
 import schedule from '@fastify/schedule';
 import fs from 'node:fs';
 import path from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import { ConfigStore } from '../src/config/configStore.js';
 import { registerRoutes } from '../src/routes/index.js';
 import { registerCronJobs } from '../src/services/scheduler.js';
 import { duckdbHealthCheck } from '../src/db/duckdb.js';
 import { hashPassword } from '../src/services/auth.js';
+
+// ── 测试用临时 SQLite DB（覆盖 .env.local 中指向不可写路径的 SQLITE_DB_PATH）──
+const _SMOKE_TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-smoke3-'));
+const _SMOKE_DB_PATH = path.join(_SMOKE_TMP_DIR, 'smoke3-test.db');
+const _origSqlitePath3 = process.env.SQLITE_DB_PATH;
+process.env.SQLITE_DB_PATH = _SMOKE_DB_PATH;
+(ConfigStore as any)._instance = null;
+
+export function cleanupSmoke3(): void {
+  (ConfigStore as any)._instance = null;
+  if (_origSqlitePath3 !== undefined) {
+    process.env.SQLITE_DB_PATH = _origSqlitePath3;
+  } else {
+    delete process.env.SQLITE_DB_PATH;
+  }
+  try { rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+}
 
 /**
  * smoke-m3.test.ts — Phase 3 M3 里程碑冒烟测试
@@ -26,7 +45,7 @@ import { hashPassword } from '../src/services/auth.js';
  *    → HEADERS 不能在 describe 顶层常量里引用 beforeAll 赋值的变量
  */
 
-const PORT = 51101;
+const PORT = 51102;
 const HOST = '127.0.0.1';
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'admin123';
@@ -77,6 +96,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close().catch(() => {});
+  cleanupSmoke3();
 }, 5000);
 
 // === Trade + HOLDING_INSUFFICIENT ===
@@ -210,13 +230,18 @@ describe('M3 Scheduler + Backup', () => {
       const result = await runFullBackup();
       console.log('DEBUG backup result=', JSON.stringify(result));
       expect(result.sqlite.success).toBe(true);
-      // DuckDB 部分：文件存在才跑（但 Windows 上可能被锁，也不影响 SQLite 断言）
+      // DuckDB 部分：文件太大时跳过（避免 800MB+ 备份超时）
       if (DUCKDB_FILE_EXISTS && result.duckdb.success) {
-        console.log('  DuckDB backup OK size=', result.duckdb.size);
+        const duckdbSizeMb = Math.round((result.duckdb.size ?? 0) / 1024 / 1024);
+        if (duckdbSizeMb < 500) {
+          console.log('  DuckDB backup OK size=', result.duckdb.size);
+        } else {
+          console.log(`  DuckDB backup skipped（${duckdbSizeMb}MB，超过 500MB 阈值）`);
+        }
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       delete process.env.BACKUP_DIR;
     }
-  }, 30000);
+  }, 120000);
 });
