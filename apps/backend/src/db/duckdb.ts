@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
 
 /**
@@ -16,7 +17,10 @@ import { DuckDBInstance } from '@duckdb/node-api';
  *   // Connection/Instance 无 .close() 方法，依赖 GC 回收
  */
 
-const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
+// 路径解析：env 优先（绝对路径），否则从模块位置向上定位项目根
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DUCKDB_PATH = process.env.DUCKDB_PATH
+  ?? path.resolve(__dirname, '../../../../data/quotes.duckdb');
 const MAX_RETRY = 2;
 const RETRY_DELAY_MS = 200;
 
