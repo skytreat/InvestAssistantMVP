@@ -190,6 +190,7 @@ export default function TradeInput() {
   const [quantity, setQuantity] = useState<string>('');
   const [price, setPrice] = useState<string>('');
   const [fee, setFee] = useState<string>('0');
+  const [tradeReason, setTradeReason] = useState<string>('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -208,6 +209,7 @@ export default function TradeInput() {
       quantity: Number(quantity),
       price: Number(price),
       fee: Number(fee) || 0,
+      trade_reason: tradeReason.trim() || undefined,
     };
 
     try {
@@ -287,7 +289,7 @@ export default function TradeInput() {
             <input
               style={{ ...inputStyle, flex: 1 }}
               type="number"
-              step="0.01"
+              step="0.0001"
               min={0}
               value={price}
               onChange={(e) => setPrice(e.target.value)}
@@ -300,10 +302,21 @@ export default function TradeInput() {
             <input
               style={{ ...inputStyle, flex: 1 }}
               type="number"
-              step="0.01"
+              step="0.0001"
               min={0}
               value={fee}
               onChange={(e) => setFee(e.target.value)}
+            />
+          </div>
+
+          <div style={formRowStyle}>
+            <label style={labelStyle}>trade_reason</label>
+            <input
+              style={{ ...inputStyle, flex: 1 }}
+              type="text"
+              placeholder="如 MACD 金叉买入 / 止损卖出"
+              value={tradeReason}
+              onChange={(e) => setTradeReason(e.target.value)}
             />
           </div>
 

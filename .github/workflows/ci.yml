@@ -31,7 +31,7 @@ jobs:
 
       # Core tests — 带 coverage，输出到 packages/core/coverage/
       - name: Run core tests
-        run: npx vitest run packages/core --coverage
+        run: npx vitest run --config packages/core/vitest.config.ts --coverage
 
       # Backend unit tests — 带 coverage；--pool=forks + singleFork 保证 ConfigStore 单例隔离
       - name: Run backend unit tests

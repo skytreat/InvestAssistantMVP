@@ -37,8 +37,14 @@ async function bootstrap() {
   await registerRoutes(app);
 
   // 注册 @fastify/schedule + 4 段 cron（校验 / 信号 / 除权 / 备份）
-  await app.register(schedule);
-  registerCronJobs(app);
+  // 本地开发可用 DISABLE_CRON=1 跳过（行情数据已预置，不跑定时更新）
+  if (process.env.DISABLE_CRON !== '1') {
+    await app.register(schedule);
+    registerCronJobs(app);
+    app.log.info('Cron 任务已注册（17:01 校验 / 17:02 信号 / 17:03 除权 / 17:05 备份）');
+  } else {
+    app.log.warn('DISABLE_CRON=1 — 跳过 cron 注册');
+  }
 
   // DuckDB 连接健康检查（不阻塞启动——DuckDB 文件可能还没初始化）
   try {
