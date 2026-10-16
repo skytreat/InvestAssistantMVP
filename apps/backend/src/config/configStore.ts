@@ -385,6 +385,19 @@ export class ConfigStore {
     return ConfigStore._instance;
   }
 
+  /**
+   * 关闭当前连接并清空单例，下次 getInstance() 会用同一 _dbPath 重新打开
+   *
+   * 仅备份恢复流程使用：恢复时必须先断开 WAL 连接、替换库文件、再重开，
+   * 否则 better-sqlite3 会继续读写旧的文件句柄。
+   */
+  static resetInstance(): void {
+    if (ConfigStore._instance) {
+      try { ConfigStore._instance._db.close(); } catch { /* 已关闭 */ }
+      ConfigStore._instance = null;
+    }
+  }
+
   get db(): Database.Database {
     return this._db;
   }

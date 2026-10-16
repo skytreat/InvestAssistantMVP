@@ -193,7 +193,7 @@ describe('Review · 胜率 / 盈亏比统计（PRD §5.5）', () => {
   it('空仓用户：winRate / profitLossRatio 为 null（前端显示 --）', async () => {
     const empty = await bundle.app.inject({
       method: 'POST', url: '/api/auth/seed',
-      payload: { username: `rev_empty_${Date.now()}`, password: 'x1234567' },
+      payload: { username: `rev_empty_${Date.now()}`, password: 'x1234567', role: 'user' },
     });
     expect(empty.statusCode).toBe(201);
     const token = JSON.parse(empty.body).data.token;

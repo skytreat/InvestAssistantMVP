@@ -169,3 +169,85 @@ export async function runFullBackup(): Promise<{
     ociUploaded,
   };
 }
+
+/** 可恢复的 SQLite 备份文件名（backupSQLite 产出的命名规范） */
+const RESTORE_FILE_RE = /^business\.db\.\d{4}-\d{2}-\d{2}$/;
+
+export interface RestoreResult {
+  success: boolean;
+  /** 恢复前的自动安全备份文件名（回滚用） */
+  safetyBackup?: string;
+  error?: string;
+}
+
+/**
+ * 从备份恢复 SQLite 业务库（T41 ⑤ / SDD §5.6）
+ *
+ * 流程：
+ *   1. 校验文件名（严格白名单正则 + 路径穿越防护）
+ *   2. 先给当前库打一份 .pre-restore 安全备份（恢复错了还能滚回去）
+ *   3. 关闭 ConfigStore 连接 → 替换库文件 → 删掉残留的 -wal/-shm
+ *   4. 重开连接，确认新库可读（SELECT 1 + 关键表存在）
+ *
+ * ⚠️ DuckDB 行情层不参与恢复：它是可重建的派生数据（AGENTS.md 行情硬约束），
+ *    恢复 SQLite 后由下一次 tdx2db 更新自然回到一致状态。
+ */
+export function restoreSQLiteBackup(fileName: string): RestoreResult {
+  // 1. 文件名白名单 —— 挡掉 ../、绝对路径、parquet 等一切非备份产物
+  if (!RESTORE_FILE_RE.test(fileName)) {
+    return { success: false, error: `文件名非法（仅接受 business.db.YYYY-MM-DD）：${fileName}` };
+  }
+
+  const backupRoot = path.resolve(BACKUP_DIR);
+  const source = path.resolve(backupRoot, fileName);
+  // 二次确认没有跳出备份目录
+  if (!source.startsWith(backupRoot + path.sep)) {
+    return { success: false, error: '路径越界，拒绝恢复' };
+  }
+  if (!fs.existsSync(source)) {
+    return { success: false, error: `备份文件不存在：${fileName}` };
+  }
+
+  const dbPath = ConfigStore.getInstance().getDbPath();
+  const safetyName = `business.db.${_date()}.pre-restore-${Date.now()}`;
+  const safetyPath = path.join(backupRoot, safetyName);
+
+  try {
+    // 2. 安全备份（同步备份，避免与后续断连竞争）
+    fs.mkdirSync(backupRoot, { recursive: true });
+    fs.copyFileSync(dbPath, safetyPath);
+
+    // 3. 断连 → 替换 → 清 WAL 残留
+    ConfigStore.resetInstance();
+    fs.copyFileSync(source, dbPath);
+    for (const suffix of ['-wal', '-shm']) {
+      try { fs.unlinkSync(dbPath + suffix); } catch { /* 不存在即可 */ }
+    }
+
+    // 4. 重开并校验新库
+    const db = ConfigStore.getInstance().db;
+    db.prepare('SELECT 1').get();
+    const tables = (db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_account','user_trade_record')`
+    ).all() as { name: string }[]).map(r => r.name);
+    if (tables.length !== 2) {
+      throw new Error(`备份内容不完整，缺少关键表：${['user_account', 'user_trade_record'].filter(t => !tables.includes(t)).join(', ')}`);
+    }
+
+    const count = (db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
+    writeSystemLog({
+      logType: 'backup', level: 'SUCCESS',
+      message: `SQLite 备份恢复完成：${fileName}`,
+      detail: `safety_backup=${safetyName} trade_records=${count}`,
+    });
+
+    return { success: true, safetyBackup: safetyName };
+  } catch (err: any) {
+    writeSystemLog({
+      logType: 'backup', level: 'ERROR',
+      message: `SQLite 备份恢复失败：${fileName}`,
+      detail: String(err),
+    });
+    return { success: false, error: String(err) };
+  }
+}

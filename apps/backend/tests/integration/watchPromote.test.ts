@@ -133,7 +133,7 @@ describe('Positions · 现价 / 市值 enrich（T33）', () => {
   it('无持仓用户 → data=[] 空数组不报错', async () => {
     const seed = await bundle.app.inject({
       method: 'POST', url: '/api/auth/seed',
-      payload: { username: `pos_empty_${Date.now()}`, password: 'x1234567' },
+      payload: { username: `pos_empty_${Date.now()}`, password: 'x1234567', role: 'user' },
     });
     expect(seed.statusCode).toBe(201);
     const token = JSON.parse(seed.body).data.token;
