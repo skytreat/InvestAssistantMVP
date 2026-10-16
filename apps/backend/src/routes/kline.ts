@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { queryDuckDB } from '../db/duckdb.js';
 import { calculateMACD, calculateRSI } from '@invest/core';
+import { ConfigStore } from '../config/configStore.js';
 
 /**
  * K 线行情数据接口（SDD F5 验收项）
@@ -11,11 +12,7 @@ import { calculateMACD, calculateRSI } from '@invest/core';
  * days: 取最近 N 条日线，默认 120，范围 [10, 500]
  * fq: qfq(前复权) / raw(不复权)，默认 qfq
  *
- * 返回：klines（升序 OHLCV）+ indicators（后端算好 MACD / RSI / MA）
- *
- * 硬约束：
- * - Fastify 进程对 DuckDB 只有 SELECT 权限（AGENTS.md）
- * - 指标统一在后端计算返回——前端禁止直接 import @invest/core（AGENTS.md 跨 workspace 依赖规则）
+ * 返回：klines（升序 OHLCV）+ indicators（后端算好 MACD / RSI / MA）+ signals（该标的近N日信号）
  */
 
 interface KlineRow {
@@ -81,6 +78,16 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       const macdResult = calculateMACD(closes);
       const rsiResult = calculateRSI(closes, 14);
 
+      // 查询该标的的近N日策略信号
+      const db = ConfigStore.getInstance().db;
+      const signals = db.prepare(
+        `SELECT trade_date, direction, label, strength, plugin_id
+         FROM user_strategy_signal
+         WHERE asset_code = ? AND is_deleted = 0
+         ORDER BY trade_date DESC
+         LIMIT 20`
+      ).all(symbol) as Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>;
+
       return reply.send({
         success: true,
         data: {
@@ -94,6 +101,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
             ma10: sma(closes, 10),
             ma20: sma(closes, 20),
           },
+          signals,
         },
       });
     } catch (err: unknown) {

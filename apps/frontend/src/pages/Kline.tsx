@@ -26,6 +26,7 @@ interface KlineApiResponse {
     fq: string;
     klines: KlineBar[];
     indicators: Indicators | null;
+    signals?: Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>;
   };
   error?: string;
   message?: string;
@@ -49,7 +50,7 @@ function setupCanvas(canvas: HTMLCanvasElement, cssWidth: number, cssHeight: num
   return ctx;
 }
 
-function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Indicators) {
+function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Indicators, signals?: Array<{ trade_date: string; direction: string; label: string; plugin_id?: string }>) {
   const ctx = setupCanvas(canvas, CANVAS_WIDTH, MAIN_HEIGHT);
   const W = CANVAS_WIDTH;
   const H = MAIN_HEIGHT;
@@ -146,6 +147,27 @@ function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Ind
   drawLegend('MA5', indicators.ma5[indicators.ma5.length - 1]?.toFixed(2) ?? '--', pad.left + 4, pad.top - 6, '#fbbf24');
   drawLegend('MA10', indicators.ma10[indicators.ma10.length - 1]?.toFixed(2) ?? '--', pad.left + 100, pad.top - 6, '#60a5fa');
   drawLegend('MA20', indicators.ma20[indicators.ma20.length - 1]?.toFixed(2) ?? '--', pad.left + 210, pad.top - 6, '#c084fc');
+
+  // 绘制策略信号标记（买入绿▲ / 卖出红▼）
+  if (signals && signals.length > 0) {
+    const dateIndex = new Map<string, number>();
+    klines.forEach((k, i) => dateIndex.set(k.date, i));
+    ctx.font = '14px sans-serif';
+    for (const sig of signals) {
+      const idx = dateIndex.get(sig.trade_date);
+      if (idx === undefined) continue;
+      const x = pad.left + idx * barW + barW / 2;
+      const yHigh = pad.top + ((max - klines[idx].high) / range) * chartH;
+      const color = sig.direction === 'buy' ? '#16a34a' : sig.direction === 'sell' ? '#dc2626' : '#374151';
+      ctx.fillStyle = color;
+      ctx.textAlign = 'center';
+      ctx.fillText(sig.direction === 'buy' ? '▲' : sig.direction === 'sell' ? '▼' : '●', x, yHigh - 6);
+      ctx.font = '9px sans-serif';
+      ctx.fillStyle = '#aaa';
+      ctx.fillText(sig.plugin_id ?? '', x, yHigh - 18);
+      ctx.font = '14px sans-serif';
+    }
+  }
 }
 
 function drawMACD(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators) {
@@ -268,6 +290,7 @@ export default function Kline() {
   const [days, setDays] = useState(120);
   const [klines, setKlines] = useState<KlineBar[]>([]);
   const [indicators, setIndicators] = useState<Indicators | null>(null);
+  const [signals, setSignals] = useState<Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -284,6 +307,7 @@ export default function Kline() {
       if (body.success && body.data) {
         setKlines(body.data.klines);
         setIndicators(body.data.indicators);
+        setSignals(body.data.signals ?? []);
       } else {
         setErr(body.message ?? body.error ?? '加载失败');
         setKlines([]);
@@ -300,11 +324,11 @@ export default function Kline() {
 
   useEffect(() => {
     if (klines.length > 0 && indicators && mainRef.current && macdRef.current && rsiRef.current) {
-      drawMain(mainRef.current, klines, indicators);
+      drawMain(mainRef.current, klines, indicators, signals);
       drawMACD(macdRef.current, klines, indicators);
       drawRSI(rsiRef.current, klines, indicators);
     }
-  }, [klines, indicators]);
+  }, [klines, indicators, signals]);
 
   return (
     <div style={{ fontFamily: 'system-ui, sans-serif' }}>

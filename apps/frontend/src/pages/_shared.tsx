@@ -41,6 +41,10 @@ export function Navbar() {
       </span>
       <button onClick={() => { logout(); navigate('/login'); }}>退出登录</button>
     </div>
+    {/* 全局合规声明 */}
+    <div style={{ background: '#fef3c7', color: '#92400e', fontSize: 12, textAlign: 'center', padding: '4px 0' }}>
+      本工具不构成投资建议，数据仅供参考
+    </div>
   );
 }
 
