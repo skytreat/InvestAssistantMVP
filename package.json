@@ -4,8 +4,8 @@
   "private": true,
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "test": "vitest run apps/backend --pool=forks --poolOptions.forks.singleFork=true && vitest run packages/core",
-    "test:coverage": "vitest run apps/backend --pool=forks --poolOptions.forks.singleFork=true --coverage && vitest run packages/core --coverage"
+    "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run packages/core --config packages/core/vitest.config.ts",
+    "test:coverage": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true --coverage && vitest run packages/core --config packages/core/vitest.config.ts --coverage"
   },
   "engines": {
     "node": ">=22"

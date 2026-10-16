@@ -9,7 +9,7 @@
  *   - 非 admin 走 admin 路由 → 403 FORBIDDEN
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTestApp, makeUserToken, ADMIN_USER, ADMIN_PASS } from './_helpers.js';
+import { createTestApp, makeUserToken, ADMIN_USER, ADMIN_PASS, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
 let bundle: TestAppBundle;
@@ -28,6 +28,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await bundle.app.close().catch(() => {});
+  cleanupIntegrationTest();
 });
 
 describe('Auth · login', () => {

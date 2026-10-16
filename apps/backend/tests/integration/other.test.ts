@@ -8,7 +8,7 @@
  * 不 mock，走真实 SQLite + Fastify inject。
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { createTestApp, makeUserToken } from './_helpers.js';
+import { createTestApp, makeUserToken, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
 const WATCH_USER = 'int_watch_user';
@@ -42,6 +42,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await bundle.app.close().catch(() => {});
+  cleanupIntegrationTest();
 });
 
 // ────────────────────────────────────────────────────────────

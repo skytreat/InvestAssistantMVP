@@ -4,11 +4,31 @@
  * 复用 smoke-m3 的 setup 但不 listen 端口（只用 app.inject()），
  * 避免 singleFork 模式下多个 Fastify 实例绑端口 EADDRINUSE。
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { ConfigStore } from '../../src/config/configStore.js';
 import { registerRoutes } from '../../src/routes/index.js';
 import { hashPassword, signToken } from '../../src/services/auth.js';
+
+// ── 测试用临时 SQLite DB（覆盖 .env.local 中指向不可写路径的 SQLITE_DB_PATH）──
+const _TEST_TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-integ-'));
+const _TEST_DB_PATH = path.join(_TEST_TMP_DIR, 'integ-test.db');
+const _origSqlitePath = process.env.SQLITE_DB_PATH;
+process.env.SQLITE_DB_PATH = _TEST_DB_PATH;
+(ConfigStore as any)._instance = null;
+
+export function cleanupIntegrationTest(): void {
+  (ConfigStore as any)._instance = null;
+  if (_origSqlitePath !== undefined) {
+    process.env.SQLITE_DB_PATH = _origSqlitePath;
+  } else {
+    delete process.env.SQLITE_DB_PATH;
+  }
+  try { rmSync(_TEST_TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+}
 
 export interface TestAppBundle {
   app: Awaited<ReturnType<typeof Fastify>>;

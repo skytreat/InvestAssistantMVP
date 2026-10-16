@@ -11,7 +11,7 @@
  *   - 非法 trade_type → 400
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createTestApp } from './_helpers.js';
+import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
 let bundle: TestAppBundle;
@@ -26,6 +26,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await bundle.app.close().catch(() => {});
+  cleanupIntegrationTest();
 });
 
 function authHeaders() {
