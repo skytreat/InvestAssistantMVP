@@ -13,7 +13,7 @@ import { writeSystemLog } from '../services/logger.js';
 
 export async function registerPluginRoutes(app: FastifyInstance) {
   app.get('/api/plugins', async (request, reply) => {
-    const user = (request as any).user as { sub: number };
+    const user = (request as any).user as { sub: number; username: string };
     const db = ConfigStore.getInstance().db;
     const allPlugins = getAllPlugins();
 
@@ -36,7 +36,7 @@ export async function registerPluginRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/plugins/:id/config', async (request, reply) => {
-    const user = (request as any).user as { sub: number };
+    const user = (request as any).user as { sub: number; username: string };
     const { id } = request.params as { id: string };
     const { params } = request.body as { params: Record<string, unknown> };
 
@@ -51,7 +51,7 @@ export async function registerPluginRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/plugins/:id/toggle', async (request, reply) => {
-    const user = (request as any).user as { sub: number };
+    const user = (request as any).user as { sub: number; username: string };
     const { id } = request.params as { id: string };
     const { enabled } = request.body as { enabled: number };
 

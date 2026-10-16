@@ -7,8 +7,8 @@ import { calculateSMA } from './indicators.js';
 import {
   getDailyRange,
   batchGetDailyRange,
-  type DailyKline,
 } from './marketData.js';
+import type { DailyKline } from '@invest/core';
 import { writeSystemLog } from './logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,6 +50,7 @@ export interface PluginContext {
 export interface PluginSignal {
   symbol: string;
   signalType: 'BUY' | 'SELL' | 'HOLD' | 'ALERT';
+  label?: string;              // 人读标签（落 user_strategy_signal.label，缺省用 signalType）
   strength?: number;          // 0-1 信号强度
   pluginId: string;
   timestamp: string;          // ISO
