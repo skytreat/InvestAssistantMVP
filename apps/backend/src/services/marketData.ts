@@ -138,11 +138,15 @@ export async function batchGetDailyRange(
  * 有行 = 交易日；没行 = 非交易日
  */
 export async function isTradingDay(date: string): Promise<boolean> {
-  const rows = await queryDuckDB<{ count: number }>(
-    'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
-    [date]
-  );
-  return rows.length > 0 && rows[0].count > 0;
+  try {
+    const rows = await queryDuckDB<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
+      [date]
+    );
+    return rows.length > 0 && rows[0].count > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -150,9 +154,23 @@ export async function isTradingDay(date: string): Promise<boolean> {
  * 返回找到的交易日，如果全部非交易日返回 null
  */
 export async function getLatestTradingDay(date: string): Promise<string | null> {
-  const rows = await queryDuckDB<{ date: string }>(
-    `SELECT date FROM raw_holidays WHERE date <= ? ORDER BY date DESC LIMIT 1`,
-    [date]
-  );
-  return rows.length > 0 ? rows[0].date : null;
+  try {
+    const rows = await queryDuckDB<{ date: unknown }>(
+      `SELECT date FROM raw_holidays WHERE date <= ? ORDER BY date DESC LIMIT 1`,
+      [date]
+    );
+    if (rows.length === 0) return null;
+    const val = rows[0].date;
+    if (val === null || val === undefined) return null;
+    if (typeof val === 'string') return val;
+    if (typeof val === 'object' && 'days' in val) {
+      // DuckDBDateValue：从 epoch days 转 ISO 日期字符串
+      const epoch = new Date(1970, 0, 1);
+      epoch.setDate(epoch.getDate() + (val as { days: number }).days);
+      return epoch.toISOString().slice(0, 10);
+    }
+    return String(val);
+  } catch {
+    return null;
+  }
 }
