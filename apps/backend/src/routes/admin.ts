@@ -85,4 +85,82 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       reply.code(500).send({ success: false, error: String(err) });
     }
   });
+
+  // T41: 列出所有用户
+  app.get('/api/admin/users', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
+    const db = ConfigStore.getInstance().db;
+    const rows = db.prepare(`SELECT id, username, role, created_at FROM user_account ORDER BY id`).all() as any[];
+    return reply.send({ success: true, data: rows });
+  });
+
+  // T41: 升级/降级用户角色（admin 只能有1人，禁止降级自己）
+  app.patch('/api/admin/users/:id/role', async (request, reply) => {
+    const operator = (request as any).user;
+    if (operator.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
+    const targetId = Number((request.params as any).id);
+    const { role } = request.body as { role: 'user' | 'admin' };
+    if (!['user', 'admin'].includes(role)) return reply.code(400).send({ success: false, error: 'role 非法' });
+
+    const db = ConfigStore.getInstance().db;
+
+    // 禁止降级自己
+    if (targetId === operator.sub && role !== 'admin') {
+      return reply.code(400).send({ success: false, error: '禁止降级当前登录账号' });
+    }
+
+    // 目标升 admin 时，检查是否已有其他 admin（admin 只能有1人）
+    if (role === 'admin') {
+      const existingAdmin = db.prepare(`SELECT COUNT(*) AS cnt FROM user_account WHERE role = 'admin' AND id != ?`).get(targetId) as { cnt: number };
+      if (existingAdmin.cnt > 0) {
+        return reply.code(400).send({ success: false, error: '已有管理员，请先降级现任管理员' });
+      }
+    }
+
+    db.prepare(`UPDATE user_account SET role = ? WHERE id = ?`).run(role, targetId);
+    writeSystemLog({
+      logType: 'trigger_manual', level: 'INFO',
+      message: `${operator.username} 将用户 ${targetId} 角色改为 ${role}`,
+    });
+    return reply.send({ success: true });
+  });
+
+  // T41: 手动触发备份
+  app.post('/api/admin/backup', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
+    try {
+      const { runFullBackup } = await import('../services/backup.js');
+      const result = await runFullBackup();
+      writeSystemLog({
+        logType: 'backup', level: 'SUCCESS',
+        message: `${user.username} 手动触发备份`,
+        detail: JSON.stringify({ sqlite: result.sqlite.success, duckdb: result.duckdb.success }),
+      });
+      return reply.send({ success: true, data: result });
+    } catch (err) {
+      return reply.code(500).send({ success: false, error: String(err) });
+    }
+  });
+
+  // T41: 列出备份文件
+  app.get('/api/admin/backups', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
+    const { BACKUP_DIR } = await import('../services/backup.js');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    try {
+      if (!fs.existsSync(BACKUP_DIR)) return reply.send({ success: true, data: [] });
+      const entries = fs.readdirSync(BACKUP_DIR).map((name: string) => {
+        const full = path.join(BACKUP_DIR, name);
+        const stat = fs.statSync(full);
+        return { name, size: stat.size, modified: stat.mtime.toISOString() };
+      }).sort((a: any, b: any) => b.modified.localeCompare(a.modified));
+      return reply.send({ success: true, data: entries });
+    } catch (err) {
+      return reply.code(500).send({ success: false, error: String(err) });
+    }
+  });
 }

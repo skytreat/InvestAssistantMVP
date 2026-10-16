@@ -17,7 +17,7 @@ import { writeSystemLog } from './logger.js';
  */
 
 // 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/backup 覆盖）
-const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup');
+export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup');
 const RETENTION_DAYS = 3;
 
 function _ensureBackupDir(): void {
