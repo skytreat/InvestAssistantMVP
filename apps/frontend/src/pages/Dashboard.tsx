@@ -33,6 +33,12 @@ interface SystemLog {
   message: string;
 }
 
+const DIRECTION_LABEL: Record<string, string> = {
+  buy: '买入',
+  sell: '卖出',
+  hold: '持仓',
+};
+
 export default function Dashboard() {
   const { role } = useUserStore();
 
@@ -49,7 +55,6 @@ export default function Dashboard() {
   const [logError, setLogError] = useState<string | null>(null);
 
   useEffect(() => {
-    // 持仓汇总
     (async () => {
       setPosLoading(true);
       try {
@@ -63,7 +68,6 @@ export default function Dashboard() {
       }
     })();
 
-    // 最新信号
     (async () => {
       setSigLoading(true);
       try {
@@ -77,7 +81,6 @@ export default function Dashboard() {
       }
     })();
 
-    // 系统日志（仅 admin）
     if (role === 'admin') {
       (async () => {
         setLogLoading(true);
@@ -98,7 +101,6 @@ export default function Dashboard() {
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>仪表盘</h1>
 
-      {/* 持仓汇总 */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>持仓汇总</div>
         {posLoading && <div>加载中...</div>}
@@ -107,26 +109,24 @@ export default function Dashboard() {
           <table style={tableStyle}>
             <thead>
               <tr>
-                <th style={thStyle}>asset_code</th>
-                <th style={thStyle}>qty</th>
-                <th style={thStyle}>avgCost</th>
-                <th style={thStyle}>realizedPnL</th>
+                <th style={thStyle}>股票代码</th>
+                <th style={thStyle}>数量</th>
+                <th style={thStyle}>均价</th>
+                <th style={thStyle}>已实现盈亏</th>
               </tr>
             </thead>
             <tbody>
               {positions.length === 0 ? (
-                <tr>
-                  <td style={thTdStyle} colSpan={4}>
-                    暂无持仓
-                  </td>
-                </tr>
+                <tr><td style={thTdStyle} colSpan={4}>暂无持仓</td></tr>
               ) : (
                 positions.map((p, i) => (
                   <tr key={i}>
                     <td style={thTdStyle}>{p.asset_code}</td>
                     <td style={thTdStyle}>{p.qty}</td>
-                    <td style={thTdStyle}>{p.avgCost}</td>
-                    <td style={thTdStyle}>{p.realizedPnL}</td>
+                    <td style={thTdStyle}>{p.avgCost.toFixed(4)}</td>
+                    <td style={{ ...thTdStyle, color: p.realizedPnL >= 0 ? '#16a34a' : '#dc2626' }}>
+                      {p.realizedPnL.toFixed(2)}
+                    </td>
                   </tr>
                 ))
               )}
@@ -135,7 +135,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* 最新信号 */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>最新信号</div>
         {sigLoading && <div>加载中...</div>}
@@ -144,26 +143,29 @@ export default function Dashboard() {
           <table style={tableStyle}>
             <thead>
               <tr>
-                <th style={thStyle}>symbol</th>
-                <th style={thStyle}>plugin</th>
-                <th style={thStyle}>direction</th>
-                <th style={thStyle}>label</th>
-                <th style={thStyle}>trade_date</th>
+                <th style={thStyle}>股票代码</th>
+                <th style={thStyle}>策略</th>
+                <th style={thStyle}>方向</th>
+                <th style={thStyle}>标签</th>
+                <th style={thStyle}>日期</th>
               </tr>
             </thead>
             <tbody>
               {signals.length === 0 ? (
-                <tr>
-                  <td style={thTdStyle} colSpan={5}>
-                    暂无信号
-                  </td>
-                </tr>
+                <tr><td style={thTdStyle} colSpan={5}>暂无信号</td></tr>
               ) : (
                 signals.map((s, i) => (
                   <tr key={i}>
                     <td style={thTdStyle}>{s.symbol}</td>
                     <td style={thTdStyle}>{s.plugin}</td>
-                    <td style={thTdStyle}>{s.direction}</td>
+                    <td style={thTdStyle}>
+                      <span style={{
+                        color: s.direction === 'buy' ? '#16a34a' : s.direction === 'sell' ? '#dc2626' : '#374151',
+                        fontWeight: 600,
+                      }}>
+                        {DIRECTION_LABEL[s.direction] ?? s.direction}
+                      </span>
+                    </td>
                     <td style={thTdStyle}>{s.label}</td>
                     <td style={thTdStyle}>{s.trade_date}</td>
                   </tr>
@@ -174,7 +176,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* 系统日志（仅 admin） */}
       {role === 'admin' && (
         <div style={cardStyle}>
           <div style={cardTitleStyle}>最近日志</div>
@@ -185,24 +186,25 @@ export default function Dashboard() {
               <thead>
                 <tr>
                   <th style={thStyle}>时间</th>
-                  <th style={thStyle}>type</th>
-                  <th style={thStyle}>level</th>
-                  <th style={thStyle}>message</th>
+                  <th style={thStyle}>类型</th>
+                  <th style={thStyle}>级别</th>
+                  <th style={thStyle}>消息</th>
                 </tr>
               </thead>
               <tbody>
                 {logs.length === 0 ? (
-                  <tr>
-                    <td style={thTdStyle} colSpan={4}>
-                      暂无日志
-                    </td>
-                  </tr>
+                  <tr><td style={thTdStyle} colSpan={4}>暂无日志</td></tr>
                 ) : (
                   logs.map((l, i) => (
                     <tr key={i}>
                       <td style={thTdStyle}>{l.created_at}</td>
                       <td style={thTdStyle}>{l.type}</td>
-                      <td style={thTdStyle}>{l.level}</td>
+                      <td style={{
+                        ...thTdStyle,
+                        color: l.level === 'ERROR' ? '#dc2626' : l.level === 'WARN' ? '#d97706' : '#16a34a',
+                      }}>
+                        {l.level}
+                      </td>
                       <td style={thTdStyle}>{l.message}</td>
                     </tr>
                   ))

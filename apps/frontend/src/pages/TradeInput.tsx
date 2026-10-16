@@ -12,7 +12,15 @@ import {
   labelStyle,
 } from './_shared';
 
-const TRADE_TYPES = ['buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'] as const;
+const TRADE_TYPES: { value: string; label: string }[] = [
+  { value: 'buy', label: '买入' },
+  { value: 'sell', label: '卖出' },
+  { value: 'reduce', label: '减仓' },
+  { value: 'clear', label: '清仓' },
+  { value: 'dividend', label: '分红' },
+  { value: 'bonus', label: '送股' },
+  { value: 'transfer', label: '转托管' },
+];
 
 function todayStr(): string {
   const d = new Date();
@@ -28,6 +36,151 @@ interface TradeResult {
     qty: number;
     avgCost: number;
   };
+}
+
+interface SymbolOption {
+  symbol: string;
+  name: string;
+}
+
+/** 自动补全输入框：输入代码/名称后弹出匹配列表，点击选择后自动补全前缀 */
+function SymbolAutocomplete({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+}) {
+  const [options, setOptions] = useState<SymbolOption[]>([]);
+  const [open, setOpen] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(-1);
+
+  const query = value.trim();
+
+  const fetchOptions = async (q: string) => {
+    if (q.length < 2) {
+      setOptions([]);
+      setOpen(false);
+      return;
+    }
+    try {
+      const res = await api.get('/symbols/search', { params: { q } });
+      setOptions((res.data?.data ?? []) as SymbolOption[]);
+      setOpen(true);
+      setHighlightIdx(-1);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleChange = (v: string) => {
+    onChange(v);
+    fetchOptions(v);
+  };
+
+  const handleSelect = (opt: SymbolOption) => {
+    // 自动补全前缀：如果当前值没有前缀，从 option.symbol 取
+    const sym = opt.symbol;
+    onChange(sym);
+    setOpen(false);
+    setOptions([]);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!open) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.min(i + 1, options.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter' && highlightIdx >= 0) {
+      e.preventDefault();
+      handleSelect(options[highlightIdx]);
+    } else if (e.key === 'Escape') {
+      setOpen(false);
+    }
+  };
+
+  // 判断当前输入是否已有合法前缀
+  const hasPrefix = /^[a-z]{2}/.test(value);
+  const displayName = hasPrefix ? value : value;
+
+  return (
+    <div style={{ position: 'relative', flex: 1 }}>
+      <input
+        style={{ ...inputStyle, flex: 1, width: '100%' }}
+        type="text"
+        placeholder="输入代码或名称，如 600000 或 浦发"
+        value={displayName}
+        onChange={(e) => handleChange(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onFocus={() => { if (options.length > 0) setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        required
+      />
+      {open && options.length > 0 && (
+        <ul
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            margin: 0,
+            padding: 0,
+            listStyle: 'none',
+            border: '1px solid #d1d5db',
+            borderRadius: 4,
+            marginTop: 2,
+            background: '#fff',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            zIndex: 100,
+            maxHeight: 240,
+            overflowY: 'auto',
+          }}
+        >
+          {options.map((opt, idx) => (
+            <li
+              key={opt.symbol}
+              onClick={() => handleSelect(opt)}
+              onMouseEnter={() => setHighlightIdx(idx)}
+              style={{
+                padding: '6px 10px',
+                cursor: 'pointer',
+                fontSize: 14,
+                background: idx === highlightIdx ? '#eff6ff' : '#fff',
+                display: 'flex',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontFamily: 'monospace', color: '#1e40af' }}>{opt.symbol}</span>
+              <span style={{ color: '#6b7280' }}>{opt.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && options.length === 0 && query.length >= 2 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            padding: '8px 10px',
+            fontSize: 13,
+            color: '#6b7280',
+            background: '#fff',
+            border: '1px solid #d1d5db',
+            borderRadius: 4,
+            marginTop: 2,
+            zIndex: 100,
+          }}
+        >
+          无匹配标的
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function TradeInput() {
@@ -87,34 +240,27 @@ export default function TradeInput() {
       <div style={{ ...cardStyle, maxWidth: 600 }}>
         <form onSubmit={handleSubmit}>
           <div style={formRowStyle}>
-            <label style={labelStyle}>asset_code</label>
-            <input
-              style={{ ...inputStyle, flex: 1 }}
-              type="text"
-              placeholder="如 sh600000"
-              value={assetCode}
-              onChange={(e) => setAssetCode(e.target.value)}
-              required
-            />
+            <label style={labelStyle}>股票代码</label>
+            <SymbolAutocomplete value={assetCode} onChange={setAssetCode} />
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>trade_type</label>
+            <label style={labelStyle}>交易类型</label>
             <select
               style={{ ...inputStyle, flex: 1 }}
               value={tradeType}
               onChange={(e) => setTradeType(e.target.value)}
             >
               {TRADE_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
+                <option key={t.value} value={t.value}>
+                  {t.label}
                 </option>
               ))}
             </select>
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>trade_date</label>
+            <label style={labelStyle}>交易日期</label>
             <input
               style={{ ...inputStyle, flex: 1 }}
               type="date"
@@ -125,7 +271,7 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>quantity</label>
+            <label style={labelStyle}>数量</label>
             <input
               style={{ ...inputStyle, flex: 1 }}
               type="number"
@@ -137,7 +283,7 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>price</label>
+            <label style={labelStyle}>价格</label>
             <input
               style={{ ...inputStyle, flex: 1 }}
               type="number"
@@ -150,7 +296,7 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>fee</label>
+            <label style={labelStyle}>手续费</label>
             <input
               style={{ ...inputStyle, flex: 1 }}
               type="number"
@@ -170,8 +316,7 @@ export default function TradeInput() {
           {error && <div style={errorStyle}>{error}</div>}
           {result && (
             <div style={successStyle}>
-              提交成功！trade_id: {result.trade_id} | 最新持仓: qty={result.position.qty}, avgCost=
-              {result.position.avgCost}
+              提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价={result.position.avgCost.toFixed(4)}
             </div>
           )}
         </form>

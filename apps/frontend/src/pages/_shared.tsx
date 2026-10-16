@@ -4,9 +4,10 @@ import { useUserStore } from '../store/user';
 
 const linkStyle: React.CSSProperties = {
   padding: '8px 12px',
-  marginRight: 8,
+  marginRight: 4,
   color: '#1e40af',
   textDecoration: 'none',
+  borderRadius: 4,
 };
 
 export function Navbar() {
@@ -23,30 +24,21 @@ export function Navbar() {
         background: '#fff',
       }}
     >
-      <span style={{ fontWeight: 'bold', fontSize: 20 }}>📈 InvestAssistant</span>
+      <span style={{ fontWeight: 'bold', fontSize: 20 }}>InvestAssistant</span>
       <nav style={{ marginLeft: 24 }}>
-        <Link to="/" style={linkStyle}>
-          Dashboard
-        </Link>
-        <Link to="/trade" style={linkStyle}>
-          交易录入
-        </Link>
-        <Link to="/signals" style={linkStyle}>
-          策略信号
-        </Link>
-        <Link to="/stockscan" style={linkStyle}>
-          条件选股
-        </Link>
+        <Link to="/" style={linkStyle}>仪表盘</Link>
+        <Link to="/trade" style={linkStyle}>交易录入</Link>
+        <Link to="/signals" style={linkStyle}>策略信号</Link>
+        <Link to="/kline" style={linkStyle}>K线图</Link>
+        <Link to="/stockscan" style={linkStyle}>条件选股</Link>
         {role === 'admin' && (
-          <Link to="/admin" style={linkStyle}>
-            管理员
-          </Link>
+          <Link to="/admin" style={linkStyle}>管理员</Link>
         )}
       </nav>
-      <span style={{ marginLeft: 'auto', color: '#666' }}>
-        {username} ({role})
+      <span style={{ marginLeft: 'auto', color: '#666', fontSize: 13 }}>
+        {username} ({role === 'admin' ? '管理员' : '普通用户'})
       </span>
-      <button onClick={() => { logout(); navigate('/login'); }}>登出</button>
+      <button onClick={() => { logout(); navigate('/login'); }}>退出登录</button>
     </div>
   );
 }
@@ -72,11 +64,12 @@ export const titleStyle: React.CSSProperties = {
 };
 
 export const cardTitleStyle: React.CSSProperties = {
-  fontSize: 18,
+  fontSize: 16,
   fontWeight: 600,
   marginBottom: 12,
   borderBottom: '1px solid #f3f4f6',
   paddingBottom: 8,
+  color: '#1f2937',
 };
 
 export const tableStyle: React.CSSProperties = {
@@ -87,7 +80,7 @@ export const tableStyle: React.CSSProperties = {
 
 export const thTdStyle: React.CSSProperties = {
   border: '1px solid #e5e7eb',
-  padding: '8px 12px',
+  padding: '8px 10px',
   textAlign: 'left',
 };
 
@@ -95,6 +88,7 @@ export const thStyle: React.CSSProperties = {
   ...thTdStyle,
   background: '#f9fafb',
   fontWeight: 600,
+  color: '#374151',
 };
 
 export const inputStyle: React.CSSProperties = {
@@ -134,7 +128,7 @@ export const formRowStyle: React.CSSProperties = {
 };
 
 export const labelStyle: React.CSSProperties = {
-  minWidth: 90,
+  minWidth: 80,
   color: '#374151',
   fontSize: 14,
 };

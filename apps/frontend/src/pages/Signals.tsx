@@ -19,6 +19,12 @@ function todayStr(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+const DIRECTION_LABEL: Record<string, string> = {
+  buy: '买入',
+  sell: '卖出',
+  hold: '持仓',
+};
+
 interface SignalRow {
   [key: string]: any;
 }
@@ -54,17 +60,27 @@ export default function Signals() {
     }
   };
 
-  // 从第一行提取列名（如果有数据）
   const columns: string[] =
     rows.length > 0 ? Object.keys(rows[0]) : [];
+
+  const COLUMN_LABELS: Record<string, string> = {
+    id: 'ID',
+    symbol: '股票代码',
+    plugin_id: '策略',
+    plugin_category: '类别',
+    direction: '方向',
+    label: '标签',
+    strength: '强度',
+    trade_date: '日期',
+    created_at: '创建时间',
+  };
 
   return (
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>策略信号</h1>
 
-      {/* 筛选栏 */}
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 14, color: '#374151' }}>trade_date</label>
+        <label style={{ fontSize: 14, color: '#374151' }}>交易日期</label>
         <input
           style={inputStyle}
           type="date"
@@ -72,7 +88,7 @@ export default function Signals() {
           onChange={(e) => setTradeDate(e.target.value)}
         />
 
-        <label style={{ fontSize: 14, color: '#374151' }}>plugin_id</label>
+        <label style={{ fontSize: 14, color: '#374151' }}>策略名称</label>
         <input
           style={inputStyle}
           type="text"
@@ -81,16 +97,16 @@ export default function Signals() {
           onChange={(e) => setPluginId(e.target.value)}
         />
 
-        <label style={{ fontSize: 14, color: '#374151' }}>direction</label>
+        <label style={{ fontSize: 14, color: '#374151' }}>方向</label>
         <select
           style={inputStyle}
           value={direction}
           onChange={(e) => setDirection(e.target.value)}
         >
           <option value="">全部</option>
-          <option value="hold">hold</option>
-          <option value="buy">buy</option>
-          <option value="sell">sell</option>
+          <option value="hold">持仓</option>
+          <option value="buy">买入</option>
+          <option value="sell">卖出</option>
         </select>
 
         <button style={buttonStyle} onClick={handleQuery} disabled={loading}>
@@ -98,7 +114,6 @@ export default function Signals() {
         </button>
       </div>
 
-      {/* 结果表格 */}
       <div style={cardStyle}>
         {error && <div style={{ color: '#dc2626', marginBottom: 12 }}>{error}</div>}
         {rows.length === 0 && !loading && !error && (
@@ -110,7 +125,7 @@ export default function Signals() {
               <tr>
                 {columns.map((col) => (
                   <th key={col} style={thStyle}>
-                    {col}
+                    {COLUMN_LABELS[col] ?? col}
                   </th>
                 ))}
               </tr>
@@ -118,11 +133,18 @@ export default function Signals() {
             <tbody>
               {rows.map((row, i) => (
                 <tr key={i}>
-                  {columns.map((col) => (
-                    <td key={col} style={thTdStyle}>
-                      {String(row[col] ?? '')}
-                    </td>
-                  ))}
+                  {columns.map((col) => {
+                    const val = row[col];
+                    let display = String(val ?? '');
+                    if (col === 'direction') {
+                      display = DIRECTION_LABEL[val] ?? display;
+                    }
+                    return (
+                      <td key={col} style={thTdStyle}>
+                        {display}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>

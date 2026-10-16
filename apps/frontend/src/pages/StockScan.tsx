@@ -1,7 +1,3 @@
-// src/pages/StockScan.tsx
-// SDD §5.5 全市场条件选股前端
-// 调用 POST /api/stockscan，展示 pass 结果 + score 排序
-
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
 import {
@@ -44,6 +40,11 @@ interface ScanResult {
   pluginId: string;
 }
 
+const CATEGORY_LABEL: Record<string, string> = { monitor: '监控', filter: '过滤' };
+const SIGNAL_LABEL: Record<string, string> = {
+  BUY: '买入', SELL: '卖出', HOLD: '持仓', ALERT: '预警',
+};
+
 export default function StockScan() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [selectedPluginId, setSelectedPluginId] = useState<string>('');
@@ -59,7 +60,6 @@ export default function StockScan() {
   const [timeMs, setTimeMs] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // 加载插件列表
   useEffect(() => {
     api
       .get('/stockscan/plugins')
@@ -68,7 +68,6 @@ export default function StockScan() {
         setPlugins(list);
         if (list.length > 0 && !selectedPluginId) {
           setSelectedPluginId(list[0].id);
-          // 预填默认参数
           const defaultParams: Record<string, unknown> = {};
           for (const f of list[0].paramSchema ?? []) {
             if (f.key !== 'symbol' && f.default !== undefined) {
@@ -78,13 +77,10 @@ export default function StockScan() {
           setParamsJson(JSON.stringify(defaultParams));
         }
       })
-      .catch((err) => {
-        setErrorMsg('加载插件列表失败：' + (err as Error).message);
-      });
+      .catch(() => setErrorMsg('加载插件列表失败'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 切换插件时更新默认参数
   const handlePluginChange = (pluginId: string) => {
     setSelectedPluginId(pluginId);
     const p = plugins.find((x) => x.id === pluginId);
@@ -118,12 +114,12 @@ export default function StockScan() {
       if (trimmed.length > 0) {
         params = JSON.parse(trimmed);
         if (typeof params !== 'object' || params === null || Array.isArray(params)) {
-          setErrorMsg('Params 必须是 JSON 对象');
+          setErrorMsg('参数必须是JSON对象');
           return;
         }
       }
-    } catch (err) {
-      setErrorMsg('Params JSON 解析失败：' + (err as Error).message);
+    } catch {
+      setErrorMsg('参数JSON解析失败');
       return;
     }
 
@@ -135,7 +131,6 @@ export default function StockScan() {
         min_amount: minAmount,
         max_results: maxResults,
       });
-
       if (res.data?.success && res.data?.data) {
         setResults(res.data.data.results);
         setTotalCandidates(res.data.data.totalCandidates);
@@ -146,8 +141,7 @@ export default function StockScan() {
         setErrorMsg(res.data?.error ?? '选股失败');
       }
     } catch (err: any) {
-      const msg = err?.response?.data?.error ?? (err as Error).message;
-      setErrorMsg('选股请求失败：' + msg);
+      setErrorMsg('选股请求失败：' + (err?.response?.data?.error ?? String(err)));
     } finally {
       setLoading(false);
     }
@@ -155,14 +149,13 @@ export default function StockScan() {
 
   return (
     <div style={pageContainerStyle}>
-      <h2 style={titleStyle}>全市场条件选股</h2>
+      <h2 style={titleStyle}>条件选股</h2>
 
-      {/* 选股配置卡片 */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>选股配置</div>
 
         <div style={formRowStyle}>
-          <span style={labelStyle}>插件：</span>
+          <span style={labelStyle}>策略插件：</span>
           <select
             style={inputStyle}
             value={selectedPluginId}
@@ -171,7 +164,7 @@ export default function StockScan() {
             {plugins.length === 0 && <option value="">加载中...</option>}
             {plugins.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} ({p.category})
+                {p.name}（{CATEGORY_LABEL[p.category] ?? p.category}）
               </option>
             ))}
           </select>
@@ -184,7 +177,7 @@ export default function StockScan() {
         </div>
 
         <div style={formRowStyle}>
-          <span style={labelStyle}>最低成交额(万)：</span>
+          <span style={labelStyle}>最低成交额（万）：</span>
           <input
             style={inputStyle}
             type="number"
@@ -194,7 +187,7 @@ export default function StockScan() {
             onChange={(e) => setMinAmount(Math.max(0, Number(e.target.value)))}
           />
           <span style={{ color: '#6b7280', fontSize: 13 }}>
-            用于过滤流动性过差的标的（单位：元，默认 0 = 不过滤）
+            用于过滤流动性过差的标的，单位：万元，默认0不过滤
           </span>
         </div>
 
@@ -206,9 +199,7 @@ export default function StockScan() {
             min={1}
             max={500}
             value={maxResults}
-            onChange={(e) =>
-              setMaxResults(Math.min(500, Math.max(1, Number(e.target.value))))
-            }
+            onChange={(e) => setMaxResults(Math.min(500, Math.max(1, Number(e.target.value))))}
           />
         </div>
 
@@ -236,9 +227,10 @@ export default function StockScan() {
                     <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>
                       {f.key}
                     </code>
-                    : {f.label} ({f.type}
+                    : {f.label}（{f.type}
                     {f.min !== undefined && f.max !== undefined ? `, ${f.min}~${f.max}` : ''}
-                    {f.default !== undefined ? `, 默认 ${String(f.default)}` : ''})
+                    {f.default !== undefined ? `, 默认${String(f.default)}` : ''}
+                    {f.unit ? ` ${f.unit}` : ''}）
                   </span>
                 ))}
               </div>
@@ -258,7 +250,6 @@ export default function StockScan() {
         </div>
       </div>
 
-      {/* 结果卡片 */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>
           选股结果
@@ -272,15 +263,13 @@ export default function StockScan() {
         {loading ? (
           <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>选股进行中...</div>
         ) : results.length === 0 ? (
-          <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>
-            暂无结果
-          </div>
+          <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>暂无结果</div>
         ) : (
           <table style={tableStyle}>
             <thead>
               <tr>
-                <th style={thStyle}>#</th>
-                <th style={thStyle}>标的</th>
+                <th style={thStyle}>序号</th>
+                <th style={thStyle}>股票代码</th>
                 <th style={thStyle}>方向</th>
                 <th style={thStyle}>强度</th>
                 <th style={thStyle}>详情</th>
@@ -290,30 +279,17 @@ export default function StockScan() {
               {results.map((r, i) => (
                 <tr key={r.symbol}>
                   <td style={thTdStyle}>{i + 1}</td>
+                  <td style={thTdStyle}><code>{r.symbol}</code></td>
                   <td style={thTdStyle}>
-                    <code>{r.symbol}</code>
-                  </td>
-                  <td style={thTdStyle}>
-                    <span
-                      style={{
-                        color:
-                          r.signalType === 'BUY'
-                            ? '#16a34a'
-                            : r.signalType === 'SELL'
-                              ? '#dc2626'
-                              : '#374151',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {r.signalType}
+                    <span style={{
+                      color: r.signalType === 'BUY' ? '#16a34a' : r.signalType === 'SELL' ? '#dc2626' : '#374151',
+                      fontWeight: 600,
+                    }}>
+                      {SIGNAL_LABEL[r.signalType] ?? r.signalType}
                     </span>
                   </td>
-                  <td style={thTdStyle}>
-                    {(r.score * 100).toFixed(1)}%
-                  </td>
-                  <td style={{ ...thTdStyle, color: '#6b7280' }}>
-                    {r.details ?? '-'}
-                  </td>
+                  <td style={thTdStyle}>{(r.score * 100).toFixed(1)}%</td>
+                  <td style={{ ...thTdStyle, color: '#6b7280' }}>{r.details ?? '-'}</td>
                 </tr>
               ))}
             </tbody>
