@@ -7,7 +7,7 @@
  *   - getHoldingBeforeDate reduce 类型交易 → 负向计入持仓
  *   - importDividendEvents 无除权事件（mock DuckDB 空）→ eventsProcessed=0
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';

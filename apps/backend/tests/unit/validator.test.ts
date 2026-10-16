@@ -7,7 +7,7 @@
  *   - TOLERANCES 常量可见
  *   - checkResult 写入 system_log
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
