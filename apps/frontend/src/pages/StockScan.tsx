@@ -59,6 +59,51 @@ export default function StockScan() {
   const [tradeDate, setTradeDate] = useState<string>('');
   const [timeMs, setTimeMs] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  /** G4：每行的加入状态：symbol → 'candidate' | 'watch' | 'loading' | 'error' */
+  const [rowAction, setRowAction] = useState<Record<string, string>>({});
+  const [rowMsg, setRowMsg] = useState<string>('');
+
+  const markRow = (symbol: string, state: string) =>
+    setRowAction((prev) => ({ ...prev, [symbol]: state }));
+
+  /** 加入候选池 */
+  const addCandidate = async (symbol: string) => {
+    markRow(symbol, 'loading');
+    try {
+      const res = await api.post('/candidate', { asset_code: symbol });
+      if (res.data?.success) {
+        markRow(symbol, 'candidate');
+        setRowMsg(`${symbol} 已加入候选池`);
+      } else if (res.status === 409) {
+        markRow(symbol, 'candidate');
+        setRowMsg(`${symbol} 已在候选池`);
+      } else {
+        markRow(symbol, 'error');
+        setErrorMsg(res.data?.error ?? '加入候选失败');
+      }
+    } catch (err: any) {
+      markRow(symbol, 'error');
+      setErrorMsg('加入候选失败：' + (err?.response?.data?.error ?? String(err)));
+    }
+  };
+
+  /** G4 候选迁移 → 自选：先入候选池，再 promote */
+  const promoteToWatch = async (symbol: string) => {
+    markRow(symbol, 'loading');
+    try {
+      const res = await api.post(`/candidate/${symbol}/promote`);
+      if (res.data?.success) {
+        markRow(symbol, 'watch');
+        setRowMsg(`${symbol} 已加入自选`);
+      } else {
+        markRow(symbol, 'error');
+        setErrorMsg(res.data?.error ?? '加入自选失败');
+      }
+    } catch (err: any) {
+      markRow(symbol, 'error');
+      setErrorMsg('加入自选失败：' + (err?.response?.data?.error ?? String(err)));
+    }
+  };
 
   useEffect(() => {
     api
@@ -273,27 +318,50 @@ export default function StockScan() {
                 <th style={thStyle}>方向</th>
                 <th style={thStyle}>强度</th>
                 <th style={thStyle}>详情</th>
+                <th style={thStyle}>操作</th>
               </tr>
             </thead>
             <tbody>
-              {results.map((r, i) => (
-                <tr key={r.symbol}>
-                  <td style={thTdStyle}>{i + 1}</td>
-                  <td style={thTdStyle}><code>{r.symbol}</code></td>
-                  <td style={thTdStyle}>
-                    <span style={{
-                      color: r.signalType === 'BUY' ? '#16a34a' : r.signalType === 'SELL' ? '#dc2626' : '#374151',
-                      fontWeight: 600,
-                    }}>
-                      {SIGNAL_LABEL[r.signalType] ?? r.signalType}
-                    </span>
-                  </td>
-                  <td style={thTdStyle}>{(r.score * 100).toFixed(1)}%</td>
-                  <td style={{ ...thTdStyle, color: '#6b7280' }}>{r.details ?? '-'}</td>
-                </tr>
-              ))}
+              {results.map((r, i) => {
+                const st = rowAction[r.symbol];
+                return (
+                  <tr key={r.symbol}>
+                    <td style={thTdStyle}>{i + 1}</td>
+                    <td style={thTdStyle}><code>{r.symbol}</code></td>
+                    <td style={thTdStyle}>
+                      <span style={{
+                        color: r.signalType === 'BUY' ? '#16a34a' : r.signalType === 'SELL' ? '#dc2626' : '#374151',
+                        fontWeight: 600,
+                      }}>
+                        {SIGNAL_LABEL[r.signalType] ?? r.signalType}
+                      </span>
+                    </td>
+                    <td style={thTdStyle}>{(r.score * 100).toFixed(1)}%</td>
+                    <td style={{ ...thTdStyle, color: '#6b7280' }}>{r.details ?? '-'}</td>
+                    <td style={{ ...thTdStyle, whiteSpace: 'nowrap' }}>
+                      <button
+                        style={{ ...buttonStyle, fontSize: 12, padding: '3px 10px', marginRight: 6 }}
+                        disabled={st === 'loading' || st === 'candidate'}
+                        onClick={() => addCandidate(r.symbol)}
+                      >
+                        {st === 'candidate' ? '已候选' : '加候选'}
+                      </button>
+                      <button
+                        style={{ ...buttonStyle, fontSize: 12, padding: '3px 10px', background: '#16a34a' }}
+                        disabled={st === 'loading' || st === 'watch'}
+                        onClick={() => promoteToWatch(r.symbol)}
+                      >
+                        {st === 'watch' ? '已自选' : '加自选'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+        )}
+        {rowMsg && (
+          <div style={{ color: '#16a34a', marginTop: 8, fontSize: 13 }}>{rowMsg}</div>
         )}
       </div>
     </div>

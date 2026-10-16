@@ -74,3 +74,61 @@ export function validateSufficientHolding(userId: number, assetCode: string, sel
   const pos = calcPosition(userId, assetCode);
   return pos.totalQuantity >= sellQty;
 }
+
+/**
+ * 单笔平仓交易的已实现盈亏（T38 胜率/盈亏比统计的数据源）
+ *
+ * 口径与 calculateMovingWeightedCost 完全一致：卖出净收入 = price*qty - fee，
+ * 成本按卖出时的移动加权均价计。平仓 0 股（空仓卖出）不计入。
+ */
+export interface ClosedTradePnl {
+  trade_id: number;
+  asset_code: string;
+  trade_date: string;
+  trade_type: string;
+  quantity: number;
+  price: number;
+  fee: number;
+  realized_pnl: number;
+}
+
+/**
+ * 按时间顺序回放所有标的的买卖，输出每笔平仓（sell/reduce/clear）的已实现盈亏
+ *
+ * 与 calcPosition 相同的映射口径：dividend/bonus/transfer 不参与成本回放
+ */
+export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
+  const db = ConfigStore.getInstance().db;
+  const rows = db.prepare(
+    `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
+     FROM user_trade_record
+     WHERE user_id = ? AND is_deleted = 0
+       AND trade_type IN ('buy','sell','reduce','clear')
+     ORDER BY trade_date ASC, id ASC`
+  ).all(userId) as Array<Omit<ClosedTradePnl, 'realized_pnl'> & { fee: number }>;
+
+  // 每个标的独立维护持仓量与成本基
+  const state = new Map<string, { qty: number; costBasis: number }>();
+  const result: ClosedTradePnl[] = [];
+
+  for (const row of rows) {
+    const st = state.get(row.asset_code) ?? { qty: 0, costBasis: 0 };
+
+    if (row.trade_type === 'buy') {
+      st.costBasis += row.quantity * row.price + row.fee;
+      st.qty += row.quantity;
+    } else {
+      if (st.qty <= 0) continue;  // 空仓卖出跳过（脏数据，POS 校验理论上已拦）
+      const avgCost = st.costBasis / st.qty;
+      const revenue = row.quantity * row.price - row.fee;
+      result.push({ ...row, realized_pnl: revenue - row.quantity * avgCost });
+      st.qty -= row.quantity;
+      st.costBasis = st.qty * avgCost;  // 卖出后成本基按剩余数量等比减少
+      if (st.qty <= 0) { st.qty = 0; st.costBasis = 0; }
+    }
+
+    state.set(row.asset_code, st);
+  }
+
+  return result;
+}

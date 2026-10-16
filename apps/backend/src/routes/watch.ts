@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
+import { writeSystemLog } from '../services/logger.js';
 
 /**
  * user_asset_rel CRUD（watch / hold / candidate 三种 rel_type 独立共存，AGENTS.md 硬约束）
@@ -9,6 +10,7 @@ import { ConfigStore } from '../config/configStore.js';
  * - POST   /api/candidate      新增候选
  * - DELETE /api/candidate/:asset
  * - GET    /api/candidate
+ * - POST   /api/candidate/:asset/promote  候选迁移到自选（Requirements §6.3，SDD 候选跟踪池）
  *
  * UNIQUE(user_id, asset_code, rel_type) 保证 watch/hold/candidate 可独立共存
  */
@@ -53,6 +55,52 @@ function _crud(app: FastifyInstance, relType: 'watch' | 'candidate') {
     ).run(user.sub, asset, relType);
     if (info.changes === 0) return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
     reply.send({ success: true, data: null });
+  });
+
+  // 候选 → 自选迁移（候选跟踪池命中后升级为自选）
+  // 幂等：已在自选里返回 alreadyWatched，不报错；候选记录保留（migrated 标记 +1）
+  app.post(`/api/${relType}/:asset_code/promote`, async (request, reply) => {
+    const user = (request as any).user;
+    const asset = (request.params as any).asset_code as string;
+    if (!/^(sh|sz)\d{6}$/.test(asset)) {
+      return reply.code(400).send({ success: false, error: 'INVALID_SYMBOL', message: 'symbol 格式应为 sh600000 / sz000001' });
+    }
+    const fromType = relType === 'candidate' ? 'candidate' : 'watch';
+    const toType = relType === 'candidate' ? 'watch' : 'candidate';
+    const db = ConfigStore.getInstance().db;
+
+    try {
+      const migrate = db.transaction(() => {
+        // 已存在（含软删）→ 恢复 + 标记迁移
+        const existing = db.prepare(
+          'SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?'
+        ).get(user.sub, asset, toType) as { id: number; is_deleted: number } | undefined;
+
+        if (existing) {
+          db.prepare('UPDATE user_asset_rel SET is_deleted = 0, migrated_from_candidate = 1 WHERE id = ?')
+            .run(existing.id);
+          return { alreadyExisted: true, restored: existing.is_deleted === 1 };
+        }
+
+        db.prepare(
+          `INSERT INTO user_asset_rel (user_id, asset_code, rel_type, migrated_from_candidate)
+           VALUES (?, ?, ?, 1)`
+        ).run(user.sub, asset, toType);
+        return { alreadyExisted: false, restored: false };
+      });
+
+      const info = migrate();
+
+      writeSystemLog({
+        logType: 'trade', level: 'INFO',
+        message: `${user.username} ${asset} 从 ${fromType} 迁移到 ${toType}`,
+        detail: JSON.stringify(info),
+      });
+
+      return reply.send({ success: true, data: { asset_code: asset, from: fromType, to: toType, ...info } });
+    } catch (err: any) {
+      return reply.code(500).send({ success: false, error: String(err) });
+    }
   });
 }
 

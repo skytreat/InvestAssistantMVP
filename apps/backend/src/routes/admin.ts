@@ -10,6 +10,7 @@ import { writeSystemLog } from '../services/logger.js';
  * - POST /api/admin/run-datacheck   手动触发 C1-C12
  * - POST /api/admin/run-signal      手动触发插件信号生成（含持久化）
  * - GET  /api/admin/system-log      分页查询 system_log
+ * - POST /api/admin/rerun-quotes    手动触发行情更新补跑（Requirements §5.1）
  */
 export async function registerAdminRoutes(app: FastifyInstance) {
   // 手动跑 C1-C12（需要 admin role）
@@ -124,6 +125,25 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       message: `${operator.username} 将用户 ${targetId} 角色改为 ${role}`,
     });
     return reply.send({ success: true });
+  });
+
+  // G3a: 手动触发行情更新补跑（Requirements §5.1「管理员也可手动触发补跑」）
+  app.post('/api/admin/rerun-quotes', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
+    try {
+      const { reason } = (request.body ?? {}) as { reason?: string };
+      const { rerunQuoteUpdate } = await import('../services/quoteRerun.js');
+      const result = await rerunQuoteUpdate(reason?.trim() || `${user.username} 手动触发`);
+      // 补跑成功后重跑一次校验，让管理员直接看到最新四色结果
+      let checks: unknown = null;
+      if (result.status === 'SUCCESS') {
+        checks = await runAllChecks(getTradeDate());
+      }
+      return reply.send({ success: true, data: { ...result, checks } });
+    } catch (err) {
+      return reply.code(500).send({ success: false, error: String(err) });
+    }
   });
 
   // T41: 手动触发备份
