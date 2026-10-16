@@ -46,6 +46,12 @@ export default function Admin() {
 
   // 最近校验结果卡片
   const [checkSummaries, setCheckSummaries] = useState<Array<{ checkId: string; result: string; message: string; detail: string | null }>>([]);
+  // G8b 展开的校验卡片
+  const [expandedCheck, setExpandedCheck] = useState<string | null>(null);
+  // 行情补跑
+  const [rerunLoading, setRerunLoading] = useState(false);
+  const [rerunMsg, setRerunMsg] = useState<string | null>(null);
+  const [rerunErr, setRerunErr] = useState<string | null>(null);
 
   if (role !== 'admin') {
     return (
@@ -61,12 +67,12 @@ export default function Admin() {
     setLogError(null);
     try {
       const res = await api.get('/admin/system-log', {
-        params: { page, page_size: pageSize },
+        params: { page: p, page_size: pageSize },
       });
       if (res.data.success) {
-        const data = res.data.data ?? {};
-        setLogs(data.rows ?? []);
-        setTotal(data.total ?? data.count ?? 0);
+        // 后端返回 { success, data: rows[], pagination: { total, totalPages } }
+        setLogs(res.data.data ?? []);
+        setTotal(res.data.pagination?.total ?? 0);
       } else {
         setLogError(res.data.error ?? '请求失败');
       }
@@ -138,40 +144,102 @@ export default function Admin() {
     }
   };
 
-  const logColumns: string[] = logs.length > 0 ? Object.keys(logs[0]) : [];
+  const handleRerun = async () => {
+    setRerunLoading(true);
+    setRerunErr(null);
+    setRerunMsg(null);
+    try {
+      const res = await api.post('/admin/rerun-quotes', { reason: '管理员手动触发' });
+      if (res.data.success) {
+        const r = res.data.data;
+        setRerunMsg(
+          r.status === 'SUCCESS'
+            ? `补跑成功（通道：${r.method}）`
+            : r.status === 'SKIP'
+              ? '补跑通道不可用（本机无 tdx2db 二进制 / systemd）'
+              : `补跑失败（通道：${r.method}，${r.message}）`
+        );
+        if (r.status === 'SUCCESS') fetchCheckSummary();
+      } else {
+        setRerunErr(res.data.error ?? '请求失败');
+      }
+    } catch (err: any) {
+      setRerunErr(err?.response?.data?.error ?? '网络错误');
+    } finally {
+      setRerunLoading(false);
+    }
+  };
+
+  const logColumns: string[] = ['log_date', 'log_type', 'level', 'check_item', 'message', 'detail'];
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>管理员面板</h1>
 
-      {/* C1-C12 校验仪表盘 */}
+      {/* C1-C12 校验仪表盘（G8b 点击展开 detail） */}
       <div style={cardStyle}>
-        <div style={cardTitleStyle}>数据校验结果（C1-C12）</div>
+        <div style={cardTitleStyle}>
+          数据校验结果（C1-C12）— 点击卡片查看详情
+        </div>
         {checkSummaries.length === 0 ? (
           <div style={{ color: '#6b7280', padding: 12 }}>暂无校验记录</div>
         ) : (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {checkSummaries.map((s) => (
-              <div
-                key={s.checkId}
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: 6,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  background: RESULT_COLOR[s.result] ?? '#e5e7eb',
-                  color: '#fff',
-                  minWidth: 80,
-                  textAlign: 'center',
-                }}
-                title={s.message}
-              >
-                {s.checkId}<br /><span style={{ fontSize: 11 }}>{s.result}</span>
+              <div key={s.checkId} style={{ minWidth: 90 }}>
+                <div
+                  onClick={() => setExpandedCheck(expandedCheck === s.checkId ? null : s.checkId)}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    background: RESULT_COLOR[s.result] ?? '#e5e7eb',
+                    color: '#fff',
+                    minWidth: 80,
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    outline: expandedCheck === s.checkId ? '2px solid #1e40af' : 'none',
+                  }}
+                  title={s.message}
+                >
+                  {s.checkId}<br /><span style={{ fontSize: 11 }}>{s.result}</span>
+                </div>
+                {expandedCheck === s.checkId && (
+                  <div style={{
+                    marginTop: 4, padding: 8, fontSize: 12, lineHeight: 1.6,
+                    background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 4,
+                    color: '#374151', maxWidth: 320, wordBreak: 'break-all',
+                  }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4, color: RESULT_COLOR[s.result] }}>
+                      {s.checkId} · {s.result}
+                    </div>
+                    <div style={{ marginBottom: 4 }}>{s.message || '（无说明）'}</div>
+                    {s.detail && (
+                      <pre style={{
+                        margin: 0, whiteSpace: 'pre-wrap', fontSize: 11,
+                        color: '#4b5563', maxHeight: 180, overflow: 'auto',
+                      }}>{s.detail}</pre>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
+      </div>
+
+      <div style={cardStyle}>
+        <div style={cardTitleStyle}>行情更新补跑（Requirements §5.1 管理员手动补跑）</div>
+        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 8 }}>
+          WARN / ERROR 会在 17:01 校验后自动补跑；此处为手动通道。
+        </div>
+        <button style={buttonStyle} onClick={handleRerun} disabled={rerunLoading}>
+          {rerunLoading ? '补跑中...' : '立即补跑行情更新'}
+        </button>
+        {rerunMsg && <div style={{ color: '#16a34a', marginTop: 8 }}>{rerunMsg}</div>}
+        {rerunErr && <div style={{ color: '#dc2626', marginTop: 8 }}>{rerunErr}</div>}
       </div>
 
       <div style={cardStyle}>
