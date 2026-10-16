@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
+import { useIsMobile, MOBILE_BREAKPOINT } from './_shared';
 
 interface KlineBar {
   date: string;
@@ -34,7 +35,9 @@ interface KlineApiResponse {
 
 /** F5 K 线图页面（SDD 验收项）*/
 
+/** 桌面端画布基准宽度（实际渲染宽度跟随容器，G10b） */
 const CANVAS_WIDTH = 1000;
+const MOBILE_CANVAS_WIDTH = 360;
 const MAIN_HEIGHT = 400;
 const MACD_HEIGHT = 160;
 const RSI_HEIGHT = 160;
@@ -50,10 +53,10 @@ function setupCanvas(canvas: HTMLCanvasElement, cssWidth: number, cssHeight: num
   return ctx;
 }
 
-function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Indicators, signals?: Array<{ trade_date: string; direction: string; label: string; plugin_id?: string }>) {
-  const ctx = setupCanvas(canvas, CANVAS_WIDTH, MAIN_HEIGHT);
-  const W = CANVAS_WIDTH;
+function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Indicators, signals: Array<{ trade_date: string; direction: string; label: string; plugin_id?: string }> | undefined, width: number) {
+  const W = width;
   const H = MAIN_HEIGHT;
+  const ctx = setupCanvas(canvas, W, H);
   const pad = { top: 20, right: 60, bottom: 30, left: 10 };
   const chartW = W - pad.left - pad.right;
   const chartH = H - pad.top - pad.bottom;
@@ -170,10 +173,10 @@ function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Ind
   }
 }
 
-function drawMACD(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators) {
-  const ctx = setupCanvas(canvas, CANVAS_WIDTH, MACD_HEIGHT);
-  const W = CANVAS_WIDTH;
+function drawMACD(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators, width: number) {
+  const W = width;
   const H = MACD_HEIGHT;
+  const ctx = setupCanvas(canvas, W, H);
   const pad = { top: 10, right: 60, bottom: 12, left: 10 };
   const chartW = W - pad.left - pad.right;
   const chartH = H - pad.top - pad.bottom;
@@ -233,10 +236,10 @@ function drawMACD(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: In
   ctx.fillText(`DEA ${dea[dea.length - 1]?.toFixed(4) ?? '--'}`, pad.left + 220, pad.top + 4);
 }
 
-function drawRSI(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators) {
-  const ctx = setupCanvas(canvas, CANVAS_WIDTH, RSI_HEIGHT);
-  const W = CANVAS_WIDTH;
+function drawRSI(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators, width: number) {
+  const W = width;
   const H = RSI_HEIGHT;
+  const ctx = setupCanvas(canvas, W, H);
   const pad = { top: 10, right: 60, bottom: 12, left: 10 };
   const chartW = W - pad.left - pad.right;
   const chartH = H - pad.top - pad.bottom;
@@ -294,9 +297,23 @@ export default function Kline() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  /** G10b 移动端副图 Tab 切换（桌面端两个副图并排，不用这个） */
+  const [subTab, setSubTab] = useState<'macd' | 'rsi'>('macd');
+  const isMobile = useIsMobile();
+
   const mainRef = useRef<HTMLCanvasElement>(null);
   const macdRef = useRef<HTMLCanvasElement>(null);
   const rsiRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  /** 画布宽度跟随容器，避免移动端横向溢出（G10b） */
+  const canvasWidth = useCallback(() => {
+    const el = wrapRef.current;
+    if (!el) return isMobile ? MOBILE_CANVAS_WIDTH : CANVAS_WIDTH;
+    const w = el.clientWidth;
+    if (w <= 0) return isMobile ? MOBILE_CANVAS_WIDTH : CANVAS_WIDTH;
+    return Math.floor(Math.min(w, CANVAS_WIDTH));
+  }, [isMobile]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -322,13 +339,23 @@ export default function Kline() {
     }
   }, [symbol, days, fq]);
 
+  const redraw = useCallback(() => {
+    if (klines.length === 0 || !indicators) return;
+    const w = canvasWidth();
+    if (mainRef.current) drawMain(mainRef.current, klines, indicators, signals, w);
+    // 移动端只画当前 Tab 的副图，桌面端两个都画
+    if (macdRef.current && (!isMobile || subTab === 'macd')) drawMACD(macdRef.current, klines, indicators, w);
+    if (rsiRef.current && (!isMobile || subTab === 'rsi')) drawRSI(rsiRef.current, klines, indicators, w);
+  }, [klines, indicators, signals, canvasWidth, isMobile, subTab]);
+
+  useEffect(() => { redraw(); }, [redraw]);
+
+  // 窗口尺寸变化（旋转屏幕 / 拖窗口）重画
   useEffect(() => {
-    if (klines.length > 0 && indicators && mainRef.current && macdRef.current && rsiRef.current) {
-      drawMain(mainRef.current, klines, indicators, signals);
-      drawMACD(macdRef.current, klines, indicators);
-      drawRSI(rsiRef.current, klines, indicators);
-    }
-  }, [klines, indicators, signals]);
+    const onResize = () => redraw();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [redraw]);
 
   return (
     <div style={{ fontFamily: 'system-ui, sans-serif' }}>
@@ -390,12 +417,41 @@ export default function Kline() {
         )}
       </div>
 
-      <div style={{ display: 'inline-block' }}>
-        <canvas ref={mainRef} style={{ border: '1px solid #333', display: 'block' }} />
+      {/* G10b 移动端副图 Tab 切换（PRD §5.8#6 手机端布局） */}
+      {isMobile && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          {([['macd', 'MACD'], ['rsi', 'RSI']] as ['macd' | 'rsi', string][]).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setSubTab(k)}
+              style={{
+                flex: 1,
+                padding: '6px 0',
+                fontSize: 13,
+                border: `1px solid ${subTab === k ? '#2563eb' : '#d1d5db'}`,
+                borderRadius: 4,
+                background: subTab === k ? '#2563eb' : '#fff',
+                color: subTab === k ? '#fff' : '#374151',
+                cursor: 'pointer',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div ref={wrapRef} style={{ width: '100%', overflow: 'hidden' }}>
+        <canvas ref={mainRef} style={{ border: '1px solid #333', display: 'block', maxWidth: '100%' }} />
         <div style={{ height: 6 }} />
-        <canvas ref={macdRef} style={{ border: '1px solid #333', display: 'block' }} />
+        {(!isMobile || subTab === 'macd') && (
+          <canvas ref={macdRef} style={{ border: '1px solid #333', display: 'block', maxWidth: '100%' }} />
+        )}
         <div style={{ height: 6 }} />
-        <canvas ref={rsiRef} style={{ border: '1px solid #333', display: 'block' }} />
+        {(!isMobile || subTab === 'rsi') && (
+          <canvas ref={rsiRef} style={{ border: '1px solid #333', display: 'block', maxWidth: '100%' }} />
+        )}
+        <div style={{ height: MOBILE_BREAKPOINT > 0 && isMobile ? 80 : 0 }} />
       </div>
 
       {klines.length === 0 && !loading && !err && (
