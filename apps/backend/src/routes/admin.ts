@@ -183,4 +183,39 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.code(500).send({ success: false, error: String(err) });
     }
   });
+
+  // T41 ⑤: 从备份恢复（二次确认 + system_log 留痕）
+  app.post('/api/admin/backup/:file/restore', async (request, reply) => {
+    const operator = (request as any).user;
+    if (operator.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
+
+    const { file } = request.params as { file: string };
+    const body = (request.body ?? {}) as { confirm?: boolean };
+
+    // 破坏性操作要求显式二次确认（AGENTS.md：减仓清仓类校验同理）
+    if (body.confirm !== true) {
+      return reply.code(400).send({
+        success: false,
+        error: 'CONFIRM_REQUIRED',
+        message: '恢复备份会覆盖当前业务库，请传 { "confirm": true } 二次确认',
+      });
+    }
+
+    const { restoreSQLiteBackup } = await import('../services/backup.js');
+    const result = restoreSQLiteBackup(decodeURIComponent(file));
+    if (!result.success) {
+      return reply.code(400).send({ success: false, error: 'RESTORE_FAILED', message: result.error });
+    }
+
+    writeSystemLog({
+      logType: 'trigger_manual', level: 'SUCCESS',
+      message: `${operator.username} 从备份恢复 SQLite 业务库：${file}`,
+      detail: `safety_backup=${result.safetyBackup ?? '无'}`,
+    });
+
+    return reply.send({
+      success: true,
+      data: { file, safetyBackup: result.safetyBackup },
+    });
+  });
 }

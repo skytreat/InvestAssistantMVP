@@ -97,7 +97,7 @@ describe('Auth · seed', () => {
   it('重复用户名 → 409', async () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/auth/seed',
-      payload: { username: ADMIN_USER, password: 'x' },
+      payload: { username: ADMIN_USER, password: 'x', role: 'user' },
     });
     expect(res.statusCode).toBe(409);
   });
@@ -108,6 +108,44 @@ describe('Auth · seed', () => {
       payload: { username: 'bad_role', password: 'x', role: 'super' as any },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('Auth · /api/auth/seed 越权防护', () => {
+  // 回归测试：seed 是公开路由（PUBLIC_ROUTES），曾经 role 默认 'admin'，
+  // 导致任何能访问 8080 的人都能自建管理员账号。现在库中已有用户时拒绝 admin。
+  it('库中已有用户时请求 role=admin → 403 ADMIN_ALREADY_EXISTS', async () => {
+    const res = await bundle.app.inject({
+      method: 'POST', url: '/api/auth/seed',
+      payload: { username: `sneak_admin_${Date.now()}`, password: 'x1234567', role: 'admin' },
+    });
+    expect(res.statusCode).toBe(403);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('ADMIN_ALREADY_EXISTS');
+    expect(body.success).toBe(false);
+  });
+
+  it('不传 role（默认 admin）→ 同样 403，不会静默建成管理员', async () => {
+    const name = `sneak_default_${Date.now()}`;
+    const res = await bundle.app.inject({
+      method: 'POST', url: '/api/auth/seed',
+      payload: { username: name, password: 'x1234567' },
+    });
+    expect(res.statusCode).toBe(403);
+    // 该用户根本没被创建
+    const row = bundle.db.db.prepare('SELECT id FROM user_account WHERE username = ?').get(name);
+    expect(row).toBeUndefined();
+  });
+
+  it('显式 role=user → 201 正常放行', async () => {
+    const name = `plain_user_${Date.now()}`;
+    const res = await bundle.app.inject({
+      method: 'POST', url: '/api/auth/seed',
+      payload: { username: name, password: 'x1234567', role: 'user' },
+    });
+    expect(res.statusCode).toBe(201);
+    const row = bundle.db.db.prepare('SELECT role FROM user_account WHERE username = ?').get(name) as { role: string };
+    expect(row.role).toBe('user');
   });
 });
 
