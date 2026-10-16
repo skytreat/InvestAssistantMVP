@@ -31,6 +31,7 @@ export function Navbar() {
         <Link to="/signals" style={linkStyle}>策略信号</Link>
         <Link to="/kline" style={linkStyle}>K线图</Link>
         <Link to="/stockscan" style={linkStyle}>条件选股</Link>
+        <Link to="/review" style={linkStyle}>交易复盘</Link>
         {role === 'admin' && (
           <Link to="/admin" style={linkStyle}>管理员</Link>
         )}

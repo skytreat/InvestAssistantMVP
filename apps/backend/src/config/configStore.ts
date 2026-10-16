@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
 );
 CREATE INDEX IF NOT EXISTS idx_signal_user_date ON user_strategy_signal(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_signal_user_plugin ON user_strategy_signal(user_id, plugin_id, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_signal_user_asset_date ON user_strategy_signal(user_id, asset_code, trade_date DESC);
 
 -- 插件配置
 CREATE TABLE IF NOT EXISTS user_plugin_config (

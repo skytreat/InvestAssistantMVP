@@ -9,6 +9,8 @@ import { registerWatchRoutes } from './watch.js';
 import { registerKlineRoutes } from './kline.js';
 import { registerStockScanRoutes } from './stockscan.js';
 import { registerSymbolSearchRoutes } from './symbolSearch.js';
+import { registerAssetStatRoutes } from './assetStat.js';
+import { registerReviewRoutes } from './review.js';
 import { extractToken, verifyToken } from '../services/auth.js';
 
 /**
@@ -54,4 +56,6 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerKlineRoutes(app);
   await registerStockScanRoutes(app);
   await registerSymbolSearchRoutes(app);
+  await registerAssetStatRoutes(app);
+  await registerReviewRoutes(app);
 }
