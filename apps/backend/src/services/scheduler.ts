@@ -11,6 +11,68 @@ import { writeSystemLog } from './logger.js';
 import { persistSignals, getTradeDate } from './signalService.js';
 import { runFullBackup } from './backup.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
+import { rerunQuoteUpdate } from './quoteRerun.js';
+
+/**
+ * G3a — WARN/ERROR 自动补跑 + 重新校验（PRD D3 自愈闭环 + SDD §5.1 Step 3）
+ *
+ * 判定口径（SDD §7.2 三层防线 + Requirements §6 C1-C10 处置列）：
+ *   - C11/C12 外部源不可用 → 只标 SKIP，不触发补跑（补跑行情解决不了）
+ *   - C1-C10 任一 ERROR → 立即补跑（数据源大概率没落全）
+ *   - C1-C10 任一 WARN  → 补跑后再校验；二次仍 WARN/ERROR 才升级为 ERROR 告警
+ *
+ * 补跑通道不可用时返回 SKIP，不抛错、不阻塞后续 cron 段。
+ */
+export async function runDatacheckWithRerun(date: string): Promise<{
+  summaries: Awaited<ReturnType<typeof runAllChecks>>;
+  reran: boolean;
+  rerunOk: boolean;
+}> {
+  const summaries = await runAllChecks(date);
+
+  // 内部一致性校验（C1-C10）才触发补跑；C11/C12 是外部源，SKIP 不算
+  const internal = summaries.filter(s => s.checkId !== 'C11' && s.checkId !== 'C12');
+  const errorItems = internal.filter(s => s.result === 'ERROR');
+  const warnItems = internal.filter(s => s.result === 'WARN');
+
+  if (errorItems.length === 0 && warnItems.length === 0) {
+    return { summaries, reran: false, rerunOk: true };
+  }
+
+  const reason = errorItems.length > 0
+    ? `C1-C10 ERROR×${errorItems.length}（${errorItems.map(s => s.checkId).join(',')}）`
+    : `C1-C10 WARN×${warnItems.length}（${warnItems.map(s => s.checkId).join(',')}）`;
+
+  const rerun = await rerunQuoteUpdate(reason);
+  if (rerun.status !== 'SUCCESS') {
+    writeSystemLog({
+      logType: 'datacheck',
+      level: errorItems.length > 0 ? 'ERROR' : 'WARN',
+      message: `补跑未成功，保留首轮校验结果（${reason}）`,
+      detail: `rerun=${rerun.status} method=${rerun.method} msg=${rerun.message}`,
+    });
+    return { summaries, reran: rerun.status !== 'SKIP', rerunOk: false };
+  }
+
+  // 补跑成功 → 重新校验，把最新结果作为终态
+  const after = await runAllChecks(date);
+  const afterInternal = after.filter(s => s.checkId !== 'C11' && s.checkId !== 'C12');
+  const afterErrors = afterInternal.filter(s => s.result === 'ERROR');
+  const afterWarns = afterInternal.filter(s => s.result === 'WARN');
+
+  writeSystemLog({
+    logType: 'datacheck',
+    level: afterErrors.length > 0 ? 'ERROR' : afterWarns.length > 0 ? 'WARN' : 'SUCCESS',
+    message: `补跑后重新校验: ERROR=${afterErrors.length} WARN=${afterWarns.length}（首轮 ${reason}）`,
+    detail: afterErrors.length > 0
+      ? `二次仍 ERROR: ${afterErrors.map(s => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
+      : afterWarns.length > 0
+        ? `二次仍 WARN: ${afterWarns.map(s => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
+        : '补跑自愈成功',
+  });
+
+  return { summaries: after, reran: true, rerunOk: true };
+}
 
 /**
  * 注册所有 cron 任务（由 server.ts 在 Fastify 启动后调用）
@@ -41,13 +103,13 @@ export function registerCronJobs(app: FastifyInstance): void {
       });
       const date = new Date().toISOString().slice(0, 10);
       try {
-        const summaries = await runAllChecks(date);
+        const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
         const errors = summaries.filter(s => s.result === 'ERROR').length;
         const warns = summaries.filter(s => s.result === 'WARN').length;
         writeSystemLog({
           logType: 'datacheck',
           level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
-          message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length}`,
+          message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
         });
       } catch (err: any) {
         writeSystemLog({
