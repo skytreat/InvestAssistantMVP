@@ -132,6 +132,59 @@ export async function batchGetDailyRange(
 }
 
 /**
+ * 批量取多个标的的最新收盘价（**1 次查询**，T33 仪表盘持仓卡用）
+ *
+ * 用窗口函数 ROW_NUMBER 取每个 symbol 最新一条，避免"先按日期定位再 IN 查"两次往返。
+ * 返回 Map<symbol, { date, close }>，没有行情的标的不出现在结果里。
+ */
+export async function batchGetLatestClose(
+  symbols: string[],
+  period: AdjustPeriod = 'qfq',
+): Promise<Map<string, { date: string; close: number }>> {
+  const result = new Map<string, { date: string; close: number }>();
+  if (symbols.length === 0) return result;
+
+  const tableName = resolveTable(period);
+  const placeholders = symbols.map(() => '?').join(', ');
+
+  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(
+    `SELECT symbol, date, close FROM (
+       SELECT symbol, date, close,
+              ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+       FROM ${tableName}
+       WHERE symbol IN (${placeholders})
+     ) WHERE rn = 1`,
+    [...symbols]
+  );
+
+  for (const row of rows) {
+    result.set(row.symbol, { date: toDateString(row.date), close: row.close });
+  }
+
+  return result;
+}
+
+/**
+ * DuckDB 的 DATE 列在不同驱动下可能是 string / number(epoch days) / {days: number}
+ * 统一转成 YYYY-MM-DD 字符串
+ */
+export function toDateString(value: unknown): string {
+  if (typeof value === 'string') return value.slice(0, 10);
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === 'number') {
+    const epoch = new Date(1970, 0, 1);
+    epoch.setDate(epoch.getDate() + value);
+    return epoch.toISOString().slice(0, 10);
+  }
+  if (value && typeof value === 'object' && 'days' in value) {
+    const epoch = new Date(1970, 0, 1);
+    epoch.setDate(epoch.getDate() + (value as { days: number }).days);
+    return epoch.toISOString().slice(0, 10);
+  }
+  return String(value);
+}
+
+/**
  * 查询某天是不是交易日（raw_holidays 有 date 列 = 交易日）
  *
  * SDD D2 实测：raw_holidays **只有一个 date 列**（没有 is_trading_day）
@@ -162,14 +215,7 @@ export async function getLatestTradingDay(date: string): Promise<string | null> 
     if (rows.length === 0) return null;
     const val = rows[0].date;
     if (val === null || val === undefined) return null;
-    if (typeof val === 'string') return val;
-    if (typeof val === 'object' && 'days' in val) {
-      // DuckDBDateValue：从 epoch days 转 ISO 日期字符串
-      const epoch = new Date(1970, 0, 1);
-      epoch.setDate(epoch.getDate() + (val as { days: number }).days);
-      return epoch.toISOString().slice(0, 10);
-    }
-    return String(val);
+    return toDateString(val);
   } catch {
     return null;
   }
