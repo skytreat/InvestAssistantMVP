@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
+import { batchGetLatestClose } from '../services/marketData.js';
 import { writeSystemLog } from '../services/logger.js';
 
 /**
@@ -103,6 +104,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       const startDate = q.start_date as string | undefined;
       const endDate = q.end_date as string | undefined;
       const systemFollowed = q.system_followed as string | undefined;
+      const strategyMatch = q.strategy_match as string | undefined;
       const isStopLoss = q.is_stop_loss as string | undefined;
       const hasReview = q.has_review as string | undefined;
       const page = Math.max(1, Number(q.page) || 1);
@@ -117,9 +119,10 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       if (startDate) { conditions.push('trade_date >= ?'); params.push(startDate); }
       if (endDate) { conditions.push('trade_date <= ?'); params.push(endDate); }
       if (systemFollowed !== undefined) { conditions.push('system_followed = ?'); params.push(Number(systemFollowed)); }
+      if (strategyMatch !== undefined) { conditions.push('strategy_match = ?'); params.push(Number(strategyMatch)); }
       if (isStopLoss !== undefined) { conditions.push('is_stop_loss = ?'); params.push(Number(isStopLoss)); }
-      if (hasReview === 'true') { conditions.push('(review_summary IS NOT NULL AND review_summary != \'\') OR (is_stop_loss IS NOT NULL) OR (system_followed IS NOT NULL)'); }
-      if (hasReview === 'false') { conditions.push('(review_summary IS NULL OR review_summary = \'\') AND is_stop_loss IS NULL AND system_followed IS NULL'); }
+      if (hasReview === 'true') { conditions.push(`(review_summary IS NOT NULL AND review_summary != '') OR strategy_match IS NOT NULL OR is_stop_loss IS NOT NULL`); }
+      if (hasReview === 'false') { conditions.push(`(review_summary IS NULL OR review_summary = '') AND strategy_match IS NULL AND is_stop_loss IS NULL`); }
 
       const where = conditions.join(' AND ');
       const db = ConfigStore.getInstance().db;
@@ -227,12 +230,57 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     }
   });
 
-  // 查询全部持仓
+  // 查询全部持仓（T33：带现价 / 市值 / 盈亏 / 仓位占比，供仪表盘持仓卡使用）
   app.get('/api/positions', async (request, reply) => {
     try {
       const user = (request as any).user;
       const positions = calcAllPositions(user.sub);
-      reply.send({ success: true, data: positions });
+      if (positions.length === 0) {
+        return reply.send({ success: true, data: [] });
+      }
+
+      // 1 次 IN 查询拿全量最新价（AGENTS.md DuckDB 硬约束：禁止逐标的循环查）
+      let latest: Map<string, { date: string; close: number }> = new Map();
+      let priceDate: string | null = null;
+      try {
+        latest = await batchGetLatestClose(positions.map(p => p.asset_code));
+        const dates = new Set([...latest.values()].map(v => v.date));
+        priceDate = dates.size === 1 ? [...dates][0] : null;
+      } catch (err: any) {
+        // DuckDB 不可用不阻塞持仓展示，前端降级为"无现价"
+        app.log.warn({ err }, '持仓现价查询失败，降级为无现价');
+      }
+
+      // 市值合计 → 每只标的的仓位占比
+      const enriched = positions.map((p) => {
+        const quote = latest.get(p.asset_code);
+        const currentPrice = quote?.close ?? null;
+        const marketValue = currentPrice !== null ? currentPrice * p.totalQuantity : null;
+        const unrealizedPnl = marketValue !== null ? marketValue - p.totalCostBasis : null;
+        const unrealizedYield = p.totalCostBasis > 0 && unrealizedPnl !== null
+          ? unrealizedPnl / p.totalCostBasis
+          : null;
+        return { ...p, currentPrice, priceDate: quote?.date ?? null, marketValue, unrealizedPnl, unrealizedYield };
+      });
+
+      const totalMarketValue = enriched.reduce((s, p) => s + (p.marketValue ?? 0), 0);
+      const withWeight = enriched.map(p => ({
+        ...p,
+        weight: totalMarketValue > 0 && p.marketValue !== null ? p.marketValue / totalMarketValue : null,
+      }));
+
+      return reply.send({
+        success: true,
+        data: withWeight,
+        summary: {
+          totalMarketValue,
+          totalCostBasis: withWeight.reduce((s, p) => s + p.totalCostBasis, 0),
+          unrealizedPnl: withWeight.reduce((s, p) => s + (p.unrealizedPnl ?? 0), 0),
+          realizedPnl: withWeight.reduce((s, p) => s + p.realizedPnL, 0),
+          priceDate,
+          positionCount: withWeight.length,
+        },
+      });
     } catch (err) {
       reply.code(500).send({ success: false, error: String(err) });
     }

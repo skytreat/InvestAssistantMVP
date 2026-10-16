@@ -119,3 +119,69 @@ describe('configStore — getDbPath', () => {
     expect(store.getDbPath()).toBe(TEST_DB);
   });
 });
+
+describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）', () => {
+  // 模拟存量库：先手工建一张缺 strategy_match 的旧表 + 塞一条数据，再让 ConfigStore 启动补列
+  it('旧表缺 strategy_match → 启动时 ALTER 补齐且不丢数据', () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invest-legacy-'));
+    const legacyDb = path.join(legacyDir, 'legacy.db');
+    const legacyPath = process.env.SQLITE_DB_PATH;
+
+    try {
+      // 1. 手工造"旧 schema"库：有数据、缺 strategy_match 列
+      const Legacy = new (require('better-sqlite3'))(legacyDb);
+      Legacy.exec(`
+        CREATE TABLE user_trade_record (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          asset_code TEXT NOT NULL,
+          trade_type TEXT NOT NULL,
+          trade_date TEXT NOT NULL,
+          quantity REAL NOT NULL,
+          price REAL NOT NULL,
+          fee REAL NOT NULL DEFAULT 0,
+          trade_reason TEXT,
+          is_auto_import INTEGER NOT NULL DEFAULT 0,
+          is_deleted INTEGER NOT NULL DEFAULT 0,
+          review_summary TEXT,
+          system_followed INTEGER,
+          is_stop_loss INTEGER,
+          remark TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          UNIQUE(user_id, asset_code, trade_type, trade_date)
+        )
+      `);
+      Legacy.prepare(
+        `INSERT INTO user_trade_record (user_id, asset_code, trade_type, trade_date, quantity, price, fee)
+         VALUES (1, 'sh600000', 'buy', '2025-01-01', 100, 10, 0)`
+      ).run();
+      Legacy.close();
+
+      // 2. 切到旧库并重建单例 → 触发补列
+      process.env.SQLITE_DB_PATH = legacyDb;
+      (ConfigStore as any)._instance = null;
+      const store = ConfigStore.getInstance();
+
+      const cols = (store.db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[])
+        .map(c => c.name);
+      expect(cols).toContain('strategy_match');
+
+      // 3. 存量数据完好 + 新列默认 NULL（三态"未标记"）
+      const rows = store.db.prepare('SELECT * FROM user_trade_record').all() as any[];
+      expect(rows.length).toBe(1);
+      expect(rows[0].asset_code).toBe('sh600000');
+      expect(rows[0].strategy_match).toBeNull();
+
+      // 4. 新列可写（三态 0/1 合法，2 被 CHECK 拦）
+      store.db.prepare('UPDATE user_trade_record SET strategy_match = 1').run();
+      expect((store.db.prepare('SELECT strategy_match FROM user_trade_record').get() as any).strategy_match).toBe(1);
+      expect(() => store.db.prepare('UPDATE user_trade_record SET strategy_match = 2').run()).toThrow();
+
+      store.db.close();
+    } finally {
+      (ConfigStore as any)._instance = null;
+      if (legacyPath !== undefined) process.env.SQLITE_DB_PATH = legacyPath;
+      try { fs.rmSync(legacyDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});

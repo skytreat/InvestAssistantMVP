@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     review_summary TEXT,
     system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
+    strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
     is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
     remark TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -156,11 +157,53 @@ export class ConfigStore {
     // 初始化所有表（幂等，重复运行安全）
     this._db.exec(DDL_SQL);
 
-    // SQLite CREATE TABLE IF NOT EXISTS 对已存在表无效——启动时检测并补齐缺失的 UNIQUE 约束
+    // SQLite CREATE TABLE IF NOT EXISTS 对已存在表无效——启动时检测并补齐缺失的列与 UNIQUE 约束
+    // 顺序要求：先补列（ALTER ADD COLUMN），让随后的 UNIQUE 重建能携带新列
+    this._ensureTradeRecordReviewColumns();
+
     this._ensureTradeRecordUniqueConstraint();
 
     // system_log 的 CHECK 白名单也需要迁移（smoke-m1 先 init 会建旧 schema，smoke-m2 复用导致 plugin_execute 被拒绝）
     this._ensureSystemLogCheckConstraint();
+  }
+
+  /**
+   * 补齐 user_trade_record 的复盘字段列（T38/T39 G6a）
+   *
+   * Requirements §5.2 定义复盘 4 字段：review_summary / strategy_match / is_stop_loss / remark。
+   * 早期 schema 只建了 review_summary / is_stop_loss / remark，
+   * PATCH /api/trades/:id 写 strategy_match 会直接报 no such column。
+   *
+   * SQLite ALTER TABLE ADD COLUMN 不支持 CHECK 之外的复杂约束但支持带 CHECK 的可空列，
+   * 且不重写表数据 —— 存量库零成本补齐，无需走重建流程。
+   */
+  private _ensureTradeRecordReviewColumns(): void {
+    const EXPECTED: Record<string, string> = {
+      review_summary: 'TEXT',
+      strategy_match: 'INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1))',
+      is_stop_loss: 'INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1))',
+      remark: 'TEXT',
+    };
+
+    try {
+      const table = this._db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
+        .get();
+      if (!table) return;  // 表还没建（DDL_SQL 已 CREATE IF NOT EXISTS，理论上必有），保守返回
+
+      const cols = (this._db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[])
+        .map(c => c.name);
+
+      const missing = Object.keys(EXPECTED).filter(c => !cols.includes(c));
+      if (missing.length === 0) return;  // 已是最新 schema
+
+      for (const col of missing) {
+        this._db.exec(`ALTER TABLE user_trade_record ADD COLUMN ${col} ${EXPECTED[col]}`);
+        console.log(`[ConfigStore] user_trade_record 补齐列 ${col}`);
+      }
+    } catch (err) {
+      console.error('[ConfigStore] 复盘字段列补齐失败（不阻塞启动）:', err);
+    }
   }
 
   /**
@@ -263,6 +306,7 @@ export class ConfigStore {
             is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
             review_summary TEXT,
             system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
+            strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
             is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
             remark TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -297,6 +341,7 @@ export class ConfigStore {
             is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
             review_summary TEXT,
             system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
+            strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
             is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
             remark TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -309,11 +354,11 @@ export class ConfigStore {
           INSERT OR IGNORE INTO user_trade_record (
             user_id, asset_code, trade_type, trade_date, quantity, price, fee,
             trade_reason, is_auto_import, is_deleted, review_summary,
-            system_followed, is_stop_loss, remark, created_at
+            system_followed, strategy_match, is_stop_loss, remark, created_at
           )
           SELECT user_id, asset_code, trade_type, trade_date, quantity, price, fee,
                  trade_reason, is_auto_import, is_deleted, review_summary,
-                 system_followed, is_stop_loss, remark, created_at
+                 system_followed, strategy_match, is_stop_loss, remark, created_at
           FROM _trade_record_old
           ORDER BY id ASC
         `);

@@ -20,6 +20,7 @@ import {
   calcPosition,
   calcAllPositions,
   validateSufficientHolding,
+  calcClosedTradePnLs,
 } from '../../src/services/positionCalculator.js';
 
 let db: ReturnType<typeof ConfigStore.getInstance>;
@@ -127,5 +128,91 @@ describe('positionCalculator — calcAllPositions', () => {
     expect(positions.length).toBe(2);
     const codes = positions.map(p => p.asset_code).sort();
     expect(codes).toEqual(['sh600519', 'sz300750']);
+  });
+});
+
+describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数据源）', () => {
+  it('无交易 → 返回空数组', () => {
+    expect(calcClosedTradePnLs(999)).toEqual([]);
+  });
+
+  it('一买一卖：卖出 realized_pnl = 净收入 - 数量×移动加权均价', () => {
+    const uid = 2001;
+    const code = 'sh600000';
+    db.db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
+    ).run(uid, `user_${uid}`, 'dummy-hash');
+    const insert = db.db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
+    );
+    // 成本基 = 100*10 + 2 = 1002 → 均价 10.02
+    insert.run(uid, code, 'buy', '2025-04-01', 100, 10.0, 2.0);
+    // 净收入 = 50*12 - 1 = 599；成本 = 50*10.02 = 501 → realized = 98
+    insert.run(uid, code, 'sell', '2025-04-10', 50, 12.0, 1.0);
+
+    const closed = calcClosedTradePnLs(uid);
+    expect(closed.length).toBe(1);
+    expect(closed[0].trade_type).toBe('sell');
+    expect(closed[0].quantity).toBe(50);
+    expect(closed[0].realized_pnl).toBeCloseTo(98, 6);
+  });
+
+  it('多次加仓后卖出：按卖出时点的移动加权均价计成本', () => {
+    const uid = 2002;
+    const code = 'sz000002';
+    db.db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
+    ).run(uid, `user_${uid}`, 'dummy-hash');
+    const insert = db.db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
+    );
+    // 成本基 = 100*10 + 100*12 = 2200 → 均价 11
+    insert.run(uid, code, 'buy', '2025-05-01', 100, 10.0, 0);
+    insert.run(uid, code, 'buy', '2025-05-02', 100, 12.0, 0);
+    // 全清：净收入 = 200*9 - 2 = 1798；成本 = 200*11 = 2200 → realized = -402
+    insert.run(uid, code, 'clear', '2025-05-20', 200, 9.0, 2.0);
+
+    const closed = calcClosedTradePnLs(uid);
+    expect(closed.length).toBe(1);
+    expect(closed[0].realized_pnl).toBeCloseTo(-402, 6);
+  });
+
+  it('软删除的平仓记录不计入', () => {
+    const uid = 2003;
+    const code = 'sz000003';
+    db.db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
+    ).run(uid, `user_${uid}`, 'dummy-hash');
+    const insert = db.db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    insert.run(uid, code, 'buy', '2025-06-01', 100, 10.0, 0, 0);
+    insert.run(uid, code, 'sell', '2025-06-10', 100, 11.0, 0, 1);  // 已软删
+    expect(calcClosedTradePnLs(uid)).toEqual([]);
+  });
+
+  it('除权类交易（dividend/bonus/transfer）不参与回放', () => {
+    const uid = 2004;
+    const code = 'sh601398';
+    db.db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
+    ).run(uid, `user_${uid}`, 'dummy-hash');
+    const insert = db.db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
+    );
+    insert.run(uid, code, 'buy', '2025-07-01', 100, 10.0, 0);
+    insert.run(uid, code, 'dividend', '2025-07-02', 100, 0.5, 0);
+    insert.run(uid, code, 'bonus', '2025-07-03', 10, 0, 0);
+
+    const closed = calcClosedTradePnLs(uid);
+    expect(closed.length).toBe(0);  // 只有买入，无平仓
   });
 });
