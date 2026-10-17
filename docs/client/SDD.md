@@ -1500,7 +1500,7 @@ systemctl status tdx2db.service --no-pager --lines=0
 
 **交易日判断兜底**：如果 DuckDB 里没有交易日历表，用 A 股规则硬编码（周末 + 法定节假日跳过）。
 
-**实现位置**：上述协调逻辑在 `apps/backend/src/routes/admin.ts` 里暴露一个手动触发端点 `POST /api/admin/datacheck`（同时也是 Fastify cron 内部调用的核心函数），方便运维手动补跑时复用同一套逻辑。
+[**实现位置**：管理员端点暴露在 `apps/backend/src/routes/admin.ts`，**端点名为 `POST /api/admin/datacheck/trigger`（§4.4 唯一权威命名）**，同时被 Fastify cron 复用；两者触发的是同一个编排逻辑，单独执行某段与批量执行的耗时口径相同。落地任务 **T90**（当前代码为 `/api/admin/run-datacheck`，待改名）。]
 
 ### 5.2 交易录入流程（含服务端校验）
 
@@ -1709,8 +1709,25 @@ export interface StrategyPlugin {
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
 | 故障隔离 | execute() 抛异常 → catch 后标记本轮跳过、记录 ERROR 日志、不影响其他插件和主流程 |
-| 超时保护 | execute() **硬限制 50ms**（Promise.race + reject）；超时标记 PLUGIN_TIMEOUT，跳过本轮 |
+| 超时保护 | execute() **硬限制 50ms**（Promise.race + reject）；超时标记 PLUGIN_TIMEOUT，跳过本轮。**⚠️ 口径见下方「50ms 计时边界」** |
 | 批量调度 | 同一标的的日线数据**一次查询、多插件共享**（避免 N 次 DuckDB 查询） |
+
+##### 50ms 计时边界（✅ 已裁决 2026-10-17，DEC-12 B-3）
+
+**50ms 只覆盖插件自身 `execute()` 的纯计算，不覆盖行情 IO。**
+
+| 计入 50ms | 不计入 50ms |
+|---|---|
+| `execute()` 内的指标计算与判断 | DuckDB 日线查询（`getDailyKlines` 等） |
+| | 批量取行情、构造 context |
+| | 信号序列化、落库 |
+
+**实现要求**：
+1. **先批量取好行情 → 构造 context → 再开始计时 → 调 `execute()`**。禁止把行情查询放进 `Promise.race` 的计时窗口内。
+2. 本节 `execute(dailyData, params)` 的签名本身已隐含该前提（数据是传入的，不是在 `execute` 内查的）。
+3. **沙盒安全约束不受影响**：插件内部死循环 / 阻塞仍必须被 `Promise.race` reject 并标记 `PLUGIN_TIMEOUT`（见 §12.3 P3）。**不得以「IO 不计时」为借口放宽超时保护。**
+
+> **实测依据（2026-10-17）**：现状 `POST /api/admin/datacheck/trigger` 的信号段返回 `{total:2, success:0, timeout:2}` —— 两个内置插件 **100% 超时**，`user_strategy_signal` **0 条**，导致 §12.5 F8「每日自动跑策略信号」与 PE6 双双不可达。**根因是行情查询被计入计时窗口**，故 RSI/MACD 实测 0.1~1ms 的计算也照样超时。落地任务 **T88**。
 
 #### MVP 内置插件清单
 
@@ -2624,6 +2641,17 @@ sequenceDiagram
 | 工具层（writeSystemLog 三层降级、rclone 配置解析） | **≥ 80%** | **≥ 75%** | 降级路径每个分支都要有对应测试 |
 
 **CI 门槛**：PR 合入 main 分支前，核心算法层 + 插件引擎覆盖率 **不能低于 90%**，否则阻断合入。
+
+> ⏸️ **已裁决（2026-10-17，DEC-12 B-5）：本表门槛与上述 CI 90% Gate 暂时冻结。**
+>
+> **理由**：前端当前 **0 测试**（无 vitest/jsdom/testing-library），全仓无 ESLint 配置，
+> 无测试基建的情况下设 90% 硬 Gate 会导致 CI 从第一天起就红，且诱导为凑数字写无意义测试。
+>
+> **过渡期实际执行值**（见实施计划 §12.4 E3）：`frontend ≥ 60%`（当前 0）；
+> `backend 不低于当前基线`（即暂不设硬门槛）。
+>
+> **恢复义务**：由实施计划 **T86b**（Wave 8）负责 —— 测试存量到位后**必须把本表数值与 90% CI Gate 恢复**。在此之前，§12.6 的全局判定**不因覆盖率判 FAIL**。
+> ⚠️ 本条为**暂缓**而非取消；T86b 未完成前视为已登记偏差。
 
 ### 12.3 单元测试边界用例清单
 
