@@ -55,10 +55,43 @@
 
 > 本项目 Session 里实炸过的坑，写进规则保证任何后续接手者（人或 Agent）都知道。
 
-**后台进程收尾三步**：任何时候用 Shell `run_in_background=true` 起的服务（后端 / vite dev server / 自动化 smoke 测试），**收尾必须完整走完**：
-- Step 1: `StopCommand(command_id)` — 停后台命令包装层
-- Step 2: **按端口段强杀残留子进程**（见下端口分配表）— StopCommand 停的是 cmd/包装层，不保证 node.exe 子进程退出
-- Step 3: `Get-NetTCPConnection -State Listen` 确认端口全部 LISTEN=空
+**后台进程收尾流程**：任何时候起的后台服务（后端 `npm run dev` / vite dev server / smoke-m1、m3 / 未来的 `tests/http/`），**收尾必须完整走完**。
+
+> **2026-10-17 实测修订**：原三步的 Step 1 已被证伪。实测启动 `npm run dev` 得到 npm PID `2632`/`14940`，但实际监听 8080/5173 的是 PID `10184`/`788`（中间隔 `cmd.exe` → `tsx` → `node` 三层）。**把两个 npm PID 都 `Stop-Process -Force` 之后，8080 和 5173 依然 LISTEN** —— 只杀包装层完全无效。
+> 另外，按端口杀完后仍残留 1 个 **`tsx watch` 看门狗**（不占端口，端口检查会误判「已清干净」，但文件一变动就自动重启后端）。
+
+**四步（顺序不可跳过）**：
+
+```powershell
+# Step 1 —— 杀整棵进程树：从监听 PID 向上遍历 ppid 逐层杀（含 cmd.exe / tsx watch）
+#          用法：$rootPid 传入后依次向上取 ParentProcessId
+Get-CimInstance Win32_Process -Filter "ProcessId=$pid" |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue; $_.ParentProcessId }
+#   ↑ 循环直到 ParentProcessId 为 0；别只杀最底层，tsx watch 是父节点，杀晚了会复活
+
+# Step 2 —— 按端口段强杀（见下方端口分配表），兜底
+@(8080,5173) + (51100..51999) | ForEach-Object {
+  Get-NetTCPConnection -State Listen -LocalPort $_ -EA SilentlyContinue
+} | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -EA SilentlyContinue }
+
+# Step 3 —— 查不占端口的残留（tsx watch / vite）★ 这一步最容易漏 ★
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'InvestAssistantMVP|tsx watch|vite' } |
+  ForEach-Object { "残留 pid=$($_.ProcessId) $($_.CommandLine)"; Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
+
+# Step 4 —— 端口段 LISTEN 归零 + Step 3 查询无输出 = 真干净
+@(8080,5173) + (51100..51999) | ForEach-Object {
+  $c = @(Get-NetTCPConnection -State Listen -LocalPort $_ -EA SilentlyContinue)
+  if ($c.Count) { "❌ $_ 仍 pid=$($c[0].OwningProcess)" }
+}
+```
+
+**验收标准**：`LISTEN = 0` **且** Step 3 无输出。**只满足前者不算收尾完成** —— `tsx watch` 不占端口但会在下次文件变动时复活后端。
+
+**起服务时的纪律**：
+- **必须用隔离库**。`.env.local` 无 `SQLITE_DB_PATH`，可直接覆盖（范式见 `apps/backend/tests/integration/_helpers.ts:17-21`：`mkdtempSync` + 覆盖 `SQLITE_DB_PATH` + `(ConfigStore as any)._instance = null`）。实测可让后端完全不碰 `apps/backend/data/business.db`。
+- **日志重定向到文件**（`-RedirectStandardOutput`），便于起不来时定位。
+- **记 PID 只能记 `Start-Process -PassThru` 的返回值，不能当清理依据** —— 见上，包装层 PID 与监听 PID 无关。
 
 每次漏做这步 → 下次 `npm run dev` 端口冲突 → ConfigStore 持久化漂移 → 排查 30 分钟以上。
 
@@ -69,12 +102,26 @@
 | Fastify 后端默认 | 8080 | ConfigStore 持久化；vite.config.ts proxy target 写死这个 |
 | Vite 前端 dev server | 5173 | vite.config.ts 固定 |
 | smoke-m1（自动化联调） | 51100 | startServer({ startPort: 51100 }) |
+| smoke-m2 | 51101 | ⚠️ **实测为死常量**（`TEST_PORT` 定义后从未使用），T60 清理 |
+| smoke-m3 | 51102 | 自动化联调 |
+| `tests/http/`（CORS / HTTPS / 性能，**必须真 listen**） | 51200‑51999 | 与下条同段，起服务前先查占用 |
 | 其他测试 / 临时联调 | 51200‑51999 | 预留段，每次临时起新服务在这个范围内 |
 
 清残留端口段的固定 PowerShell（一行）：
 ```powershell
 @(8080,5173) + (51100..51999) | ForEach-Object { Get-NetTCPConnection -State Listen -LocalPort $_ -EA SilentlyContinue } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -EA SilentlyContinue }
 ```
+
+**测试分层与端口依赖**（`app.inject()` 绕过网络层，勿误放）：
+
+| 目录 | 调用方式 | 占端口 | 能测什么 | 不能测什么 |
+|---|---|---|---|---|
+| `tests/unit/` | 直接调函数 | ❌ | 纯算法 / 单服务 | 路由、鉴权 |
+| `tests/integration/` | **`app.inject()`**（`_helpers.ts:50` 只 `registerRoutes` 不 `listen`） | ❌ | 进程内**完整路由 + 鉴权 + DB** 链路 | **CORS / HTTPS / 性能**（`inject()` 走内存，不经 HTTP 传输层） |
+| `tests/http/` | **必须 `app.listen()`** | ✅ 51200‑51999 | CORS 只允许 127.0.0.1、SE1 HTTPS 301、PE1‑PE5 性能 | — |
+| `smoke-m1`/`m3` | `app.listen()` | ✅ 51100/51102 | 端到端联调 | — |
+
+> ⚠️ **把 CORS/HTTPS/性能测试写进 `integration/` 会得到假绿** —— `inject()` 完全绕过 `@fastify/cors` 的 Origin 处理与 socket 层，测了等于没测。这是 T60 补齐项。
 
 **里程碑边界每阶段最后一条 commit**（用户要求，便于 review / 回滚 / 追责）：
 - 每个 M1/M2/M3/M4 最后一次 commit → `fix:` 或 `docs:` 或 `test:` 前缀，然后验收清卡
