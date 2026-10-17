@@ -348,11 +348,11 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 
 ---
 
-## 5. 实施计划（T49-T88，41 个任务）
+## 5. 实施计划（T49-T90，43 个任务）
 
 > **任务粒度**：1-3 人天。**每个 T 任务一条 commit**，格式 `<prefix>: T<编号> <描述>`。
 > **依赖标记**：🔒 = 有前置阻塞任务。
-> **T85-T88 是 2026-10-17 所有者裁决 §13.1 阻断项后新增的**（见 §13.4），编号接续 T84，不改动既有编号。
+> **T85-T90 是 2026-10-17 所有者裁决 §13 阻断项后新增的**（见 §13.4），编号接续 T84，不改动既有编号。
 
 ### Wave 1 — 数据与规则纠偏（后端 + core）
 
@@ -373,15 +373,17 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 | **T56** | **候选池批量接口** | `POST /api/candidates/batch` body `{asset_codes: string[]}`（上限 100）；`db.transaction()` 包裹，`INSERT OR IGNORE` 幂等；返回 `{added,skipped,duplicates[]}`；写 `system_log` | ① 100 条批量 < 200ms；② 重复项进 `duplicates` 不报错；③ 事务中途失败全量回滚；④ 超过上限 400 | 与 T50 同表，注意事务粒度 |
 | **T57** | **鉴权补 register + refresh**（DEC-10：两个都补齐） | `POST /api/auth/register`：首个用户自动 admin，其后仅 admin 可建号或强制 `role='user'`；`POST /api/auth/refresh`：access 7d + **refresh 30d** 双 token（SDD §4.4），refresh token 落 `user_account` 新列并轮换（旧 refresh 立即失效） | ① 首用户注册自动 admin；② 第二用户不能自升 admin；③ refresh 换新 access 且旧 refresh 失效；④ 过期 refresh → 401；⑤ **注册入口的越权用例必须齐**（对应 `cba9556` 修复的同类漏洞，不得重开） | ⚠️ **勿回退 `cba9556` 对 `/seed` 的加固**（那是安全修复）；`register` 是**新增路由**，与 seed 加固并存。`user_account` 加列走幂等 ALTER |
 | **T58** | **信号落库字段补全 + 持仓关系同步** | `persistSignals`/`persistBatchSignals` INSERT 补 `metrics_json`（序列化 `signal.params`）与 `is_final=1`；`routes/trade.ts` 写入/删除交易时同步 `user_asset_rel` 的 `rel_type='hold'`；清仓时软删 hold 关系 | ① `metrics_json` 内容 = 插件 `params`；② 买入后 `rel_type='hold'` 存在；③ 清仓后软删；④ `exDividendSync` 不再走交易表兜底分支（打日志断言） | `metrics_json` 内含数值，禁止塞 token 等敏感字段（logger.ts 有脱敏工具） |
-| **T59** | **system_log 日期范围 + 管理员全流程触发** | `GET /api/admin/system-log` 加 `start_date`/`end_date`（替换单值 `trade_date`，保留向后兼容）；新增 `POST /api/admin/run-pipeline`：串行跑 rerun-quotes → datacheck → signal → 除权 → 备份，返回各段结果数组（SDD §4.4 `/api/admin/datacheck/trigger`） | ① 日期范围闭区间正确；② `run-pipeline` 各段串行且单段失败不中断后续；③ 二次鉴权 + 写 `trigger_manual` 日志 | 串行总耗时可能超前端超时；需返回 `jobId` + 轮询，或前端设长超时 |
+| **T59** | **system_log 日期范围 + 管理员全流程触发** | `GET /api/admin/system-log` 加 `start_date`/`end_date`（替换单值 `trade_date`，保留向后兼容）；新增 **`POST /api/admin/datacheck/trigger`**（**§13.4 B-12 裁决：以 SDD §4.4:1274 为准**；代码现为 `/api/admin/run-datacheck`，本计划初稿曾另起名 `run-pipeline`，**均作废**）：串行跑 rerun-quotes → datacheck → signal → 除权 → 备份，返回各段结果数组 | ① 日期范围闭区间正确；② `run-pipeline` 各段串行且单段失败不中断后续；③ 二次鉴权 + 写 `trigger_manual` 日志 | 串行总耗时可能超前端超时；需返回 `jobId` + 轮询，或前端设长超时 |
 | 🔒 **T80** | **DuckDB 连接泄漏 + 并发互抢 + BigInt 归一化（P0-9 / P0-12 / P0-10）** ✅**已实装并验证** | ① `db/duckdb.ts`：**instance 进程内单例**（挂 `globalThis`，惰性创建 + Promise 去重；挂 globalThis 是因为 vitest 每测试文件独立 module graph，模块变量会导致全量跑时跨文件互抢锁）；**connection 每次查询开关 + `finally` 中 `conn.closeSync()`**；② `normalizeValue()` 在 `queryDuckDB` 唯一出口统一归一化：`bigint → number`、**DATE → `'YYYY-MM-DD'`**（实测 `@duckdb/node-api` 的 DATE 返回 `{days: epoch天数}`，与其类型声明的 `Date` **不符**，故两种形态都兼容；epoch 转换必须走 `toISOString()` 否则本地时区会偏移一天）；③ 导出 `closeDuckDBInstance()` 供测试 `afterAll` 与优雅退出；④ 补短退避重试应对 tdx2db 写库瞬时锁 | ① 串行连续 3 次查询全成功（原第 2 次起必失败）；② **并发 5 次 / 8 次（含失败分支混合）/ healthCheck 与查询共存**全成功（原 5 路并发 4 失败）；③ 查询**故意失败**后下一条仍成功（证明 finally 不被异常吞掉）；④ **结果不含 bigint 且可被 `JSON.stringify`**（回归 P0-10 原始症状）；⑤ **DATE 归一化为 `'YYYY-MM-DD'`**，含 epoch 0 边界（`1970-01-01`）与跨月边界（`2026-03-01`）防时区偏移；⑥ 全量 `unit` + `integration` + `core` 全绿（跨测试文件不互抢） | ✅ **已验证**：`tests/unit/duckdbLeak.test.ts` 11 用例全通过。**双版本对照**：HEAD 版跑同一组用例 → **5 failed**（`File is already open` + BigInt 序列化）。`tsc --noEmit` 0 error；`unit` **17/17 文件 137/137**、`integration` 58/58、`core` 24/24。端到端：股票 K 线 `sh600519`/`sz000001`/`sz002594` 由 500 → **200**，并发 5 端点全 200，串行连续 5 次全 200。⚠️ 测试**不依赖行情库内容**（用 `SELECT 1` / `1::BIGINT` / `DATE '...'`），CI 环境无 `data/quotes.duckdb` 也能跑 |
 | 🔒 **T82** | ~~DuckDB BigInt 序列化修复~~ → **已并入 T80 完成**，本任务关闭 | — | — | ✅ **关闭**：BigInt 与 DATE 归一化已在 `duckdb.ts` 的 `normalizeValue()` 实现并通过 11 个回归用例。**唯一残留项**：ETF/指数视图路由（见 F-K10）留在 T53 |
 | 🔒 **T83** | **补齐 filter 类选股插件（P0-11）** | 新增至少 2 个 `category='filter'` 内置插件（PRD §5.6「条件选股」+ Requirements §4.2 #7 的实际前提）：`turnover_filter`（换手率 > X）、`market_cap_filter`（总市值 < X 亿）；二者的 `paramSchema` **不得含 `symbol` 字段**（这是 monitor 与 filter 的本质区别）；`routes/stockscan.ts` 增加 **category 过滤校验**（只接受 `category==='filter'` 的插件，传 monitor 插件返回 400 而非静默扫不出）；`pluginEngine.executeAllPlugins` 已只跑 monitor（`scheduler.ts:755`），确认 filter 插件不会被误纳入每日信号生成 | ① `GET /api/stockscan/plugins` 返回中含 `category:'filter'` 项；② `POST /api/stockscan` 用 filter 插件时 **`totalCandidates > 0`**（当前恒为 0）；③ 用 monitor 插件调 scan → 400 且中文提示「该插件是监控类，不能用于选股」；④ filter 插件**不出现在每日信号生成**里；⑤ 选股 5000 标的 ≤3s（PRD PE2）；⑥ 动态执行结果数 ≤100 | ⚠️ **T55（公共过滤）+ T56（批量候选池）都不解决这个** —— 没有 filter 类插件，扫不出任何东西。建议与 T55 同批交付，否则 T73 的前端工作量无法验收 |
-| 🔒 **T84** | **持仓充足性校验修复（P0-13）** | ① `services/positionCalculator.ts` 的 `validateSufficientHolding` **改为时点校验**：按 `trade_date ASC, id ASC` 回放时**停在目标卖出交易之前**（同日按 `id` 序），判断那一刻的持仓是否 ≥ 卖出量；当前实现回放全部记录并用**所有日期的累计总量**，会用未来买入支撑过去卖出。② `packages/core/src/movingWeightedCost.ts` 的 sell 分支加**最后一道防线**：`totalQuantity -= qty` 后若为负则抛错，避免任何调用方绕过校验写脏数据。③ `routes/trade.ts` 的 `REDUCE_TYPES` 分支加 `try/catch`，把 core 抛出的超卖异常映射为 `HOLDING_INSUFFICIENT` 400 | ① **构造日期交错场景**：先写 `10-16 buy 100`，再写 `08-01 buy 100`，然后 `08-06 sell 105` → **400 拒绝**（当前 201 通过）<br>② 单笔买入场景回归：`buy 100` 后 `sell 150` → 400（时点持仓 100）<br>③ 合法卖出：`buy 100` 后 `sell 99` → 201 且持仓 1<br>④ 恰好清仓：`buy 100` 后 `sell 100` → 201 且持仓 0<br>⑤ 空仓卖出任意量 → 400<br>⑥ core 层直接传入超卖序列 → 抛错而非返回负数<br>⑦ **回放后全库无负持仓**（数据订正后断言） | 🔴 **必须在 T49 之前或同期完成** —— 两者改同一批 `switch` 分支。<br>⚠️ **`clear` 类型口径待确认**：`trade.ts:35` 要求 `quantity > 0`，但「清仓」语义是卖全部，其校验逻辑与 `reduce` 不同；需先读 `calculateMovingWeightedCost` 对 `clear` 的处理（当前 `mapToCoreTrade` 把 `clear` 与 `sell` 同映射为 `direction:'sell'`，**数量语义在 DDL/前端上未区分**），再决定校验写法 |
+| 🔒 **T84** | **持仓充足性校验修复（P0-13）** | ① `services/positionCalculator.ts` 的 `validateSufficientHolding` **改为时点校验**：按 `trade_date ASC, id ASC` 回放时**停在目标卖出交易之前**（同日按 `id` 序），判断那一刻的持仓是否 ≥ 卖出量；当前实现回放全部记录并用**所有日期的累计总量**，会用未来买入支撑过去卖出。② `packages/core/src/movingWeightedCost.ts` 的 sell 分支加**最后一道防线**：`totalQuantity -= qty` 后若为负则抛错，避免任何调用方绕过校验写脏数据。③ `routes/trade.ts` 的 `REDUCE_TYPES` 分支加 `try/catch`，把 core 抛出的超卖异常映射为 `HOLDING_INSUFFICIENT` **409**（`trade.ts:58` 现为 `reply.code(400)`，按 §13.4 B-10 裁决改为 409 —— SDD §4.3 错误码表明确 `HOLDING_INSUFFICIENT → HTTP 409`；**SDD §12.3 B1 写的 400 属 SDD 自身笔误，需同步改为 409**） | ① **构造日期交错场景**：先写 `10-16 buy 100`，再写 `08-01 buy 100`，然后 `08-06 sell 105` → **400 拒绝**（当前 201 通过）<br>② 单笔买入场景回归：`buy 100` 后 `sell 150` → 400（时点持仓 100）<br>③ 合法卖出：`buy 100` 后 `sell 99` → 201 且持仓 1<br>④ 恰好清仓：`buy 100` 后 `sell 100` → 201 且持仓 0<br>⑤ 空仓卖出任意量 → 400<br>⑥ core 层直接传入超卖序列 → 抛错而非返回负数<br>⑦ **回放后全库无负持仓**（数据订正后断言） | 🔴 **必须在 T49 之前或同期完成** —— 两者改同一批 `switch` 分支。<br>⚠️ **`clear` 类型口径待确认**：`trade.ts:35` 要求 `quantity > 0`，但「清仓」语义是卖全部，其校验逻辑与 `reduce` 不同；需先读 `calculateMovingWeightedCost` 对 `clear` 的处理（当前 `mapToCoreTrade` 把 `clear` 与 `sell` 同映射为 `direction:'sell'`，**数量语义在 DDL/前端上未区分**），再决定校验写法 |
 | **T60** | **后端测试补齐 + smoke 测试 DB 隔离 + 持仓查询性能** | ① **smoke-m1~m4 必须像 integration 一样隔离 DB** —— 实测 `data/business.db` 被污染（35 个 `seed_*`/`int_*` 用户、2310 条 datacheck 日志、5 笔测试交易），原因是集成测试有隔离（`tests/integration/_helpers.ts:19-20` 覆盖 `SQLITE_DB_PATH`）而 **smoke 测试没有**；把 smoke 的 bootstrap 也统一到 `_helpers.ts` 同款隔离；② 新增 `tests/unit/{kline,stockscan,kdj,positionPerf}.test.ts`、`tests/integration/{candidates,authRegister,signalFilter}.test.ts`；③ `calcAllPositions` 改单次 `IN` 查询取候选标的 + 内存聚合，消除 N+1；④ 补 `restoreSQLiteBackup` 白名单单测；⑤ `assetStat.test.ts` 补双口径数学用例 | ① **跑完全部 smoke 后 `data/business.db` 行数不变**（隔离回归断言）；② 30 只持仓 `/api/positions` p99 < 200ms（PE4）；③ KDJ/MA60/fq 四值断言；④ 双口径数值与 golden 一致 | AGENTS.md 硬约束：批量查必须 `IN (...)` 一次。**隔离修复应先于任何会碰开发库的任务**（含 T49 的清库动作） |
 | 🔒 **T85** | **实现 C4/C5 两条校验（§13.4 B-1 裁决：需要）** | `services/validator.ts` 把 `checkC3toC5` 拆成三条独立校验，使 `runAllChecks` 返回 **12 条**：<br>**C3 停牌日** —— 保留现有逻辑，仅把 `checkId` 独立出来（原函数名 `checkC3toC5` 一律返回 `C3` 是 B-1 的根因）<br>**C4 退市标记** —— ⚠️ **数据源需先探测**。已确认存在：`raw_symbol_name(symbol, name)`（`symbolSearch.ts:29` 在用）。判定式（名称含「退」/ 代码段判定）**必须先 SELECT 实测取值分布后再定，禁止照抄 SDD 描述硬编码**<br>**C5 ST 状态一致性** —— ⚠️ **`raw_symbol_class` 表在现有代码中从未被引用过**（已全仓 grep 确认），字段名 `is_st` 来自 SDD §5.7 描述、**未经代码验证**。第一步必须是查 DuckDB 实际 schema（`DESCRIBE raw_symbol_class`）确认真实列名，再实现；若该表不存在 → C5 返回 **SKIP** 并登记为 SDD 偏差<br>**四态齐备**：每条校验返回 PASS/WARN/ERROR/SKIP；数据源缺失一律 SKIP，**不得算 PASS** | ① `runAllChecks()` 返回长度 **= 12**（硬断言 `toHaveLength(12)`）<br>② **先交探测脚本的实测输出**（`raw_symbol_class` 的真实列名 + `raw_symbol_name` 含「退」的实际样本），作为实现依据留档<br>③ C4：名称含「退」的标的被识别；正常名称不误报<br>④ C5：`is_st` 与名称双向交叉，两种不一致都产出 WARN<br>⑤ C5：持仓中的 ST 标的 → ERROR<br>⑥ DuckDB 表缺失 → SKIP（不抛错、不计 PASS）<br>⑦ C1-C12 四态各有至少 1 个用例<br>⑧ **删掉 SDD §5.7 的「略」占位** | 🔴 **PRD D1「12 项校验」与 §6.2「C1-C10 通过率」的唯一解锁项**。<br>⚠️ **禁止猜测 DuckDB schema**：T80 已放行 `raw_symbol_name` / `raw_symbol_class` 两张表，但「表被放行」≠「字段名已知」，`raw_symbol_class` 尤其要自己 `DESCRIBE` 一遍。<br>⚠️ 与 T88 同批更省事：两者都改 validator/调度链的判定与计时边界。 |
-| 🔒 **T87** | **`trade_time` 输入 + UNIQUE 改键为「同日同笔」语义（§13.4 B-11 裁决：追加）** | ① **DDL**（`configStore.ts:25-47`，已核对真实列名）：`user_trade_record` 加 `trade_time TEXT NOT NULL DEFAULT '00:00:00'`（格式 `HH:mm:ss`，秒级）；`configStore.ts:45` 的 `UNIQUE(user_id, asset_code, trade_type, trade_date)` → **`UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time, quantity)`**（`quantity` = 所有者所说的「交易份额」，实测列名，勿写成 `trade_volume`）；走 `CREATE TABLE IF NOT EXISTS` + 幂等表重建（与 T49 的 `_ensureTradeTypeAddColumn()` 同款套路，**两次表重建合并为一次**）<br>② **API**：`POST /api/trades` / `PUT /api/trades/:id` 接受 `trade_time`（正则 `^\d{2}:\d{2}:\d{2}$` + 时分秒范围校验，参数化语句不拼 SQL）；缺省填当日当前时间<br>③ **语义翻转**：`TRADE_DUPLICATE` 的中文文案从「该日已有同类型交易」改为「**已存在完全相同的一笔交易（标的/类型/日期/时间/份额全部一致）**」<br>④ **前端** `TradeInput.tsx` 加「成交时间」`<input type="time" step="1">`，默认当前时刻，允许留空（留空 = `00:00:00`） | ① **同日同标的同类型、不同份额 → 两笔都 201 成功并存**（当前第二笔 409 `TRADE_DUPLICATE` —— 这是本任务的核心断言）<br>② 同日同标的同类型、**同时间同份额** → 409（幂等仍生效）<br>③ 同日同标的同类型、**同时间不同份额** → 201（证明份额进主键是关键）<br>④ 同日同标的同类型、**不同时间** → 201<br>⑤ `trade_time` 非法格式（`25:00:00` / `abc`）→ 400 `PARAM_INVALID`<br>⑥ 回放持仓时同日交易**按 `trade_time ASC, id ASC` 排序**（T84 的时点回放同步采纳）<br>⑦ 旧数据（无 `trade_time`）迁移后默认 `00:00:00` 且不违反新 UNIQUE | 🔴 **必须在 T49 之前或同期** —— 同改 `user_trade_record` DDL 与 CHECK/UNIQUE。<br>⚠️ **「份额进主键」是所有者明确指定的设计**，代价是同一秒内两笔**完全相同**的买入会被判重复 —— 判定依赖 `trade_time` 秒级精度，故输入控件用 `step="1"`。<br>⚠️ 补录历史交易时用户通常不知道精确成交时刻 → **允许留空**，留空按 `00:00:00` 处理，此时靠「份额不同」区分多笔。<br>⚠️ `quantity` 有 `CHECK (quantity >= 0)`，签名靠 `trade_type` 表达，因此份额进主键不产生方向歧义。 |
+| 🔒 **T87** | **`trade_time` 输入 + UNIQUE 改键为「同日同刻」语义（§13.4 B-11 裁决：追加；**成交时间进主键，份额不进**）** | ① **DDL**（`configStore.ts:25-47`，已核对真实列名）：`user_trade_record` 加 **`trade_time TEXT NOT NULL`**（格式 `HH:mm:ss`，秒级，**无 DEFAULT**）；`configStore.ts:45` 的 `UNIQUE(user_id, asset_code, trade_type, trade_date)` → **`UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)`**（**注意：`quantity` 不进主键** —— 所有者裁决明确只加成交时间）；走 `CREATE TABLE IF NOT EXISTS` + 幂等表重建（与 T49 的 `_ensureTradeTypeAddColumn()` 同款套路，**两次表重建合并为一次**）<br>② **API**：`POST /api/trade` / `PATCH /api/trade/:id` 接受 `trade_time`，**必填**（正则 `^\d{2}:\d{2}:\d{2}$` + 时/分/秒范围校验，参数化语句不拼 SQL）；`routes/trade.ts:69` 的 INSERT 字段列表加 `trade_time`<br>③ **语义翻转**：`TRADE_DUPLICATE` 文案（`trade.ts:91` 现「同日同标的同方向交易已存在」）改为「**该标的在该时刻已有同类型交易**」<br>④ **前端** `TradeInput.tsx` 加「成交时间」`<input type="time" step="1" required>`，默认当前时刻；**提交前预检**：拉当日同标的同类型已用时间集合，命中则禁用提交并提示「该时刻已被占用，请修改成交时间」<br>⑤ **新增错误码登记**：`TRADE_DUPLICATE` 在 SDD §4.3 错误码表中**不存在**（该表只有 10 个码），需补一行 `TRADE_DUPLICATE \| 同标的同类型同时刻重复 \| 409` | ① **同日同标的同类型、不同时间 → 两笔都 201 成功并存**（当前第二笔 409 —— 这是本任务的核心断言）<br>② 同日同标的同类型、**同时间** → 409 `TRADE_DUPLICATE`（幂等仍生效）<br>③ **同日同标的同类型、同时间、不同份额 → 仍 409**（验证份额确实**不在**主键内，这是裁决的反向断言）<br>④ 缺 `trade_time` → 400 `PARAM_INVALID`（**必填，不给默认值**）<br>⑤ `trade_time` 非法格式（`25:00:00` / `abc`）→ 400 `PARAM_INVALID`<br>⑥ 回放持仓时同日交易**按 `trade_time ASC, id ASC` 排序**（T84 的时点回放同步采纳）<br>⑦ 旧数据（无 `trade_time`）迁移时按 `created_at` 的时分秒回填，避免违反新 UNIQUE | 🔴 **必须在 T49 之前或同期** —— 同改 `user_trade_record` DDL 与 CHECK/UNIQUE。<br>⚠️ **`trade_time` 必须必填、不能留空**：裁决把份额移出主键后，唯一区分「同日同标的同类型多笔」的字段就只剩时间。若允许留空（落 `00:00:00`），则同一天同一标的同一类型**仍只能录一笔** —— **与「追加」裁决直接冲突**。故本任务改为必填 + 前端预检拦截，代价见下。<br>⚠️ **已知代价（裁决的直接后果，已登记）**：粒度从「天」细化到「秒」，**同一标的同一天同一类型只能有一笔**。补录历史交易时用户若对多笔填了相同时间（如都填 `09:30` 表达「同一天买」），第二笔会 409 —— 需前端预检提前拦截并提示改时间，而不是让用户提交后才吃错误码。<br>⚠️ 份额不进主键是所有者明确指定的设计（初版曾误加 `quantity`，已按裁决移除）。 |
 | 🔒 **T88** | **插件 50ms 计时边界修正（§13.4 B-3 裁决：行情查询不计入）** | **口径定义**：50ms 预算**只覆盖插件自身 `execute()` 的纯计算**，**行情查询（DuckDB IO）、JSON 序列化、DB 写入一律不计入**。实现：<br>① 把 `buildPluginContext` 的行情查询从 `executeAllPlugins` 的 `Promise.race` 计时窗口内**移到窗口外**（先批量取好行情 → 构造 context → 再开始计时 → 调 `execute`）<br>② `Promise.race` 的计时起点改为「进入 `execute()` 那一刻」，并在 `plugin.test.ts` 里对内置插件断言 `execute` 自身耗时 < 50ms<br>③ **保留**「插件内部死循环必须被 reject」的保护 —— 这是 SDD §12.3 P3 的安全约束，与 IO 无关<br>④ `signalType` 枚举去掉超范围的 `ALERT`（SDD §5.3 无此项），或补 SDD 确认 | ① **`POST /api/admin/run-signal` 返回 `{total:2, success:2, timeout:0}`**（当前 `{2, 0, 2}`）—— 这是本任务的核心断言<br>② `user_strategy_signal` 新增行数 > 0（当前 0 条）<br>③ **`while(true){}` 插件仍被 reject 且标记 TIMEOUT**（证明没把安全约束一起放掉）<br>④ 计算耗时 > 50ms 的插件（用注入 sleep 模拟）仍被判 TIMEOUT<br>⑤ 每个内置插件单独断言 `execute` 耗时 < 50ms（逐个记录实测值） | 🔴 **实测两个内置插件 100% 超时 → `user_strategy_signal` 0 条 → F8「每日自动跑策略信号」与 PE6 双双不可达**。<br>⚠️ **建议先于 T83**：T83 新增的 filter 插件应在正确的计时口径下交付，否则新插件会重蹈覆辙。<br>⚠️ 修完必须把实测耗时写进 §11.8 证据表，替换「当前猜测 DuckDB 查询计入预算」的表述 |
+| 🔒 **T89** | **统一响应封装改代码 + 错误码对齐 SDD §4.3（§13.4 B-9 裁决：改代码；B-10：409）** | ① **envelope**（SDD §4.2）：成功 `{code:0, data, timestamp}`；错误 `{code:'<ERROR_CODE>', message, data:null, timestamp}`。新增统一 helper（如 `lib/envelope.ts`）`ok(data)` / `fail(code, message)` + `setErrorHandler()`，**所有路由经此出口** —— 实测现有 `reply.code(...)` 共 **63 处**，`{success, data/error, message}` 散落全部路由<br>② **错误码对齐**（SDD 错误码表在 **§4.3，不是 §4.2**）：实测代码现有 **17 个码**，SDD 只定义 **10 个**。逐条裁决：<br>· 已对齐：`TRADE_REASON_REQUIRED` / `HOLDING_INSUFFICIENT` / `FORBIDDEN` / `INTERNAL_ERROR` / `DUPLICATE_IMPORT` / `SYMBOL_NOT_FOUND` / `UNAUTHORIZED`<br>· 需改名：`INVALID_TOKEN`+`NO_TOKEN` → `UNAUTHORIZED`；`INVALID_SYMBOL` → `SYMBOL_NOT_FOUND`；`DUPLICATE`(watch) / `NOT_FOUND` / `PLUGIN_NOT_FOUND` → SDD 补码<br>· 需新增：`PARAM_INVALID`（**代码中根本不存在**，却是 SDD §4.3 首个码）、`DB_UNAVAILABLE`、`EXTERNAL_SOURCE_UNAVAILABLE`、`TRADE_DUPLICATE`（T87 需要）<br>· 需裁决：插件/搜索/备份类专有码（`PLUGIN_NOT_FOUND`/`SEARCH_FAILED`/`KLINE_QUERY_FAILED`/`RESTORE_FAILED`/`CONFIRM_REQUIRED`/`ADMIN_ALREADY_EXISTS`/`SEED_PASSWORD_REQUIRED`）保留还是并入 `INTERNAL_ERROR`<br>③ **状态码**按 SDD §4.3 HTTP 列逐条校正：`HOLDING_INSUFFICIENT` 400→409（`routes/trade.ts:58` 现为 `reply.code(400)`，实测确认）；`PARAM_INVALID` 400；`SYMBOL_NOT_FOUND` 404；`DB_UNAVAILABLE` 503<br>④ **同步修 SDD §12.3 B1** 的 `400` 笔误 → 409<br>⑤ **前端** `api/client.ts` 改读 `code` 判定（不再读 `success`），T64 的 `errorMessages.ts` 换新码集 | ① 契约测试遍历**全部路由**：成功体必有 `code===0` + `data` + `timestamp`；错误体必有字符串 `code` + `message` + `data===null` + `timestamp`<br>② **全仓 grep `{ success:` 归零**（envelope 实现内部除外）<br>③ **全仓 grep `HOLDING_INSUFFICIENT` 配 400 归零**<br>④ SDD §4.3 每个码都有 ≥1 用例；**无「SDD 有码而代码不用」，也无「代码有码而 SDD 未登记」**<br>⑤ **故意漏 `timestamp` → 契约测试必须失败**（证明约束生效）<br>⑥ 前端 401 流程仍能正确跳登录（T64 回归） | 🔴 SDD §4.2 明文「所有 API 用统一 envelope」，裁决「改代码」即采纳 SDD。<br>⚠️ **63 处 `reply.code(...)` 必须逐个过**，**禁止正则批量替换** —— 各路由 `data` 取值形态不同（有对象、有数组）。<br>⚠️ **前端全部 API 调用一起受影响**，必须与 T64/T90 同批或先行，否则前端白屏。建议顺序 **T89 封装 → T90 路由 → 前端适配**。<br>⚠️ 与 T90 改同一批文件，**同批 commit 最省冲突**。 |
+| 🔒 **T90** | **路由契约对齐 SDD §4.4（§13.4 B-12 裁决：以 SDD 为准）** | SDD §4.4 的 **22 条路由**是唯一权威。实测代码命名与之不符的有 15 处（§13.2 I-1），逐条对齐：<br>① **B-12 手动触发**：`routes/admin.ts` 现 `/api/admin/run-datacheck` → **`/api/admin/datacheck/trigger`**（SDD §4.4:1274）。**T59 原计划新增的 `/api/admin/run-pipeline` 取消**；同时把 SDD §5.1.1 的简写 `/api/admin/datacheck` 统一为同一路由（属 SDD 内部矛盾修正，非改名）<br>② **校验结果读取**：代码 `/api/datacheck/latest` → **`/api/admin/datacheck/result`**（SDD §4.4:1273）<br>③ **交易**：`/api/trades` → **`/api/trade`**；`POST /api/trades/:id/soft-delete` 路径对齐<br>④ **持仓**：`/api/positions` → **`/api/holding`**<br>⑤ **K 线**：`/api/kline/:symbol` → **`/api/quote/:symbol/kline`**<br>⑥ **插件**：`/api/plugins` → **`/api/strategy/plugins`**；配置 PATCH → **PUT `/api/strategy/plugins/:id/config`**<br>⑦ **信号**：`/api/signals` → **`/api/signal`**<br>⑧ **复盘**：`/api/review/stats` → **`/api/review/yield`**<br>⑨ **候选池迁移**：`/api/candidate/:asset_code/promote` → **`/api/candidate/:id/migrate`**（注意 `:id` 与 `:asset_code` 的语义切换）<br>⑩ **角色**：`/api/admin/users/:id/role` → **PATCH `/api/admin/role/:userId`**<br>⑪ 计划新增路由**补登记进 SDD §4.4**：`/api/candidates/batch`（T56）<br>⑫ **T59 的 `run-pipeline` 取消** | ① **契约测试遍历 SDD §4.4 全 22 条路由，逐条断言存在且方法/鉴权匹配**<br>② 反向断言：旧名全部 404（SDD 里没有的路由不得残留）<br>③ 旧名保留 1 个版本 `@deprecated` 别名 + 响应头 `Deprecation: true`，下版本删除<br>④ 前端 `api/client.ts` 全部 base path 同步，无 404<br>⑤ `auth.ts:81` 的 409（用户名已存在）与 `watch.ts:41` 的 409（重复关注）**保留 409**（语义冲突非参数错误，与 SDD §4.3 不冲突） | 🔴 「以 SDD 为准」= **改代码**，不改 SDD 的路由名（仅统一 §5.1.1 的内部简写）。<br>⚠️ **与 T89 高度耦合**（都改全部路由文件），**必须同批**。<br>⚠️ **B-13 仍未裁决**：`/api/strategy/reload`（SDD §4.4:1267，admin 热加载自定义插件）代码中不存在，本计划 §8 曾误判为 V2。本任务**暂不实现**，但须在 §9.3 登记「违背 PRD M5 / SDD §4.4，待裁决」。 |
 
 ### Wave 2 — 前端基座（token + 基建 + 测试）
 
@@ -447,7 +449,7 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 
 | Wave | 任务 | 范围 | 后端 | core | 前端 | 小计 |
 |------|------|------|------|------|------|------|
-| 1 | T49-T60 + T80-T88 | 数据与规则纠偏 + **指标库接入** + DuckDB 三修 + **超卖校验** + filter 插件 + 测试隔离 + **C4/C5 校验 + 交易追加语义 + 插件计时边界** | 10.5d | **3.5d** | 0.5d | **14.5d** |
+| 1 | T49-T60 + T80-T90 | 数据与规则纠偏 + **指标库接入** + DuckDB 三修 + **超卖校验** + filter 插件 + 测试隔离 + **C4/C5 校验 + 交易追加语义 + 插件计时边界 + 响应封装 + 路由对齐** | 14.5d | **3.5d** | 0.8d | **18.8d** |
 | 2 | T61-T66 + **T86** | 前端基座 + **lint/build 基建** | **0.5d** | 0 | **7.5d** | **8.0d** |
 | 3 | T67 | Dashboard（含 ux_v2 建议 C/D/E） | 0.5d | 0 | **6.5d** | **7.0d** |
 | 4 | T68-T69 | TradeInput + Review | 0 | 0 | 3.2d | **3.2d** |
@@ -456,11 +458,12 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 | 7 | T75-T76 | Admin + 全局导航/a11y/响应式基础 | 0 | 0 | **4.3d** | **4.3d** |
 | 8 | T77-T78 + **T86b** | smoke-m5 + **覆盖率门槛恢复** + 最终审计 | **0.5d** | 0 | 0.5d | **1.5d** |
 | 9 | **T79** ⚠️ | **响应式 Phase 2/3 + P2 体验收尾**（可后置） | 0 | 0 | **4.2d** | **4.2d** |
-| | **合计** | **41 个任务** | **12.0d** | **3.5d** | **32.2d** | **~50.7 人天** |
+| | **合计** | **43 个任务** | **16.0d** | **3.5d** | **32.5d** | **~55 人天** |
 
 > **已完成**：T80（DuckDB 泄漏 + 并发 + BigInt/DATE，0.3d）、T82（已并入 T80 关闭）
-> **Wave 1 后续未开始**：T49 加仓 / T50 候选池基准价 / T51 指标库 / T52 KDJ / T53 K线路由 / T54 signals 过滤 / T55 公共过滤 / T56 批量候选 / T57 auth / T58 落库字段 / T59 日志范围 / T60 测试补齐 / T81 测试隔离 / T83 filter 插件 1.0d / T84 超卖校验 0.5d / **T85 C4/C5 校验 1.0d** / **T87 交易追加语义 + trade_time 1.0d** / **T88 插件计时边界 0.5d**
+> **Wave 1 后续未开始**：T49 加仓 / T50 候选池基准价 / T51 指标库 / T52 KDJ / T53 K线路由 / T54 signals 过滤 / T55 公共过滤 / T56 批量候选 / T57 auth / T58 落库字段 / T59 日志范围 / T60 测试补齐 / T81 测试隔离 / T83 filter 插件 1.0d / T84 超卖校验 0.5d / **T85 C4/C5 校验 1.0d** / **T87 交易追加语义 + trade_time 1.0d** / **T88 插件计时边界 0.5d** / **T89 响应封装 + 错误码对齐 2.0d** / **T90 路由对齐 SDD §4.4 1.5d**
 > **Wave 2 新增**：**T86 lint/build 基建 1.5d**；**Wave 8 新增**：**T86b 覆盖率门槛恢复 0.5d**（工作量随 T60/T61 缺口浮动）
+> ⚠️ **T89 + T90 必须同批**（都改全部路由文件，共 63 处 `reply.code(...)`），且**前端适配需一并交付**，否则前端全量 404 / 白屏。
 
 > **v2 plan → v2 plan（含 ux_v2 补全）增量**：`docs/archive/frontend_ux_v2_SUPERSEDED-2026-10-16.md` 交叉审计发现 13 项初稿遗漏，已全部并入：
 > - **P0 ×2**：T68 ②（`trade_reason` label 中文化，ux_v2 §3.2-5，实测未做）、T67 ⑦（今日动态概览卡，ux_v2 建议 D，初稿完全漏掉）
@@ -500,6 +503,7 @@ T88(插件 50ms 计时边界)─────────→ T83(filter 选股插
 T85(C4/C5 校验)─────────────┐
 T87(trade_time+UNIQUE 追加)───┼─→ T49(加仓7种)─┐
 T84(超卖时点校验)─────────────┘               │
+T89(响应封装+错误码)─┬→ T90(路由对齐 SDD §4.4) ┘
 T50(基准价)─────────────────────────────────┼─→ T73(StockScan)─┐
 T51(指标库+适配+golden)─┬→ T52(KDJ+布林)──→ T53(K线路由)──┐
                         ├→ T70(Kline 交互)──────────────┤
@@ -508,7 +512,7 @@ T55(公共过滤)───────────┼→ T73                    
 T56(批量候选)───────────┼→ T73                          │
 T57(auth register/refresh)─┬→ T64(错误码+401 会话过期)   │
 T58(落库 metrics_json)────┴→ T70(Kline 信号 hover)      │
-T59(system-log 范围+run-pipeline)─┬→ T75(Admin)          │
+T59(system-log 范围+datacheck/trigger)─┬→ T75(Admin)          │
 T60(后端测试+smoke隔离+持仓性能)───┼→ T81(测试隔离)→ T77  │
 T81(测试隔离修复)──────────────────┴→ T77                 │
                                   T60/T61 → T86b(覆盖率门槛恢复) │
@@ -524,12 +528,14 @@ T64(错误码映射)──────────────┴─────
                                                                               ↓
 DEC-1(已定) ──→ T51 适配层 ──→ T71(Kline 参数实时生效)
 DEC-6(待定) ──→ 决定 T71 是 import core 适配层 还是 前端复制适配
-DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
+DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b/T89/T90
 ```
 
 **数据正确性三角**（`T84 + T87 → T49`，三者必须有序）：`T84` 修时点超卖、`T87` 修同日分笔被拒与成交时刻、`T49` 才把 `sell` 改名 `reduce` 并改 CHECK 白名单。三者同改 `user_trade_record` DDL 与持仓回放分支，**顺序错会把已知漏洞换个名字保留**。
 
 **插件链**：`T88 → T83`。T88 修正 50ms 计时边界后，T83 新增的 filter 插件才会在正确口径下交付；否则新插件会重蹈「100% 超时」的覆辙。
+
+**契约链**：`T89 + T90`（必须同批）→ **前端适配**。两者改全部 63 处 `reply.code(...)` 与路由路径，前端 `api/client.ts` 不同步会全量 404。这条链是 Wave 1 里**风险面最广**的一段。
 
 **关键路径**：`T51 → T52 → T53 → T70 → T77 → T78`（约 11.5 人天）。T51 是整条链的咽喉 —— 它必须在 T53/T70 之前落地，因为 K 线路由和 Kline 组件都直接消费 `core` 的指标适配层输出（`routes/kline.ts` 算 ma60/rsi/macd，前端 `Kline.tsx` 按下标对齐）。但 T51 本身**不是高风险**（§4.3.4：适配层只有数组补齐 + 柱值 ×2 两处形状/约定变换，不含算法实现）。
 
@@ -567,7 +573,7 @@ DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
 | **DEC-9** | **开发库 `data/business.db` 直接清空重建**，不写 `sell` 数据订正脚本 | 实测确认该库为 **smoke/集成测试污染**：5 笔交易 `trade_reason` 全为「smoke买入」「集成测试买入」「dup1」，35 个用户全为 `int_admin`/`seed_*`，2 条候选基准价均为 NULL，无真实业务数据 | T49 |
 | **DEC-10** | **`/api/auth/register` 与 `/api/auth/refresh` 两个都补齐** | 严格遵循 SDD §4.4 + PRD D5。**注意：不回退 `cba9556` 对 `/seed` 的安全加固** —— register 是新增路由，与 seed 加固并存 | T57 |
 | **DEC-11** | **先做切片 A（W1 + W2 + W7）** = T49-T66 + T75-T76 + **T80-T88（含 T86/T86b）**，约 **28 人天** | W3/W4/W5/W6/W8 的功能部分暂缓。切片 A 交付「业务规则正确（7 类型 / 同日分笔可追加 / 12 项校验 / 信号不超时）+ 指标口径统一 + 前端有回归保护 + lint 阻断 + 管理员功能齐全」，是 MVP 验收信任度最高的组合 | 全部 |
-| **DEC-12** | **§13.4 所有者裁决（2026-10-17）**：B-1 实现 C4/C5；B-3 插件 50ms **不计入**行情查询；B-5 覆盖率门槛**暂缓下调、后续由 T86b 补回**；B-6 **补 Wave 2 lint 任务**；B-11 交易改**追加**语义 + `trade_time` 与标的代码/份额共同构成主键 | 裁决优先于本计划此前的任何推断；对应 T85 / T88 / T86b / T86 / T87。详见 **§13.4** | T85 / T86 / T86b / T87 / T88 |
+| **DEC-12** | **§13.4 所有者裁决（2026-10-17，共 9 项）**：B-1 实现 C4/C5；B-3 插件 50ms **不计入**行情查询；B-5 覆盖率门槛**暂缓下调、后续由 T86b 补回**；B-6 **补 Wave 2 lint 任务**；B-9 **改代码**采纳 SDD §4.2 envelope；B-10 `HOLDING_INSUFFICIENT` 用 **409**；B-11 交易改**追加** + `trade_time` 进主键（**份额不进**）；B-12 路由**以 SDD §4.4 为准** | 裁决优先于本计划此前的任何推断；对应 T85 / T86 / T86b / T87 / T88 / T89 / T90。详见 **§13.4** | T85-T90 |
 | **DEC-12** | **过期审计文档归档到 `docs/archive/`** + 顶部加失效声明横幅 | ✅ **本次已执行**：`frontend_ux_v2.md` → `docs/archive/frontend_ux_v2_SUPERSEDED-2026-10-16.md`；`frontend-gap-audit-2026-10-16.md` → `docs/archive/frontend-gap-audit_SUPERSEDED-2026-10-16.md`。两份均加了失效原因 + 仍有效部分 + 指向本文档的链接 | — |
 
 ### 9.2 待确认
@@ -718,7 +724,7 @@ DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
 | `POST /api/candidates/batch` | **404** | T56 |
 | `POST /api/auth/register` | **404** | P0-7 |
 | `POST /api/auth/refresh` | **404** | P0-8 |
-| `POST /api/admin/run-pipeline` | **404** | T59 |
+| `POST /api/admin/run-pipeline` | **404** | T59 → **§13.4 B-12 已裁决改名为 `/api/admin/datacheck/trigger`，归 T90** |
 | `POST /api/candidate` | 201，响应体仅 `{id}`，**无基准价** | P0-2 |
 
 ### 11.5 顺带修正的三处判断
@@ -921,17 +927,17 @@ DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
 | **B-6** | **Lint 阻断阶段无任务** | 根 `package.json` 无 `lint` 脚本；全仓无 `.eslintrc*` / `.prettierrc*`；`ci.yml` 无 lint 步骤。但 E6/T66 均以「需先配 ESLint」为前提 | SDD §12.6 CI Stage 2「Lint + TypeScript Check」，阻断点含「Lint 失败」；AGENTS.md §编码约束 6 | ✅ **已裁决（2026-10-17）：补 Wave 2 任务** → 新增 **T86**。见 §13.4 |
 | **B-7** | **候选池迁移违反 PRD 明文** | `watch.ts:62-88` promote **直接 INSERT watch 行**；`watchPromote.test.ts:35` 断言「watch 出现」 | PRD S5「**MVP 迁移操作只在候选记录上打标记，不会自动创建自选关联**（用户需手动从候选池加入自选）」；SDD §12.3 B6 同 | T50/T74 增加硬性验收：「promote 只置 `migrated_from_candidate=1` + `migrated_price_mode`，**不 INSERT watch 行**」，并改 `watchPromote.test.ts:35` |
 | **B-8** | **插件契约字段几乎全缺** | 代码 `Plugin` 只有 `id/name/description?/category/paramSchema?`；缺 `version/author/period/sub_category/complexity/defaultParams/chartOverlay`；`execute(context, params)` 签名不同；`signalType` 大写且多 `ALERT`；SDD `metrics` vs 代码 `params` | SDD §5.3「**本节为插件引擎的核心设计契约，所有内置插件与自定义插件必须严格遵循**」 | 并入 T83 或新增 T83b 补齐字段 + 加「插件对象字段完备性」单测 |
-| **B-9** | **统一响应封装（SDD §4.2）全链路缺失** | 代码统一 `{success, data/error, message}`；本计划 0 处提及，§12.1 无对应验收项 | SDD §4.2「所有 API 返回统一 envelope `{code,data,timestamp}`」，业务错误体含 `code` 字段 | 裁决：以代码为准并改写 SDD §4.2，**或**新增任务统一封装 + 契约测试（后者工作量大，建议前者） |
-| **B-10** | **`HOLDING_INSUFFICIENT` 状态码 400 vs 409，且 SDD 自相矛盾** | 代码与本计划用 **400** | SDD §4.2 表 `409` + §5.1 时序图 `409`；但 SDD §12.3 B1 写 **400** | 裁决 400 或 409，并统一 SDD 两处 |
-| **B-11** | **`UNIQUE(user_id, asset_code, trade_type, trade_date)` 与 SDD §12.3 B4 矛盾** | 代码有该约束，同日同标的同类型第二次 → **409 TRADE_DUPLICATE** | SDD §12.3 B4「同一日内同一 symbol 多次买入（幂等）→ **不触发 UNIQUE 冲突，正常追加**」 | ✅ **已裁决（2026-10-17）：追加**；且**成交时间需用户输入**，与标的代码、交易份额等**共同构成主键** → 新增 **T87**。见 §13.4 |
-| **B-12** | **手动触发端点出现第四个名字** | 本计划 T59 新增 `/api/admin/run-pipeline` | SDD §4.4 `/api/admin/datacheck/trigger`；SDD §5.1.1 `/api/admin/datacheck`；代码 `/api/admin/run-datacheck` | 统一为一个名字，并同步 SDD §4.4 + §5.1.1 + §6.3 |
+| **B-9** | **统一响应封装（SDD §4.2）全链路缺失** | 代码统一 `{success, data/error, message}`；实测 `reply.code(...)` 共 63 处。本计划 0 处提及，§12.1 无对应验收项 | SDD §4.2「所有 API 返回统一 envelope `{code,data,timestamp}`」，业务错误体含 `code` 字段 | ✅ **已裁决（2026-10-17）：改代码** → 新增 **T89**（采纳 SDD 的 envelope）。见 §13.4 |
+| **B-10** | **`HOLDING_INSUFFICIENT` 状态码 400 vs 409，且 SDD 自相矛盾** | `routes/trade.ts:58` 实测 `reply.code(400)`；本计划亦用 400 | SDD §4.3 错误码表 `HOLDING_INSUFFICIENT → 409` + §5.1 时序图 `409`；但 SDD §12.3 B1 写 **400** | ✅ **已裁决（2026-10-17）：409** → T84/T89 改用 409，并**修掉 SDD §12.3 B1 的 400 笔误**。见 §13.4 |
+| **B-11** | **`UNIQUE(user_id, asset_code, trade_type, trade_date)` 与 SDD §12.3 B4 矛盾** | 代码有该约束，同日同标的同类型第二次 → **409 TRADE_DUPLICATE** | SDD §12.3 B4「同一日内同一 symbol 多次买入（幂等）→ **不触发 UNIQUE 冲突，正常追加**」 | ✅ **已裁决（2026-10-17，两次修订）**：① 改**追加**；② 首次要求「成交时间与标的代码、**份额**共同进主键」，后修订为「**成交时间进主键，份额不进**」→ **`UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)`**，`trade_time` 变必填。→ 新增 **T87**。见 §13.4 |
+| **B-12** | **手动触发端点出现第四个名字** | 本计划 T59 新增 `/api/admin/run-pipeline`；代码 `routes/admin.ts` 是 `/api/admin/run-datacheck` | SDD §4.4:1274 **`/api/admin/datacheck/trigger`**；SDD §5.1.1 简写 `/api/admin/datacheck` | ✅ **已裁决（2026-10-17）：以 SDD 为准** → 统一为 **`/api/admin/datacheck/trigger`**，T59 的 `run-pipeline` 取消；连带 I-1 的 15 处路由一并对齐 → 新增 **T90**。见 §13.4 |
 | **B-13** | **`/api/strategy/reload` 被我误判为 V2** | 本计划 §8「插件热重载扫描自定义 `.js` → V2（AGENTS.md 禁止）」 | AGENTS.md 原文「自定义插件**只能**放 `/opt/invol/plugins/strategies/` 且**仅限** `.js`；禁止动态 eval」—— 这是**路径/扩展名/eval 约束，不是功能禁令**；PRD M5「安装自己写的策略插件」；SDD §4.4:1267 列了 `/api/strategy/reload` | **撤销我的降级判定**。要么补该路由，要么在 §8 明确标注「违背 PRD M5 / SDD §4.4，**属需求裁剪需所有者书面确认**」，不可引 AGENTS.md 当依据 |
 
 ### 13.2 重要级（会造成实现偏差或文档互斥）
 
 | # | 项 | 现状 vs 真相源 | 建议 |
 |---|---|---|---|
-| I-1 | **路由命名 15 处不一致** | SDD §4.4 的 `/api/trade`、`/api/holding`、`/api/quote/:symbol/kline`、`/api/strategy/plugins`、`/api/review/yield`、`/api/candidate/:id/migrate`、`/api/admin/datacheck/result`、`/api/admin/role/:userId` 等，代码用的是复数/新名。**本计划只登记了 F-Q10 一条，且登记后未派任务** | 合并为单一任务「路由契约对齐」，与 `/api/admin/run-pipeline`、`/api/candidates/batch` 一并处理 |
+| I-1 | **路由命名 15 处不一致** | SDD §4.4 的 `/api/trade`、`/api/holding`、`/api/quote/:symbol/kline`、`/api/strategy/plugins`、`/api/review/yield`、`/api/candidate/:id/migrate`、`/api/admin/datacheck/result`、`/api/admin/role/:userId` 等，代码用的是复数/新名。**本计划只登记了 F-Q10 一条，且登记后未派任务** | ✅ **已裁决（B-12：以 SDD 为准）** → **T90** 对齐全部 22 条 |
 | I-2 | **错误码集合三方不一致** | SDD §4.2 定义 10 个；代码 16 个；`DUPLICATE_IMPORT` vs `DUPLICATE`/`TRADE_DUPLICATE`、`SYMBOL_NOT_FOUND` vs `INVALID_SYMBOL`、`UNAUTHORIZED` vs `NO_TOKEN`/`INVALID_TOKEN`、`PARAM_INVALID` 代码中不存在 | T64 的 20 个错误码映射应以**代码实际集合**为准，并同步修 SDD §4.2 |
 | I-3 | **`user_trade_record.strategy_match` / `user_asset_rel.is_deleted` / `user_strategy_signal.is_deleted` 不在 SDD §3.2** | 代码有（且有幂等 ALTER），SDD DDL 无 | 补进 SDD §3.2（这三列是 AGENTS.md「全部业务记录软删除」的落地） |
 | I-4 | **`system_log.log_type` CHECK：SDD 6 值 vs 代码 9 值** | 代码多 `plugin_execute`/`startup`/`trade`；PRD §5.7 列的 5 类与两者都不吻合 | 同步 SDD §3.2 与 PRD §5.7 的枚举 |
@@ -973,7 +979,10 @@ DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
 | **B-3** | ✅ **不应该计入** —— 50ms 预算**只覆盖插件自身 `execute()` 的计算**，**行情查询（DuckDB IO）不计入** | **T88** | SDD §5.3「硬限制 50ms」需补一句口径定义，否则每个实现者都会像初版那样把 IO 算进去 |
 | **B-5** | ⏸️ **暂维持下调的覆盖率门槛，后续再补** | §12.4 E3 保留现值 + 标注待补；收尾由 **T86b** 承担 | SDD §12.2 与 §12.6 的 90% Gate 暂时冻结，**属已知偏差，§12.6 判定时不再据此判 FAIL** |
 | **B-6** | ✅ **补 Wave 2 任务**（ESLint / Prettier / lint 脚本 / CI Stage 2） | **T86** | 恢复 SDD §12.6 CI Stage 2 的可达性 |
-| **B-11** | ✅ **追加**（不拒绝）；**成交时间需用户输入**，与标的代码、交易份额等**共同构成主键** | **T87** | SDD §12.3 B4 的「不触发 UNIQUE 冲突，正常追加」由代码落地；SDD §3.2 `user_trade_record` 需补 `trade_time` 列与新 UNIQUE 定义 |
+| **B-9** | ✅ **改代码** —— 采纳 SDD §4.2 的 `{code, data, timestamp}` envelope | **T89** | **无 SDD 改动**（代码向 SDD 靠拢）。SDD 错误码表实为 **§4.3**（非 §4.2），T89 同步对齐 17(代码) → 10(SDD) 的码集差异 |
+| **B-10** | ✅ **409** | **T84 / T89** | 采纳 SDD §4.3 的 409；**需修掉 SDD §12.3 B1 的 400 笔误**（SDD 自身矛盾） |
+| **B-11** | ✅ **追加**；**成交时间进主键，份额不进** | **T87** | 落地 SDD §12.3 B4「正常追加」。新 UNIQUE = `(user_id, asset_code, trade_type, trade_date, trade_time)`；`trade_time` **必填无默认**。**需给 SDD §4.3 补 `TRADE_DUPLICATE` 码**（现表 10 码不含它） |
+| **B-12** | ✅ **以 SDD 为准** | **T90**（连带 I-1 的 15 处路由） | 路由名**不改 SDD**；仅统一 SDD §5.1.1 的简写与 §4.4 同名。T59 的 `run-pipeline` 取消 |
 
 **新增任务一览**（均已写入 §5，编号接续 T84 之后）：
 
@@ -982,11 +991,20 @@ DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
 | **T85** | Wave 1 | 实现 C4（退市标记）/ C5（ST 状态一致性）两条校验 | 无 |
 | **T86** | Wave 2 | ESLint + Prettier + 根 `lint`/`build` 脚本 + CI Stage 2 | 无（**T66 的前置**） |
 | **T86b** | Wave 8 | 覆盖率达标后恢复 SDD §12.2 门槛与 90% 阻断 Gate | T60 / T61 |
-| **T87** | Wave 1 | `trade_time` 输入 + UNIQUE 改键为「同日同笔」语义（追加而非拒绝） | 🔒 **必须在 T49 之前或同期**（同改 `user_trade_record` DDL） |
+| **T87** | Wave 1 | `trade_time` 输入（必填）+ UNIQUE 改「同日同刻」语义 | 🔒 **必须在 T49 之前或同期** |
 | **T88** | Wave 1 | 插件 50ms 计时边界修正（行情查询移出预算）+ `while(true){}` 回归用例 | 🔒 建议先于 T83 |
+| **T89** | Wave 1 | 统一响应封装改代码（63 处 `reply.code`）+ 错误码对齐 SDD §4.3 | 🔒 与 T90 同批 |
+| **T90** | Wave 1 | 路由契约对齐 SDD §4.4 全 22 条（含 B-12） | 🔒 与 T89 同批 |
 
-**仍未裁决的阻断项**（8 项）：B-2（已修，仅剩验证）、**B-4**（测试映射 + 4 个缺失测试文件）、**B-7**（候选池迁移违反 PRD S5）、**B-8**（插件契约字段）、**B-9**（统一响应封装）、**B-10**（400 vs 409）、**B-12**（端点命名第四个名字）、**B-13**（`/api/strategy/reload` 是否属 MVP）。
-> 其中 **B-9 / B-10 / B-12** 是**纯文档对齐**，各需所有者一句话确认即可关闭，建议与上批一起裁决。
+**仍未裁决的阻断项**（**4 项**）：
+| # | 项 | 备注 |
+|---|---|---|
+| **B-4** | SDD §12.5 的「对应测试 Case」映射被丢弃；`holding.test.ts` / `plugin.test.ts` / `scan.test.ts` / `frontend.test.tsx` 四个文件不存在，`backup_restore_duckdb` 无测试 | 需新增任务 |
+| **B-7** | 候选池迁移违反 PRD S5 明文（`watch.ts:62-88` 直接 INSERT watch 行） | 需新增任务或并入 T50/T74 |
+| **B-8** | 插件契约字段几乎全缺（`version/author/period/sub_category/complexity/defaultParams/chartOverlay`） | 建议并入 T83 或新增 T83b |
+| **B-13** | `/api/strategy/reload` 是否属 MVP | T90 暂不实现该路由，先登记偏差 |
+
+> **13 项阻断已裁决 9 项**，剩 4 项。其中 B-4/B-7/B-8 影响 §12.6 判 PASS，B-13 需口径确认。
 
 ---
 
@@ -1034,7 +1052,10 @@ DEC-12(已定, §13.4) ──→ T85/T87/T88/T86/T86b
 | **B-3 插件 50ms 预算误含行情查询 → 100% 超时** | **T88**（§13.4 裁决：不计入）+ T83 依赖它 |
 | **B-5 覆盖率门槛下调 / 90% Gate 删除** | **T86b**（§13.4 裁决：暂缓执行，届时恢复） |
 | **B-6 Lint 阻断阶段无任务** | **T86**（§13.4 裁决：补 Wave 2）+ T66 依赖它 |
-| **B-11 UNIQUE 拒绝同日分笔交易** | **T87**（§13.4 裁决：追加 + `trade_time` 进主键），须先于 T49 |
+| **B-11 UNIQUE 拒绝同日分笔交易** | **T87**（§13.4 裁决：追加 + `trade_time` 进主键，**份额不进**），须先于 T49 |
+| **B-9 统一响应封装缺失（SDD §4.2）** | **T89**（§13.4 裁决：**改代码**，采纳 SDD envelope） |
+| **B-10 HOLDING_INSUFFICIENT 400 vs 409** | **T84 / T89**（§13.4 裁决：**409**，并修 SDD §12.3 B1 笔误） |
+| **B-12 + I-1 路由命名不一致（15 处）** | **T90**（§13.4 裁决：**以 SDD §4.4 为准**） |
 | **P0-14 审计方法论缺陷** | 留档，无任务 |
 | **F-Q12 响应式横向溢出** | T76（fluid 容器 + 断点）/ T79 ①（表格卡片化）/ T65 |
 | **F-Q13 401 跳转到不存在的 `/login`** | T57（refresh token）+ T64（真实 login 路由 + 保留路径） |
