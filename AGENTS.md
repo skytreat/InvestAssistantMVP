@@ -235,10 +235,11 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 需求权威源 | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
 | PRD | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
 | SDD 设计文档 | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
-| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T94，48 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差登记与所有者裁决 DEC-12** |
+| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T94，48 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
+| **决策归档** | `docs/adr/` | **已接受 ADR 8 份** —— 决策结论 + 理由 + 代价 + 备选方案否决理由；索引见 `docs/adr/README.md`。**本文档与实施计划只引用决策，不重复决策理由** |
 | ~~旧实施计划~~ | `docs/client/MVP_code_implementation_plan.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系）|
 | 编码规范 | `docs/coding-standards.md` | 命名、类型、SQL、错误处理、测试规范 |
 | 编码规则摘要 | `AGENTS.md`（本文） | AI agent 行为规则 + 架构硬约束 + 禁止 Out-Scope |
 | 黄金测试数据集 | `packages/core/tests/fixtures/golden/` | ⚠️ **目录存在但当前为空** —— 由 **T51** 填充（移动加权成本 5 场景 / RSI / MACD）。填之前「双端一致性断言」无载体可依 |
-| ADR 决策归档 | `docs/adr/` | 架构决策记录（当前为空，后续重要决策归档到这里）|
+| ADR 决策归档 | `docs/adr/` | **架构决策记录**（当前已 8 份，见 `README.md` 索引）|
 | Wave Gate 落档 | `docs/audit/wave-N-gate.md` | 每波收尾必写；**无文件 = 未执行 = FAIL** |

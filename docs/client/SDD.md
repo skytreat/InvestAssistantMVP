@@ -46,7 +46,7 @@
 ```mermaid
 graph TB
     subgraph Client["客户端（桌面 + 手机浏览器共用）"]
-        SPA["响应式 Web 前端<br/>（React SPA + klinecharts）"]
+        SPA["桌面 Web 应用<br/>（React SPA + Canvas 自绘 K 线）"]
     end
 
     subgraph Server["服务器（单实例）"]
@@ -384,13 +384,15 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 包体积 | 略小 | ~120KB gzip |
 | 风险 | 2 | 生态稍小于 React；K 线图 React 绑定更丰富 |
 
-**推荐方案 A**：React + Vite。理由：KLineChart（klinecharts）官方 React 绑定更完善；原始文档指定了 React + Vite 组合，团队如有此技术栈偏好则零学习成本。
+**推荐方案 A**：React + Vite。理由：React 生态与团队技术栈匹配；~~KLineChart（klinecharts）官方 React 绑定更完善~~ —— **K 线图库已按 §2.5 裁决改为自写 Canvas，不再影响本项选型**。
 
 ---
 
 ### 2.5 K 线图库选型
 
-#### 方案 A：klinecharts（**推荐**）
+> ✅ **已裁决（2026-10-17，DEC-11 / plan §13.4）：不引入第三方图表库，改用自写 Canvas + SVG。** 下方原「方案 A klinecharts」为历史推演，**不再是推荐**。
+
+#### ~~方案 A：klinecharts~~（**已否决**）
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
@@ -414,19 +416,44 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 图表渲染 | 中 | DOM + Canvas 混合，性能不如专业 K 图库 |
 | 风险 | 4 | 副图联动、十字光标、缩放平移等需大量定制 |
 
-**推荐方案 A**：klinecharts。理由：MIT 协议零授权成本；150KB 适合移动端；副图 + 十字光标 + 交互开箱即用；内置 `chartOverlayConfig` 元数据对应策略引擎 chartOverlay 字段。
+#### ✅ 最终选定：自写 Canvas + SVG（零第三方图表库）
+
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| 实现成本 | 2 | MVP 只需 K 线 + 成交量 + MA/RSi/MACD 副图，Canvas 足够；**现有 `Kline.tsx` 已是 Canvas 实现** |
+| 图表渲染 | 良好 | Canvas 绘制，满足 PE3「首渲染 ≤500ms」 |
+| 风险 | **1** | **无第三方库的版本升级 / API 变动 / 授权风险**；代价是交互（十字光标、缩放）需自行实现（归 T70） |
+
+**理由**：① MVP 图表复杂度可控，不值得引入 150KB 依赖；② 避免第三方库的 API 变动风险（`chartOverlay` 这类插件元数据要与之耦合）；③ 依赖表已因指标库增加一项，再加图表库会放大前端 bundle 与升级成本。
+**替代 klinecharts 的 `chartOverlayConfig` 机制**：改为由后端插件返回 `chartOverlay` 元数据（SDD §5.3），前端自绘。**该字段由 T93 补齐。**
 
 ---
 
 ### 2.6 技术指标计算库选型
 
-#### 方案 A：technicalindicators（**推荐，需验证**）
+> ✅ **已裁决（2026-10-17，DEC-1）：选用 `fast-technical-indicators@1.1.6`（精确锁版本，禁 `^`）。** 前端与 `packages/core` **各自直接依赖同一版本**，不跨 workspace 复用实现。
+
+#### ~~方案 A：technicalindicators~~（**已否决**）
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
 | 实现成本 | 1 | TypeScript + CommonJS/ESM 兼容；`RSI.calculate()` / `MACD.calculate()` API |
 | 性能 | 中 | 纯 JS 实现，大数组场景比 native 慢但 MVP 无压力 |
-| 风险 | 3 | **【待确认】** 2024 年后是否仍在活跃维护？是否有安全漏洞？npm 搜索显示有 `fast-technical-indicators` 声称 100% API 兼容但性能更好，可作为备份 |
+| 风险 | 3 | **2024 年后活跃度存疑**；npm 搜索显示有 `fast-technical-indicators` 声称 100% API 兼容但性能更好 |
+
+#### ✅ 方案 A'：fast-technical-indicators（**最终选定**）
+
+| 维度 | 评分 | 说明 |
+|------|------|------|
+| 实现成本 | 1 | pure JS，无原生编译；**实测 221 个导出覆盖 RSI/MACD/BollingerBands/Highest/Lowest** |
+| 性能 | 良好 | 纯 JS；实测单次 RSI/MACD 计算远低于插件 50ms 预算（前提：行情 IO 不计入，见 plan T88） |
+| 风险 | **1** | 版本精确锁定 `1.1.6`；**已知缺口：库里没有 KDJ**，需自写（归 T52） |
+
+**必须做的两处口径适配**（归 T51，**不是可选优化**）：
+1. **数组补齐到 `closes.length`** —— 库的输出长度短于输入（EMA warm-up 瞬态）
+2. **MACD 柱值 `histogram × 2`** —— 库给国际口径，A股通达信约定为 2 倍
+
+**已知缺口**：`fast-technical-indicators` **无 KDJ**；其 `Stochastic` 是美式口径（K/D 与 A 股差 ~7 个点），**不可直接用于 A 股**，须按 SDD 公式自写（归 T52）。
 
 #### 方案 B：TA-Lib（原生 C binding）
 
@@ -436,7 +463,7 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 性能 | 极高 | 纯 C 实现，10x ~ 50x 快于 pure JS |
 | 风险 | 3 | 跨平台编译坑多；Node 版本升级常出现 binary 不兼容 |
 
-**推荐方案 A**：technicalindicators（或其 API 兼容替代品）。理由：Node.js pure JS 避免原生编译复杂性，单实例 12GB 内存场景不缺这点 CPU。`fast-technical-indicators` 作为 **备份方案** 可在测试中验证 API 兼容性。
+**推荐方案 A**：~~technicalindicators~~ → **已改为 `fast-technical-indicators`（见 §2.6 方案 A'）**。理由：Node.js pure JS 避免原生编译复杂性，单实例 12GB 内存场景不缺这点 CPU。**版本精确锁定 `1.1.6`**；代价是需自写 KDJ（归 T52）与两处口径适配（归 T51）。
 
 ---
 
@@ -529,8 +556,8 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 2 | 业务层数据库 | SQLite + WAL | PostgreSQL | etcd | 50MB 量级无需独立服务 |
 | 3 | 后端框架 | Fastify | Express | NestJS | Schema-first 开发 + 高性能冗余 |
 | 4 | 前端框架 | React + Vite | Vue 3 + Vite | — | K 图绑定 + 团队偏好 |
-| 5 | K 线图库 | klinecharts | TradingView LC | ECharts | MIT 零授权 + 副图丰富 |
-| 6 | 指标计算库 | technicalindicators | TA-Lib | — | pure JS 零原生编译 |
+| 5 | K 线图 | ~~klinecharts~~ | TradingView LC | ECharts | **✅ 已裁决：不引第三方库，自写 Canvas（§2.5）** |
+| 6 | 指标计算库 | ~~technicalindicators~~ | TA-Lib | 无 | **✅ 已裁决：`fast-technical-indicators@1.1.6`（§2.6），KDJ 自写** |
 | 7 | 调度机制 | tdx2db: systemd timer + Fastify: 内部 cron | 全部内部 cron | xxl-job | Go 二进制独立化 |
 | 8 | 反向代理 | Caddy | Nginx + certbot | — | Let's Encrypt 零运维 |
 | 9 | DuckDB 备份 | COPY PARQUET GZIP | cp + gzip | WAL 归档 | 列式压缩率最高 |
@@ -590,7 +617,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=invest
-EnvironmentFile=/opt/invest/.env
+EnvironmentFile=/opt/invol/.env
 # systemd 不做 shell 展开，需要用 /bin/bash -c 包装 $(date) 和链式命令
 ExecStartPre=/bin/bash -c 'rclone copy /backup/duckdb/ "invest-oss:invest-backup/$(date +%%F)/duckdb/" --backup-dir="invest-oss:invest-backup/archive/duckdb/" --ignore-existing --checksum --stats-one-line'
 ExecStart=/bin/bash -c 'rclone copy /backup/sqlite/ "invest-oss:invest-backup/$(date +%%F)/sqlite/" --backup-dir="invest-oss:invest-backup/archive/sqlite/" --ignore-existing --checksum --stats-one-line'
@@ -611,7 +638,7 @@ WantedBy=timers.target
 
 ### 2.12 前端架构设计
 
-> 本节基于 §2.4（React + Vite）和 §2.5（klinecharts）的选型决策，给出工程级架构设计。
+> 决策结论见 §2.4（React + Vite）与 §2.5（**已裁决：不引第三方图表库，自写 Canvas**）。
 
 #### 2.12.1 组件分层结构
 
@@ -629,7 +656,7 @@ graph TD
     end
 
     subgraph Business["业务组件层（含业务逻辑、直连 API）"]
-        B1[KLineChart<br/>集成 klinecharts]
+        B1[KLineChart<br/>Canvas 自绘]
         B2[TradeForm<br/>交易录入弹窗]
         B3[PositionCard<br/>持仓卡片]
         B4[SignalPanel<br/>策略信号面板]
@@ -683,7 +710,7 @@ graph TD
 #### 2.12.2 路由设计
 
 ```typescript
-// /opt/invest/frontend/src/router/index.tsx
+// /opt/invol/frontend/src/router/index.tsx
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -730,7 +757,7 @@ export const router = createBrowserRouter([
 |---|------|
 | 守卫方式 | React Router Loader + 自定义 Guard 组件（AuthGuard / AdminGuard） |
 | 重定向 | 未登录 → `/login`；已登录访问根路径 → `/dashboard`；未知路径 → `/dashboard` |
-| 懒加载 | KLinePage（含 klinecharts）、AdminPage 用 `React.lazy + Suspense` 代码分割 |
+| 懒加载 | KLinePage（Canvas 自绘）+ AdminPage | `React.lazy + Suspense` | 拆分包 | 首屏不加载 K 线 |
 | 404 页 | 统一重定向到 dashboard（MVP 不单独做 404 页面） |
 
 #### 2.12.3 状态管理方案
@@ -752,7 +779,7 @@ export const router = createBrowserRouter([
 **Store 示例（authStore）**：
 
 ```typescript
-// /opt/invest/frontend/src/stores/authStore.ts
+// /opt/invol/frontend/src/stores/authStore.ts
 import { create } from "zustand";
 import * as api from "@/api/client";
 
@@ -802,7 +829,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 #### 2.12.4 API Client 层设计
 
 ```typescript
-// /opt/invest/frontend/src/api/client.ts
+// /opt/invol/frontend/src/api/client.ts
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 import { useAuthStore } from "@/stores/authStore";
 import { useNavigate } from "react-router-dom";
@@ -863,7 +890,7 @@ export default instance;
 | 策略 | 实现方式 | 预期效果 |
 |------|---------|---------|
 | 代码分割（路由级） | KLinePage / AdminPage 用 `React.lazy + Suspense` | K 线图独立 chunk ≈ 80KB，不阻塞首屏 |
-| 按需加载（klinecharts） | `import("klinecharts")` 动态 import，首次进入 K 线页才下载 | 首屏无 klinecharts 依赖 |
+| 按需加载 klinecharts | ~~`import("klinecharts")`~~ | **已移除** —— K 线图改为自写 Canvas（§2.5），不再有按需加载需求 | — |
 | Vite 生产优化 | `manualChunks` 拆分：react + zustand 公共 chunk、axios chunk、business chunk | 公共依赖复用 |
 | 压缩 | gzip + brotli（Caddy 自动） | 总体 gzip ≈ 150KB（原始需求验收标准：首屏 ≤ 1.5s）|
 | 图片 | 全部用 SVG / data URL，不引入图片资源 | 避免图片请求 |
@@ -999,6 +1026,10 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
         trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')
     ),
     trade_date TEXT NOT NULL,
+    -- 成交时刻（秒级 HH:mm:ss，必填无默认）。与标的代码 / 交易类型 / 日期共同构成去重键。
+    -- 为何必填：若允许留空落 00:00:00，则同日同标的同类型仍只能录一笔，与「同日分笔可追加」矛盾。
+    -- 代价：同一标的同一天同一类型只能有一笔；补录历史时若多笔填同一时刻，第二笔 409。
+    trade_time TEXT NOT NULL,
     quantity REAL NOT NULL CHECK (quantity >= 0),
     price REAL NOT NULL CHECK (price >= 0),
     fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
@@ -1007,15 +1038,26 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     review_summary TEXT,
     system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
+    strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
     is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
     remark TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    -- 去重语义：只有「完全同标的 + 同类型 + 同日期 + 同时刻」才算同一笔（409 TRADE_DUPLICATE）。
+    -- 份额 quantity 刻意不入键 —— 同一天同一标的同一类型的多笔，靠 trade_time 区分。
+    -- ⚠️ 改已有表的 UNIQUE 必须用幂等表重建（CREATE TABLE IF NOT EXISTS 对已存在的表无效），
+    --    见 AGENTS.md「DDL 变更判据」，先例 configStore.ts:164。
+    UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
 );
 CREATE INDEX IF NOT EXISTS idx_trade_user_date ON user_trade_record(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_asset ON user_trade_record(user_id, asset_code);
 CREATE INDEX IF NOT EXISTS idx_trade_type ON user_trade_record(user_id, trade_type);
 ```
+
+> ⚠️ **DDL 变更方式**：`CREATE TABLE IF NOT EXISTS` **只对「表不存在」生效**，无法修改已存在表的 CHECK / UNIQUE。
+> - **加列** → `ALTER TABLE ADD COLUMN`（先 `PRAGMA table_info` 判存在）
+> - **改 CHECK / UNIQUE / 主键** → **幂等表重建**：建新表 → `INSERT SELECT` → `DROP 旧` → `ALTER RENAME`，必须包 `db.transaction()`
+> - 判别口诀：**只加列 → ALTER；碰约束 → 表重建。** 详见 AGENTS.md「DDL 变更判据」
 
 #### user_asset_rel（用户-标的关联）
 
@@ -1236,16 +1278,22 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 
 | 分类 | 错误码 | 触发场景 | HTTP |
 |------|--------|---------|------|
-| 参数校验 | `PARAM_INVALID` | 必填字段缺失、类型错误 | 400 |
+| 参数校验 | `PARAM_INVALID` | 必填字段缺失、类型错误（如 `trade_time` 格式非法、缺省） | 400 |
 | 参数校验 | `TRADE_REASON_REQUIRED` | buy/add/reduce/clear 操作理由为空 | 400 |
-| 业务校验 | `HOLDING_INSUFFICIENT` | 减仓/清仓数量 > 持仓 | 409 |
+| 业务校验 | `HOLDING_INSUFFICIENT` | 减仓/清仓数量 > **该时刻**持仓（时点校验，非全表累计） | 409 |
+| 业务校验 | `TRADE_DUPLICATE` | 同标的 + 同类型 + 同日期 + **同时刻**已存在一笔（见 §3.2 UNIQUE） | 409 |
 | 业务校验 | `DUPLICATE_IMPORT` | 除权自动导入幂等冲突 | 200（跳过）|
 | 业务校验 | `SYMBOL_NOT_FOUND` | 标的不在自选/持仓（手动补充除权）| 404 |
-| 权限 | `UNAUTHORIZED` | Token 无效或过期 | 401 |
+| 权限 | `UNAUTHORIZED` | Token 无效或过期（缺失 / 无效 / 过期**统一用此码**，不再区分 `NO_TOKEN` / `INVALID_TOKEN`）| 401 |
 | 权限 | `FORBIDDEN` | admin API 普通用户访问 | 403 |
 | 系统 | `INTERNAL_ERROR` | 数据库异常、插件异常等 | 500 |
 | 系统 | `DB_UNAVAILABLE` | SQLite 不可用（已降级到文件）| 503 |
 | 外部 | `EXTERNAL_SOURCE_UNAVAILABLE` | 东财/Tushare 校验源不可用 | 503（校验任务内部处理为 SKIP，不对外暴露）|
+
+> **✅ 已裁决（2026-10-17，DEC-12 B-9/B-10）**：本表为错误码**唯一权威**。
+> - `HOLDING_INSUFFICIENT` 统一为 **409**（§12.3 B1 原文写 400 系笔误，已同步修正）
+> - 新增 `TRADE_DUPLICATE`（§3.2 去重键落地所需）
+> - 统一响应 envelope 见 **§4.2**；**落地任务 T89a（Wave 1，加字段 + 错误码归一）/ T89b（Wave 8，删 `success`）**
 
 ### 4.4 核心 API 路由清单
 
@@ -1452,7 +1500,7 @@ systemctl status tdx2db.service --no-pager --lines=0
 
 **交易日判断兜底**：如果 DuckDB 里没有交易日历表，用 A 股规则硬编码（周末 + 法定节假日跳过）。
 
-**实现位置**：上述协调逻辑在 `apps/backend/src/routes/admin.ts` 里暴露一个手动触发端点 `POST /api/admin/datacheck`（同时也是 Fastify cron 内部调用的核心函数），方便运维手动补跑时复用同一套逻辑。
+[**实现位置**：管理员端点暴露在 `apps/backend/src/routes/admin.ts`，**端点名为 `POST /api/admin/datacheck/trigger`（§4.4 唯一权威命名）**，同时被 Fastify cron 复用；两者触发的是同一个编排逻辑，单独执行某段与批量执行的耗时口径相同。落地任务 **T90**（当前代码为 `/api/admin/run-datacheck`，待改名）。]
 
 ### 5.2 交易录入流程（含服务端校验）
 
@@ -1657,12 +1705,29 @@ export interface StrategyPlugin {
 | 规则 | 说明 |
 |------|------|
 | 内置插件库 | 打包在 `@invest/core` 包内；MVP 仅 `rsi` + `macd_cross`（默认启用） |
-| 用户自定义插件 | 放置在 `/opt/invest/plugins/strategies/`，**仅支持 .js**（require() 加载） |
+| 用户自定义插件 | 放置在 `/opt/invol/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
 | 故障隔离 | execute() 抛异常 → catch 后标记本轮跳过、记录 ERROR 日志、不影响其他插件和主流程 |
-| 超时保护 | execute() **硬限制 50ms**（Promise.race + reject）；超时标记 PLUGIN_TIMEOUT，跳过本轮 |
+| 超时保护 | execute() **硬限制 50ms**（Promise.race + reject）；超时标记 PLUGIN_TIMEOUT，跳过本轮。**⚠️ 口径见下方「50ms 计时边界」** |
 | 批量调度 | 同一标的的日线数据**一次查询、多插件共享**（避免 N 次 DuckDB 查询） |
+
+##### 50ms 计时边界（✅ 已裁决 2026-10-17，DEC-12 B-3）
+
+**50ms 只覆盖插件自身 `execute()` 的纯计算，不覆盖行情 IO。**
+
+| 计入 50ms | 不计入 50ms |
+|---|---|
+| `execute()` 内的指标计算与判断 | DuckDB 日线查询（`getDailyKlines` 等） |
+| | 批量取行情、构造 context |
+| | 信号序列化、落库 |
+
+**实现要求**：
+1. **先批量取好行情 → 构造 context → 再开始计时 → 调 `execute()`**。禁止把行情查询放进 `Promise.race` 的计时窗口内。
+2. 本节 `execute(dailyData, params)` 的签名本身已隐含该前提（数据是传入的，不是在 `execute` 内查的）。
+3. **沙盒安全约束不受影响**：插件内部死循环 / 阻塞仍必须被 `Promise.race` reject 并标记 `PLUGIN_TIMEOUT`（见 §12.3 P3）。**不得以「IO 不计时」为借口放宽超时保护。**
+
+> **实测依据（2026-10-17）**：现状 `POST /api/admin/datacheck/trigger` 的信号段返回 `{total:2, success:0, timeout:2}` —— 两个内置插件 **100% 超时**，`user_strategy_signal` **0 条**，导致 §12.5 F8「每日自动跑策略信号」与 PE6 双双不可达。**根因是行情查询被计入计时窗口**，故 RSI/MACD 实测 0.1~1ms 的计算也照样超时。落地任务 **T88**。
 
 #### MVP 内置插件清单
 
@@ -1769,7 +1834,7 @@ sequenceDiagram
 
 ### 5.7 C1-C12 数据校验引擎 SQL 模板
 
-> 本节提供 C1-C12 每条校验的**可直接执行的 DuckDB SQL 模板**，开发时原样使用。所有校验 SQL 封装在 `/opt/invest/backend/src/services/validator.ts` 中，由 §5.1 每日 5 段自动化流程的第 2 段（17:02）统一调度执行。
+> 本节提供 C1-C12 每条校验的**可直接执行的 DuckDB SQL 模板**，开发时原样使用。所有校验 SQL 封装在 `/opt/invol/backend/src/services/validator.ts` 中，由 §5.1 每日 5 段自动化流程的第 2 段（17:02）统一调度执行。
 
 **SQL 模板约定**：
 - 🔗 所有 DuckDB 表名/列名已锁定，以 [tdx2db_schema.md](../tdx2db_schema.md) 实测版本为准，**不再有 `【待确认 D2】` 占位**
@@ -1862,9 +1927,37 @@ FROM v_stock_qfq
 WHERE date = '{{TRADE_DATE}}'
   AND volume = 0;  -- 只检查推断停牌的股票
 
--- C4 退市标记一致性（类似 C3，通过 raw_symbol_name 推断是否退市，略）
--- C5 ST 标记一致性（略）
+-- C4 退市标记一致性
+-- 数据源：raw_symbol_name(symbol, name) —— 已确认存在（symbolSearch.ts:29 在用）
+-- ⚠️ 判定式须在实现时先 SELECT 实测取值分布再定，不得照抄本段注释硬编码
+--   候选判定信号：名称含「退」；代码段属退市整理板
+-- 四态：命中退市标记且仍在持仓/候选 → ERROR；仅名称含「退」→ WARN；表缺失 → SKIP（不得算 PASS）
+SELECT n.symbol, n.name,
+    CASE
+        WHEN n.name LIKE '%退%' THEN 'WARN'
+        ELSE 'PASS'
+    END AS result
+FROM raw_symbol_name n;
+
+-- C5 ST 标记一致性
+-- 数据源：raw_symbol_class.is_st
+-- ⚠️⚠️ raw_symbol_class 在现有代码中从未被引用过，字段名 is_st 仅来自本文档描述、未经代码验证。
+--    实现第一步必须 DESCRIBE raw_symbol_class 确认真实列名；若该表不存在 → 返回 SKIP 并登记偏差。
+-- 四态：is_st 与名称双向交叉（is_st=true 但名称无「ST」→ WARN；反之亦然 → WARN）；
+--      持仓/候选中的标的命中不一致 → ERROR；数据源缺失 → SKIP
+SELECT c.symbol, c.is_st, n.name,
+    CASE
+        WHEN c.is_st AND n.name NOT LIKE '%ST%' THEN 'WARN'  -- 上游不同步
+        WHEN NOT c.is_st AND n.name LIKE '%ST%' THEN 'WARN'
+        ELSE 'PASS'
+    END AS result
+FROM raw_symbol_class c
+JOIN raw_symbol_name n ON n.symbol = c.symbol;
 ```
+
+> ✅ **已裁决（2026-10-17，DEC-12 B-1）：C4 / C5 必须实现。**
+> 原文两行「（略）」占位导致 PRD D1「12 项校验」与 §6.2「C1-C10 通过率 ≥99.9%」**不可达** —— 代码实际只返回 **10 条**校验（`validator.ts` 的 `checkC3toC5` 一律返回 `checkId:'C3'`）。落地任务 **T85**。
+> **每条校验必须返回 PASS / WARN / ERROR / SKIP 四态**；数据源缺失一律 SKIP，**不得计为 PASS**。
 
 #### C6：前复权收盘价与原始收盘价 × 复权因子 差值 < 0.01
 
@@ -2072,7 +2165,7 @@ WHERE date = '{{TRADE_DATE}}';
 **函数签名**：
 
 ```typescript
-// /opt/invest/backend/src/utils/logger.ts
+// /opt/invol/backend/src/utils/logger.ts
 export async function writeSystemLog(
   level: "INFO" | "WARN" | "ERROR",
   log_type: "IMPORT" | "TRADE" | "PLUGIN" | "AUTO" | "ALERT",
@@ -2088,7 +2181,7 @@ flowchart TD
     A["调用方：writeSystemLog(level, log_type, message, detail)"] --> B["独立事务写 SQLite system_log 表"]
     B -->|INSERT 成功| C["返回 {status: 'sqlite'}"]
     B -->|better-sqlite3 抛异常| D{"SQLite 不可用？<br/>(SQLITE_FULL / SQLITE_LOCKED / SQLITE_CORRUPT / timeout)"}
-    D -->|是| E["降级写文件<br/>/opt/invest/logs/system_log_YYYY-MM-DD.log<br/>(JSON Lines, appendFileSync)"]
+    D -->|是| E["降级写文件<br/>/opt/invol/logs/system_log_YYYY-MM-DD.log<br/>(JSON Lines, appendFileSync)"]
     D -->|否：其他异常| F["console.error + 返回 failed"]
     E -->|写入成功| G["返回 {status: 'file', target: '...log'}"]
     E -->|文件也无法写入| H["console.error 最后兜底<br/>返回 {status: 'fallback'}"]
@@ -2099,7 +2192,7 @@ flowchart TD
 | 规则 | 说明 |
 |------|------|
 | 互斥写入 | SQLite 正常时**只写 SQLite**，不同时写文件；只有 SQLite 写失败才降级写文件。避免两边都写导致日志重复 |
-| 降级文件路径 | `/opt/invest/logs/system_log_YYYY-MM-DD.log`，每日滚动 |
+| 降级文件路径 | `/opt/invol/logs/system_log_YYYY-MM-DD.log`，每日滚动 |
 | 文件格式 | JSON Lines（每行一个完整 JSON 对象），用 Node.js `fs.appendFileSync`（同步，保证不丢失） |
 | 独立事务 | SQLite 写入必须 `BEGIN IMMEDIATE`（避免 WAL 模式下读写竞争），立即 commit，事务不与业务逻辑共享 |
 | SQLite 不可用判定 | better-sqlite3 抛出以下错误码之一：`SQLITE_FULL`（磁盘满）、`SQLITE_LOCKED`（锁超时）、`SQLITE_CORRUPT`（数据库损坏）、busy_timeout 耗尽 |
@@ -2109,7 +2202,7 @@ flowchart TD
 **降级文件写入示例**：
 
 ```json
-// /opt/invest/logs/system_log_2026-10-14.log 中的一行
+// /opt/invol/logs/system_log_2026-10-14.log 中的一行
 {
   "fallback": "sqlite_unavailable",
   "log_type": "PLUGIN",
@@ -2128,7 +2221,7 @@ flowchart TD
 | 场景 | 目标 | 实现方式 | 验证方法 |
 |------|------|---------|---------|
 | 首屏加载 | ≤ 1.5s | React + Vite 生产构建 gzip ≈ 150KB；K 线图按需加载 | Lighthouse Chrome DevTools |
-| K 线首渲染 | ≤ 500ms | klinecharts Canvas 绘制；前复权日线预计算缓存 | Chrome Performance Profiler |
+| K 线渲染 | ≤ 500ms | **自写 Canvas 渲染耗时**（Chrome Performance Profiler 实测） | Chrome Performance Profiler |
 | 选股 ≤ 3s | 5000+ 标的 | DuckDB OLAP 查询列式压缩；一次 IN 查询批量拿日线 | `time curl -X POST /api/stockscan` |
 | 信号生成 ≤ 20s | 50 插件 × 30 标的 | 一次批量日线加载 → 多插件共享；IN 查询 | 插入 system_log 记录前后时间戳 |
 | 行情更新 ≤ 120s | — | tdx2db 全量增量；HTTP 下载通达信日线包 | C8 校验 |
@@ -2249,11 +2342,11 @@ Type=simple
 User=nobody
 Group=nogroup
 Environment=NODE_ENV=production
-Environment=DB_PATH=/opt/invest/user.db
-Environment=DUCKDB_PATH=/opt/invest/quotes.duckdb
+Environment=DB_PATH=/opt/invol/user.db
+Environment=DUCKDB_PATH=/opt/invol/quotes.duckdb
 Environment=JWT_SECRET={{vault_or_env}}
-Environment=DATA_DIRECTORYS=/opt/invest/plugins/custom
-ExecStart=/usr/bin/node /opt/invest/dist/server.js
+Environment=DATA_DIRECTORYS=/opt/invol/plugins/custom
+ExecStart=/usr/bin/node /opt/invol/dist/server.js
 Restart=always
 RestartSec=5
 WatchdogSec=30
@@ -2549,6 +2642,17 @@ sequenceDiagram
 
 **CI 门槛**：PR 合入 main 分支前，核心算法层 + 插件引擎覆盖率 **不能低于 90%**，否则阻断合入。
 
+> ⏸️ **已裁决（2026-10-17，DEC-12 B-5）：本表门槛与上述 CI 90% Gate 暂时冻结。**
+>
+> **理由**：前端当前 **0 测试**（无 vitest/jsdom/testing-library），全仓无 ESLint 配置，
+> 无测试基建的情况下设 90% 硬 Gate 会导致 CI 从第一天起就红，且诱导为凑数字写无意义测试。
+>
+> **过渡期实际执行值**（见实施计划 §12.4 E3）：`frontend ≥ 60%`（当前 0）；
+> `backend 不低于当前基线`（即暂不设硬门槛）。
+>
+> **恢复义务**：由实施计划 **T86b**（Wave 8）负责 —— 测试存量到位后**必须把本表数值与 90% CI Gate 恢复**。在此之前，§12.6 的全局判定**不因覆盖率判 FAIL**。
+> ⚠️ 本条为**暂缓**而非取消；T86b 未完成前视为已登记偏差。
+
 ### 12.3 单元测试边界用例清单
 
 #### 核心算法层（测试重点）
@@ -2573,7 +2677,7 @@ sequenceDiagram
 
 | # | 业务规则 | 边界用例 | 预期结果 |
 |---|---------|---------|---------|
-| B1 | 交易录入 | quantity > 当前持仓（减仓）| HOLDING_INSUFFICIENT 400 + 表单禁用提交 |
+| B1 | 减仓/清仓 | quantity > **该时刻**持仓（按 `trade_date ASC, trade_time ASC, id ASC` 回放，停在目标交易之前；**禁止用全表累计量**，否则未来买入会支撑过去卖出）| `HOLDING_INSUFFICIENT` **409** + 中文 message |
 | B2 | 交易录入 | 操作理由必填（非空字符串）| 空字符串触发 TRADE_REASON_REQUIRED 400 |
 | B3 | 交易录入 | trade_type 不在 7 种枚举内 | CHECK 约束拦截，返回 400 |
 | B4 | 交易录入 | 同一日内同一 symbol 多次买入（幂等）| 不触发 UNIQUE 冲突，正常追加 |
@@ -2623,7 +2727,7 @@ sequenceDiagram
 #### API 集成测试目录结构
 
 ```
-/opt/invest/backend/tests/integration/
+/opt/invol/backend/tests/integration/
   ├── auth.test.ts          // POST /api/auth/login, POST /refresh, 401 自动续期
   ├── trade.test.ts         // POST /api/trade, GET /api/trade/list, DELETE /api/trade/:id
   ├── holding.test.ts       // GET /api/holding/current, GET /api/holding/history
@@ -2649,7 +2753,7 @@ sequenceDiagram
 #### 测试数据库策略
 
 ```typescript
-// /opt/invest/backend/tests/setup.ts
+// /opt/invol/backend/tests/setup.ts
 import { mkdtemp, rm } from "fs/promises";
 import path from "path";
 
@@ -2717,7 +2821,7 @@ afterEach(async () => {
 
 | # | 原始需求 §9 | 对应测试 Case | 通过标准 |
 |---|------------|--------------|---------|
-| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a /opt/invest/*.db` | 600 + owner=nobody:nogroup |
+| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a /opt/invol/*.db` | 600 + owner=nobody:nogroup |
 
 ### 12.6 CI/CD Pipeline 设计
 
@@ -2788,7 +2892,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_rsa deploy@invest-vm \
             "systemctl stop invest-assistant && \
-             rsync -avz --delete dist/ /opt/invest/dist/ && \
+             rsync -avz --delete dist/ /opt/invol/dist/ && \
              systemctl start invest-assistant && \
              sleep 2 && curl -sf http://localhost:3000/health || (systemctl status invest-assistant; exit 1)"
 ```
@@ -2806,7 +2910,7 @@ jobs:
 #### 测试目录结构总结
 
 ```
-/opt/invest/
+/opt/invol/
 ├── backend/
 │   ├── src/                 # 业务代码
 │   ├── tests/
