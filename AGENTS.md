@@ -1,10 +1,13 @@
 # AGENTS.md — 项目全局编码规则
-> 本项目严格依据 `docs/client/MVP_code_implementation_plan.md` 执行，所有开发任务以该文档为唯一真相源。
-> SDD基线文档：`docs/client/SDD.md`
-> 不要参考 `docs/web/` 目录下的任何文档。
+> 本项目严格依据 **`docs/client/code_implementation_plan_v2.md`** 执行，所有开发任务以该文档为唯一真相源。
+> **该文档含 §12.7「Wave 出口门槛（硬阻断）」—— 未过 gate 的 Wave，其 commit 一律不得合入 `main`（见本文「里程碑边界与 Wave Gate」）。**
+> SDD基线文档：`docs/client/SDD.md`；产品需求：`docs/client/PRD.md`；业务规则最高优先级：`docs/client/Requirements_simplified.md`
+> 真相源优先级（冲突时从高到低）：`Requirements_simplified` > `PRD` > `SDD` > 实施计划。
+> **`docs/client/MVP_code_implementation_plan.md` 已被 `code_implementation_plan_v2.md` 超越（Phase1-4 旧任务体系，T49-T94 已完全重写），禁止再作为执行依据。**
+> 不要参考 `docs/web/` 目录下的任何文档；`docs/archive/` 下均为已归档的过期文档。
 
 ## 🔒 锁定技术栈，禁止擅自修改
-1. Node版本 **≥22**；使用 systemd 管理普通 Node 进程；**禁止使用 Bun**。
+1. Node版本 **≥22**（当前实测 v25.8.1）；使用 systemd 管理普通 Node 进程；**禁止使用 Bun**。
 2. 桌面SQLite：**推荐 better-sqlite3**（同步 API，成熟稳定，原生预编译二进制覆盖 linux-x64 / linux-arm64 / win32-x64）；
    - 有 `db.transaction(fn)` 事务闭包，也可手动 `BEGIN / COMMIT / ROLLBACK`；
    - 有 `db.backup(path)` 热备份 API，也可手动 `PRAGMA wal_checkpoint(TRUNCATE)` + `VACUUM INTO`；
@@ -13,9 +16,13 @@
    ```jsonc
    {
      "workspaces": ["packages/*", "apps/*"],
-     "scripts": { "test": "vitest run", "test:coverage": "vitest run --coverage" }
+     // ⚠️ 实际脚本是分段带各自 config 的形式，不是裸 `vitest run`（改动时照抄实际，别照抄本注释）
+     "scripts": {
+       "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run --config packages/core/vitest.config.ts"
+     }
    }
    ```
+   > ⚠️ `singleFork=true` 是**故意的**：Fastify 多实例并行 listen 会 `EADDRINUSE`。改动前先读 §「测试分层与端口依赖」。
    **固定目录结构（禁止擅自新增/删除 workspace）**：
    - `packages/core` —— 核心复用层（ESM + CJS 双格式 + d.ts），**零业务依赖**，存放移动加权成本、RSI/MACD、插件接口契约等纯算法代码
    - `apps/backend` —— Fastify 后端（systemd 管理普通进程），**依赖 core**；包含 C1-C12 校验、插件引擎、API handler、备份 cron（@fastify/schedule，17:01-17:05）
@@ -128,18 +135,47 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 每个 smoke-mX.test.ts 实装完成后单独一条 commit
 - 禁止多个"半拉子改动"攒成一个大 commit
 
+**Wave Gate（2026-10-17 新增，硬阻断，优先于上面的 commit 约定）**：
+- 实施计划 **§12.7** 定义了 8 个 **Wave 出口门槛（G1-G8）**，判定只有 **PASS / FAIL（无 COND）**
+- **任一条 FAIL → 本波全部 commit 一律不得合入 `main`**
+- 结果必须落档 `docs/audit/wave-N-gate.md`（含逐条 PASS/FAIL/豁免 + **实测原始数据** + 本波 commit 区间）。**无落档文件 = 未执行 = FAIL**
+- **禁止「先合入再补 gate」** —— gate 文档的 commit 必须与本波 commit 同一个 PR
+- 标 🔒 的**数据正确性类门槛永久不可豁免**；其余门槛豁免须写明理由 + 指向 §9.3/§13 条目，**同一门槛最多豁免 1 个 Wave**
+- **回滚可行性依赖 commit 粒度**：因规定「每个 T 任务一条 commit」，一波内 commit 区间可整体 `git revert` 而不留半拉子改动 —— **这是 Gate 流程成立的前提，不可把多个 T 任务合并成一条 commit**
+- **T78 不是首次验收，是最终验收**。§12.6 的全局 PASS 前提是 G1-G8 全 PASS
+
 ## 🚫 Out‑Scope，绝对不要实现
 1. 分钟K线、分钟周期策略、盘中实时信号；
 2. 小程序端K线图表；
 3. 微信云托管CloudBase‑Run常驻服务；
 4. 实盘对接、交易下单；
 5. 小程序消息订阅推送（MVP不做）；
-6. schema_migrations迁移表，MVP不做数据库迁移机制，DDL使用 `CREATE TABLE IF NOT EXISTS`。
+6. **不做 `schema_migrations` 迁移表 / 迁移框架**，但**改已有表的约束必须用幂等表重建**，见下。
+
+### DDL 变更判据（2026-10-17 实测澄清，违反会导致 T49/T87 无法实现）
+
+`CREATE TABLE IF NOT EXISTS` **只对「表不存在」生效**；表已存在时它什么都不做，**无法改 CHECK / UNIQUE**。
+
+| 变更类型 | 可行手段 | 先例 |
+|---|---|---|
+| **加列** | `ALTER TABLE ... ADD COLUMN`（幂等：先 `PRAGMA table_info` 判存在） | `configStore.ts:180` `_ensureTradeRecordReviewColumns()` |
+| **改 CHECK / UNIQUE / 主键** | **幂等表重建**：`建新表 → INSERT SELECT → DROP 旧表 → ALTER RENAME` | `configStore.ts:164` `_ensureTradeRecordUniqueConstraint()`、`configStore.ts:167` `_ensureSystemLogCheckConstraint()` |
+
+> 根因（`configStore.ts:177` 注释原文）：**SQLite `ALTER TABLE ADD COLUMN` 不支持带 CHECK 之类的复杂约束，也不支持改 CHECK 值。**
+>
+> ⚠️ **绝对禁止「直接 DROP 旧表」** —— 必须先 `INSERT INTO 新 SELECT * FROM 旧` 再 DROP，且必须包在 `db.transaction()` 里。T49 / T87 都要改 `user_trade_record` 的 CHECK 与 UNIQUE，走的就是这条路径。
+>
+> ⚠️ 多个幂等重建若落在同一张表上（如 T49 改 CHECK + T87 改 UNIQUE），**合并为一次重建**，不要叠加多次 DROP/RENAME。
+>
+> 判别口诀：**只加列 → ALTER；碰约束 → 表重建。**
 
 ## 🔐 安全编码强制约束
-1. Tushare token、device凭证、绑定token禁止打印明文日志；禁止前端渲染明文token；token统一加密保存在桌面配置层单例。
-2. 减仓、清仓必须做持仓充足校验，业务错误码固定 `HOLDING_INSUFFICIENT`。
-3. 配置文件敏感字段做加密，配置文件存于`%APPDATA%/InvestAssistant/config.json`。
+1. Tushare token、device凭证、绑定token禁止打印明文日志；禁止前端渲染明文token。
+2. 减仓、清仓必须做持仓充足校验，业务错误码固定 `HOLDING_INSUFFICIENT`（**HTTP 409**，非 400）。
+3. **敏感配置的现状（2026-10-17 实测，勿按旧描述实施）**：
+   - **全仓不存在 `config.json`**，ConfigStore 实际是 `configStore.ts:141` 的 `process.env.SQLITE_DB_PATH ?? path.resolve('data','business.db')`。
+   - `TUSHARE_TOKEN` / `JWT_SECRET` **明文存于 `apps/backend/../.env.local`**（已被 `.gitignore` 忽略），由 `node --env-file` 加载。
+   - ⚠️ **不要以为 token 已加密，也不要为此新建 config.json 层** —— 那会与现有 `--env-file` 机制双轨并存。加密存储属**未实现的待办**，落地前须先登记并经所有者确认。
 
 ## 🧩 编码输出约定
 1. 实现任务前先阅读对应Txxx任务描述、开发要点、测试要点、卡点；
@@ -181,7 +217,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 3. SQL：全部使用预编译prepared statement，禁止字符串拼接SQL。
 4. 错误处理：业务异常使用结构化错误对象；原始异常必须捕获，不允许顶层裸throw泄露内部细节。
 5. 测试：
-   - 核心逻辑必须编写单元测试，使用 **Vitest 5.x**（前后端统一框架，复用 Vite config；coverage via @vitest/coverage-v8）；
+   - 核心逻辑必须编写单元测试，使用 **Vitest（版本与仓库实际对齐，当前 `^2.1.0`）**，前后端统一框架，复用 Vite config；coverage via @vitest/coverage-v8。
+     > ⚠️ **不要按旧文档升级到 Vitest 5.x** —— 实施计划 DEC-3 已裁决「暂不升级」，升版会导致 core/backend/frontend 三处配置分裂。`apps/frontend` 的测试基建由 T61 建立，届时三处必须同版本。；
    - 核心算法必须跑 golden 黄金数据集；
    - 数据库相关测试优先使用 `:memory:`内存数据库；
 6. 格式化：遵循项目 .eslintrc / .prettierrc，不要私自修改格式化规则。
@@ -198,8 +235,10 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 需求权威源 | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
 | PRD | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
 | SDD 设计文档 | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
-| MVP 实施计划 | `docs/client/MVP_code_implementation_plan.md` | 开发任务拆解（Txxx 任务 ID，Phase1-4 顺序）|
+| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T94，48 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差登记与所有者裁决 DEC-12** |
+| ~~旧实施计划~~ | `docs/client/MVP_code_implementation_plan.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系）|
 | 编码规范 | `docs/coding-standards.md` | 命名、类型、SQL、错误处理、测试规范 |
 | 编码规则摘要 | `AGENTS.md`（本文） | AI agent 行为规则 + 架构硬约束 + 禁止 Out-Scope |
-| 黄金测试数据集 | `packages/core/tests/fixtures/golden/` | 移动加权成本、RSI、MACD 双端一致性断言用 |
+| 黄金测试数据集 | `packages/core/tests/fixtures/golden/` | ⚠️ **目录存在但当前为空** —— 由 **T51** 填充（移动加权成本 5 场景 / RSI / MACD）。填之前「双端一致性断言」无载体可依 |
 | ADR 决策归档 | `docs/adr/` | 架构决策记录（当前为空，后续重要决策归档到这里）|
+| Wave Gate 落档 | `docs/audit/wave-N-gate.md` | 每波收尾必写；**无文件 = 未执行 = FAIL** |

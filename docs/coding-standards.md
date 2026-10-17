@@ -166,7 +166,8 @@ CI 覆盖率 Gate：packages/core 和 apps/backend 核心模块**行覆盖率 �
 │   │   ├─ Requirements_simplified.md    # 业务规则唯一真相源（WHAT，非 HOW）
 │   │   ├─ PRD.md                        # 用户视角产品需求
 │   │   ├─ SDD.md                        # 工程落地设计（已补全：技术选型、DDL、测试策略、CI/CD）
-│   │   └─ MVP_code_implementation_plan.md  # ⏳ 开发任务拆解（Txxx 任务 ID）— **待创建**
+│   │   └─ code_implementation_plan_v2.md # ⭐ 开发任务拆解（T49-T94，48 个任务，Wave 1-8；含 §12 Wave 出口门槛）
+│   ├─ archive/                           # 已归档的过期文档（禁止作为执行依据）
 │   ├─ web/                              # ❌ 已弃用，不要参考
 │   └─ adr/                              # 架构决策记录（当前为空，后续补）
 ├─ .trae/
