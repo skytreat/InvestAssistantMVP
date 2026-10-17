@@ -1,3 +1,18 @@
+> # ⚠️ 本文档已归档 — 内容已过期
+>
+> **归档日期**：2026-10-17　**原内容基准**：M3 收尾（commit `501e56b`）
+> **失效原因**：本文档停留在 M3，其「当前状态」描述已被大幅超越：
+> - 「239 tests 全 PASS」→ 实际 137(unit) + 58(integration) + 24(core)
+> - 「行情层正常」→ 2026-10-17 动态审计发现 **3 个 DuckDB 层 P0**（连接泄漏 / 并发互抢 / BigInt 序列化），静态审计全部漏判
+> - 「下一步 Phase 4 / T43-T48」→ 已被 `code_implementation_plan_v2.md` 的 **T49-T84（35 个任务）** 取代
+> - 「已知遗留 8 个缺陷」→ 实际 44 项 gap，其中 11 项 P0
+>
+> **当前权威文档**：[`docs/client/code_implementation_plan_v2.md`](../client/code_implementation_plan_v2.md)
+> **仍可参考的部分**：「顺带修复的 8 个历史缺陷」记录了 M3 当时的修复细节（DDL 补列 / 幂等 ALTER / K 线图移动端适配等）。
+>
+> **归档安全性**：已 grep 确认无任何文档引用本文档，移动到 `docs/archive/` 不会产生断链。
+
+---
 # Hand-over Notes — 2026-10-16（M3 收尾后）
 
 ## 当前状态
