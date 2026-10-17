@@ -7,7 +7,8 @@
 > ✅ **本文档自包含**：两份归档文档中**仍然有效**的内容已内联保全于 **附录 B-2**（Design Token 具体数值、按钮变体、全站内联颜色清单、a11y 明细、架构决策）。执行 T61-T79 **无需打开 `docs/archive/`**；archive 仅作审计历史留档。
 >
 > 📁 **`docs/HANDOVER.md` 已于 2026-10-17 归档**至 `docs/archive/HANDOVER_SUPERSEDED-2026-10-16.md`（内容停在 M3，且「239 tests / 行情层正常」已被本轮审计推翻）。该文件原本**无任何文档引用**，归档不产生断链。**接手本项目请以本文档为准。**
-> **与前序关系**：本文档是 `MVP_code_implementation_plan.md`（T1-T48）的**后续增量计划**，任务编号从 **T49** 起延续，不重排、不作废已完成的 T1-T48。
+> **与前序关系**：本文档是 `MVP_code_implementation_plan.md`（T1-T48，已归档至 `docs/archive/`）的**后续增量计划**，任务编号从 **T49** 起延续，不重排、不作废已完成的 T1-T48。
+> **决策归档**：已接受的技术决策、理由与代价记在 **`docs/adr/`**（8 份 ADR）。本文档只**引用**决策，不重复决策理由 —— 避免计划文档同时充当「计划」与「决策记录」。
 
 **真相源优先级**（不变）：
 
@@ -1146,6 +1147,20 @@ DEC-12(已定, §13.4) ──→ T85-T94
 
 ### 13.4 所有者裁决结果（2026-10-17）
 
+
+> 📌 **裁决的完整理由、代价与备选方案已归档至 `docs/adr/`**（2026-10-17 建立，8 份 ADR）。
+> 本节只保留**待办清单**（哪条判了什么、派给哪个任务、SDD 需不需要改），**不重复决策理由** ——
+> 避免计划文档同时充当「计划」与「决策记录」两种角色。索引见 `docs/adr/README.md`。
+
+> | 主题 | ADR |
+> |---|---|
+> | 技术选型（指标库 / 图表库 / 测试框架） | [ADR-001](../adr/ADR-001-frontend-backend-stack.md) |
+> | 响应封装与错误码契约 | [ADR-002](../adr/ADR-002-api-envelope-and-error-codes.md) |
+> | 交易记录去重语义 | [ADR-003](../adr/ADR-003-trade-dedup-semantics.md) |
+> | 数据校验完整性（C4/C5 + 测试映射） | [ADR-004](../adr/ADR-004-data-validation-integrity.md) |
+> | 插件契约 / 50ms 计时边界 / 热重载 | [ADR-005](../adr/ADR-005-plugin-contract-and-timeout.md) |
+> | 工程门槛暂缓与 Wave 验收分层 | [ADR-006](../adr/ADR-006-engineering-gates-and-wave-acceptance.md) |
+> | 路由契约与候选池迁移语义 | [ADR-007](../adr/ADR-007-route-contract-and-candidate-migration.md) |
 > 本节记录所有者对 §13.1 阻断项的**逐项裁决**。裁决即新约束，**优先于本计划此前的任何推断**。
 
 | # | 裁决 | 落地任务 | 对真相源的影响 |
