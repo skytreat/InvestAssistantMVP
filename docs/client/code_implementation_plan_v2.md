@@ -5,6 +5,8 @@
 > **取代**：`docs/audit/frontend-gap-audit-2026-10-16.md`（结论已失效，见 §2）、`docs/client/frontend_ux_v2.md`（部分结论已失效）
 >
 > ✅ **本文档自包含**：两份归档文档中**仍然有效**的内容已内联保全于 **附录 B-2**（Design Token 具体数值、按钮变体、全站内联颜色清单、a11y 明细、架构决策）。执行 T61-T79 **无需打开 `docs/archive/`**；archive 仅作审计历史留档。
+>
+> 📁 **`docs/HANDOVER.md` 已于 2026-10-17 归档**至 `docs/archive/HANDOVER_SUPERSEDED-2026-10-16.md`（内容停在 M3，且「239 tests / 行情层正常」已被本轮审计推翻）。该文件原本**无任何文档引用**，归档不产生断链。**接手本项目请以本文档为准。**
 > **与前序关系**：本文档是 `MVP_code_implementation_plan.md`（T1-T48）的**后续增量计划**，任务编号从 **T49** 起延续，不重排、不作废已完成的 T1-T48。
 
 **真相源优先级**（不变）：
