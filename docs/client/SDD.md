@@ -1144,16 +1144,35 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 
 **复权公式**：`qfq_factor = hfq_factor / latest_hfq`，其中 `latest_hfq = argmax(hfq_factor, date)` 全历史最新因子。前复权价 = `raw_price × qfq_factor`；后复权价 = `raw_price × hfq_factor`。
 
-**MVP 使用**：`v_stock_qfq` 高频读（插件引擎行情查询、C1-C10 校验）；`v_etf_qfq` 低频读（用户自选含 ETF 时）。其余 4 张视图 MVP 暂不访问。
+**MVP 使用**：`v_stock_qfq` / `v_etf_qfq` 高频读（插件引擎行情查询、C1-C10 校验、K 线默认前复权）；`v_stock_hfq` / `v_stock_bfq` 中频读（K 线路由的「后复权 / 不复权」切换，见下表 T53）；`v_etf_hfq` / `v_etf_bfq` 低频读（自选含 ETF 且用户切后复权/不复权时）。6 张视图 MVP 全部可访问，按 `raw_symbol_class.class` 路由（`stock` → `v_stock_*`，`etf` → `v_etf_*`）。
 
-#### ❌ MVP 完全不访问的表
+#### MVP 访问边界
+
+**✅ MVP 访问**
+
+| 表 | 消费方 | 关键列 |
+|---|---|---|
+| `v_stock_qfq` / `v_etf_qfq` | 插件引擎行情查询、C1-C10 校验、K 线路由 | 前复权 OHLCV |
+| `v_stock_hfq` / `v_stock_bfq` | K 线路由后复权/不复权切换（T53） | 后复权 OHLCV |
+| `raw_kline_daily` | C11 不复权价、K 线路由 `fq=raw` | `date`,`symbol`,OHLCV |
+| `raw_adjust_factor` | C9 复权因子校验 | `date`,`symbol`,`hfq_factor` |
+| `raw_basic_daily` | C11 `preclose`、C7 换手率、市值过滤（选股公共过滤 T55） | `date`,`symbol`,`preclose`,`turnover`,`floatmv`,`totalmv` |
+| `raw_holidays` | C1/C2 交易日判断 | `date` |
+| `raw_gbbq` | C8/C10 除权校验 + 除权自动导入（**仅 `category=1`**） | `category`,`symbol`,`date`,`c1`-`c4` |
+| `raw_symbol_class` | C3 ST 状态校验、选股 `asset_type`/`exclude_st` 过滤、ETF 视图路由 | `symbol`,`class`,`is_listing`,`is_st` |
+| **`raw_symbol_name`** | **标的搜索 `/api/symbols/search`（`routes/symbolSearch.ts:29`，已在用）；并供 C3 移动端可交易性校验（`services/validator.ts`）+ 选股/持仓/候选池展示证券名称（T55/T67/T73/T74）** | `symbol`,`name` |
+| **`raw_tdx_blocks_info` / `raw_tdx_blocks_member`** | **选股页「行业选择」公共过滤的数据源（T55，PRD §5.6）** | `block_code`,`block_name`,`block_type`,`symbol` |
+
+> **变更记录（2026-10-17）**：`raw_symbol_name` 与 `raw_tdx_blocks_*` 由「MVP 完全不访问」改为访问。
+> 原因：① 原标注与代码不符 —— `routes/symbolSearch.ts:29` 早已查询 `raw_symbol_name`，`services/validator.ts` C3 也已依赖它；② PRD §5.6 明文要求选股页提供「行业选择」过滤 + 结果表展示「标的代码 + 名称」，§5.3 要求持仓卡展示名称 —— 不放开这两张表则该需求无法实现。
+> 约束不变：Fastify 进程对 DuckDB **仍只有 SELECT 权限**，写入权仅 tdx2db 持有。
+
+**❌ MVP 完全不访问的表**
 
 | 表 | 原因 |
 |---|---|
 | `raw_kline_1min` | AGENTS.md 禁止分钟级策略和盘中信号 |
-| `raw_tdx_blocks_info` / `raw_tdx_blocks_member` | MVP 不做板块功能 |
 | `_meta` | tdx2db 内部版本信息 |
-| `raw_symbol_name` | MVP 暂不展示证券名称 |
 
 ### 3.4 SQLite 连接模式
 
