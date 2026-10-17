@@ -795,6 +795,31 @@ DEC-12(已定, §13.4) ──→ T85-T94
 
 ---
 
+
+### 11.9 本次审计的 14 项二次复核命令与结果
+
+> 记录可复现的复核命令，供后续 audit 时对照。**命令与结果均为 2026-10-17 实测**。
+
+| # | 复核项 | 命令 | 结果 |
+|---|--------|------|------|
+| 1 | positions 路由路径 | `Select-String trade.ts "\.(get|post|patch|delete)\("` | 8 条；`/api/positions`（:234）非 `/api/trades/positions` ✅ 确认 |
+| 2 | KDJ 全仓 | `Select-String -Pattern "kdj\|KDJ"` | **0** ✅ |
+| 3 | MA60 全仓 | `Select-String -Pattern "ma60\|MA60"` | **0** ✅ |
+| 4 | stockscan body 参数 | `Select-String -Pattern "body\."` | 4 条，仅 `plugin_id`/`plugin_name`/`params`/`min_amount`/`max_results` ✅ |
+| 5 | signals 筛选参数 | 读 `signal.ts:17-31` | 仅 3 个，无 `asset_code` ✅ |
+| 6 | auth 路由 | `Select-String -Pattern "\.(get|post)\("` | 仅 login + seed ✅ |
+| 7 | kline fq 分支 | `Select-String -Pattern "fq"` | `fq==='raw'?'raw_kline_daily':'v_stock_qfq'` ✅ 无 hfq/bfq |
+| 8 | NavLink | `Select-String -Pattern "NavLink"` | **0** ✅ |
+| 9 | 前端测试文件 | `Get-ChildItem -Include *.test.*,*.spec.*` | **0** ✅ |
+| 10 | trade_type CHECK | `Select-String -Pattern "trade_type IN"` | 3 处，均无 `'add'` ✅ |
+| 11 | candidate_base_price 写入 | `Select-String -Pattern "candidate_base_price\|candidate_reason\|migrated_price_mode"` | 仅 DDL 3 行，**0 写入** ✅ |
+| 12 | rel_type='hold' 写入 | `Select-String -Pattern "hold"` | 仅 DDL + `exDividendSync` 查询 + 无关 `HOLD` 方向 ✅ |
+| 13 | metrics_json 写入 | 读 `signalService.ts` INSERT | 8 列，无 `metrics_json`/`is_final` ✅ |
+| 14 | indicator 依赖 | 4 个 `package.json` grep `technicalindicators\|talib` + `node_modules` | **0** ✅ |
+
+
+---
+
 ## 12. 验收标准
 
 > 本章定义「什么算通过」。前面各章是「做什么」与「为什么」，此处是「做完如何判定合格」。
@@ -861,9 +886,9 @@ DEC-12(已定, §13.4) ──→ T85-T94
 
 | # | ux_v2 出处 | 项 | 门槛 | 落地任务 |
 |---|---|---|---|---|
-| U1 | §2.1 + 附录 B-2.1 | **Design Token 层**：`tokens.ts` 导出 COLORS/SPACING/RADIUS/TYPO/MAX_WIDTH；`.tsx` 中 raw hex 归零（token 文件除外） | P0 | T62 |
-| U2 | §2.2 + B-2.3 | 全站 14 个内联颜色收敛为 token | P0 | T62 |
-| U3 | §2.3 + B-2.2 | 按钮 5 变体（primary/danger/ghost/secondary/disabled）+ `focusRingStyle` | P1 | T62/T63 |
+| U1 | §2.1 + [ui-spec §1](ui-spec.md#1-design-token-具体数值) | **Design Token 层**：`tokens.ts` 导出 COLORS/SPACING/RADIUS/TYPO/MAX_WIDTH；`.tsx` 中 raw hex 归零（token 文件除外） | P0 | T62 |
+| U2 | §2.2 + [ui-spec §3](ui-spec.md#3-全站-14-类颜色清单) | 全站 14 个内联颜色收敛为 token | P0 | T62 |
+| U3 | §2.3 + [ui-spec §2](ui-spec.md#2-按钮规格) | 按钮 5 变体（primary/danger/ghost/secondary/disabled）+ `focusRingStyle` | P1 | T62/T63 |
 | U4 | §2.1 | **`global.css`** 存在且定义 `:focus-visible` / body 背景 / margin 重置（inline style 无法表达这些） | P0 | T62 |
 | U5 | §1.1 | **NavLink 激活态**：当前页有可见高亮（`aria-current` 或 active 样式） | P0 | T63 |
 | U6 | §1.2 | 导航按业务流程重排（仪表盘→交易→选股→K线→信号→复盘→候选池→设置→管理员） | P2 | T76 |
@@ -1271,153 +1296,22 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **F-Q14 业务数值误用错误色** | T62（token 语义分层）+ T67/T75 |
 | a11y 8 项 | T63 + T76 |
 
-## 附录 B-2：归档文档中「仍然有效」内容的保全清单
+## 附录 B-2：UI 设计规格（已归位）
 
-> 归档 ≠ 丢弃。`frontend_ux_v2` / `frontend-gap-audit` 两份文档中，下列内容在 `559d671` 之后**依然成立**（结论未被推翻、也未被本 plan 的 §3 覆盖），但它们**只存在于 `docs/archive/`**。若将来有人清理 archive，这些依据会丢失。
-> 因此在此**内联保全**，使本 plan 自包含 —— **执行 T61-T79 时不需要打开 archive**。
+> 本附录原为「归档文档中仍然有效内容的保全清单」共 128 行。
+> 因其内容**不是计划内容**（而是 UI 设计规格），且被 §12.3b 的 U1-U3 与 T62/T63/T67/T68/T76/T79 引用，
+> 已于 2026-10-17 **归位为独立文档** → **[`docs/client/ui-spec.md`](ui-spec.md)**。
+>
+> 归位原因：计划文档只回答「什么时候做什么」，不回答「长什么样」。
 
-### B-2.1 Design Token 具体数值（ux_v2 §2.4，建议直接落地）
-
-ux_v2 已完成全站颜色统计并给出建议 token 值，这是**唯一一份具体数值来源**，本 plan 的 T62 只写了「按建议值落地」而未内联数值。保全如下：
-
-```ts
-// apps/frontend/src/theme/tokens.ts —— T62 落地依据（数值来自 ux_v2 §2.4）
-export const COLORS = {
-  // Primary / Brand
-  brand: '#2563eb', brandLink: '#1e40af', brandBg: '#eff6ff',
-  // Semantic
-  success: '#16a34a',   // 盈利绿 / 系统导入绿
-  danger:  '#dc2626',   // 亏损红 / 删除 / ERROR
-  warning: '#d97706',   // WARN
-  info:    '#3b82f6',
-  neutral: '#6b7280',
-  // Text hierarchy
-  textPrimary: '#1f2937', textSecondary: '#4b5563',
-  textMuted: '#9ca3af',   textOnDark: '#e5e7eb',
-  // Backgrounds
-  pageBg: '#f8fafc', cardBg: '#ffffff', headerBg: '#f9fafb',
-  tableStripe: '#fafbfc', tableHover: '#f1f5f9',
-  // Borders
-  borderLight: '#e5e7eb', borderMedium: '#d1d5db', borderFocus: '#2563eb',
-  // Chart palette（Kline.tsx 专用）
-  chartBg: '#1a1a2e', chartGrid: '#2d2d44', chartText: '#888888',
-  candleUp:   '#ef4444',   // A 股红涨
-  candleDown: '#22c55e',   // A 股绿跌
-  ma5: '#fbbf24', ma10: '#60a5fa', ma20: '#c084fc',
-  macdBarPos: '#ef4444', macdBarNeg: '#22c55e',
-  rsiLine: '#a78bfa', difLine: '#60a5fa', deaLine: '#f59e0b',
-} as const;
-
-export const SPACING = {
-  pagePadding: '24px', cardPadding: '16px', cardMarginBottom: '24px',
-  formRowGap: '12px', formRowMarginBottom: '12px', labelMinWidth: '80px',
-  btnPadding: '6px 16px', inputPadding: '6px 10px', navPadding: '12px 16px',
-  gapTight: '4px', gapBase: '8px', gapRelaxed: '16px', gapLoose: '24px',
-} as const;
-
-export const RADIUS = { sm: '4px', base: '6px', md: '8px', lg: '12px' } as const;
-
-export const TYPO = {
-  fontFamily: '"Noto Sans SC", "PingFang SC", system-ui, -apple-system, sans-serif',
-  monoFamily: '"JetBrains Mono", "SF Mono", Consolas, monospace',
-  h1Size: '22px', h1Weight: '700',
-  h2Size: '18px', h2Weight: '600',
-  cardTitleSize: '16px', cardTitleWeight: '600',
-  bodySize: '14px', smallSize: '13px', captionSize: '11px',
-} as const;
-
-export const MAX_WIDTH = 1200;
-```
-
-**⚠️ 一处需修正的数值**：ux_v2 建议 `TYPO.h1Size: '22px'`，但现网 `titleStyle` 是 `24px`（`_shared.tsx`）。落地时**沿用 24px**（避免全站标题视觉突变），其余按上表。
-
-### B-2.2 按钮变体（ux_v2 §2.3 问题 2-3/2-5）
-
-```
-dangerButtonStyle   = { background: '#dc2626', color: '#fff' }
-ghostButtonStyle    = { background: 'transparent', color: '#2563eb', border: '1px solid #2563eb' }
-secondaryButtonStyle= { background: '#e5e7eb', color: '#374151' }
-buttonDisabledStyle = { background: '#9ca3af', color: '#fff', cursor: 'not-allowed' }
-focusRingStyle      = { outline: '2px solid #2563eb', outlineOffset: '2px' }
-```
-T62 已列前四项；`focusRingStyle` 归 T63。
-
-### B-2.3 全站内联颜色清单（ux_v2 §2.2，T62 的验收基准）
-
-这 14 个颜色当前在各页重复内联，T62 要求收敛为 token：
-
-| 颜色 | 出现次数 | 出现位置 | 映射到 |
-|---|---|---|---|
-| `#2563eb` | ~14 | `_shared:212`, Dashboard, Review, Kline, Settings | `COLORS.brand` |
-| `#16a34a` | ~20 | 盈利绿 | `COLORS.success` |
-| `#dc2626` | ~20 | 亏损红 | `COLORS.danger` |
-| `#6b7280` | ~25 | 次级文字 | `COLORS.neutral` |
-| `#e5e7eb` | 多处 | Card 边框 / 表格分隔线 | `COLORS.borderLight` |
-| `#d1d5db` | 多处 | 输入框边框 | `COLORS.borderMedium` |
-| `#f9fafb` | 表头 bg | — | `COLORS.headerBg` |
-| `#374151` | 表头文字 | — | `COLORS.textSecondary` |
-| `#1f2937` | cardTitle 文字 | — | `COLORS.textPrimary` |
-| `#1e40af` | 链接蓝 | — | `COLORS.brandLink` |
-| `#9ca3af` | 禁用灰 | Kline 加载按钮 | `COLORS.textMuted` |
-| `#eff3f6f`→实际 `#eff6ff` | hover 蓝 | TradeInput autocomplete、Review 选中 | `COLORS.brandBg` |
-| `#fee2e2` + `#fca5a5` | 选中红 | Review 止损三态选中 | 新增 `BG_SELECTED_DANGER` |
-| `#dbeafe` + `#93c5fd` | 选中蓝 | Review 策略三态选中 | 新增 `BG_SELECTED_PRIMARY` |
-| `#1a1a2e` | K线 canvas bg | — | `COLORS.chartBg` |
-| `#ef4444` / `#22c55e` | K线阳线/阴线 | **A 股红涨绿跌**，勿改反 | `COLORS.candleUp/candleDown` |
-
-> ⚠️ **`#fee2e2`/`#dbeafe` 两组在建议 token 表中原本缺失**，需 T62 补 `BG_SELECTED_DANGER` / `BG_SELECTED_PRIMARY`。
-
-### B-2.4 可访问性明细（ux_v2 §5，本 plan F-A11~F-A18 的原始依据）
-
-| 方面 | 现状 | 修复建议 |
+| 原小节 | 内容 | 现位置 |
 |---|---|---|
-| Focus 样式 | 完全缺失 | 全局 `:focus-visible`（走 `global.css`，inline style 表达不了） |
-| 表单 label | 无 `htmlFor` | 所有 input/select 加 `id` + `<label htmlFor>` |
-| 表格 scope | `<th>` 无 scope | 加 `scope="col"` |
-| 颜色对比度 | `#16a34a` 白字 4.5:1 临界；`#6b7280` 白底 4.6:1 临界 | 升级为 `#15803d` / `#c81e1e` / `#4b5563`（P2，可选） |
-| 语义标签 | 仅 2 个 `<nav>` | 引入 `<header>/<main>/<nav>/<footer>` |
-| aria-live | 缺失 | 动态内容区加 `aria-live="polite"` |
-| 焦点锁定 | Review 弹窗无 | Modal 打开时锁定焦点 |
+| B-2.1 | Design Token 具体数值 | `ui-spec.md` §1 |
+| [ui-spec §2](ui-spec.md#2-按钮规格) | 按钮规格（primary/danger/ghost/secondary/disabled）| `ui-spec.md` §2 |
+| [ui-spec §3](ui-spec.md#3-全站-14-类颜色清单) | 全站 14 类颜色清单 | `ui-spec.md` §3 |
+| B-2.4 | 移动端断点与布局切换 | `ui-spec.md` §4 |
+| B-2.5 | 布局宽度约束 | `ui-spec.md` §5 |
+| B-2.6 | gap-audit 补充约束 | `ui-spec.md` §6 |
 
-### B-2.5 架构决策（ux_v2 §8.3，仍然有效，勿推翻）
-
-1. **inline style 方案保留**，但必须引入 Token 常量层；**不急于切 CSS Module / Tailwind**（MVP 阶段保持简单）
-2. **允许引一个轻量 CSS 文件**（`global.css`）定义 `:focus-visible`、`body` 背景、`html/body` margin 重置 —— 这些 inline style 表达不了
-3. **不引图表库**：K 线继续手写 Canvas（ECharts/TradingView 在信号标记 overlay 上受限且增体积）；收益曲线用手写 SVG
-4. **TradeInput 实时预估算法在前端本地实现**（移动加权成本公式不复杂），无需打 API；与后端一致性由 golden 数据集在 CI 校验 —— ✅ **此条已由 DEC-1 落地**（前端直接用 `fast-technical-indicators`）
-5. **Dark mode 推迟**（PRD §5.8 #8 自带「MVP 可选」）
-
-### B-2.6 frontend-gap-audit 中仍然有效的部分
-
-| 内容 | 状态 |
-|---|---|
-| 「不变更的范围」表（移动端底部 Tab、桌面左侧导航、插件热重载、深色模式、收益曲线 SVG） | 移动端 Tab **已实现**；桌面左侧导航经 §10.3 裁决**按 PRD 执行**（T76）；其余归 V2 |
-| 「实施顺序方案 B」7 波划分 | ✅ 已被本 plan 的 8 Wave 取代，但**排序逻辑一致**（先打通后端查询链路 → 再补前端） |
-| 「工作量估算表」 | 8.5 人天 —— **严重低估**，本 plan §6 已给出修正对比 |
-| 后端前置依赖清单（8 项） | ✅ 已并入 §3，动态审计实证 8 项全部成立 |
-| Dashboard 建议 D「今日动态概览卡」 | ✅ 已补入 T67（**初稿遗漏的 P0**） |
-
----
-
-## 附录 B：本次审计的 14 项二次复核命令与结果
-
-| # | 复核项 | 命令 | 结果 |
-|---|--------|------|------|
-| 1 | positions 路由路径 | `Select-String trade.ts "\.(get|post|patch|delete)\("` | 8 条；`/api/positions`（:234）非 `/api/trades/positions` ✅ 确认 |
-| 2 | KDJ 全仓 | `Select-String -Pattern "kdj\|KDJ"` | **0** ✅ |
-| 3 | MA60 全仓 | `Select-String -Pattern "ma60\|MA60"` | **0** ✅ |
-| 4 | stockscan body 参数 | `Select-String -Pattern "body\."` | 4 条，仅 `plugin_id`/`plugin_name`/`params`/`min_amount`/`max_results` ✅ |
-| 5 | signals 筛选参数 | 读 `signal.ts:17-31` | 仅 3 个，无 `asset_code` ✅ |
-| 6 | auth 路由 | `Select-String -Pattern "\.(get|post)\("` | 仅 login + seed ✅ |
-| 7 | kline fq 分支 | `Select-String -Pattern "fq"` | `fq==='raw'?'raw_kline_daily':'v_stock_qfq'` ✅ 无 hfq/bfq |
-| 8 | NavLink | `Select-String -Pattern "NavLink"` | **0** ✅ |
-| 9 | 前端测试文件 | `Get-ChildItem -Include *.test.*,*.spec.*` | **0** ✅ |
-| 10 | trade_type CHECK | `Select-String -Pattern "trade_type IN"` | 3 处，均无 `'add'` ✅ |
-| 11 | candidate_base_price 写入 | `Select-String -Pattern "candidate_base_price\|candidate_reason\|migrated_price_mode"` | 仅 DDL 3 行，**0 写入** ✅ |
-| 12 | rel_type='hold' 写入 | `Select-String -Pattern "hold"` | 仅 DDL + `exDividendSync` 查询 + 无关 `HOLD` 方向 ✅ |
-| 13 | metrics_json 写入 | 读 `signalService.ts` INSERT | 8 列，无 `metrics_json`/`is_final` ✅ |
-| 14 | indicator 依赖 | 4 个 `package.json` grep `technicalindicators\|talib` + `node_modules` | **0** ✅ |
-
----
 
 > **文档结束**。执行前请先拍板 §9 的 DEC-1 / DEC-2 / DEC-3（三项均阻塞 Wave 1-2 开工）。
