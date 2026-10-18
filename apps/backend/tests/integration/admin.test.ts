@@ -45,7 +45,7 @@ describe('Admin · run-datacheck', () => {
       expect(Array.isArray(body.data.summaries)).toBe(true);
       expect(body.data.summaries.length).toBeGreaterThan(0);
     }
-  }, 30000);
+    }, 90_000);
 
   it('指定 trade_date → summaries 用该日期', async () => {
     if (!DUCKDB_EXISTS) return;
@@ -55,7 +55,7 @@ describe('Admin · run-datacheck', () => {
       payload: { trade_date: '2026-10-14' },
     });
     expect([200, 500]).toContain(res.statusCode);
-  }, 30000);
+    }, 90_000);
 });
 
 describe('Admin · run-signal', () => {

@@ -11,7 +11,7 @@
 //   ✅ system_log 至少有 datacheck + plugin_execute + dividend_import 三类日志
 //
 // 注意：
-//   - runAllChecks 返回 10 条（C4/C5 MVP 合并到 checkC3toC5，返回 checkId='C3'）
+  //   - runAllChecks 返回 12 项（C4/C5 已于 T85 补齐，此前只产出 10 个 checkId）
 //   - pluginEngine 直接调用写 plugin_execute logType，signal_generate 由 scheduler cron 产生
 //   - 不要 mock DuckDB——让真实 DuckDB 不可用，验证 gracefully catch 后仍写 system_log
 
@@ -78,15 +78,15 @@ afterAll(async () => {
 // M2 C1-C3,C6-C12 数据校验（DuckDB 不可用时每条 ERROR 也必须写 system_log）
 // ========================================================================
 describe('M2 C1-C12 数据校验', () => {
-  it('runAllChecks 返回 10 条 CheckSummary（C1/C2/C3/C6/C7/C8/C9/C10/C11/C12）', async () => {
+  it('runAllChecks 返回 12 项 CheckSummary（C1-C12 齐全，T85 补齐 C4/C5 后不再缺项）', async () => {
     const summaries = await runAllChecks(tradeDate);
-    // CHECKS 数组共 10 条：checkC1, checkC2, checkC3toC5, checkC6, checkC7, checkC8, checkC9, checkC10, checkC11, checkC12
-    expect(summaries).toHaveLength(10);
+    // T85 前：CHECKS 只注册 10 个函数，C4/C5 从未实现（见 plan §13.2 I-16）
+    expect(summaries).toHaveLength(12);
 
-    const validCheckIds = ['C1', 'C2', 'C3', 'C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12'];
+    const validCheckIds = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12'];
     const seenIds = new Set<string>();
     for (const s of summaries) {
-      // checkId 必须是合法的 C1/C2/C3/C6-C12（C4/C5 MVP 跳过，合并到 C3）
+      // checkId 不得越界或重复 —— T85 后 12 项齐全，C4/C5 各自独立
       expect(validCheckIds).toContain(s.checkId);
       expect(seenIds.has(s.checkId)).toBe(false);  // 无重复
       seenIds.add(s.checkId);
@@ -103,12 +103,12 @@ describe('M2 C1-C12 数据校验', () => {
 
     const rows = db.db
       .prepare(
-        "SELECT check_item, level, message FROM system_log WHERE log_type='datacheck' ORDER BY id DESC LIMIT 10"
+        "SELECT check_item, level, message FROM system_log WHERE log_type='datacheck' ORDER BY id DESC LIMIT 12"
       )
       .all() as { check_item: string; level: string; message: string }[];
 
     // 至少有若干条 datacheck 日志（DuckDB 不可用时每条 ERROR 也会写）
-    expect(rows.length).toBeGreaterThanOrEqual(10);
+    expect(rows.length).toBeGreaterThanOrEqual(12);
     // 每个 level 必须是合法值
     const validLevels = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
     for (const r of rows) {

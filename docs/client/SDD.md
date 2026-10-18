@@ -2011,43 +2011,66 @@ FROM <复权因子表>;
 ```sql
 -- C4 除权除息更新时间：最新除权日必须 ≥ 当日 - 7 天
 -- 数据源：raw_gbbq（已在 SDD §3.3 放行）
--- 注意：除权事件稀疏，「最新除权日 ≥ 当日-7天」在长假/淡季可能误报，
---       实现时需与交易日历联查确认该窗口内确有除权事件，否则应为 PASS
+-- ⚠️ 2026-10-17 T85 实测校正：初稿写的是 `raw_gbbq.ex_date`，**该列不存在**。
+--    DESCRIBE 实测 raw_gbbq = (category, symbol, date, c1, c2, c3, c4)，
+--    除权事件日期列是 **`date`**。
+-- 实测基准（2026-10-12 库）：MAX(date) = 2026-10-19，近 7 日 186 条事件
+-- ⚠️ 除权事件稀疏，「最新除权日 ≥ 当日-7天」在长假/淡季可能误报 ——
+--    故判定改为：窗口内**确有除权事件**即视为数据已更新到最新（见实现注释）
 
-SELECT MAX(ex_date) AS latest_ex_date,
+SELECT MAX(date) AS latest_ex_date,
     CASE
-        WHEN MAX(ex_date) >= '{{TRADE_DATE}}' - INTERVAL 7 DAY THEN 'PASS'
+        WHEN MAX(date) >= CAST(? AS DATE) - INTERVAL 7 DAY THEN 'PASS'
+        WHEN MAX(date) IS NULL THEN 'SKIP'
         ELSE 'WARN'
     END AS result
 FROM raw_gbbq;
 ```
 
-**失败处理**：`WARN` → 自动触发行情更新补跑。
+**失败处理**：`WARN` → 自动触发行情更新补跑；`SKIP`（无任何除权数据）→ 不阻塞。
 
 ---
 
 #### C5：板块 / 概念数据完整性
 
-```sql
--- C5 板块数据完整：总量相对前 7 日均值降幅 < 10%
--- 数据源：raw_tdx_blocks_member 或同类板块成分表（⚠️ 实现时须 DESCRIBE 确认表名与字段）
+> ⚠️ **2026-10-17 T85 实测结论：MCP 库中无板块成分数据，本项恒为 SKIP。**
+> `DESCRIBE raw_tdx_blocks_member` → `(stock_symbol, block_code)` —— **无 `date` 列**，
+> 因此「按日统计总量算降幅」在当前 schema 下**不可实现**；实测 `COUNT(*) = 0`（空表）。
+>
+> **替代口径（已实现）**：用 `raw_symbol_class.class` 做**分类完整性**校验 ——
+> 该表实测 `(symbol, class)`，分组计数相对前一交易日的降幅 < 10% 即视为完整。
+> 实测基准：`stock = 6158`（全库仅此一类，分类数恒为 1）。
+>
+> 若将来 tdx2db 补上板块成分的日期维度，切换回按日降幅口径。
 
-WITH today_cnt AS (SELECT COUNT(*) AS cnt FROM <板块成分表>),
-     hist_avg  AS (SELECT AVG(cnt) AS avg_cnt FROM (
-                     SELECT COUNT(*) AS cnt FROM <板块成分表>
-                     WHERE date >= '{{TRADE_DATE}}' - INTERVAL 7 DAY
-                       AND date <  '{{TRADE_DATE}}'
-                     GROUP BY date) h)
-SELECT t.cnt, h.avg_cnt,
+```sql
+-- C5 分类完整性（替代口径）：当日出现过的 class 集合，
+-- 与前一交易日相比，类别数降幅 < 10%
+WITH today_cnt AS (
+    SELECT COUNT(DISTINCT class) AS cnt
+    FROM raw_symbol_class c
+    WHERE EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = CAST(? AS DATE))
+),
+prev_day AS (
+    SELECT MAX(date) AS d FROM v_stock_qfq WHERE date < CAST(? AS DATE)
+),
+prev_cnt AS (
+    SELECT COUNT(DISTINCT class) AS cnt
+    FROM raw_symbol_class
+    WHERE EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = (SELECT d FROM prev_day))
+)
+SELECT t.cnt AS today_cnt, p.cnt AS prev_cnt,
     CASE
-        WHEN h.avg_cnt IS NULL OR h.avg_cnt = 0 THEN 'SKIP'
-        WHEN (h.avg_cnt - t.cnt) / h.avg_cnt < 0.10 THEN 'PASS'
+        WHEN t.cnt = 0 THEN 'SKIP'
+        WHEN p.cnt = 0 THEN 'SKIP'
+        WHEN (p.cnt - t.cnt) * 1.0 / p.cnt < 0.10 THEN 'PASS'
         ELSE 'WARN'
     END AS result
-FROM today_cnt t CROSS JOIN hist_avg h;
+FROM today_cnt t CROSS JOIN prev_cnt p;
 ```
 
-**失败处理**：`WARN` → 记录，人工确认（**不自动补跑** —— 板块数据缺失不靠重跑解决）。
+**失败处理**：`WARN` → 记录，人工确认（**不自动补跑** —— 分类/板块数据缺失不靠重跑解决）。
+`SKIP` → 前一交易日无数据（新库首日），不阻塞。
 
 ---
 
