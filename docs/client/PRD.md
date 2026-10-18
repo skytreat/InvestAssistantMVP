@@ -284,7 +284,7 @@
 | 5 | 页面切换无全量刷新（现代 Web 应用体验） |
 | 6 | 移动端底部 Tab 栏：持仓 / K线 / 选股 / 复盘 / 设置 |
 | 7 | 桌面端左侧导航栏：持仓 / K线 / 选股 / 复盘 / 候选池 / 设置 |
-| 8 | 暗色模式支持（MVP 可选） |
+| 8 | 暗色模式支持 —— ❌ **MVP 不做**（✅ 已裁决 2026-10-17 B-17=A）。PRD 标「MVP 可选」故未列入 MVP 交付，实施计划 §8 判 V2；此处对齐以免被误读为 MVP 范围 |
 | 9 | 错误提示友好：区分「网络错误」「数据问题」「业务校验失败」，并给出操作建议 |
 | 10 | 无障碍：Tab 导航完整、表单 label 关联、错误 field 高亮 |
 
@@ -348,7 +348,7 @@
 
 ## 7. MVP 迭代顺序（价值驱动）
 
-Phase 边界原则：**每 Phase 交付一个可运行的独立闭环**，Phase 之间线性依赖，不抢跑。各 Phase 详细交付物清单参见同目录下 [Requirements_simplified.md 第 9 节](file:///d:/workspace/InvestAssistantMVP/docs/Requirements_simplified.md#9-mvp-迭代规划4-phase每-phase-交付可运行闭环)。
+Phase 边界原则：**每 Phase 交付一个可运行的独立闭环**，Phase 之间线性依赖，不抢跑。各 Phase 详细交付物清单参见同目录下 [Requirements_simplified.md 第 9 节](Requirements_simplified.md#9-mvp-迭代规划4-phase每-phase-交付可运行闭环)。
 
 ### Phase 1：空壳底座
 
@@ -418,8 +418,12 @@ Phase 边界原则：**每 Phase 交付一个可运行的独立闭环**，Phase 
 | 除权除息（gbbq） | 公司分红、送股、转增等导致股权变动的事件 |
 | 策略插件 | 实现了统一接口的独立计算模块，接收日线序列，输出信号 |
 | 候选跟踪池 | 独立于自选的跟踪列表，用于评估选股策略胜率 |
-| STO 状态 | 连续亏损上市公司的特别处理（Special Treatment） |
+| ST 状态 | 连续亏损上市公司的特别处理（Special Treatment） |
 
 ---
 
-> **注意**：本文档的业务规则细节（7 种交易类型处理、移动加权成本公式、双口径收益计算、12 项数据校验的具体检查项等）均收录在同目录下的 [Requirements_simplified.md](file:///d:/workspace/InvestAssistantMVP/docs/Requirements_simplified.md) 中。PRD 关注「用户体验」，Requirements 关注「规则精确性」。
+> **注意**：本文档的业务规则细节（7 种交易类型处理、移动加权成本公式、双口径收益计算、12 项数据校验的**具体检查项**等）均收录在同目录下的 [Requirements_simplified.md](Requirements_simplified.md) 中。PRD 关注「用户体验」，Requirements 关注「规则精确性」。
+>
+> ⚠️ **层级边界**（2026-10-17 确立）：PRD 只定义**用户可见的体验与交互**。业务规则归
+> `Requirements_simplified.md`，技术契约（API / DDL / 12 项校验的具体检查项 / 性能门槛）归
+> `SDD.md`。**其他层只能引用，不在本文件定义** —— 详见 AGENTS.md「文档分层与层界规则」。

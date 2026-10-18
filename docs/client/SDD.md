@@ -1834,7 +1834,21 @@ sequenceDiagram
 
 ### 5.7 C1-C12 数据校验引擎 SQL 模板
 
-> 本节提供 C1-C12 每条校验的**可直接执行的 DuckDB SQL 模板**，开发时原样使用。所有校验 SQL 封装在 `/opt/invol/backend/src/services/validator.ts` 中，由 §5.1 每日 5 段自动化流程的第 2 段（17:02）统一调度执行。
+> **✅ 已修订（2026-10-17，DEC-13 / B-14 裁决=A）—— 本节的 C 编号与定义现以
+> `Requirements_simplified.md` §7 为唯一权威。**
+>
+> **修订原因**：初稿本节的 C3-C8 定义为「数据内容校验」（停牌/退市/ST/价差/成交量/滞后），
+> 与 Requirements §7.1 的「数据新鲜度」校验**完全不同**，而 PRD §6.4 亦写明
+> 「行情更新执行时长 ≤ 120s \| 内部校验 C8 监控」—— 即 **PRD + Requirements 两层**
+> 都站在新鲜度口径上。初稿的 6 条内容校验未被删除，已移至本节末「📎 扩展校验」，
+> **不占用 C 编号、不计入 12 项主表**。
+>
+> **各层职责（层界规则）**：Requirements §7 规定**「要检什么」**（业务要求），
+> 本节规定**「怎么检」**（SQL 实现）。二者不重复定义。
+>
+> **落地任务见实施计划 T85** —— ⚠️ 代码当前实现的是「扩展校验」那套，与主表口径不一致。
+
+> 本节提供 C1-C12 每条校验的**可直接执行的 DuckDB SQL 模板**，开发时原样使用。所有校验 SQL 封装在 `/opt/invol/backend/src/services/validator.ts` 中，由 §5.1 每日 5 段自动化流程的第 2 段（17:01）统一调度执行。
 
 **SQL 模板约定**：
 - 🔗 所有 DuckDB 表名/列名已锁定，以 [tdx2db_schema.md](../tdx2db_schema.md) 实测版本为准，**不再有 `【待确认 D2】` 占位**
@@ -1854,38 +1868,31 @@ sequenceDiagram
 
 #### C1：当日日线行数是否正常
 
+> **✅ 已对齐 Requirements §7.1 C1**：判定式为「当日标的数 ≥ 3000（正常 5000+）」，失败级别 **ERROR**。
+> 初稿本节曾用「偏离全市场平均行数 ±10% 为 WARN」，已按 Requirements 修正。
+
 ```sql
--- C1 当日日线行数正常
--- 容差：偏离全市场平均行数的 ±10% 为 WARN，否则 ERROR
+-- C1 当日日线行数正常（Requirements §7.1 C1）
+-- 判定式：当日标的数 ≥ 3000 → PASS；>0 但 <3000 → WARN；=0 → ERROR
+-- 容差常量 3000 与 Requirements §7.1 C1 一致，调整需同步改 Requirements
 -- tdx2db 实际 schema：v_stock_qfq, 日期列名一律 date（非 trade_date）
 
 WITH today_counts AS (
     SELECT COUNT(*) AS cnt
     FROM v_stock_qfq
     WHERE date = '{{TRADE_DATE}}'
-),
-avg_history AS (
-    SELECT AVG(cnt) * 0.9 AS lower_bound, AVG(cnt) * 1.1 AS upper_bound
-    FROM (
-        SELECT date, COUNT(*) AS cnt
-        FROM v_stock_qfq
-        WHERE date >= '{{TRADE_DATE}}' - INTERVAL 30 DAY
-          AND date < '{{TRADE_DATE}}'
-          AND date IN (SELECT date FROM raw_holidays)   -- raw_holidays 只有交易日
-        GROUP BY date
-    ) hist
 )
 SELECT
     tc.cnt AS actual_count,
-    ah.lower_bound,
-    ah.upper_bound,
     CASE
-        WHEN tc.cnt BETWEEN ah.lower_bound AND ah.upper_bound THEN 'PASS'
-        WHEN tc.cnt > 0 THEN 'WARN'
-        ELSE 'ERROR'
+        WHEN tc.cnt >= 3000 THEN 'PASS'
+        WHEN tc.cnt > 0      THEN 'WARN'   -- 有数据但明显偏少
+        ELSE 'ERROR'                        -- 当日完全无数据
     END AS result
-FROM today_counts tc CROSS JOIN avg_history ah;
+FROM today_counts tc;
 ```
+
+**失败处理**：`ERROR` → 自动触发行情更新补跑（Requirements §7.1）。
 
 #### C2：交易日历匹配
 
@@ -1909,141 +1916,150 @@ SELECT
     END AS result;
 ```
 
-#### C3-C5：停牌日 / 退市标记 / ST 状态一致性
+#### C3：复权因子数据新鲜度
+
+> 口径来源：`Requirements_simplified.md` §7.1 C3 —— **数据新鲜度类校验**（问的是「更新成功了吗」，不是「数值对不对」）。
 
 ```sql
--- C3 停牌日停牌标记一致性
--- 停牌股票：当日日线 volume = 0 且 close = prev_close
--- 注意：tdx2db schema 里没有 raw_pause_suspension 表
--- 停牌标记通过 volume=0 自动推断
+-- C3 复权因子更新时间：最新日期必须 = 当日
+-- 数据源待实现时探测：tdx2db schema 中复权因子表的 date 列（初稿曾假设 raw_hfq_factor，
+-- ⚠️ 该表名未经代码验证，实现第一步必须 DESCRIBE 确认）
+-- 四态：PASS / WARN / ERROR / SKIP；数据源缺失返回 SKIP，不得计为 PASS
 
-SELECT symbol, date,
+SELECT MAX(date) AS latest_factor_date,
     CASE
-        WHEN volume = 0 AND close = LAG(close) OVER (PARTITION BY symbol ORDER BY date) THEN 'PASS'
-        WHEN volume > 0 THEN 'WARN'  -- 推断停牌但有成交量
-        ELSE 'ERROR'
+        WHEN MAX(date) = '{{TRADE_DATE}}' THEN 'PASS'
+        ELSE 'WARN'   -- 因子滞后 → 自动触发行情更新补跑
     END AS result
-FROM v_stock_qfq
-WHERE date = '{{TRADE_DATE}}'
-  AND volume = 0;  -- 只检查推断停牌的股票
-
--- C4 退市标记一致性
--- 数据源：raw_symbol_name(symbol, name) —— 已确认存在（symbolSearch.ts:29 在用）
--- ⚠️ 判定式须在实现时先 SELECT 实测取值分布再定，不得照抄本段注释硬编码
---   候选判定信号：名称含「退」；代码段属退市整理板
--- 四态：命中退市标记且仍在持仓/候选 → ERROR；仅名称含「退」→ WARN；表缺失 → SKIP（不得算 PASS）
-SELECT n.symbol, n.name,
-    CASE
-        WHEN n.name LIKE '%退%' THEN 'WARN'
-        ELSE 'PASS'
-    END AS result
-FROM raw_symbol_name n;
-
--- C5 ST 标记一致性
--- 数据源：raw_symbol_class.is_st
--- ⚠️⚠️ raw_symbol_class 在现有代码中从未被引用过，字段名 is_st 仅来自本文档描述、未经代码验证。
---    实现第一步必须 DESCRIBE raw_symbol_class 确认真实列名；若该表不存在 → 返回 SKIP 并登记偏差。
--- 四态：is_st 与名称双向交叉（is_st=true 但名称无「ST」→ WARN；反之亦然 → WARN）；
---      持仓/候选中的标的命中不一致 → ERROR；数据源缺失 → SKIP
-SELECT c.symbol, c.is_st, n.name,
-    CASE
-        WHEN c.is_st AND n.name NOT LIKE '%ST%' THEN 'WARN'  -- 上游不同步
-        WHEN NOT c.is_st AND n.name LIKE '%ST%' THEN 'WARN'
-        ELSE 'PASS'
-    END AS result
-FROM raw_symbol_class c
-JOIN raw_symbol_name n ON n.symbol = c.symbol;
+FROM <复权因子表>;
 ```
 
-> ✅ **已裁决（2026-10-17，DEC-12 B-1）：C4 / C5 必须实现。**
-> 原文两行「（略）」占位导致 PRD D1「12 项校验」与 §6.2「C1-C10 通过率 ≥99.9%」**不可达** —— 代码实际只返回 **10 条**校验（`validator.ts` 的 `checkC3toC5` 一律返回 `checkId:'C3'`）。落地任务 **T85**。
-> **每条校验必须返回 PASS / WARN / ERROR / SKIP 四态**；数据源缺失一律 SKIP，**不得计为 PASS**。
+**失败处理**：`WARN` → 自动触发行情更新补跑。
 
-#### C6：前复权收盘价与原始收盘价 × 复权因子 差值 < 0.01
+---
+
+#### C4：除权除息数据新鲜度
 
 ```sql
--- C6 前复权因子一致性校验
--- 验证 v_stock_qfq.close = round(raw_kline_daily.close * hfq_factor / latest_hfq, 2)
--- v_stock_qfq 内置 qfq_factor = hfq_factor / latest_hfq，所以等价于 close = round(raw.close * qfq_factor, 2)
--- 抽样 50 只，容差 < 0.01 元
+-- C4 除权除息更新时间：最新除权日必须 ≥ 当日 - 7 天
+-- 数据源：raw_gbbq（已在 SDD §3.3 放行）
+-- 注意：除权事件稀疏，「最新除权日 ≥ 当日-7天」在长假/淡季可能误报，
+--       实现时需与交易日历联查确认该窗口内确有除权事件，否则应为 PASS
 
-WITH sampled AS (
-    SELECT UNNEST(ARRAY_AGG(symbol ORDER BY random() LIMIT 50)) AS symbol
-    FROM v_stock_qfq
-    WHERE date = '{{TRADE_DATE}}'
-)
-SELECT v.symbol,
-       v.close AS qfq_close,
-       ROUND(rk.close * v.qfq_factor, 2) AS raw_close_times_factor,
-       ABS(v.close - ROUND(rk.close * v.qfq_factor, 2)) AS diff,
-       CASE
-           WHEN ABS(v.close - ROUND(rk.close * v.qfq_factor, 2)) < 0.01 THEN 'PASS'
-           ELSE 'WARN'
-       END AS result
-FROM sampled s
-JOIN v_stock_qfq v ON s.symbol = v.symbol AND v.date = '{{TRADE_DATE}}'
-JOIN raw_kline_daily rk ON s.symbol = rk.symbol AND rk.date = '{{TRADE_DATE}}';
+SELECT MAX(ex_date) AS latest_ex_date,
+    CASE
+        WHEN MAX(ex_date) >= '{{TRADE_DATE}}' - INTERVAL 7 DAY THEN 'PASS'
+        ELSE 'WARN'
+    END AS result
+FROM raw_gbbq;
 ```
 
-#### C7：成交量/成交额 异常值（零成交或极端值）
+**失败处理**：`WARN` → 自动触发行情更新补跑。
+
+---
+
+#### C5：板块 / 概念数据完整性
 
 ```sql
--- C7 成交量异常
--- 零成交量 → 停牌，需要 C3 配合验证是否合理
--- 极端成交量（> 200 倍 30 日均量）→ WARN
+-- C5 板块数据完整：总量相对前 7 日均值降幅 < 10%
+-- 数据源：raw_tdx_blocks_member 或同类板块成分表（⚠️ 实现时须 DESCRIBE 确认表名与字段）
 
-WITH recent AS (
-    SELECT symbol, date, volume,
-        AVG(volume) OVER (
-            PARTITION BY symbol
-            ORDER BY date
-            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
-        ) AS avg_30d
-    FROM v_stock_qfq
-    WHERE date BETWEEN '{{TRADE_DATE}}' - INTERVAL 30 DAY AND '{{TRADE_DATE}}'
-)
-SELECT symbol, date, volume, avg_30d,
+WITH today_cnt AS (SELECT COUNT(*) AS cnt FROM <板块成分表>),
+     hist_avg  AS (SELECT AVG(cnt) AS avg_cnt FROM (
+                     SELECT COUNT(*) AS cnt FROM <板块成分表>
+                     WHERE date >= '{{TRADE_DATE}}' - INTERVAL 7 DAY
+                       AND date <  '{{TRADE_DATE}}'
+                     GROUP BY date) h)
+SELECT t.cnt, h.avg_cnt,
     CASE
-        WHEN volume = 0 THEN 'WARN_SUSPICIOUS'
-        WHEN avg_30d > 0 AND volume > 200 * avg_30d THEN 'WARN_EXTREME'
+        WHEN h.avg_cnt IS NULL OR h.avg_cnt = 0 THEN 'SKIP'
+        WHEN (h.avg_cnt - t.cnt) / h.avg_cnt < 0.10 THEN 'PASS'
+        ELSE 'WARN'
+    END AS result
+FROM today_cnt t CROSS JOIN hist_avg h;
+```
+
+**失败处理**：`WARN` → 记录，人工确认（**不自动补跑** —— 板块数据缺失不靠重跑解决）。
+
+---
+
+#### C6：市值数据存在性
+
+```sql
+-- C6 市值数据存在：当日有市值字段的标的数 ≥ 3000
+-- 数据源：raw_basic_daily（已在 SDD §3.3 放行），市值列名待实现时探测
+
+SELECT COUNT(*) AS cnt,
+    CASE
+        WHEN COUNT(*) >= 3000 THEN 'PASS'
+        ELSE 'WARN'
+    END AS result
+FROM <市值表>
+WHERE date = '{{TRADE_DATE}}' AND <市值列> IS NOT NULL;
+```
+
+**失败处理**：`WARN` → 自动触发行情更新补跑。
+
+---
+
+#### C7：日线价格合理性
+
+```sql
+-- C7 日线价格合理性：收盘价 ≠ 0 且 开盘价 ≤ 收盘价 × 2
+-- 数据源：raw_kline_daily（不复权原始价）
+
+SELECT symbol, open, close,
+    CASE
+        WHEN close = 0 THEN 'WARN'
+        WHEN open > close * 2 THEN 'WARN'
         ELSE 'PASS'
     END AS result
-FROM recent
+FROM raw_kline_daily
 WHERE date = '{{TRADE_DATE}}';
 ```
 
-#### C8：除权除息事件与行情跳变交叉验证
+**失败处理**：`WARN` → 记录异常标的（**不自动补跑**）。
+
+---
+
+#### C8：行情更新执行时长
 
 ```sql
--- C8 除权日价格跳变率 ≈ raw_gbbq 现金分红 + 送转比例
--- raw_gbbq(category=1): date=ex_date, c1=每10股分红, c2=0, c3=每10股送转, c4=0
--- 理论跳变率 ≈ (c1/10)/prev_close - (c3/10)
--- 容差 0.5%
+-- C8 行情更新执行时长 ≤ 120s
+-- ⚠️ 本项不查 DuckDB，而是读本次行情更新的耗时记录（system_log 的行情更新条目时间戳差）
+-- ⚠️ PRD §6.4 与 Requirements §7.1 C8 均明确定义本项为「时长检查」——
+--    这是本轮修订中编号含义变化最大的一条（初稿 SDD 曾定义为「复权信息滞后」）
 
-WITH raw AS (
-    SELECT v.symbol,
-           g.c1 / 10.0 AS cash_per_share,        -- category=1, c1=每10股分红
-           g.c3 / 10.0 AS stock_transfer_ratio,  -- category=1, c3=每10股送转
-           prev.close AS prev_close,
-           v.close AS ex_close,
-           (prev.close - v.close) / prev.close AS actual_drop,
-           (g.c1 / 10.0 / prev.close) - (g.c3 / 10.0) / (1 + g.c3 / 10.0) AS theoretical_drop
-    FROM v_stock_qfq v
-    JOIN raw_gbbq g ON v.symbol = g.symbol
-      AND g.date = '{{TRADE_DATE}}'
-      AND g.category = 1
-    JOIN v_stock_qfq prev ON v.symbol = prev.symbol
-      AND prev.date = '{{TRADE_DATE}}' - INTERVAL 1 DAY
-    WHERE v.date = '{{TRADE_DATE}}'
-)
-SELECT symbol, actual_drop, theoretical_drop,
-    CASE
-        WHEN ABS(actual_drop - theoretical_drop) < 0.005 THEN 'PASS'
-        ELSE 'WARN'
-    END AS result
-FROM raw;
+-- 判定式（伪 SQL，实际由 validator 读 system_log 起止时间戳计算）：
+--   duration_seconds = 行情更新结束时间 - 开始时间
+--   CASE WHEN duration_seconds <= 120 THEN 'PASS' ELSE 'WARN' END
 ```
 
+**失败处理**：`WARN` → 记录（PRD §6.4 注明「过长会影响后续步骤启动」）。
+
+---
+
+#### 📎 扩展校验（**不计入 12 项主表**）
+
+> **本小节是 2026-07 前的历史设计**（见 `docs/adr/` 与 Git 历史）。这些检查**确有价值**，
+> 但与 `Requirements_simplified.md` §7.1 的 C3-C8 定义**冲突**，且 PRD D1 明确要求
+> 「**12 项**校验」这一固定数量。**已裁决（2026-10-17）：它们不占用 C 编号、不计入 12 项主表。**
+>
+> **当前状态**：代码 `validator.ts` 实际实现的是**本小节这套**（C3 停牌 / C4 退市 / C5 ST /
+> C6 价差 / C7 成交量 / C8 滞后），与上面的主表口径**不一致**。落地任务见实施计划 T85。
+
+| 原编号 | 原定义 | 与主表的关系 | 处置建议 |
+|---|---|---|---|
+| C3 | 停牌日标记一致性 | 停牌推理（Requirements §5.6）仍需要，但归 F10 详情而非主表 | 保留，移出主表 |
+| C4 | 退市标记一致性 | **主表 C4 已改为「除权除息新鲜度」** | 保留，移出主表 |
+| C5 | ST 状态一致性 | **主表 C5 已改为「板块数据完整」** | 保留，移出主表 |
+| C6 | 前复权 vs 原始收盘价差值 < 0.01 | 与 C9「复权因子数学一致性」重叠 | 建议合并进 C9 |
+| C7 | 成交量/成交额异常值 | 独立价值 | 保留，移出主表 |
+| C8 | 复权信息/股本变迁数据滞后 | **主表 C8 已改为「执行时长」** | 保留，移出主表 |
+
+> ⚠️ **这六项的实现 SQL 见 Git 历史**（本轮修订前的 §5.7）。若确定保留，需由后续任务
+> 从 Git 恢复并重新核对表名 —— **不得直接沿用**，因为其中的表名假设（如 `raw_hfq_factor`）
+> 从未经代码验证。
 #### C9：复权因子抽样数学一致性
 
 ```sql
@@ -2117,7 +2133,7 @@ WHERE rk.date = '{{TRADE_DATE}}';
 | **抽样策略** | 随机 30 只（Tushare Free 每日限额）；优先覆盖用户自选和持仓 |
 | **容差** | 价格字段 < 0.01 元；volume/amount 精确一致 |
 | **SKIP 条件** | Tushare 429/503/token 无效 → 整项 SKIP |
-| **判定** | 30 只全 PASS → PASS；≤ 2 只偏差 → WARN；≥ 3 只 → ERROR |
+| **阈值** | 30 只 · PASS | **PRD §6.2 权威**：容差内差异 **≤3/30 → WARN，>3 → ERROR**（✅ 已裁决 2026-10-17 I-8「以 PRD 为准」，初稿的「≤2→WARN / ≥3→ERROR」作废）|
 
 #### C12：东财跨源校验（20 只抽样，节流）
 
@@ -2139,7 +2155,7 @@ WHERE date = '{{TRADE_DATE}}';
 | **节流** | 每只间隔 500ms 请求，避免东财限流；外部源连续 ≥ 5 只失败 → 整项 SKIP |
 | **容差** | `< 0.02 元`（东财 HTTP 解析可能有微小精度差异） |
 | **重试** | 单只请求失败退避重试 2 次（200ms → 400ms），重试后仍失败则标记该只 SKIP 继续下一只 |
-| **判定** | 20 只中全部 PASS → PASS；偏差 ≤ 3 只 → WARN；偏差 ≥ 4 只 → ERROR；外部源整体不可用 → SKIP |
+| **阈值** | 20 只 · PASS | **PRD §6.2 权威**：差异 **≤5/20 → WARN，>5 → ERROR**（✅ 已裁决 2026-10-17 I-8「以 PRD 为准」，初稿的「≤3→WARN / ≥4→ERROR」作废）；外部源整体不可用 → SKIP |
 
 ---
 
