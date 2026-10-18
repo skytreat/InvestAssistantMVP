@@ -95,7 +95,7 @@ graph TB
     FastifyCron -.->|WARN/ERROR 自动补跑| TDX2DB
     Backend -->|IN 查询批量拿日线| DuckDB
     Backend -->|读写（WAL）| SQLite
-    DataValidator -->|C12 节流 200ms| EastMoney
+    DataValidator -->|C12 节流 500ms| EastMoney
     DataValidator -->|C11 每日 1 次| Tushare
     BackupTask -->|rclone copy 上传| OSSService
     SQLite -.->|写失败降级| LogFile
@@ -1051,7 +1051,9 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
 );
 CREATE INDEX IF NOT EXISTS idx_trade_user_date ON user_trade_record(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_asset ON user_trade_record(user_id, asset_code);
-CREATE INDEX IF NOT EXISTS idx_trade_type ON user_trade_record(user_id, trade_type);
+-- ⚠️ 2026-10-17 实测校正：初稿此处的 idx_trade_type(user_id, trade_type) **代码从未创建**，
+--    且现有查询均按 (user_id, asset_code) 或 (user_id, trade_date) 过滤，单独建 type 索引收益低 → 移除。
+--    如将来出现「按类型跨用户统计」需求再补，届时走幂等建索引。
 ```
 
 > ⚠️ **DDL 变更方式**：`CREATE TABLE IF NOT EXISTS` **只对「表不存在」生效**，无法修改已存在表的 CHECK / UNIQUE。
@@ -1072,6 +1074,8 @@ CREATE TABLE IF NOT EXISTS user_asset_rel (
     candidate_base_price REAL,
     migrated_from_candidate INTEGER DEFAULT 0,
     migrated_price_mode TEXT CHECK (migrated_price_mode IS NULL OR migrated_price_mode IN ('base', 'current')),
+    -- 软删除（AGENTS.md「全部业务记录软删除，禁止物理删除」）。2026-10-17 补：代码已有该列，SDD 初稿遗漏
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(user_id, asset_code, rel_type),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
@@ -1093,14 +1097,18 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     strength REAL,
     metrics_json TEXT,
     is_final INTEGER DEFAULT 1,
+    -- 软删除（AGENTS.md「全部业务记录软删除」）。2026-10-17 补：代码已有该列，SDD 初稿遗漏
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(user_id, asset_code, plugin_id, trade_date),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_user_date ON user_strategy_signal(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_signal_user_plugin ON user_strategy_signal(user_id, plugin_id, trade_date DESC);
-CREATE INDEX IF NOT EXISTS idx_signal_user_asset ON user_strategy_signal(user_id, asset_code, trade_date DESC);
-CREATE INDEX IF NOT EXISTS idx_signal_user_dir_date ON user_strategy_signal(user_id, direction, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_signal_user_asset_date ON user_strategy_signal(user_id, asset_code, trade_date DESC);
+-- ⚠️ 2026-10-17 实测校正：初稿此处写 idx_signal_user_asset / idx_signal_user_dir_date，
+--    代码实际为 idx_signal_user_asset_date / （无 direction 索引）。已按代码对齐。
+--    direction 无独立索引：现有查询均带 asset_code 或 plugin_id，前导列已覆盖。
 ```
 
 #### user_plugin_config（插件配置）
@@ -1142,7 +1150,8 @@ CREATE TABLE IF NOT EXISTS system_log (
     log_date TEXT NOT NULL,
     log_type TEXT NOT NULL CHECK (
         log_type IN ('tdx2db_update', 'datacheck', 'signal_generate',
-                     'dividend_import', 'backup', 'trigger_manual')
+                     'dividend_import', 'backup', 'trigger_manual',
+                     'plugin_execute', 'startup', 'trade')   -- 后 3 个为代码实际在用，SDD 初稿遗漏（2026-10-17 实测补齐）
     ),
     level TEXT NOT NULL CHECK (level IN ('INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS')),
     check_item TEXT,
@@ -1811,7 +1820,7 @@ sequenceDiagram
     Validator->>DuckDB: SELECT symbol, close FROM v_stock_qfq WHERE date = ? LIMIT 20
     DuckDB-->>Validator: local_data
 
-    loop 20 只标的（节流 200ms / 只）
+    loop 20 只标的（节流 500ms / 只 —— 与 §5.7 C12「节流」参数一致）
         Validator->>EastMoney: fetch(symbol)
         alt 请求成功（200 OK + fqt=1 前复权）
             EastMoney-->>Validator: {close: X}
@@ -2262,7 +2271,7 @@ flowchart TD
 |------|------|---------|
 | 第一层（内部一致性）| C1-C10 10 项 | WARN 自动补跑 → ERROR 告警 |
 | 第二层（跨源原始数据）| C11 Tushare（每日 1 次免费）| 被限流/不可用 → SKIP（不阻塞）|
-| 第三层（跨源复权数据）| C12 东财（免费无限次）| 节流 200ms + 退避重试 → 不可用 → SKIP |
+| 第三层（跨源复权数据）| C12 东财（免费无限次）| 节流 **500ms/只** + 退避重试（200ms→400ms）→ 不可用 → SKIP |
 | 业务层唯一约束 | signal UNIQUE(user+symbol+plugin+trade_date)、除权自动导入 UNIQUE(user+symbol+date+type)、trade_record UNIQUE（手动防重）| 冲突跳过 |
 | 事务完整性 | 交易录入 BEGIN/COMMIT 包裹持仓校验 + 写入 | 校验失败 → ROLLBACK |
 
