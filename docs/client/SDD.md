@@ -2283,13 +2283,17 @@ graph LR
     C["SQLite 业务层 ≈ 50MB"] -->|每日 17:05| D["WAL TRUNCATE + VACUUM INTO<br/>≈ 50MB"]
     B --> E["本地 /backup/ 目录<br/>行情保留 7 天，业务保留 30 天"]
     D --> E
-    E -->|rclone copy| F["远程存储（对象存储）<br/>Lifecycle Policy 自动清理过期保留 90 天"]
+    E -.->|"⛔ MVP 不交付<br/>（裁决 I-11=A）"| F["~~远程存储（对象存储）~~<br/>~~Lifecycle Policy 90 天~~"]
 ```
 
-**恢复验证要求**：
-- 每月执行一次完整恢复演练（DuckDB + SQLite 双库）
-- 恢复脚本写入 CI/CD pipeline，自动验证完整性
-- 恢复失败概率 < 0.1%（预期极低，SQLite 文件 copy 恢复确定性高）
+**分级策略**（裁决 **I-11=A**，2026-10-17）：
+
+- **MVP 交付范围**：**仅本地双库备份** + 滚动清理（行情 7 天 / 业务 30 天）+ 恢复验证脚本
+- **移出 MVP**：~~远程对象存储上传（rclone）~~、~~Lifecycle Policy 自动清理 90 天~~、~~恢复脚本写入 CI/CD pipeline~~
+  - 依据：实测 `backup.ts:98` 注释「OCI 上传 MVP T30 暂缓」，初稿 SDD 却把远程写成硬要求 → PRD §6.2「备份恢复验证通过率 100%」不可达
+- **恢复验证要求**（本地）：
+  - 每月执行一次完整恢复演练（DuckDB + SQLite 双库），**本地执行，不入 CI/CD pipeline**
+  - 恢复失败概率 < 0.1%（预期极低，SQLite 文件 copy 恢复确定性高）
 
 ### 6.6 首次 DuckDB Bootstrap（Phase 1 部署关键步骤）
 
