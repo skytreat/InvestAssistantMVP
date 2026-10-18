@@ -178,19 +178,33 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 > ⚠️ **把 CORS/HTTPS/性能测试写进 `integration/` 会得到假绿** —— `inject()` 完全绕过 `@fastify/cors` 的 Origin 处理与 socket 层，测了等于没测。这是 T60 补齐项。
 
-**里程碑边界每阶段最后一条 commit**（用户要求，便于 review / 回滚 / 追责）：
-- 每个 M1/M2/M3/M4 最后一次 commit → `fix:` 或 `docs:` 或 `test:` 前缀，然后验收清卡
-- 每个 smoke-mX.test.ts 实装完成后单独一条 commit
-- 禁止多个"半拉子改动"攒成一个大 commit
+**交付单元：一个 Wave = 一个 PR（2026-10-17 用户决策，替代「里程碑每阶段一 PR」）**
 
-**Wave Gate（2026-10-17 新增，硬阻断，优先于上面的 commit 约定）**：
-- 实施计划 **§12.7** 定义了 8 个 **Wave 出口门槛（G1-G8）**，判定只有 **PASS / FAIL（无 COND）**
-- **任一条 FAIL → 本波全部 commit 一律不得合入 `main`**
-- 结果必须落档 `docs/audit/wave-N-gate.md`（含逐条 PASS/FAIL/豁免 + **实测原始数据** + 本波 commit 区间）。**无落档文件 = 未执行 = FAIL**
-- **禁止「先合入再补 gate」** —— gate 文档的 commit 必须与本波 commit 同一个 PR
-- 标 🔒 的**数据正确性类门槛永久不可豁免**；其余门槛豁免须写明理由 + 指向 §9.3/§13 条目，**同一门槛最多豁免 1 个 Wave**
-- **回滚可行性依赖 commit 粒度**：因规定「每个 T 任务一条 commit」，一波内 commit 区间可整体 `git revert` 而不留半拉子改动 —— **这是 Gate 流程成立的前提，不可把多个 T 任务合并成一条 commit**
-- **T78 不是首次验收，是最终验收**。§12.6 的全局 PASS 前提是 G1-G8 全 PASS
+Wave 1-8 合计 52 个任务 / ~64 人天，**人工逐任务 review 不现实**，故改为按 Wave 交付：
+
+| 环节 | 规则 |
+|---|---|
+| **commit 粒度** | **仍是「一个 T 任务一条 commit」不变** —— PR 只是容器，原子仍是 commit |
+| **PR 粒度** | **一个 Wave 一个 PR**（Wave 1 = T49-T60 + T80-T98，约 30 条 commit 打进一个 PR） |
+| **验收时机** | 跑 G1~G8 门槛 → 写 `docs/audit/wave-N-audit.md` → **与本波 commit 同 PR** |
+| **合并条件** | `CI build-and-test 通过` **且** `wave-N-audit.md 判定 PASS` —— 二者缺一不可 |
+| **合并方式** | squash merge，**满足上述两条件后自动执行**，不需人工点确认 |
+| **下一 Wave** | 合并成功后**立即开始下一个 Wave**，不等待人工指令 |
+
+> ⚠️ **为什么 gate 必须在 PR 内而不是 merge 之后**：
+> 若「CI 过了就 merge、验收在 merge 后做」，则 gate FAIL 时代码**已经在 main 上**，
+> 「硬阻断」名存实亡。故本流程把 gate 排在 merge **之前**：
+> **CI 是必要条件，gate 是充分条件，两者都过才 merge。**
+> 标 🔒 的数据正确性门槛（G1/G2 等）FAIL 时 → **不许 merge**，就地修复后重跑。
+
+**Wave 验收文档（`docs/audit/wave-N-audit.md`）**：
+- 每个 Wave 收尾必写，**无落档文件 = 未执行 = FAIL**
+- 内容：G1~G8 逐条 **PASS / FAIL（无 COND）** + 豁免理由 + **实测原始数据** + 本波 commit 区间
+- 豁免：标 🔒 的**数据正确性类门槛永久不可豁免**；其余须写明理由 + 指向 §9.3/§13 条目，**同一门槛最多豁免 1 个 Wave**
+
+**回滚可行性依赖 commit 粒度**：因规定「每个 T 任务一条 commit」，一波内 commit 区间可整体 `git revert` 而不留半拉子改动 —— **这是 Gate 流程成立的前提，不可把多个 T 任务合并成一条 commit**（**PR 合并不违反此条：PR 内仍是原子 commit**）
+
+**T78 不是首次验收，是最终验收**。§12.6 的全局 PASS 前提是 G1-G8 全 PASS
 
 ## 🚫 Out‑Scope，绝对不要实现
 1. 分钟K线、分钟周期策略、盘中实时信号；
@@ -293,5 +307,6 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 编码规范 | `docs/coding-standards.md` | 命名、类型、SQL、错误处理、测试规范 |
 | 编码规则摘要 | `AGENTS.md`（本文） | AI agent 行为规则 + 架构硬约束 + 禁止 Out-Scope |
 | 黄金测试数据集 | `packages/core/tests/fixtures/golden/` | ⚠️ **目录存在但当前为空** —— 由 **T51** 填充（移动加权成本 5 场景 / RSI / MACD）。填之前「双端一致性断言」无载体可依 |
-| Wave Gate 落档 | `docs/audit/wave-N-gate.md` | 每波收尾必写；**无文件 = 未执行 = FAIL** |
+| Wave 验收落档 | `docs/audit/wave-N-audit.md` | 每波收尾必写；**无文件 = 未执行 = FAIL**；与本波 commit 同 PR |
+| **Wave 验收** | `docs/audit/wave-N-audit.md` | **交付单元 = 一个 Wave 一个 PR**；G1~G8 逐条 PASS/FAIL + 实测原始数据；CI 与 gate 双通过才 squash merge |
 | **审计记录** | `docs/audit/*.md` | 静态审计 Gap 清单、UX 交叉核对、动态探针记录（**属证据，非计划内容**）；实施计划 §3/§10/§11 已迁出至此，plan 内只留紧凑索引 |
