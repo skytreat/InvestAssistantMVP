@@ -53,14 +53,17 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         tradeReason = body.trade_reason ?? null;
       }
 
-      if (REDUCE_TYPES.has(body.trade_type)) {
-        if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity)) {
-          return reply.code(400).send({
+if (REDUCE_TYPES.has(body.trade_type)) {
+        // T84（P0-13）：必须传 trade_date —— 以卖出发生时点回放，
+        // 否则尚未发生的买入会支撑更早的卖出（日期交错绕过校验）
+        if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity, body.trade_date)) {
+          // B-10 裁决：HOLDING_INSUFFICIENT = HTTP 409（非 400）
+          return reply.code(409).send({
             success: false,
             error: 'HOLDING_INSUFFICIENT',
-            message: `持仓不足，无法${body.trade_type} ${body.asset_code}`,
+            message: `持仓不足：无法${body.trade_type} ${body.asset_code}`,
           });
-        }
+}
       }
 
       const db = ConfigStore.getInstance().db;

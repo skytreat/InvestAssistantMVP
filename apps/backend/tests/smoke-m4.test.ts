@@ -169,7 +169,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     expect(JSON.parse(res.body).data.position.avgCost).toBeCloseTo(16005 / 1500, 4);
   });
 
-  it('超持仓卖出 → 400 HOLDING_INSUFFICIENT', async () => {
+  it('超持仓卖出 → 409 HOLDING_INSUFFICIENT', async () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
@@ -177,7 +177,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
         quantity: 99999, price: 15.0, trade_reason: 'M4 超卖校验',
       },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('HOLDING_INSUFFICIENT');
   });
 

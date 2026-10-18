@@ -76,7 +76,7 @@ describe('Trade · 买入 + 持仓查询', () => {
 });
 
 describe('Trade · HOLDING_INSUFFICIENT', () => {
-  it('卖出超过持仓 → 400 HOLDING_INSUFFICIENT', async () => {
+  it('卖出超过持仓 → 409 HOLDING_INSUFFICIENT', async () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
@@ -86,7 +86,7 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
         trade_reason: '测试卖出超持仓',
       },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
     expect(body.error).toBe('HOLDING_INSUFFICIENT');
     expect(body.success).toBe(false);

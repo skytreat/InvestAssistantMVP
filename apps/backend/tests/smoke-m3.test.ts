@@ -118,7 +118,7 @@ describe('M3 Trade + 持仓校验', () => {
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + '-dup', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
     expect(body.error).toBe('HOLDING_INSUFFICIENT');

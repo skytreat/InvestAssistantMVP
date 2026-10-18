@@ -35,21 +35,32 @@ function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
 
 /**
  * 算单个标的当前持仓（含已实现盈亏）
+ *
+ * T84：`asOfDate` 指定「回放到哪个时点」，只回放 `trade_date <= asOfDate` 的记录。
+ * 卖出校验必须用它 —— 否则**尚未发生的买入**会支撑**更早的卖出**（P0-13）。
+ *
+ * ⚠️ 显示路径传 `strictOversell: false`：存量脏数据不应让持仓卡整页 500，
+ * 但脏状态通过 `hasOversell` / `oversellDetail` 暴露，不得静默吞掉。
  */
-export function calcPosition(userId: number, assetCode: string): PositionResult {
+export function calcPosition(
+  userId: number,
+  assetCode: string,
+  asOfDate?: string,
+): PositionResult {
   const db = ConfigStore.getInstance().db;
   const rows = db.prepare(
     `SELECT id, user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted
      FROM user_trade_record
      WHERE user_id = ? AND asset_code = ? AND is_deleted = 0
-     ORDER BY trade_date ASC, id ASC`
-  ).all(userId, assetCode) as DbTradeRow[];
+       AND (? IS NULL OR trade_date <= ?)
+     ORDER BY trade_date ASC, id ASC`,
+  ).all(userId, assetCode, asOfDate ?? null, asOfDate ?? null) as DbTradeRow[];
 
   const coreTrades = rows
     .map(mapToCoreTrade)
     .filter((t): t is CoreTrade => t !== null);
 
-  return calculateMovingWeightedCost(coreTrades);
+  return calculateMovingWeightedCost(coreTrades, { strictOversell: false });
 }
 
 /**
@@ -66,12 +77,21 @@ export function calcAllPositions(userId: number): Array<{ asset_code: string } &
 }
 
 /**
- * sell 前校验持仓充足（T25 核心，AGENTS.md 硬约束）
- * 返回 true = 可卖；false = 持仓不足
+ * sell/reduce/clear 前校验持仓充足（T25 核心 + T84 P0-13）
+ *
+ * 🔴 `tradeDate` 是**必传**的正确性参数：以卖出发生时点回放，
+ * 只计入 `trade_date <= tradeDate` 的记录，避免未来买入支撑过去的卖出。
+ *
+ * 返回 true = 可卖；false = 持仓不足。
  */
-export function validateSufficientHolding(userId: number, assetCode: string, sellQty: number): boolean {
+export function validateSufficientHolding(
+  userId: number,
+  assetCode: string,
+  sellQty: number,
+  tradeDate?: string,
+): boolean {
   if (sellQty <= 0) return false;
-  const pos = calcPosition(userId, assetCode);
+  const pos = calcPosition(userId, assetCode, tradeDate);
   return pos.totalQuantity >= sellQty;
 }
 
