@@ -30,7 +30,7 @@
 | 覆盖 | `apps/frontend/src` 14 文件 3250 行 / `apps/backend/src` 29 文件 4798 行 / `packages/core` 5 文件 / `.github/workflows/ci.yml` / 根 `package.json` |
 | 交叉验证 | 14 项关键结论用 `Select-String` 二次复核（见附录 B） |
 | **未覆盖** | 未启动 dev server 做浏览器实测，未做真机部署验证。Canvas 绘制效果、响应式断点表现、PRD §6.3 性能指标（PE1-PE5）**未经实测**，计划内已排实测任务 |
-| 动态审计 | ✅ **已完成两层**（API 41 端点 + 浏览器 52 项断言 / 三视口），见 §11。新增发现 **P0-10、P0-11、F-Q12、F-Q13、F-Q14** |
+| 动态审计 | ✅ **已完成两层**（API 41 端点 + 浏览器 52 项断言 / 三视口），见 [dynamic-audit](../audit/dynamic-audit-2026-10-17.md)。新增发现 **P0-10、P0-11、F-Q12、F-Q13、F-Q14** |
 | **仍未覆盖** | ① 真机部署验证（systemd unit / Caddy HTTPS）；② PRD §6.3 性能 PE1-PE5 实测（需生产级数据规模）；③ 移动端真机触摸 |
 
 ---
@@ -49,167 +49,40 @@
 | 第 1 波 T37+T39 后端 2 天 | **已闭合**（`501e56b` G1/G2） | `routes/assetStat.ts`、`routes/trade.ts:98-212` |
 | 第 6 波 T40+T41 后端 1 天 | **后端已闭合**，**前端 3 个 API 从未被调用** | `routes/admin.ts:91,100,168,188` 全是死路由 |
 
-**反向修正**：本次审计新查出 6 项旧审计**完全没有发现**的后端正确性缺陷 + 2 项 P0 级合规缺失（见 §3.1、§3.2）。
+**反向修正**：本次审计新查出 6 项旧审计**完全没有发现**的后端正确性缺陷 + 2 项 P0 级合规缺失（见 [gap-list §3.1、§3.2](../audit/gap-list-2026-10-17.md)）。
 
 ---
 
-## 3. Gap 清单
+## 3. Gap 清单（已迁出，见下表索引）
 
-优先级：**P0** = 阻塞 MVP 验收 / 数据正确性；**P1** = PRD §5 明文要求但未实现；**P2** = 体验与工程质量。
+> 本章为 2026-10-17 静态审计发现的 61 项 Gap 详情（含证据、代码位置、根因）。
+> 已于 2026-10-17 迁出 → **[`docs/audit/gap-list-2026-10-17.md`](../audit/gap-list-2026-10-17.md)**。
+> 引用 Gap 编号（如 `P0-13`、`F-Q11`）时以该文档为准。
 
-### 3.1 P0 — 后端正确性缺陷（11 项 + 1 项方法论）
+### 3.0 紧凑索引（编号 → 一句话 → 承接任务）
 
-| # | Gap | 违反 | 证据 | 影响 |
-|---|-----|------|------|------|
-| **P0-1** | **加仓（`add`）交易类型完全不存在**。DDL CHECK 白名单是 `('buy','sell','reduce','clear','dividend','bonus','transfer')`，用 `sell` 顶掉了「加仓」 | Requirements §5.1 明文 7 种类型含**加仓** | `configStore.ts:26`（3 处 CHECK） | 7 种类型只落地 6 种。`exDividendSync.ts:61-64` 有 `add` 分支但 `add` 不是合法值 → **死分支**，持仓前数量算错会让除权分红金额算错。✅ **DEC-2 已定**：白名单改 7 种，移除 `sell`、加入 `add`（T49） |
-| **P0-2** | **候选池基准价从未固化**。`candidate_base_price` / `candidate_reason` / `migrated_price_mode` 3 列在 DDL 里定义，**全仓无任何 INSERT/UPDATE** | Requirements §4.2 #8「基准价固化」；PRD S4「加入日收盘价固化」；SDD §4.4 `/api/candidate`「基准价自动取当日收盘价」 | `configStore.ts:58,59,62`（仅 DDL）；`routes/watch.ts:29-46` body 只收 `asset_code` | 候选池**没有基准价**，「跟踪有基准」核心价值不成立；PRD S5 迁移选 base/current 也无从选择 |
-| **P0-3** | **黄金测试数据集完全缺失**。`packages/core/tests/fixtures/golden/` 只有 `README.txt`，README 自述「golden 数据集 Phase 1 之后生成」，Phase 1 早已完成 | AGENTS.md §编码输出约定 6「双端算法必须复用同一套golden数据断言，保证双端计算误差=0」 | 目录内 0 个 `.json`（全仓 `*.json` 仅 8 个，全是 `package.json`/`tsconfig.json`） | **跨端口径一致性零保障**。DEC-1 后一致性主保障升级为「同库同版本锁定」，但 golden 仍是**防库升级 / 防适配层改错**的唯一回归网，必须落地（归入 T51） |
-| **P0-4** | **前端零测试**。无 `test` script、无 vitest/jsdom/testing-library，根 `npm test` 不覆盖 frontend，CI 也不跑 | AGENTS.md §5「核心逻辑必须编写单元测试，Vitest 5.x」；SDD §12.5 F5 要求 `frontend.test.tsx → kline_render` | `apps/frontend/package.json` 无 test script；`*.test.*` 计数 = 0 | 双口径切换、收益曲线、donut 计算、Canvas 绘制、移动端断点 —— 全部 UI 行为零回归保护 |
-| **P0-5** | **`GET /api/signals` 无 `asset_code` 过滤**。K 线图信号 overlay 只能拉 top-20 全量再前端按日期匹配 | PRD §5.2 策略信号标记；§3.1-A 建议 A（持仓卡直显信号） | `routes/signal.ts:17-31`（仅 `trade_date`/`plugin_id`/`direction`） | 持仓 10+ 只时 K 线 overlay 会漏标；`routes/kline.ts` 内嵌的 `signals` 还返回**倒序**而 klines 是**升序**，映射脆 |
-| **P0-6** | **`metrics_json` / `is_final` 从不写入**。`persistSignals` 的 INSERT 只有 8 列 | Requirements §5.5「指标明细（可选，数值键值对）」；PRD §5.2 信号 hover 显示「指标明细」 | `services/signalService.ts`（两处 INSERT 均无该2 列） | K 线信号 hover 无明细可展示；插件 `params`（`pluginEngine.ts:112` 已产出）数据落地丢失 |
-| **P0-9** 🔴 | **DuckDB 连接泄漏 → 后端自锁死行情库**（**动态审计发现，静态审计漏判**）。`queryDuckDB()` 每次 `DuckDBInstance.create(path)` 新建连接，注释声称「不常驻连接 → 交给 GC 回收」，但**从不 `closeSync()`**。首个查询成功后文件锁被**同进程**持有 | AGENTS.md「DuckDB 行情层硬约束」第 3 条：**「DuckDB 按需打开关闭，不常驻连接（文件锁机制，多进程不能同时写）」** —— 「打开」做了，「关闭」没做 | `db/duckdb.ts:52-70`（`queryDuckDB`）、`:29-48`（`duckdbHealthCheck`，同样泄漏） | **实测后果**：后端启动后第一次行情查询成功，**之后所有 DuckDB 端点永久 500/502** —— `/api/market/latest` 502、`/api/kline/:symbol`（含 4 种 fq 全试）500 `KLINE_QUERY_FAILED`、`/api/symbols/search` 500 `SEARCH_FAILED`、`/api/stockscan` 无法执行。实测错误：`IO Error: Cannot open file ".../quotes.duckdb": File is already open in node.exe (PID <后端自身>)`。直接验证：同文件用 `@duckdb/node-api` 独立进程可正常打开，16 张表/视图齐全 → **不是数据问题，是代码缺陷**。✅ **已修复（T80）** |
-| **P0-10** ✅**已修** | **股票 K 线 100% 返回 500：DuckDB `BIGINT` → JS `BigInt` 无法 JSON 序列化**（**动态审计发现；且被 P0-9 长期掩盖**）。`v_stock_qfq.volume` 列类型为 `BIGINT`，`@duckdb/node-api` 返回 JS `BigInt`，Fastify `JSON.stringify` 抛错 | PRD §5.2 K 线图（股票是主资产类别）；AGENTS.md「错误处理：不允许顶层裸 throw 泄露内部细节」 | `routes/kline.ts:40-117`（SELECT 含 `volume`，直接透传给前端）；`db/duckdb.ts` 的 `queryDuckDB` | **原始实测**：`sh600519` / `sz000001` 全部 `500 "Do not know how to serialize a BigInt"`；ETF/指数返回 200（但 klines 为空，见 F-K10）。**✅ 已在 `db/duckdb.ts` 的 `normalizeValue()` 统一修复**（T80 同批） |
-| **P0-12** ✅**已修** | **DuckDB 并发互抢：并发行情查询互相抢文件锁**（**T80 回归测试用例抓出**）。`DuckDBInstance.create()` 是**排他**的，每次查询都新建 instance 时，并发查询会互相抢锁，第 2~N 个报「另一个程序正在使用此文件」。真实现 Dashboard 首屏就并发打 `/positions` + `/asset-stat/latest` + `/signals` + `/system-log` | PRD §6.3 PE4（API p99 ≤ 200ms）；AGENTS.md「DuckDB 按需打开关闭」 | `db/duckdb.ts`（原实现每次 `DuckDBInstance.create()`） | **原始实测**：5 路并发 → 1 成功 4 失败（`File is already open in`）。**✅ 已修为「instance 进程内单例（挂 `globalThis`）+ 每个并发分支独立 connection」**。挂 `globalThis` 而非模块变量的原因：vitest 每测试文件是独立 module graph，模块变量不共享会导致全量跑时跨文件互抢（单跑通过、全量失败）。**实测：单 instance + 多 connection 并发读全部成功**（5 路返回一致结果） |
-| **P0-13** 🔴 | **持仓充足性校验用「全日期累计总量」而非「卖出发生当天的持仓」，日期交错时可写入超卖**（**动态审计 + 运行时复现发现**）。`validateSufficientHolding` 调 `calcPosition`，后者按 `trade_date ASC, id ASC` 回放**全部已写入**记录，返回的是「所有日期加总的总量」；校验式 `totalQuantity >= sellQty` 因此会用**未来的买入**去支撑**过去的卖出**。叠加 core 层无防护：`calculateMovingWeightedCost` 的 sell 分支只挡 `totalQuantity <= 0`（完全空仓），不检查单笔是否超持仓，`totalQuantity` 与 `totalCostBasis` 均可变负 | Requirements §5.2「**减仓数量不得超过当前实际持仓 → 服务端拒绝保存**」；AGENTS.md 安全编码约束第 2 条；需求原文「交易永久留痕，负持仓脏数据一旦写入将永久污染聚合结果」 | `services/positionCalculator.ts:72-76`（`validateSufficientHolding`）、`:39-53`（`calcPosition`）；`packages/core/src/movingWeightedCost.ts:43-50`（sell 分支无超卖防护） | **精确成因**（以库中真实数据说明，`sh600000` 在 id=7 写入前有 id=1 `2026-10-16 buy 100` 与 id=5 `2026-08-01 buy 100`）：<br>① 校验回放 → `08-01 buy100 =100` → `10-16 buy100 =200`，返回 **200**，`200 >= 105` **通过**<br>② 但该卖出发生在 `08-06`，此刻 `10-16` 的买入**尚未发生**，真实持仓只有 **100**<br>③ 写入后回放 → `08-01 buy100=100` → `08-06 sell105=**-5**` → `10-16 buy100=95`，**负持仓已落库**<br>**拦截并非完全失效**（实测）：空仓卖 500 → ✅400 拒绝；`reduce 99999` → ✅400 拒绝。仅当**多笔买入日期交错**时才绕过（单笔买入时校验值恰好等于时点持仓）<br>**库中已有 2 笔此类脏数据**：id=7（`08-06 sell 105` > 当时持仓 100）、id=13（`08-21 sell 120` > 当时持仓 110）<br>**危害**：`totalCostBasis` 变负会污染 `avgCost`，进而污染持仓卡、双口径收益率、复盘胜率/盈亏比全部下游计算 |
-| **P0-14** ⚠️**审计方法论缺陷** | **我在追查 P0-13 时连续 4 次给出错误描述**（① 判「不是 bug」→ ② 判「日期回放可绕过」→ ③ 判「单笔卖出永远不会被拦截」→ ④ 向用户解释时仍用错的口径），每次都基于推测而非读代码。读到 `movingWeightedCost.ts:43-50` + 用库中真实数据逐步回放后才确认 | AGENTS.md「关键逻辑给出单测示例」；本项目根本问题是**缺少能暴露此类缺陷的测试** | 审计过程记录见 §11.8 | **教训**：① 静态审计与运行时验证都不可省略；② 对「数值异常」类问题必须**先读实现 + 用真实数据逐步回放**，再看数据；③ **描述一个缺陷时必须区分「完全失效」与「特定条件下失效」** —— 我曾把「特定条件下绕过」夸大成「永远不被拦截」，若用户据此决策会误判严重性 |
-| **F-K10** ⚠️**动态新发现** | **ETF / 指数 K 线恒返回空**（**不是本次引入的回归**） | SDD §3.3 明确要求「按 `raw_symbol_class.class` 路由：stock → `v_stock_*`，etf → `v_etf_*`」；PRD §5.2 未排除 ETF | `routes/kline.ts:44`：`const table = fq === 'raw' ? 'raw_kline_daily' : 'v_stock_qfq';` —— **硬编码 v_stock_qfq，从不路由到 v_etf_*** | ETF 在 `v_stock_qfq` 中 0 行 → `klines: []`。**首次动态审计时我误判为「ETF 正常」**（只看了 HTTP 200 与响应字段结构，没看 `klines` 是否为空）—— 本次审计第 6 次「只看状态码不看数据」。**修复归属 T53**（fq 四值 + ETF 视图路由打包在一起）。⚠️ 实测确认 ETF 视图本身有数据，故这是路由 bug 不是数据缺失 |
-| **P0-11** 🔴 | **「全市场条件选股」无任何可用插件，功能实际不可用**（**动态审计发现**）。`GET /api/stockscan/plugins` 返回 2 个插件，但**两者 `category` 均为 `monitor`**，且 `paramSchema` 中 `symbol` 为 `required:true` | Requirements §4.2 #7「全市场条件选股」；PRD §5.6；SDD §5.3 插件接口契约要求区分 `monitor`/`filter` 两类 | `services/pluginEngine.ts`（`builtinPlugins` 仅 `rsi_oversold`/`macd_cross` 两个 monitor 插件）；`routes/stockscan.ts:78-83` 按 `plugin_id`/`plugin_name` 找插件但不校验 category | **实测**：`POST /api/stockscan` 返回 200 但 `{"totalCandidates":0,"total":0,"results":[]}` —— 无候选池可扫。即使 T55 补齐公共过滤、T56 补齐批量入池，**没有 filter 类插件仍然扫不出任何东西**。这是 Requirements §4.2 #7 的**功能性缺失**，不只是 UI/接口缺失 |
+| 编号 | 缺口 | 承接 |
+|---|---|---|
+| **P0-1** | `add` 加仓类型缺失（CHECK 白名单只有 `sell`）| T49 |
+| **P0-2** | 候选池基准价未固化（`candidate_base_price` 有 DDL 无写入）| T50 |
+| **P0-3** | 无 golden 数据集，双端一致性无载体 | T51 |
+| **P0-4** | 前端 0 测试 | T61 |
+| **P0-5** | `signals` 无 `asset_code` 筛选 | T54 |
+| **P0-6** | 信号落库缺 `metrics_json` / `is_final` | T58 |
+| **P0-7** | `/api/auth/register` 缺失 | T57 |
+| **P0-8** | `/api/auth/refresh` 缺失 | T57 + T64 |
+| **P0-9** | DuckDB 连接泄漏 | **T80（✅ 已实装）** |
+| **P0-10** | DuckDB BigInt / DATE 序列化失败 | **T80（✅ 已实装）** |
+| **P0-11** | 无 filter 类选股插件 → `totalCandidates` 恒为 0 | T83 |
+| **P0-12** | DuckDB 并发互抢 | **T80（✅ 已实装）** |
+| **P0-13** | 持仓**时点**校验缺失（日期交错可超卖）| T84（须先于 T49）|
+| **P0-14** | 审计方法论缺陷（人工复现未留证）| 留档，见 [dynamic-audit §11.4](../audit/dynamic-audit-2026-10-17.md) |
+| **F-Q3~F-Q6 / F-Q8~F-Q12** | `any` 泛滥 / N+1 / 路由不一致 / 响应式溢出等 | T66 / T60 / T90 / T76 |
+| **F-Q11** | 测试顺序依赖 / env 污染 | T81 |
+| **P1（26+8 项）** | PRD §5 交互要求未实现 | §5 Wave 3-7 任务卡 |
+| **P2（14 项）** | 响应式 Phase 2/3 + 体验收尾 | T79（可后置）|
 
-### 3.2 P0 — 后端功能缺失（2 项）
-
-| # | Gap | 违反 | 证据 |
-|---|-----|------|------|
-| **P0-7** | **`POST /api/auth/register` 不存在**。建号只能走 `/api/auth/seed`，且 `cba9556` 已把 seed 锁死为「已有任何用户即 403」 | SDD §4.4；PRD D5「首个注册用户自动成为管理员」 | `routes/auth.ts:16,40`（仅 login + seed）；`:66-73` 管理员存在即 403 |
-| **P0-8** | **`POST /api/auth/refresh` 不存在**。access token 7d 硬过期，store 里无 refresh token；401 处理器 `window.location.href='/login'` 而 **`/login` 路由不存在** → 整页刷新 | SDD §4.4「refresh（30d）」；PRD §5.9「支持刷新自动续期」+「过期后自动跳转登录页并保留当前页面路径」 | `routes/auth.ts`；`apps/frontend/src/App.tsx:22-32` 无 login 路由；`api/client.ts:15-23` |
-
-> ⚠️ P0-7 与 `cba9556` 的安全加固直接冲突：该 commit 把 `/api/auth/seed` 改成 public + 首用户锁定。正确解法是**新增 register 路由**（首用户自动 admin，后续注册强制 user 或仅 admin 可建号），**不是**回退 seed 的加固。
-
-### 3.3 P1 — PRD §5 明文要求但未实现（前端，26 项）
-
-**§5.3 Dashboard（6）**
-
-> ✅ **动态审计修正（2026-10-17）**：D1 的「双口径切换」、D2 的「资产组成图」**已存在**，初稿误列为缺失。浏览器 DOM 实测：按钮文字为「价格口径/实际口径」（**不是**初稿假设的「价格收益率/实际收益率」），资产组成为 `conic-gradient` div（**不是** `<svg>`）。下表已按实际修正。
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-D1 | **「总资产」大字显示的语义错误**：标签写「总资产」但取值为 `posSummary?.totalCostBasis`（**持仓总成本**），应为 `totalMarketValue`；`stat.total_assets_price_yield`/`total_assets_actual_yield` **声明了但从不渲染** | `Dashboard.tsx:241`（`fmt(posSummary?.totalCostBasis)`）+ `:243` 标签「总资产」；声明于 `:20-21`。⚠️ **动态无法验证数值** —— 实测该卡显示「暂无资产快照（每日 17:02 信号生成后自动写入）」，`asset_stat` 表为空（cron 未跑）。属**数据语义 bug**，非功能缺失 |
-| F-D2 | 持仓仍是 `<table>`，PRD §5.3 要求「持仓**卡片列表**」 | `Dashboard.tsx:304-342`；✅ 动态确认 `tables=3`、`th` 为 9 列 |
-| F-D3 | 仓位占比**只有文字无进度条** | `Dashboard.tsx:314,335`；✅ 动态实测进度条元素数 = **0** |
-| F-D4 | 持仓行无【买入】【卖出】快捷按钮 → 交易录入弹窗 | `Dashboard.tsx:319-340` 全是 `<td>`；✅ 动态实测「买入/卖出」按钮数 = **0**（整个 Dashboard 无任何含此二字的按钮） |
-| F-D5 | 无排序（盈亏/收益率/仓位占比）、无过滤（标的类型/行业） | ✅ 动态实测排序控件 = **false**；`Dashboard.tsx` 无任何 `onClick` handler |
-| F-D6 | 资产组成图**已存在**（`conic-gradient` donut，股票/ETF 两段），但**无「点击下钻过滤持仓列表」** | `Dashboard.tsx:93-117`；✅ 动态实测 `conic-gradient` 元素 = 1 |
-
-**§5.4 TradeInput（6）**
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-T1 | 交易类型是 `<select>` 下拉，PRD §5.4 要求「顶部 **Tab** 切换：买入/加仓/减仓/清仓/除权补充」 | `TradeInput.tsx:249-262` |
-| F-T2 | `trade_reason` 无 `required`、无前端阻止；提交时 `trim() \|\| undefined` 送后端吃 400 | `TradeInput.tsx:212,312-321` |
-| F-T3 | 无实时预估新均价（只在提交**后**显示 `result.position.avgCost`） | `TradeInput.tsx:332`；全文无 `useMemo` |
-| F-T4 | 减仓超持仓无红色禁用（`GET /api/positions/:asset_code` 已存在却从不调用） | `TradeInput.tsx` 无该调用 |
-| F-T5 | 无「除权补充」独立入口，无理由自动固化置灰 | 后端 `trade.ts:45-46` 已自动填，前端零实现 |
-| F-T6 | 无 PRD §5.4「预设标签按钮（策略触发/止损/抄底）」快捷填充 | `TradeInput.tsx:314-320` 纯文本框 |
-
-**§5.5 Review（2）**
-
-> ✅ **动态审计修正（2026-10-17）**：R1「双口径切换」**已存在**（初稿误列）。R6「4 色标签」为**彩色文字非 pill**（初稿判断成立）。R2「收益曲线」的容器与周期切换**已存在**，当前因无快照数据而走空态。
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-R1 | 无日期范围筛选（后端 `start_date`/`end_date` 已支持） | `Review.tsx` 无 date input；✅ 动态实测 `input[type=date]` = **0** |
-| F-R2 | 标签是彩色文字非 pill/badge | ✅ 动态实测：标签以 `<td>` 彩色文字呈现，`span[style*=borderRadius]` 数 = **0**（无 pill 组件）。另 `transfer` 在 Review 标「转增」、TradeInput 标「转托管」——**分类法不一致**（`Review.tsx:49` vs `TradeInput.tsx:22`） |
-
-> 🐛 **附带缺陷**：`Review.tsx:155` 的 `page` state **从不 `setPage`**，`fetchTrades(page±1)` 后「第 N/M 页」永不推进。`Review.tsx:428,430`
-
-**§5.1+§5.2 Kline（8）**
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-K1 | fq 只有 前复权/不复权，缺**后复权**（`v_stock_hfq` 在 `marketData.ts:10-17` 已映射但路由挡掉） | `routes/kline.ts:44` `fq==='raw'?'raw_kline_daily':'v_stock_qfq'`；✅ **动态实测选项为 `前复权\|不复权`**，确认无后复权 |
-| F-K2 | **MA60 缺失**（PRD §5.2 明确 MA(5/10/20/60)） | 全仓 `ma60` 命中 = 0；✅ 动态实测页面无「MA60」字样 |
-| F-K3 | MA 不可隐藏（无开关） | `Kline.tsx:138-140` 硬编码 |
-| F-K4 | **KDJ 全栈不存在**（后端 + core + 前端全无） | 全仓 `kdj` 命中 = 0；✅ 动态实测无「KDJ」字样 |
-| F-K5 | 桌面端副图不可切换（只有移动端有 Tab） | `Kline.tsx:421-453` |
-| F-K6 | 无十字光标 + OHLCV 悬浮窗（PRD §5.2 明文） | ✅ **动态实测 `canvas=3` 但带 mouse handler 的 = 0** —— Canvas 完全无鼠标事件 |
-| F-K7 | 无周 K / 月 K（PRD §5.2「日/周/月，周月基于日线聚合」） | ✅ 动态实测周期选项仅 `近60日\|近120日\|近1年\|近500日` |
-| F-K8 | 信号标记无 hover tooltip（方向+强度+指标明细） | `Kline.tsx:154-173` 只画三角 |
-| **F-K9** ⚠️**动态新增** | **股票 K 线整体不可用**，且错误提示无意义 | P0-10：`sh600519`/`sz000001` → `500 "Do not know how to serialize a BigInt"`，页面原样显示「请求失败: Do not know how to serialize a BigInt」。ETF/指数正常 |
-
-> 🐛 **附带缺陷**：`Kline.tsx:354-358` 每次依赖变化都重新注册 resize 监听（监听器泄漏）；无 `ResizeObserver`，容器尺寸变化（侧栏折叠）不重绘。
-
-**§5.6 StockScan（5）**
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-S1 | 公共过滤缺 标的类型/排除ST/行业（**前后端双缺**，`routes/stockscan.ts:86-88` 只收 `min_amount`） | 同上 |
-| F-S2 | 参数输入是裸 JSON textarea。**`Settings.tsx:144-189` 已有完整 schema 驱动渲染器未复用** | `StockScan.tsx:251-260` |
-| F-S3 | 「结果 ≤100」未强制，UI 允许到 **500**（违反 PRD §5.6） | `StockScan.tsx:245,247` |
-| F-S4 | 无批量加入候选池（无 checkbox / 全选 / 批量按钮）；后端也无批量接口 | `StockScan.tsx:342-355` 仅逐行 |
-| F-S5 | 结果表缺 名称/现价/涨跌幅/成交额 + 无分页（PRD §5.6 明文） | `StockScan.tsx:315-322` |
-
-> 🐛 **附带缺陷**：`StockScan.tsx:77-80` 在**成功分支**判 `res.status===409`，但 axios 对 409 走 reject → 重复加入候选池显示「加入候选失败」而非「已在候选池」。
-
-**§5.7 Admin（3）**
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-A1 | system_log 无日期过滤、无类型过滤（后端 `log_type`/`level`/`trade_date` 已支持，从未传） | `Admin.tsx` 全文无筛选控件 |
-| F-A2 | **备份列表 + 恢复 UI 完全缺失**。`GET /api/admin/backups`、`POST .../restore` 是死路由 | `Admin.tsx` 从不调用 |
-| F-A3 | **角色管理 UI 完全缺失**。`GET /api/admin/users`、`PATCH .../role` 是死路由 | 同上 |
-
-> 🐛 `Admin.tsx:140` 用**阻塞式 `alert()`** 反馈备份结果。
-
-**§5.8 全局（4）**
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-G1 | **无当前页高亮**（`NavLink`/`useLocation` 全仓命中 = 0），用户不知身在何处 | `_shared.tsx:59` 纯 `<Link>` |
-| F-G2 | **桌面端左侧导航栏缺失**（PRD §5.8 #7：持仓/K线/选股/复盘/**候选池**/设置）；现有顶栏也缺候选池入口 | `_shared.tsx:17-26` |
-| F-G3 | **候选池页 `/candidates` 完全不存在**。后端 `GET /api/candidate`、`GET /api/watch`、`DELETE /:asset` 全是死路由 | `App.tsx:22-32` 无路由 |
-| F-G4 | 错误提示不友好：仅 `HOLDING_INSUFFICIENT` 映射中文，`TRADE_REASON_REQUIRED`/`FORBIDDEN`/`INVALID_SYMBOL`/`CONFIRM_REQUIRED` 全部裸码（违反 PRD §5.8 #9） | `TradeInput.tsx:221-233` |
-
-### 3.4 P1 — 无障碍（PRD §5.8 #10，8 项）
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-A11 | 零 `:focus-visible` 样式，键盘导航无视觉反馈（全仓 `focus-visible`/`outline` 仅 1 处，是 Admin 选中卡高亮） | `_shared.tsx` 无 |
-| F-A12 | `<label>` 无 `htmlFor`，input 无 `id`（全页） | `TradeInput.tsx:245-246`、`Review.tsx:331-337` |
-| F-A13 | `<th>` 无 `scope` | `_shared.tsx:196-201` |
-| F-A14 | 零 `aria-*`：无 `aria-live`（异步结果）、无 `aria-expanded`（Admin 卡片/Settings 折叠）、无 `role="dialog"`（Review 弹窗）、无 `aria-current`（导航） | 全仓命中 = 0 |
-| F-A15 | Review 弹窗无焦点锁定、无 ESC 关闭 | `Review.tsx:437` |
-| F-A16 | 语义标签缺失：无 `<header>`/`<main>`/`<footer>`/`<section>` | 仅 2 个 `<nav>` |
-| F-A17 | 零 Loading spinner / skeleton（全仓 `spinner`/`keyframes`/`animate` = 0），12 处纯文字「加载中...」 | 各页 |
-| F-A18 | Loading/Empty 态未组件化，散落各页硬编码 | 各页 |
-
-### 3.5 P2 — 工程质量（14 项）
-
-| # | Gap | 证据 |
-|---|-----|------|
-| F-Q1 | **无 Design Token 层**。14+ 个 raw hex 跨页重复（`#2563eb` ×14、`#6b7280` ×25）；`borderRadius` 4/6/8/10 混用；`maxWidth:1200` 在 `App.tsx:19` 和 `_shared.tsx:146` 重复 | 全前端 |
-| F-Q2 | **零 CSS 文件**（inline style 全覆盖），导致 `@media` 无法表达，只能 JS 判宽（`_shared.tsx:80-82` 注释自承） | 全前端 |
-| F-Q3 | `types.ts` 69 行**死代码**（0 引用）；各页重复声明本地类型且已漂移 | `types.ts` |
-| F-Q4 | ~25 处 `any`，且**全仓无 ESLint/Prettier 配置**（AGENTS.md §编码约束 6 要求遵循 `.eslintrc`/`.prettierrc` —— 文件不存在） | 全前端 |
-| F-Q5 | 死代码：`TradeInput.tsx:106-107` `hasPrefix`/`displayName` 两分支完全相同；`_shared.tsx:142,153` 两个导出 0 引用 | 同左 |
-| F-Q6 | 无路由级代码分割（SDD §2.12.5 要求 KLinePage/AdminPage `React.lazy`） | `App.tsx:22-32` |
-| F-Q7 | `@fastify/jwt` 已安装但**全仓 0 引用**（自研 HS256 手写 JWT） | `apps/backend/package.json` |
-| F-Q8 | `calcAllPositions` 对 SQLite **N+1**（N 次全量 replay），持仓 30 只 → 每请求 30 次全表扫描。PE4 要求 p99 ≤200ms | `services/positionCalculator.ts:59-66` |
-| F-Q9 | `rel_type='hold'` **从无任何路由写入**；`exDividendSync.ts:139-141` 查它再靠 `:150-155` 兜底扫交易表 | `configStore.ts:56` 仅 DDL |
-| F-Q10 | `/api/positions` 与 SDD §4.4 及历史文档的 `/api/holding`、`/api/trades/positions` 三处命名不一致 | `routes/trade.ts:234` |
-| F-Q11 | **后端测试存在顺序依赖/污染：全量跑与单跑结果不一致**（**T80 验证时发现**）。`validator.test.ts` 的「TUSHARE_TOKEN 未设置 → C11 结果 SKIP」用例**单独跑通过、全量跑失败** —— 已 `git stash` 掉本次改动复现，确认与 duckdb.ts 无关，是既有问题。疑似有其它测试设置了 `process.env.TUSHARE_TOKEN` 后未还原 | `tests/unit/validator.test.ts`（C11 SKIP 条件用例）；`tests/setup.ts` 只在 `!(key in process.env)` 时注入，**不会覆盖也不会清理**已存在的值 | CI 里是全量跑，所以这条用例在 CI 上大概率一直红/靠顺序侥幸通过；掩盖真实回归 |
-| **F-Q13** | **失效 token 的 401 处理会导致「登录页不存在 + 整页刷新 + 丢路径」**（**动态审计发现**）。`api/client.ts:17-22` 的 401 分支执行 `logout()` + `window.location.href = '/login'`，但 **`/login` 路由不存在** —— `App.tsx:22-32` 的 `*` 兜底重定向到 `/`，而 `/` 因 `App.tsx:15-16` `if (!token) return <Login />` 又渲染登录组件。净效果：整页刷新而非 SPA 路由跳转，**且原始路径丢失** | `api/client.ts:17-22`、`App.tsx:15-16`、`App.tsx:22-32` | 实测 B6：注入坏 token 后能弹回登录框（功能上没死循环，因为 logout 已清 token），但走的是**浏览器整页刷新**。违反 PRD §5.9「过期后自动跳转登录页并**保留当前页面路径**（登录后可返回原页面）」。另缺 `_retry` 幂等标志，并发 401 会多次触发跳转。**注：T57（refresh token）+ T64（真实 `/login` 路由 + 保留路径）是本项的前置** |
-| **F-Q14** | **Dashboard / Admin 把正常业务数值渲染成红色**（**动态审计发现，我的断言也曾因此误报**）。扫描 `[style*=dc2626]` 命中的是**持仓盈亏数字**（`-29.70`、`-3.30%`）与**校验状态词**（`ERROR`），并非错误提示 | `Dashboard.tsx` 持仓表浮动盈亏列的红色；`Admin.tsx` `RESULT_COLOR`（`:19-21`） | 语义混淆：用户在 a11y 上无法区分「这是错误消息」与「这是亏损数值」。本项由我自己的 B3 断言误报暴露 —— 说明**用颜色选择器判断语义本身不可靠**，已在 §11.0 记录方法论 |
-| **F-Q12** ⚠️**动态新增** | **响应式横向溢出**（违反 PRD §5.8 #1「全站响应式，桌面和手机功能对等」）—— 浏览器动态实测 `documentElement.scrollWidth − clientWidth`：
-
-| 视口 | dashboard | trade | review | kline | stockscan | admin |
-|---|---|---|---|---|---|---|
-| **手机 375** | **+163px** | 0 | **+250px** | 0 | **+39px** | **+416px** |
-| **平板 768** | 0 | 0 | 0 | 0 | 0 | **+23px** |
-| 桌面 1440 | 0 | 0 | 0 | 0 | 0 | 0 |
-
-6 个页面中 **4 个在手机视口溢出**，最严重 Admin 溢出 **416px**（表格 `min-width` 所致）；平板下 Admin 仍溢出 23px。根因叠加 F-Q2（零 CSS 文件 → 无 media query 能力）+ 固定 `maxWidth:1200` 双份硬编码 |
-
----
-
+> 完整清单见 `docs/audit/gap-list-2026-10-17.md`；**Gap → 任务的完整映射见本文档附录 A**。
 ## 4. 架构决策 ADR-001：**已决议** —— 前后端统一用 `fast-technical-indicators`
 
 > **决议日期**：2026-10-17。**决策人**：项目所有者。**状态**：✅ 已锁定，`T71` 解锁。
@@ -614,212 +487,22 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | Vitest 版本 | AGENTS.md §5「Vitest 5.x」 | 仓库全用 2.x，DEC-3 定不升级 | 建议改 AGENTS.md 表述为「与仓库实际版本对齐」 |
 | 行业口径 | PRD §5.6「行业选择」 | MVP 用通达信板块表近似，非严格申万/中信行业分类 | T55 交付时在 UI 标注「板块口径」，T78 审计如实记录 |
 
-## 10. 交叉审计记录：ux_v2 + frontend_audit 覆盖核对
+## 10. UX 审计记录（已迁出）
 
-> 审计日期 2026-10-17。核对对象：`docs/archive/frontend_ux_v2_SUPERSEDED-2026-10-16.md`（约 40 项）、`docs/archive/frontend-gap-audit_SUPERSEDED-2026-10-16.md`（30 项）。
+> 本章为 `frontend_ux_v2` + `frontend_gap_audit` 的交叉核对记录，属**审计发现**而非计划内容。
+> 已于 2026-10-17 迁出 → **[`docs/audit/ux-audit-2026-10-17.md`](../audit/ux-audit-2026-10-17.md)**。
+>
+> **仍然有效的 UI 规格**（Design Token 数值、按钮规格、14 类颜色、断点、宽度约束）
+> 已保全到 **[`docs/client/ui-spec.md`](ui-spec.md)** —— T62 / T63 / T65 / T67 / T68 / T76 / T79 的规格依据。
+>
+> **仍然有效的审计结论**（13 项遗漏）已并入 §5 各任务卡的「交付物」列。
+## 11. 动态审计记录（已迁出）
 
-### 10.1 覆盖情况总览
-
-| 来源 | 条目数 | 已覆盖 | 本次补入 | 未采纳 |
-|---|---|---|---|---|
-| `frontend_ux_v2.md` | ~40 | 27 | **13** | 0 |
-| `frontend-gap-audit-2026-10-16.md` | 30 | 30 | 0 | 0（1 项与 PRD 冲突，见 §10.3） |
-
-### 10.2 本次补入的 13 项（全部已在 §5 任务表落地）
-
-| # | 来源 | 项 | ux_v2 优先级 | ux_v2 估值 | 落地任务 | 代码验证 |
-|---|---|---|---|---|---|---|
-| 1 | §3.2-5 | `trade_reason` label → 「操作理由」 | **P0** | 0.1d | T68 ② | ❌ `TradeInput.tsx:313` 仍是字面量 `trade_reason` |
-| 2 | §3.1.A 建议 D | **今日动态概览卡**（资产变化/今日信号/今日成交/除权导入/重点关注） | **P0** | 0.8d | T67 ⑦ | 完全未实现 |
-| 3 | §6 Phase 1 | `<768px` Navbar hamburger 折叠菜单 | P0 | 0.8d | T76 ③ | ❌ 仅 `MobileTabBar`，无折叠菜单 |
-| 4 | §6 Phase 1 | 容器改 fluid（去固定 `maxWidth`） | P0 | 0.2d | T76 ④ | ❌ `App.tsx:19` + `_shared.tsx:146` 双份 `maxWidth:1200` |
-| 5 | §6 Phase 1 | TradeInput `formRow` 手机端垂直堆叠 | P0 | 0.3d | T68 ⑧ | ❌ `formRowStyle` 无 `flexDirection` |
-| 6 | §3.1.A 建议 C | 标的详情 Modal + K 线小图 | P1 | 2.0d | T67 ⑧ | 完全未实现 |
-| 7 | §3.1.A 建议 E | 信号 → 交易 一键快捷链路（Mini-Menu 预填） | P1 | 0.5d | T67 ⑨ | 完全未实现 |
-| 8 | §3.3-3 | Review 筛选即时生效（debounce，删「筛选」按钮） | P1 | 0.3d | T69 ⑥ | ❌ `Review.tsx:356` 仍为手动触发 |
-| 9 | §6 Phase 2 | 表格手机端改卡片列表 | P1 | 0.8d | T79 ① | 完全未实现 |
-| 10 | §3.1-5 | Dashboard 重定位为概览页（资产/快捷区/持仓Top3/信号Top5） | P1 | 1.5d | T79 ⑤ | 完全未实现 |
-| 11 | §3.1.A 建议 F | Dashboard 候选池联动面板（折叠窄条 + Top5） | P1 | 1.2d | T79 ⑥ | 完全未实现 |
-| 12 | §3.4-1 / §3.3-4 / §1-2 | h1/h2 层级统一 / 三态选中态视觉 / 导航按流程重排 | P2 | 0.6d | T76 ⑦⑧ + T69 ⑦ | ❌ `Kline.tsx:362`、`StockScan.tsx:197` 仍是 `<h2>` |
-| 13 | §6 Phase 3 / §1-3 / §3-1-4 | touch 44×44 / 面包屑 / 信号空态引导文案 | P2 | 1.1d | T79 ②③④ | — |
-
-### 10.3 一处文档冲突（按真相源优先级裁决）
-
-| 冲突 | `frontend-gap-audit` 的说法 | PRD §5.8 #7 | 裁决 |
-|---|---|---|---|
-| 桌面端左侧导航栏 | 「不变更的范围」表列为「当前 Navbar 水平链接够用」 | 明文要求「桌面端左侧导航栏：持仓/K线/选股/复盘/候选池/设置」 | **采纳 PRD** → T76 ① 保留左侧导航 |
-| 移动端底部 Tab 栏 | 列为「V2 不做」 | PRD §5.8 #6 明文要求 | 已实现（`_shared.tsx:83-124`），T76 ② 仅补候选池/设置入口 |
-
-**依据**：真相源优先级 Requirements > PRD > SDD > 本文档（见 §0）。审计报告不是真相源，其「不变更」判断不能推翻 PRD 明文要求。
-
-### 10.4 排除的疑似问题（核实后确认非缺陷）
-
-| 疑似 | 核实结果 |
-|---|---|
-| `Admin.tsx:59` 与 `:178` 重复渲染 `<h1>管理员面板</h1>` | **非缺陷**。`:59` 位于无权限 early-return 分支（`role !== 'admin'` 提前返回「无权限」卡），与 `:178` 互斥，不会同时渲染 |
-| 「其余 4 张视图 MVP 暂不访问」 | **原标注与代码不符**，已在 §SDD 3.3 修订；`marketData.ts:8-15` 早已映射 `v_stock_hfq`/`v_stock_bfq` |
-| 「`raw_symbol_name` MVP 不访问」 | **原标注与代码不符**，`routes/symbolSearch.ts:29` 早已查询；已在 SDD §3.3 修订 |
-
----
-
-## 11. 动态审计记录（2026-10-17，API + 浏览器双层）
-
-> **API 层方法**：真实启动后端（127.0.0.1:8080，`admin/admin123`），对 41 个端点逐个发真实 HTTP 请求。真实 DuckDB 行情库 `data/quotes.duckdb`（1.19 GB / 2026-10-15）。
-> **浏览器层方法**：Playwright + Chromium（`ms-playwright/chromium-1217`），1440×900 主视口 + 375/768/1440 三视口响应式，逐页 DOM 断言 + innerText dump + CSSOM `:focus` 规则扫描 + console/network 监听。Playwright 装在**临时目录**（仓库外），未污染 `package.json`。
-> 截图与原始 JSON 见 `%TEMP%/opencode/shots/`、`%TEMP%/opencode/browser-audit.json`。
-
-### 11.0 ⚠️ 动态审计自身的误报已修正（方法论记录）
-
-首轮 44 项断言报出「PASS 6 / FAIL 36」，其中 **4 项是断言写错导致的误报**，经 DOM dump 复核后修正：
-
-| 项 | 首轮误报 | 修正后 | 误报根因 |
-|---|---|---|---|
-| D1 总资产卡+双口径 | FAIL | **PASS** | 我搜 `价格收益率`，实际文案是「价格**口径**/实际**口径**」 |
-| D2 资产组成图 | FAIL | **PASS** | 我搜 `<svg>`，实际是 `conic-gradient` div |
-| R1 双口径 Tab | FAIL | **PASS** | 同 D1 标签词 |
-| R2 收益曲线 | FAIL | **PARTIAL** | 容器与月/季/年切换**已存在**，但 `asset_stat_history` 为空数组 → 走空态未渲染 SVG |
-| G1f h1/h2 一致 | PASS | **FAIL** | 该断言只跑了 Dashboard（恰好 h2=0）；代码证实 `Kline.tsx:362`、`StockScan.tsx:197` 仍是 `<h2>` |
-
-**教训**：动态审计同样会产生假阴性/假阳性。**每条 FAIL 必须用 DOM dump 或代码交叉复核后才能写进 plan**，否则会把「已有功能」误列为 gap。本次 4 项误报全部通过 dump 原文比对发现。
-
-### 11.1 浏览器动态审计最终结论（修正后）
-
-| 页面 | PASS | PARTIAL | FAIL |
-|---|---|---|---|
-| 全局/a11y | 3 | 0 | 5 |
-| Dashboard | 3 | 0 | 3 |
-| TradeInput | 0 | 0 | 6 |
-| Review | 1 | 2 | 3 |
-| Kline | 0 | 0 | 5 |
-| StockScan | 0 | 0 | 5 |
-| Admin | 0 | 1 | 3 |
-| Signals | 0 | 0 | 2 |
-| Settings | 1 | 0 | 0 |
-
-**全局层实测数据**：`aria-live`/`aria-expanded`/`aria-current`/`role=dialog`/`label[for]`/`th[scope]` **全部为 0**；`<header>/<main>/<footer>` **全部为 0**（仅 1 个 `<nav>`）；CSSOM 扫描 `:focus` 规则 **0 条**；导航无任何 active 标记；候选池入口缺失。
-
-**正面样本**：Settings 页 schema 驱动表单**已实现**（2 个插件 + checkbox，无 textarea）—— 这是全站唯一做对动态参数渲染的地方，StockScan 应复用它。
-
-### 11.2 动态审计发现的 3 个新 P0
-
-| # | Gap | 实测证据 |
-|---|---|---|
-| **P0-9** | DuckDB 连接泄漏 → 后端自锁死 | `File is already open in node.exe (PID <自身>)`；修复前第 2 次查询起全挂。✅ **已修复（T80）**，修复后 `market/latest` 连续 3 次全成功 |
-| **P0-10** | **股票 K 线 100% 500**：`v_stock_qfq.volume` 是 `BIGINT` → JS `BigInt` → `JSON.stringify` 抛错 | `sh600519`/`sz000001` → `500 "Do not know how to serialize a BigInt"`；**ETF（`sh510300`/`sz159915`）与指数（`sh000001`）正常 200**。K 线页对该错误原样显示。**长期被 P0-9 掩盖** |
-| **P0-11** | **「全市场条件选股」无可用插件**：2 个内置插件均为 `category='monitor'` 且 `paramSchema.symbol` 为 `required` | `POST /api/stockscan` 返回 `200 {"totalCandidates":0,"total":0,"results":[]}` |
-
-### 11.3 响应式横向溢出实测（新增 F-Q12）
-
-`documentElement.scrollWidth − clientWidth`：
-
-| 视口 | dashboard | trade | review | kline | stockscan | admin |
-|---|---|---|---|---|---|---|
-| **手机 375** | **+163** | 0 | **+250** | 0 | **+39** | **+416** |
-| **平板 768** | 0 | 0 | 0 | 0 | 0 | **+23** |
-| 桌面 1440 | 0 | 0 | 0 | 0 | 0 | 0 |
-
-6 页中 4 页手机溢出，Admin 最严重 416px。违反 PRD §5.8 #1。
-
-### 11.3b 补跑断言（造数据后，11 项）
-
-为触达「数据为空时看不出」的分页/信号/校验卡片逻辑，已向 `apps/backend/data/business.db` **写入测试数据**：25 笔交易尝试（成功 12 笔，`sell` 因 `HOLDING_INSUFFICIENT` 被拒属正确行为）+ 12 笔 PATCH 复盘字段 + 5 只标的加 watch/candidate。
-
-| # | 项 | 结果 | 实测 |
-|---|---|---|---|
-| B1 | Review 列表渲染 | **PASS** | `tbody tr = 16`（16 笔交易） |
-| B2 | 3 态字段（未标记/是/否） | **PASS** | 页面含「未标记」 |
-| B3 | 8 页错误提示友好度 | **FAIL ×2 / N/A ×4 / PASS ×2** | 唯一真实失败是 **K 线页 `请求失败: Do not know how to serialize a BigInt`**（P0-10 透传到 UI，印证 F-G4）。dashboard/admin 的红色元素是**正常业务数值**（F-Q14，我的断言误报） |
-| B4 | 未知路由重定向 | **PASS** | `/nonexistent-route-xyz` → 重定向到 `/` |
-| B5 | 无 token 访问 `/admin` | **PASS**（首轮误报 FAIL） | 渲染登录框，URL 保持 `/admin` 不变；登录后正常进入管理员面板 |
-| B6 | token 失效提示 | **PARTIAL** | 能弹回登录框但**无任何提示文案**；且走整页刷新 → 见 F-Q13 |
-| B7 | Signals 进页自动加载 | **FAIL** | `table=false`、`行=0`，仍显示「请点击查询按钮加载数据」 |
-| B8 | Admin 12 项校验卡片 | **FAIL**（初版误判为 PARTIAL） | 状态词仅 6 个、`checkId` 只有 `C1,C12`，显示「暂无校验记录」空态。**⚠️ 初版结论「缺的是数据、卡片渲染逻辑存在」是错的** —— 真实原因有二：① `services/validator.ts:157` 注释「MVP 只实现 C3，**C4/C5 SDD 是"略"**」，函数名 `checkC3toC5` 但 `checkId` 返回 `'C3'`、`detail` 写「C4/C5 MVP 暂缺」→ **代码只有 10 条校验，C4（退市标记）/ C5（ST 状态一致性）从未实现**；② 本库 `system_log` 校验日志为空。后果：**PRD D1「12 项校验」与 §6.2「C1-C10 通过率 ≥99.9%」不可达**，且 §5 全部任务中无任何一个负责 C4/C5 → 见 §13 B-1 |
-
-**并发观察**：全站 4xx/5xx 请求**仅 1 条** —— `GET /api/kline/sh600519?days=120&fq=qfq` → 500 BigInt。说明除 K 线外无其它隐藏接口错误。
-
-### 11.4 静态结论的动态实证（8 项 P0 全部成立）
-
-| 探针 | 实测 | 印证 |
-|---|---|---|
-| `POST /api/trades` `trade_type=add` | **400 `trade_type 非法`** | P0-1 |
-| `POST /api/trades` `trade_type=sell` | 400 `HOLDING_INSUFFICIENT`（**sell 合法**） | DEC-2 |
-| `POST /api/trades` 空 `trade_reason` | 400 `TRADE_REASON_REQUIRED` | 后端校验在 |
-| `POST /api/candidates/batch` | **404** | T56 |
-| `POST /api/auth/register` | **404** | P0-7 |
-| `POST /api/auth/refresh` | **404** | P0-8 |
-| `POST /api/admin/run-pipeline` | **404** | T59 → **§13.4 B-12 已裁决改名为 `/api/admin/datacheck/trigger`，归 T90** |
-| `POST /api/candidate` | 201，响应体仅 `{id}`，**无基准价** | P0-2 |
-
-### 11.5 顺带修正的三处判断
-
-| 项 | 原判断 | 动态实测修正 |
-|---|---|---|
-| **DEC-9 开发库路径** | 指认根目录 `data/business.db`（污染库）需清空 | 后端实际用 `apps/backend/data/business.db`（干净：1 admin / 3 笔 buy / 0 信号）。根目录那个是**孤儿**，后端根本不会碰到 |
-| Dashboard 双口径 + 资产组成图 | 列为缺失（F-D1「总资产语义错误」/ F-D6「饼图只有 2 段」） | 双口径切换与 `conic-gradient` 组成图**均已实现**；F-D1 收窄为**语义 bug**（显示 `totalCostBasis` 却标「总资产」）；F-D6 收窄为**缺点击下钻** |
-| Review 双口径 + 收益曲线 | R1 缺失 | 均**已实现**；收益曲线因无快照数据走空态。`/api/asset-stat/history` 返回 `array[0]` —— 需先跑一次 17:02 cron 写入快照才能验证曲线渲染 |
-
-### 11.6 实测发现的既有缺陷
-
-- **F-Q11 测试顺序依赖**：`validator.test.ts` C11 用例单跑通过、全量跑失败。已 `git stash` 掉 T80 改动复现，确认无关。`tests/setup.ts` 只在 `!(key in process.env)` 时注入，既不覆盖也不清理 → 记为 T81。
-- **Review 分页 `setPage` 从未被调用**：`Review.tsx:155` 定义 `[page, setPage]`，但 `:428/:430` 的按钮只调 `fetchTrades(page±1)`，**`setPage` 全文件仅出现 1 次（即定义处）**。实测数据仅 4 条（`totalPages=1`）故控件未渲染（`Review.tsx:426` 条件渲染），需 >20 条才能看到，但 bug 本身已确认 → 归入 T69。
-
-### 11.7 开发库当前状态（**用户已确认保留**）
-
-动态审计期间向 `apps/backend/data/business.db` **写入了测试数据，用户明确指示保留**。后续接手者需知道库内现状：
-
-| 数据 | 数量 | 说明 |
-|---|---|---|
-| `user_account` | 1（`admin` / admin） | 原生账号 |
-| `user_trade_record` | 16 笔（12 笔本轮造的 `批量造数-*` + 4 笔历史） | `trade_type` 分布 `{buy:12, sell:4}`。⚠️ 含 `sell` 类型 —— **T49 改 DDL 白名单时需一并处理**（本库为开发库，允许重建） |
-| 复盘字段 | 12 笔已 PATCH（`review_summary` / `remark` / `strategy_match` / `is_stop_loss`） | 三态值含 `1`/`0`/`null` |
-| `user_asset_rel` | 5 组 watch + 5 组 candidate（`sh600000` / `sh600036` / `sz000001` / `sh510300` / `sz159915`） | `candidate_base_price` 全为 NULL（P0-2 实证） |
-| `user_strategy_signal` | **0 条** | `run-signal` 实测 `{total:2, success:0, timeout:2}` → **两个插件全部 50ms 超时**，一条信号都没产出 |
-| `user_asset_stat` | 0 条 | 17:02 cron 未跑，Dashboard 显示「暂无资产快照」 |
-
-**⚠️ 新发现（未立案，待确认严重程度）**：`POST /api/admin/run-signal` 返回 `{"stats":{"total":2,"success":0,"timeout":2,"timeout":2}}` —— **两个内置插件 100% 超时**，`PLUGIN_TIMEOUT_MS = 50`。可能是：
-- 环境因素（本机 Node 25 + tsx，首跑 JIT 未预热 / DuckDB 查询耗时计入）
-- 或 `buildPluginContext` 的 DuckDB 拉取被计入 50ms 预算
-
-**影响**：M4 的「每日收盘后自动跑一遍策略信号」（Requirements §4.2 #12、F8）在本环境**无法产出信号**。因涉及 SDD §12.5 验收项 F8/PE6，建议在 T78 实测环境（DEC-5 服务器）**优先复核**此项，再决定是否需要独立 T 任务。
-
-### 11.8 当前测试基线
-
-| 套件 | 结果 |
-|---|---|
-| `tests/unit/duckdbLeak.test.ts`（T80 新增） | **4/4 通过**（git 原始版本 → 4/4 失败） |
-| `tests/unit` 全量 | 16/17 文件、**129/130 用例通过**（唯一失败 = F-Q11） |
-| `tests/integration` 全量 | **6/6 文件、58/58 用例通过** |
-| `tsc --noEmit -p apps/backend` | **0 error** |
-
-> 上述基线在 T80 修复后测得；此后未再改动生产代码（T81-T83 未开始）。
-
----
-
-
-### 11.9 本次审计的 14 项二次复核命令与结果
-
-> 记录可复现的复核命令，供后续 audit 时对照。**命令与结果均为 2026-10-17 实测**。
-
-| # | 复核项 | 命令 | 结果 |
-|---|--------|------|------|
-| 1 | positions 路由路径 | `Select-String trade.ts "\.(get|post|patch|delete)\("` | 8 条；`/api/positions`（:234）非 `/api/trades/positions` ✅ 确认 |
-| 2 | KDJ 全仓 | `Select-String -Pattern "kdj\|KDJ"` | **0** ✅ |
-| 3 | MA60 全仓 | `Select-String -Pattern "ma60\|MA60"` | **0** ✅ |
-| 4 | stockscan body 参数 | `Select-String -Pattern "body\."` | 4 条，仅 `plugin_id`/`plugin_name`/`params`/`min_amount`/`max_results` ✅ |
-| 5 | signals 筛选参数 | 读 `signal.ts:17-31` | 仅 3 个，无 `asset_code` ✅ |
-| 6 | auth 路由 | `Select-String -Pattern "\.(get|post)\("` | 仅 login + seed ✅ |
-| 7 | kline fq 分支 | `Select-String -Pattern "fq"` | `fq==='raw'?'raw_kline_daily':'v_stock_qfq'` ✅ 无 hfq/bfq |
-| 8 | NavLink | `Select-String -Pattern "NavLink"` | **0** ✅ |
-| 9 | 前端测试文件 | `Get-ChildItem -Include *.test.*,*.spec.*` | **0** ✅ |
-| 10 | trade_type CHECK | `Select-String -Pattern "trade_type IN"` | 3 处，均无 `'add'` ✅ |
-| 11 | candidate_base_price 写入 | `Select-String -Pattern "candidate_base_price\|candidate_reason\|migrated_price_mode"` | 仅 DDL 3 行，**0 写入** ✅ |
-| 12 | rel_type='hold' 写入 | `Select-String -Pattern "hold"` | 仅 DDL + `exDividendSync` 查询 + 无关 `HOLD` 方向 ✅ |
-| 13 | metrics_json 写入 | 读 `signalService.ts` INSERT | 8 列，无 `metrics_json`/`is_final` ✅ |
-| 14 | indicator 依赖 | 4 个 `package.json` grep `technicalindicators\|talib` + `node_modules` | **0** ✅ |
-
-
----
-
+> 本章为 2026-10-17 的动态审计实测记录（41 个 API 探针 + 浏览器双通道），属**审计证据**而非计划内容。
+> 已于 2026-10-17 迁出 → **[`docs/audit/dynamic-audit-2026-10-17.md`](../audit/dynamic-audit-2026-10-17.md)**。
+>
+> **其中影响验收判定的结论已前移**到 §12 Wave 出口门槛（G1-G8）；
+> **派生的任务**在 §5；**偏差登记**在 §13。
 ## 12. 验收标准
 
 > 本章定义「什么算通过」。前面各章是「做什么」与「为什么」，此处是「做完如何判定合格」。

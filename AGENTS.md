@@ -2,9 +2,54 @@
 > 本项目严格依据 **`docs/client/code_implementation_plan_v2.md`** 执行，所有开发任务以该文档为唯一真相源。
 > **该文档含 §12.7「Wave 出口门槛（硬阻断）」—— 未过 gate 的 Wave，其 commit 一律不得合入 `main`（见本文「里程碑边界与 Wave Gate」）。**
 > SDD基线文档：`docs/client/SDD.md`；产品需求：`docs/client/PRD.md`；业务规则最高优先级：`docs/client/Requirements_simplified.md`
-> 真相源优先级（冲突时从高到低）：`Requirements_simplified` > `PRD` > `SDD` > 实施计划。
 > **`docs/client/MVP_code_implementation_plan.md` 已被 `code_implementation_plan_v2.md` 超越（Phase1-4 旧任务体系，T49-T94 已完全重写），禁止再作为执行依据。**
 > 不要参考 `docs/web/` 目录下的任何文档；`docs/archive/` 下均为已归档的过期文档。
+
+## 📐 文档分层与层界规则（2026-10-17 确立，违反即视为缺陷）
+
+### 核心规则：每条事实只在它所属的那一层定义，其他层只能引用
+
+> 违反此规则已造成实际损失：**B-14（C1-C12 编号定义）** —— `Requirements_simplified.md` §7.1
+> 与 `SDD.md` §5.7 对 C3-C8 的定义**完全不同**（一为「数据新鲜度」，一为「数据内容」），
+> 而 `PRD.md` §6.4 站在 Requirements 一边。**三层文档、两套定义，潜伏 3 轮审计未被发现。**
+
+### 各层职责边界
+
+| 层 | 文档 | **只回答** | **明确不写** |
+|---|---|---|---|
+| L1 业务 | `Requirements_simplified.md` | **业务规则与不变量**（成本算法、双口径、七类交易、**C1-C12「要检什么」**）| 任何技术实现、SQL、界面细节 |
+| L2 体验 | `PRD.md` | **用户可见的旅程与交互** | 业务规则、技术契约 |
+| L2.5 规格 | `ui-spec.md` | **UI 长什么样**（Token / 组件规格 / 断点）| 什么时候做、排期 |
+| L3 契约 | `SDD.md` | **技术契约唯一权威**：API / DDL / 插件接口 / **C1-C12「怎么检」的 SQL** / 性能与安全门槛 | 用户故事、排期 |
+| L4 计划 | `code_implementation_plan_v2.md` | **任务拆解 + 排期 + 依赖 + 验收 Gate + 偏差待办** | **不复述技术契约** |
+| 决策 | `docs/adr/` | **为什么这么定** + 代价 + 备选方案否决理由 | 具体怎么做 |
+| 旁路 | `AGENTS.md`（本文）| agent 硬约束**摘要 + 指针** | 不复述细节 |
+| 旁路 | `docs/coding-standards.md` | **怎么写代码**（命名 / 风格 / 测试写法）| 不复述架构与验收 |
+
+### 冲突裁决：按域，不按扁平优先级
+
+> ⚠️ **不要用「`Requirements > PRD > SDD > plan」的扁平优先级** —— 会计规则不该压过 UX 决策，
+> 技术契约也不该压过业务要求。**按冲突的类型裁决**：
+
+| 冲突类型 | 谁赢 |
+|---|---|
+| 业务规则 / 计算口径 / 校验项定义 | **`Requirements_simplified.md`** |
+| 交互 / 界面行为 / 用户旅程 | **`PRD.md`** |
+| 技术契约（API / DDL / SQL 实现 / 性能与安全门槛）| **`SDD.md`** |
+| 「什么时候做 / 谁做 / 什么顺序」| **实施计划** |
+| 「为什么这么设计」| **`docs/adr/`（已接受 ADR 优先于 SDD 的旧表述）** |
+
+### 写入文档前的自检
+
+1. 这条事实**属于哪一层**？→ 不属于本层就别写
+2. 已有某一层定义了吗？→ **只引用，不复述**（复述即失真）
+3. 改动会不会与另一层冲突？→ 冲突时按上表裁决，并把裁决记入 `docs/adr/`
+4. 如果是**实现细节**（表名 / 列名 / API 路径）→ 一律不写进 L1/L2，只进 L3
+
+> ⚠️ **SDD §3.3「放行某张表可读」≠「已知该表字段名」。**
+> 本项目已多次因照抄未验证的表名假设（`raw_symbol_class.is_st`、`raw_hfq_factor`、
+> `/opt/invest/plugins/`）而写错代码 —— **实现前必须 `DESCRIBE` 实测**。
+> 详见实施计划 §13.1 B-1 与 T85 卡点。
 
 ## 🔒 锁定技术栈，禁止擅自修改
 1. Node版本 **≥22**（当前实测 v25.8.1）；使用 systemd 管理普通 Node 进程；**禁止使用 Bun**。
@@ -243,3 +288,4 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 黄金测试数据集 | `packages/core/tests/fixtures/golden/` | ⚠️ **目录存在但当前为空** —— 由 **T51** 填充（移动加权成本 5 场景 / RSI / MACD）。填之前「双端一致性断言」无载体可依 |
 | ADR 决策归档 | `docs/adr/` | **架构决策记录**（当前已 8 份，见 `README.md` 索引）|
 | Wave Gate 落档 | `docs/audit/wave-N-gate.md` | 每波收尾必写；**无文件 = 未执行 = FAIL** |
+| **审计记录** | `docs/audit/*.md` | 静态审计 Gap 清单、UX 交叉核对、动态探针记录（**属证据，非计划内容**）；实施计划 §3/§10/§11 已迁出至此，plan 内只留紧凑索引 |
