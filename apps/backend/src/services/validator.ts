@@ -31,6 +31,53 @@ export const TOLERANCES = {
   EASTMONEY_PRICE_DIFF: 0.02,      // C12 东财价格容差
 } as const;
 
+/**
+ * 跨源校验「执行参数」（T97）—— 抽样数 / 节流 / 退避 / 超时 / 降级阈值
+ *
+ * 与 `TOLERANCES` 的分工：`TOLERANCES` 是「比多算不算数」（判定内容），
+ * `EXEC_PARAMS` 是「怎么跑」（执行节奏）。T85 定前者，T97 定后者，二者不可互相替代。
+ *
+ * ⚠️ **C11 与 C12 的节流值不同且有据可循，严禁统一成一个常量**：
+ *   - C11 走 Tushare，有硬限额（daily 接口 50 次/分钟、每日 500 次）→ 100ms/只
+ *   - C12 走东方财富，调用无次数上限但会被软限流 → 500ms/只
+ */
+export const EXEC_PARAMS = {
+  // ── 抽样规模（Requirements §7.3「抽样 30 只 / 20 只」）──
+  C11_SAMPLE_SIZE: 30,
+  C12_SAMPLE_SIZE: 20,
+
+  // ── 节流（每只请求之间的固定间隔）──
+  C11_THROTTLE_MS: 100,
+  C12_THROTTLE_MS: 500,
+
+  // ── 单只超时 ──
+  C11_TIMEOUT_MS: 5_000,
+  C12_TIMEOUT_MS: 10_000,
+
+  // ── C12 退避重试序列：第 1 次失败等 200ms，第 2 次失败等 400ms，共重试 2 次 ──
+  RETRY_BACKOFF_MS: [200, 400],
+
+  // ── 总耗时上限（SDD §7.3 鲁棒性：跨源校验总 30s）──
+  MAX_TOTAL_MS: 30_000,
+
+  // ── 告警分级阈值（Requirements §7.3 唯一权威；匹配率目标见 PRD §6.2）──
+  C11_WARN_AT: 3,      // C11 mismatch > 3 只 → WARN（PRD §6.2 目标 ≤3/30 容差内）
+  C11_ERROR_AT: 5,     // C11 mismatch > 5 只 → ERROR
+  C12_WARN_AT: 5,      // C12 mismatch > 5 只有差异 → WARN（PRD §6.2 目标 ≤5/20 容差内）
+  C12_ERROR_GT: 0.1,   // C12 单只价差 > 0.1 元 → 计入「大幅差异只数」
+  C12_ERROR_COUNT_GT: 1, // C12  大幅差异只数 > 1 → ERROR（**幅度条件，不是计数条件**）
+
+  // ── 外部源整体不可用的降级判定（连续失败 → 整项 SKIP，不阻塞后续校验）──
+  C11_SKIP_CONSECUTIVE_FAILS: 5,
+  C12_SKIP_CONSECUTIVE_FAILS: 5,
+
+  // ── HTTP 层限流信号：命中即「跳过该只」，不再重试（SDD §7.3「被限流 → 跳过该只」）──
+  RATE_LIMIT_STATUSES: [429, 503],
+
+  // ── detail 字段截断长度，避免 system_log 被长文本撑爆 ──
+  MAX_DETAIL_CHARS: 200,
+} as const;
+
 export interface CheckSummary {
   checkId: string;        // 'C1' / 'C2' / ...
   result: CheckResult;
@@ -45,6 +92,19 @@ export interface CheckSummary {
 /** 单行包装：很多校验 SQL 只返回一行 */
 function firstRow<T>(rows: T[]): T | undefined {
   return rows.length > 0 ? rows[0] : undefined;
+}
+
+/**
+ * 节流 / 退避的唯一出口。
+ * 全部延时都必须经由本函数，禁止在文件内散落 `setTimeout(..., 字面量)`。
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
+/** 跨源校验总耗时守卫：已用时达到 MAX_TOTAL_MS 即中止剩余请求 */
+function withinTimeBudget(startedAt: number): boolean {
+  return Date.now() - startedAt < EXEC_PARAMS.MAX_TOTAL_MS;
 }
 
 /** 写 system_log（level 映射：PASS→SUCCESS, WARN→WARN, ERROR→ERROR, SKIP→SKIP） */
@@ -591,7 +651,7 @@ function parseTushareRow(
   };
 }
 
-/** 调用 Tushare 免费 daily 接口，5 秒超时 */
+/** 调用 Tushare 免费 daily 接口，超时取 EXEC_PARAMS.C11_TIMEOUT_MS */
 async function fetchTushareDaily(
   tsCode: string,
   tradeDate: string,
@@ -613,7 +673,7 @@ async function fetchTushareDaily(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(EXEC_PARAMS.C11_TIMEOUT_MS),
   });
 
   if (!res.ok) return null;
@@ -684,26 +744,37 @@ async function checkC11(tradeDate: string): Promise<CheckSummary> {
     };
   }
 
-  // 随机抽 30 只（Tushare Free 每日限额）
+  // 随机抽样 30 只（Tushare Free 每日 500 次限额，一次跑完不累积）
   const sampled = [...localRows]
     .sort(() => Math.random() - 0.5)
-    .slice(0, 30);
+    .slice(0, EXEC_PARAMS.C11_SAMPLE_SIZE);
 
   let match = 0;
   let mismatch = 0;
   let fetchFail = 0;
+  let consecutiveFail = 0;
+  let timedOut = false;
   const mismatchDetails: string[] = [];
 
   for (const row of sampled) {
+    // 总耗时守卫：超 30s 中止剩余请求，已比对的结果照常出结论
+    if (!withinTimeBudget(start)) {
+      timedOut = true;
+      break;
+    }
+
     const tsCode = convertToTsCode(row.symbol);
+    let failed = true;
     try {
       const tushare = await fetchTushareDaily(tsCode, tradeDate);
       if (!tushare) {
         fetchFail++;
       } else if (compareC11Rows(row, tushare)) {
         match++;
+        failed = false;
       } else {
         mismatch++;
+        failed = false;
         mismatchDetails.push(
           `${row.symbol}: local_close=${row.close} ts_close=${tushare.close} local_pre=${row.pre_close} ts_pre=${tushare.pre_close}`,
         );
@@ -711,27 +782,38 @@ async function checkC11(tradeDate: string): Promise<CheckSummary> {
     } catch {
       fetchFail++;
     }
+    consecutiveFail = failed ? consecutiveFail + 1 : 0;
 
-    // 100ms 节流，30 只 ≈ 3 秒完成
-    // Tushare Free 每日 500 次 / 每分钟 50 次，100ms 间隔远低于限流阈值
-    await new Promise((r) => setTimeout(r, 100));
+    // 100ms 节流/只（Tushare daily 限 50 次/分钟、每日 500 次；30 只 ≈ 3s 跑完）
+    await sleep(EXEC_PARAMS.C11_THROTTLE_MS);
   }
+
+  const abortNote = timedOut
+    ? `超时提前中止（总耗时上限 ${EXEC_PARAMS.MAX_TOTAL_MS}ms，仅比对 ${match + mismatch}/${sampled.length} 只）`
+    : '';
+  const detailTail = mismatchDetails.join('; ').slice(0, EXEC_PARAMS.MAX_DETAIL_CHARS);
 
   let result: CheckResult;
   let detail: string;
 
-  if (fetchFail >= sampled.length) {
+  if (fetchFail >= sampled.length || consecutiveFail >= EXEC_PARAMS.C11_SKIP_CONSECUTIVE_FAILS) {
+    // 外部源整体不可用（token 失效 / 429 限流耗尽 / 网络异常）→ SKIP，不阻塞后续校验
     result = 'SKIP';
-    detail = 'Tushare API 全部请求失败（可能 token 无效、429 限流或网络异常）';
+    detail = `Tushare API 整体不可用（fetchFail=${fetchFail}，连续失败 ${consecutiveFail} 次）${abortNote}`;
   } else if (mismatch === 0) {
     result = 'PASS';
-    detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）`;
-  } else if (mismatch <= 2) {
+    detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）${abortNote}`;
+  } else if (mismatch <= EXEC_PARAMS.C11_WARN_AT) {
+    // Requirements §7.3「>3 只不匹配 → WARN」：1~3 只即记 WARN，不计 PASS
     result = 'WARN';
-    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${mismatchDetails.join('; ').slice(0, 200)}`;
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
+  } else if (mismatch <= EXEC_PARAMS.C11_ERROR_AT) {
+    // 4~5 只：仍为 WARN（ERROR 只在 >5 只时触发）
+    result = 'WARN';
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
   } else {
     result = 'ERROR';
-    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${mismatchDetails.join('; ').slice(0, 200)}`;
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
   }
 
   return {
@@ -758,17 +840,27 @@ interface C12Row {
   local_qfq_close: number;
 }
 
+/** 东财单次请求的结果分类（决定是「跳过该只」还是「值得退避重试」） */
+type EmFetchOutcome =
+  | { kind: 'ok'; close: number }
+  /** 被限流（429/503）→ 直接跳过该只，不浪费重试预算（SDD §7.3「被限流 → 跳过该只」）*/
+  | { kind: 'rate_limited' }
+  /** 网络异常 / 超时 / 非 200 / 无数据 → 退避重试耗尽后跳过该只 */
+  | { kind: 'unavailable' };
+
 /**
- * 调东财免费日K接口取前复权收盘价
+ * 调东财免费日K接口取前复权收盘价（单次尝试，不含重试）
  * @param symbol  sh600000 / sz000001 / bj8xxxxx（北交所跳过）
  * @param tradeDate  YYYY-MM-DD
- * @returns 前复权收盘价；不支持市场 / 超时 / 非 200 → null
  */
-async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<number | null> {
+async function fetchEastMoneyQfqOnce(
+  symbol: string,
+  tradeDate: string,
+): Promise<EmFetchOutcome> {
   const prefix = symbol.slice(0, 2).toLowerCase();
   const code = symbol.slice(2);
   const market = prefix === 'sh' ? '1' : prefix === 'sz' ? '0' : null;
-  if (!market) return null;
+  if (!market) return { kind: 'unavailable' };
 
   const begEnd = tradeDate.replace(/-/g, '');
   const url =
@@ -784,21 +876,42 @@ async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<num
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         Referer: 'https://quote.eastmoney.com/',
       },
-      signal: AbortSignal.timeout(10_000), // 单只 10s 超时
+      signal: AbortSignal.timeout(EXEC_PARAMS.C12_TIMEOUT_MS), // 单只 10s 超时
     });
-    if (!res.ok) return null;
+    const isRateLimited = (EXEC_PARAMS.RATE_LIMIT_STATUSES as readonly number[]).includes(res.status);
+    if (isRateLimited) return { kind: 'rate_limited' };
+    if (!res.ok) return { kind: 'unavailable' };
     const json = (await res.json()) as {
       data?: { klines?: string[] | null };
     };
     const klines = json?.data?.klines;
-    if (!Array.isArray(klines) || klines.length === 0) return null;
-    // "2024-01-02,10.50,10.60,10.40,10.55,1234567,12967890.00,0,3.21,2.05,1.23"
+    if (!Array.isArray(klines) || klines.length === 0) return { kind: 'unavailable' };
+    // fields2 顺序 = f51 日期, f52 开盘, f53 收盘, f54 最高, f55 最低, f56 量, f57 额, f58 振幅, f59 涨跌幅, f60 涨跌额, f61 换手
+    // => 收盘价是 parts[2]。2026-10-17 真实响应实测：1262.95,1288.00,1288.00,1261.00 与本地 close=1288 吻合
     const parts = String(klines[0]).split(',');
     const close = Number(parts[2]);
-    return Number.isFinite(close) ? close : null;
+    return Number.isFinite(close) ? { kind: 'ok', close } : { kind: 'unavailable' };
   } catch {
-    return null;
+    return { kind: 'unavailable' };
   }
+}
+
+/**
+ * 带退避重试的东财取价：失败（网络/超时/非 200）按 200ms → 400ms 退避重试 2 次，
+ * 仍失败则该只记为「跳过」（返回 null），绝不抛出、不阻塞后续标的。
+ * 被限流（429/503）不重试 —— 立刻跳过该只。
+ */
+async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<number | null> {
+  let outcome = await fetchEastMoneyQfqOnce(symbol, tradeDate);
+  for (
+    let attempt = 0;
+    outcome.kind === 'unavailable' && attempt < EXEC_PARAMS.RETRY_BACKOFF_MS.length;
+    attempt++
+  ) {
+    await sleep(EXEC_PARAMS.RETRY_BACKOFF_MS[attempt]);
+    outcome = await fetchEastMoneyQfqOnce(symbol, tradeDate);
+  }
+  return outcome.kind === 'ok' ? outcome.close : null;
 }
 
 async function checkC12(tradeDate: string): Promise<CheckSummary> {
@@ -815,49 +928,81 @@ async function checkC12(tradeDate: string): Promise<CheckSummary> {
       };
     }
 
-    // 随机抽 20 只
-    const sampled = [...localRows].sort(() => Math.random() - 0.5).slice(0, 20);
+    // 随机抽 20 只（Requirements §7.3）
+    const sampled = [...localRows]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, EXEC_PARAMS.C12_SAMPLE_SIZE);
 
     let match = 0;
     let mismatch = 0;
+    let bigDiff = 0;
     let fetchFail = 0;
+    let consecutiveFail = 0;
+    let sourceDown = false;
+    let timedOut = false;
     const details: string[] = [];
 
     for (const row of sampled) {
+      // 总耗时守卫：超 30s 中止剩余请求，已比对的结果照常出结论
+      if (!withinTimeBudget(start)) {
+        timedOut = true;
+        break;
+      }
+
       const emClose = await fetchEastMoneyQfq(row.symbol, tradeDate);
       if (emClose === null) {
         fetchFail++;
+        consecutiveFail++;
       } else {
+        consecutiveFail = 0;
         const diff = Math.abs(row.local_qfq_close - emClose);
         if (diff < TOLERANCES.EASTMONEY_PRICE_DIFF) {
           match++;
         } else {
           mismatch++;
+          if (diff > EXEC_PARAMS.C12_ERROR_GT) bigDiff++;
           details.push(
             `${row.symbol}: local=${row.local_qfq_close} em=${emClose} diff=${diff.toFixed(4)}`,
           );
         }
       }
 
-      // 500ms 节流，避免东财限流
-      await new Promise<void>((r) => setTimeout(r, 500));
+      // 连续多只失败 → 判定东财整体不可用，立即整项 SKIP（不阻塞后续校验）
+      if (consecutiveFail >= EXEC_PARAMS.C12_SKIP_CONSECUTIVE_FAILS) {
+        sourceDown = true;
+        break;
+      }
+
+      // 500ms 节流/只，避免东财限流
+      await sleep(EXEC_PARAMS.C12_THROTTLE_MS);
     }
+
+    const abortNote = timedOut
+      ? `超时提前中止（总耗时上限 ${EXEC_PARAMS.MAX_TOTAL_MS}ms，仅比对 ${match + mismatch}/${sampled.length} 只）`
+      : '';
+    const detailTail = details.join('; ').slice(0, EXEC_PARAMS.MAX_DETAIL_CHARS);
 
     let result: CheckSummary['result'];
     let detail: string;
 
-    if (fetchFail >= 5) {
+    if (sourceDown || fetchFail >= sampled.length) {
+      // 外部源整体不可用 / 全部请求失败 → SKIP（不是 ERROR），不阻塞后续校验
       result = 'SKIP';
-      detail = `东财 API 连续 ${fetchFail} 只请求失败 → 整项 SKIP`;
+      detail = `东财 API 整体不可用（fetchFail=${fetchFail}，连续失败 ${consecutiveFail} 次）${abortNote}`;
     } else if (mismatch === 0) {
       result = 'PASS';
-      detail = `20 只全 PASS（match=${match} fetchFail=${fetchFail}）`;
-    } else if (mismatch <= 2) {
-      result = 'WARN';
-      detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${details.join('; ').slice(0, 200)}`;
-    } else {
+      detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）${abortNote}`;
+    } else if (bigDiff > EXEC_PARAMS.C12_ERROR_COUNT_GT) {
+      // Requirements §7.3：>1 只差异 > 0.1 元 → ERROR（幅度条件，与 mismatch 计数无关）
       result = 'ERROR';
-      detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${details.join('; ').slice(0, 200)}`;
+      detail = `mismatch=${mismatch}（其中 ${bigDiff} 只差异 >${EXEC_PARAMS.C12_ERROR_GT} 元）match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
+    } else if (mismatch <= EXEC_PARAMS.C12_WARN_AT) {
+      result = 'WARN';
+      detail = `mismatch=${mismatch}（≤${EXEC_PARAMS.C12_WARN_AT}，PRD §6.2 容差内）match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
+    } else {
+      // >5 只有差异仍记 WARN：Requirements §7.3 对 C12 的 ERROR 只由「幅度」触发，计数只决定 WARN 级别
+      result = 'WARN';
+      detail = `mismatch=${mismatch}（>${EXEC_PARAMS.C12_WARN_AT}，均在 ${EXEC_PARAMS.C12_ERROR_GT} 元以内）match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
     }
 
     return {
