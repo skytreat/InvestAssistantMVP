@@ -384,15 +384,17 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 包体积 | 略小 | ~120KB gzip |
 | 风险 | 2 | 生态稍小于 React；K 线图 React 绑定更丰富 |
 
-**推荐方案 A**：React + Vite。理由：React 生态与团队技术栈匹配；~~KLineChart（klinecharts）官方 React 绑定更完善~~ —— **K 线图库已按 §2.5 裁决改为自写 Canvas，不再影响本项选型**。
+**推荐方案 A**：React + Vite。理由：React 生态与团队技术栈匹配。**K 线图库已按 §2.5 复审改用 `klinecharts@10.1.0`（只画不算）**，本项选型不受影响。
 
 ---
 
 ### 2.5 K 线图库选型
 
-> ✅ **已裁决（2026-10-17，DEC-11 / plan §13.4）：不引入第三方图表库，改用自写 Canvas + SVG。** 下方原「方案 A klinecharts」为历史推演，**不再是推荐**。
+> ⚠️ **初稿裁决已推翻（2026-10-17，DEC-11 / ADR-001 修订）**：本节初稿结论为「不引入第三方图表库，自写 Canvas + SVG」。
+> 2026-10-17 复审后**改为选用方案 A `klinecharts@10.1.0`** —— 初稿的两条否决依据经实测不成立，
+> 详见本节末「历史：已否决的自绘方案」与 ADR-001 修订记录。
 
-#### ~~方案 A：klinecharts~~（**已否决**）
+#### 方案 A：`klinecharts`（✅ **最终选用**，2026-10-17 复审）
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
@@ -416,22 +418,79 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 图表渲染 | 中 | DOM + Canvas 混合，性能不如专业 K 图库 |
 | 风险 | 4 | 副图联动、十字光标、缩放平移等需大量定制 |
 
-#### ✅ 最终选定：自写 Canvas + SVG（零第三方图表库）
+#### ✅ 最终选定：`klinecharts@10.1.0`（**只画不算**，值由前端灌入）
+
+> ⚠️ **2026-10-17 修订（DEC-11 / ADR-001）**：本节初稿结论为「自写 Canvas + SVG，零第三方图表库」。
+> 该结论的两条理由经实测不成立（bundle 与「已有实现无需重写」），已改为选用 `klinecharts`。
+> **初版结论与推翻理由保留在下方「历史：已否决的自绘方案」中，不作删除。**
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
-| 实现成本 | 2 | MVP 只需 K 线 + 成交量 + MA/RSi/MACD 副图，Canvas 足够；**现有 `Kline.tsx` 已是 Canvas 实现** |
-| 图表渲染 | 良好 | Canvas 绘制，满足 PE3「首渲染 ≤500ms」 |
-| 风险 | **1** | **无第三方库的版本升级 / API 变动 / 授权风险**；代价是交互（十字光标、缩放）需自行实现（归 T70） |
+| 实现成本 | **1** | 零依赖、Apache-2.0、Snyk 0 漏洞；**十字光标 / 缩放平移 / hover tooltip / 响应式 / 副图窗格全部内置** |
+| 图表渲染 | 优秀 | Canvas，v10.1.0（2026-10-14 发布），周下载 3.9 万、4.0k star |
+| 风险 | 2 | ⚠️ **v10 是破坏性大版本**（2026-07-10 重写数据加载/布局/指标/overlay）；网上 9.x 教程全部作废，升级须重读 CHANGELOG |
 
-**理由**：① MVP 图表复杂度可控，不值得引入 150KB 依赖；② 避免第三方库的 API 变动风险（`chartOverlay` 这类插件元数据要与之耦合）；③ 依赖表已因指标库增加一项，再加图表库会放大前端 bundle 与升级成本。
-**替代 klinecharts 的 `chartOverlayConfig` 机制**：改为由后端插件返回 `chartOverlay` 元数据（SDD §5.3），前端自绘。**该字段由 T93 补齐。**
+**核心用法：注册自定义指标，`calc` 直接返回前端预计算的值，库完全不参与计算。**
+
+```ts
+registerIndicator({
+  name: 'MACD',
+  calc: () => rows.map(r => ({ dif: r.dif, dea: r.dea, macd: r.macd })), // 忽略入参，返回预计算值
+  figures: [{ key: 'dif', title: 'DIF', type: 'line' },
+            { key: 'dea', title: 'DEA', type: 'line' },
+            { key: 'macd', title: 'MACD', type: 'histogram' }],
+})
+```
+
+⚠️ **绝不可使用 klinecharts 的内置指标**（`chartOverlayConfig` 声明式配置）——
+那会让「后端 core 算一套 + 前端库算一套」产生**双口径**（与当初否决 `technicalindicators` 同类问题）。
+**spike 实测已验证灌值可行：`V6_EXACT_MATCH: true`（逐位相等）。**
+
+**指标归属分界**（不是「递归 vs 非递归」，而是「参数是否可调 + 是否用于决策」）：
+
+| 图上元素 | 计算方 | 理由 |
+|---|---|---|
+| MA(5/10/20/60) 主图叠加 / MACD / RSI / **KDJ** | **前端** | 参数固定、纯装饰；两端同为 JS（IEEE754）同公式必然逐位相同 |
+| 成交量 | 后端下发原始 `volume` | 原始字段无需计算 |
+| **信号标记 + hover 指标明细** | **后端**（插件引擎）| 参数每用户可调，是**决策依据** → 必须可复现、可追溯 |
+
+> KDJ 两份实现（core + 前端）由 **T51 golden 逐位断言**兜底，这是 golden 的设计用途。
+
+#### ⚠️ v10 API 变更清单（9.x 写法全部失效）
+
+| 9.x | v10.1 实际 |
+|---|---|
+| `chart.applyNewData(klines)` | ❌ 不存在 → `setDataLoader({ getBars })` + `setSymbol()` + `setPeriod()` + `resetData()` |
+| `chart.getIndicatorSeries()` | ❌ 不存在 → `getIndicators()` |
+| 灌值写 `figures` | 灌值靠 **`calc` 返回值 → `result`** |
+
+**体积实测**：`index.esm.js` 677KB（未压缩；官方称 gzip ≈40KB）。本地 SPA 不走公网，**bundle 不构成否决理由**。
+
+#### 历史：已否决的自绘方案（保留供追溯）
+
+~~#### ~~最终选定：自写 Canvas + SVG（零第三方图表库）~~（**2026-10-17 已推翻**）~~
+
+| 维度 | 初稿评分 | 初稿说明（**部分不成立**）|
+|---|---|---|
+| 实现成本 | 2 | ~~「现有 `Kline.tsx` 已是 Canvas 实现」~~ → **实测不成立**：该文件 465 行里十字光标 / 缩放 / tooltip / KDJ / 响应式**全部 0 命中**，恰是 T70 最缺的部分 |
+| 图表渲染 | 良好 | Canvas 绘制，满足 PE3「首渲染 ≤500ms」 |
+| 风险 | **1**（初稿评分） | ~~「无第三方库的版本升级 / API 变动 / 授权风险」~~ → **方向反了**：真实风险在交互自研的边界 bug（v10.0.4 一次修 6 个拖拽/缩放/十字线状态 bug），而非库升级 |
+
+~~**初稿理由**：① MVP 图表复杂度可控，不值得引入 150KB 依赖（❌ 体积实测 gzip ≈40KB，本地不走公网）；
+② 避免第三方库的 API 变动风险（❌ 方向反了）；③ 依赖表已增一项，再加图表库会放大 bundle 与升级成本（❌ bundle 非瓶颈）。~~
 
 ---
 
 ### 2.6 技术指标计算库选型
 
-> ✅ **已裁决（2026-10-17，DEC-1）：选用 `fast-technical-indicators@1.1.6`（精确锁版本，禁 `^`）。** 前端与 `packages/core` **各自直接依赖同一版本**，不跨 workspace 复用实现。
+> ⚠️ **已裁决（2026-10-17，DEC-1）：选用 `fast-technical-indicators@1.1.6`（精确锁版本，禁 `^`）。**
+> 前端与 `packages/core` **各自直接依赖同一版本**，不跨 workspace 复用实现
+> （AGENTS.md 硬约束：`apps/frontend` 禁止 import `packages/core`）。
+>
+> ⚠️ **落地状态（2026-10-17 实测）**：该库**尚未安装** —— 不在任何 `package.json`，`node_modules` 中也不存在。
+> `apps/backend/src/services/indicators.ts` 的注释自承「MVP 简化：直接 re-export core 的指标计算，
+> **不直接引入 fast-technical-indicators**」。即 **DEC-1 至今未真正执行**，当前指标由 `packages/core` 手写。
+> **T51 为落地前置**（装依赖 + 适配层 + golden）。
 
 #### ~~方案 A：technicalindicators~~（**已否决**）
 
@@ -556,7 +615,7 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 | 2 | 业务层数据库 | SQLite + WAL | PostgreSQL | etcd | 50MB 量级无需独立服务 |
 | 3 | 后端框架 | Fastify | Express | NestJS | Schema-first 开发 + 高性能冗余 |
 | 4 | 前端框架 | React + Vite | Vue 3 + Vite | — | K 图绑定 + 团队偏好 |
-| 5 | K 线图 | ~~klinecharts~~ | TradingView LC | ECharts | **✅ 已裁决：不引第三方库，自写 Canvas（§2.5）** |
+| 5 | K 线图 | ~~klinecharts~~ | TradingView LC | ECharts | **✅ 已改用 klinecharts@10.1.0（§2.5 复审修订，只画不算）** |
 | 6 | 指标计算库 | ~~technicalindicators~~ | TA-Lib | 无 | **✅ 已裁决：`fast-technical-indicators@1.1.6`（§2.6），KDJ 自写** |
 | 7 | 调度机制 | tdx2db: systemd timer + Fastify: 内部 cron | 全部内部 cron | xxl-job | Go 二进制独立化 |
 | 8 | 反向代理 | Caddy | Nginx + certbot | — | Let's Encrypt 零运维 |
@@ -890,7 +949,7 @@ export default instance;
 | 策略 | 实现方式 | 预期效果 |
 |------|---------|---------|
 | 代码分割（路由级） | KLinePage / AdminPage 用 `React.lazy + Suspense` | K 线图独立 chunk ≈ 80KB，不阻塞首屏 |
-| 按需加载 klinecharts | ~~`import("klinecharts")`~~ | **已移除** —— K 线图改为自写 Canvas（§2.5），不再有按需加载需求 | — |
+| 按需加载 klinecharts | `import("klinecharts")` | **保留** —— §2.5 复审改用 klinecharts@10.1.0 后，K 线页仍按需加载（SDD §2.12.5 要求 `React.lazy`）| 待 T70 |
 | Vite 生产优化 | `manualChunks` 拆分：react + zustand 公共 chunk、axios chunk、business chunk | 公共依赖复用 |
 | 压缩 | gzip + brotli（Caddy 自动） | 总体 gzip ≈ 150KB（原始需求验收标准：首屏 ≤ 1.5s）|
 | 图片 | 全部用 SVG / data URL，不引入图片资源 | 避免图片请求 |
