@@ -852,7 +852,7 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | S-5 | ~~SDD C12 节流数值自相矛盾~~ | ✅ **已修（2026-10-17）**：实测发现并非「矛盾」而是**三处不同语义** —— C12 节流应为 **500ms/只**（代码 `validator.ts:780` 实测），初稿的「200ms」出现在架构图、时序图、§12 场景表共 3 处，**全部改为 500ms**；`200ms→400ms` 是**重试退避**不是节流，保留 |
 | S-6 | ~~SDD §5.7 写「第 2 段（17:02）调度校验」，与 §5.1「第 2 段 = 17:01 校验」矛盾~~ | ✅ **已修（2026-10-17）**：§5.7 节首的「第 2 段（17:02）」已改为 **17:01**（与 §5.1 及 `scheduler.ts:126` 的 `1 17 * * 1-5` 一致）；全 SDD 复查无残留 |
 | S-7 | **React Query（SDD §2.12.3 强制）缺失** | 实测前端只装 `zustand`，**`@tanstack/react-query` 未装、0 处 `useQuery`** | 🟡 **已登记 → T98 ②**：建议 MVP 不引入（数据获取全走 `api/client.ts` + `useState`，工作量不足以证明引入成本），改为**下调 SDD §2.12.3 声明**。改 SDD 成本远低于引入一个数据层框架 |
-| S-8 | 插件目录路径不统一 | SDD §5.3 `/opt/invest/plugins/` vs AGENTS.md 与 SDD 其他处 `/opt/invol/` |
+| S-8 | 插件目录 `/opt/invest/plugins/` vs `/opt/invol/` | ✅ **已复核，主体为误报 + 1 处真实残留**：<br>① **SDD §5.3 与 AGENTS.md §插件引擎均为 `/opt/invol/plugins/strategies/`，一致**；AGENTS.md 中出现的 `/opt/invest/plugins/` 是「照抄未验证路径假设」的反面**举例**，非定义<br>② **真实残留**：SDD systemd unit（`Environment=DATA_DIRECTORYS=/opt/invol/plugins/custom`）—— 实测**代码从不读取 `DATA_DIRECTORYS`**，且路径 `custom` ≠ §5.3 的 `strategies`。属 SDD 声明了一个不存在的配置项，随 T86 运维段一并清理 |
 | S-9 | Playwright | ⏸️ **保持已登记偏差**：SDD §12.1「MVP 可选，Phase 4 启用」vs 实施计划 T77「前端 E2E 标 V2」。**非矛盾而是可选性差异**，保留登记即可，无需裁决 |
 | S-10 | **PE4 未指定被压测路由** | ✅ **已修（2026-10-17）**：随 B-12「以 SDD §4.4 为准」裁决，SDD §4.4 无 `/api/holding/current`（本就不存在），PE4 实测对象应为 **`/api/holding`**（T90 落地后） |
 
