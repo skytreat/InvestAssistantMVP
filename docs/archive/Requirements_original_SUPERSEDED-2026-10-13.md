@@ -1,3 +1,7 @@
+> **⚠️ 已归档（2026-10-17）**：本文为需求 **V1.1（2026-10-13，OCI ARM VM 架构）** 原始版，
+> 已被 [docs/client/Requirements_simplified.md](../client/Requirements_simplified.md)（V1.0，2026-10-14，桌面本地架构）取代。
+> **架构前提已完全不同**（本文 15 处 OCI / 9 处桌面；现行版 0 处 OCI / 6 处桌面）。
+> 业务规则以 Requirements_simplified.md 为准，本文仅作历史留档，**不得作为执行依据**。
 # 个人投资助手 OCI ARM VM + DuckDB需求规格文档（Requirements）
 
 **版本：V1.1**

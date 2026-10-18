@@ -4,12 +4,12 @@
 >
 > | 问题 | 去哪查 |
 > |---|---|
-> | 做什么、排期、任务拆解 | [`code_implementation_plan_v2.md`](code_implementation_plan_v2.md) |
-> | **技术契约**（API / DDL / 插件 / 验收标准 / 插件接口）| **[`SDD.md`](SDD.md)** ← 技术契约唯一权威 |
-> | **为什么这么设计**（决策 + 代价 + 备选方案）| **[`../adr/`](../adr/README.md)** |
+> | 做什么、排期、任务拆解 | [code_implementation_plan_v2.md](client/code_implementation_plan_v2.md) |
+> | **技术契约**（API / DDL / 插件 / 验收标准 / 插件接口）| **[SDD.md](client/SDD.md)** ← 技术契约唯一权威 |
+> | **为什么这么设计**（决策 + 代价 + 备选方案）| **[docs/adr/](adr/README.md)** |
 > | 业务规则 / 交互需求 | `Requirements_simplified.md` / `PRD.md` |
-> | UI 长什么样 | [`ui-spec.md`](ui-spec.md) |
-> | agent 硬约束 | [`../../AGENTS.md`](../../AGENTS.md) |
+> | UI 长什么样 | [ui-spec.md](client/ui-spec.md) |
+> | agent 硬约束 | [AGENTS.md](../AGENTS.md) |
 
 > ⚠️ **本文档不重复 SDD / ADR 的内容**，只给指针。历史教训：早前版本曾把
 > 「DDL 用 `CREATE TABLE IF NOT EXISTS`」「API 路由连字符分隔」「禁止 `msg` 字段」
@@ -48,17 +48,17 @@ interface TradeRecord {}
 - 布尔字段：`is_xxx`，例 `is_deleted`
 - 时间戳：`updated_at` / `created_at`
 - 主键与唯一键：**各表不同，不套用通式** → 以
-  [SDD §3.2 DDL](SDD.md) 为准（例：`user_trade_record` 主键为 `id`，
-  唯一键为 `(user_id, asset_code, trade_type, trade_date, trade_time)` —— 见 [ADR-003](../adr/ADR-003-trade-dedup-semantics.md)）
+  [SDD §3.2 DDL]](client/SDD.md) 为准（例：`user_trade_record` 主键为 `id`，
+  唯一键为 `(user_id, asset_code, trade_type, trade_date, trade_time)` —— 见 [ADR-003](adr/ADR-003-trade-dedup-semantics.md)）
 
 ### API 路由
-- **以 [SDD §4.4 核心 API 路由清单](SDD.md) 为唯一权威**（22 条）。
+- **以 [SDD §4.4 核心 API 路由清单]](client/SDD.md) 为唯一权威**（22 条）。
 - 命名风格：**斜杠分段，无连字符**（例 `/api/quote/:symbol/kline`）。
   ❌ 不要自造 `/api/trade/add` 这类连字符路径。
 
 ### 错误码
 - `UPPER_SNAKE_CASE`，例 `HOLDING_INSUFFICIENT`
-- **完整列表见 [SDD §4.3](SDD.md)**（唯一权威）。
+- **完整列表见 [SDD §4.3]](client/SDD.md)**（唯一权威）。
   ❌ 早期版本称列表在 `packages/core/src/error-codes.ts` —— **该文件不存在**。
 
 ## 3 Import / 模块导入规范
@@ -85,7 +85,7 @@ interface TradeRecord {}
 - 备份优先 `db.backup(path)`；或 `PRAGMA wal_checkpoint(TRUNCATE)` + `VACUUM INTO`
 - 索引随建表定义；联合索引字段顺序按业务查询优先级
 
-> ⚠️ **DDL 变更方式不要凭直觉**，判据见 **[AGENTS.md「DDL 变更判据」](../../AGENTS.md)**：
+> ⚠️ **DDL 变更方式不要凭直觉**，判据见 **[AGENTS.md「DDL 变更判据」](../AGENTS.md)**：
 > `CREATE TABLE IF NOT EXISTS` **只对「表不存在」生效**，无法改已存在表的 CHECK / UNIQUE。
 > 改约束必须**幂等表重建**（先例 `configStore.ts:164` / `:167`）。
 > 口诀：**只加列 → ALTER；碰约束 → 表重建。**
@@ -118,16 +118,16 @@ interface TradeRecord {}
   `exit_code` 成功 / 失败**两条路径都要覆盖**
 - 测试 case 须覆盖：正常流程、边界值、异常失败场景
 
-> ⚠️ **测试分层与端口**（详细表见 [AGENTS.md](../../AGENTS.md)）：
+> ⚠️ **测试分层与端口**（详细表见 [AGENTS.md](../AGENTS.md)）：
 > `tests/integration/` 用 `app.inject()`，**不占端口**，
 > 因此**测不了 CORS / HTTPS / 性能**（`inject()` 绕过 HTTP 传输层）。
 > 这三类必须放 `tests/http/` 并**真 listen** —— 放 integration 会得到**假绿**。
 
 ## 9 后端响应与错误码
 
-- 统一 envelope：**以 [SDD §4.2](SDD.md) 为唯一权威**；落地分两阶段，见 [ADR-002](../adr/ADR-002-api-envelope-and-error-codes.md)
+- 统一 envelope：**以 [SDD §4.2]](client/SDD.md) 为唯一权威**；落地分两阶段，见 [ADR-002](adr/ADR-002-api-envelope-and-error-codes.md)
   （`T89a` Wave 1 加字段 / `T89b` Wave 8 删 `success`）
-- 状态码以 [SDD §4.3](SDD.md) 的 HTTP 列为准（例 `HOLDING_INSUFFICIENT` → **409**）
+- 状态码以 [SDD §4.3]](client/SDD.md) 的 HTTP 列为准（例 `HOLDING_INSUFFICIENT` → **409**）
 - ✅ **错误响应含 `message` 字段**（中文文案，供前端直接展示）
   > ❌ 早期版本写「禁止额外 msg 字段」—— **与 SDD §4.2 示例直接矛盾**，且会导致
   > 前端拿不到中文文案、只能显示裸错误码。
@@ -162,7 +162,7 @@ interface TradeRecord {}
 ❌ 不要物理删除业务记录，全部软删除 `is_deleted = 1`
 ❌ token 明文打印日志、前端明文展示 token
 ❌ 拼接 SQL 字符串
-❌ 引入第三方图表库（K 线图用自写 Canvas —— 见 [ADR-001](../adr/ADR-001-frontend-backend-stack.md)）
+❌ 引入第三方图表库（K 线图用自写 Canvas —— 见 [ADR-001](adr/ADR-001-frontend-backend-stack.md)）
 ❌ 升级 Vitest 到 5.x
 
 ## 12 机器强制执行（**当前尚未落地**）
@@ -177,12 +177,12 @@ interface TradeRecord {}
 
 > ⚠️ **早期版本把上述全部写成「已存在」，实际一个都没有。** 在 T86 落地前，
 > 「机器强制执行」只存在于本文档，**无任何自动化校验** —— 写代码时不要假设 lint 会拦住你。
-> 覆盖率门槛冻结理由与恢复义务见 [ADR-006](../adr/ADR-006-engineering-gates-and-wave-acceptance.md)。
+> 覆盖率门槛冻结理由与恢复义务见 [ADR-006](adr/ADR-006-engineering-gates-and-wave-acceptance.md)。
 
 ## 13 项目目录结构
 
-> **权威定义在 [AGENTS.md 第 3 条](../../AGENTS.md)**（含 npm workspaces 配置、跨 workspace 依赖规则图），
-> 完整 `src/` 子模块展开见 [SDD §1.5.4](SDD.md)。
+> **权威定义在 [AGENTS.md 第 3 条](../AGENTS.md)**（含 npm workspaces 配置、跨 workspace 依赖规则图），
+> 完整 `src/` 子模块展开见 [SDD §1.5.4]](client/SDD.md)。
 > **如需修改目录结构，必须先改 AGENTS.md。**
 
 ```
