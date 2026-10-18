@@ -172,6 +172,40 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
       expect(rows[0].asset_code).toBe('sh600000');
       expect(rows[0].strategy_match).toBeNull();
 
+      // 3b. T87：trade_time 已由 created_at 迁移而来，且为合法 HH:mm:ss
+      expect(rows[0].trade_time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+
+      // 3c. T87 + T49：UNIQUE 已含 trade_time，trade_type CHECK 已含 add
+      const ddl = (store.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
+        .get() as { sql: string }).sql;
+      expect(ddl).toContain('trade_time');
+      expect(ddl).toMatch(/UNIQUE\s*\(user_id, asset_code, trade_type, trade_date, trade_time\)/);
+      expect(ddl).toContain("'add'");
+      expect(ddl).not.toMatch(/IN \([^)]*'sell'/);
+
+      // 3d. 迁移后可按新唯一键追加同日的第二笔（不同成交时间）
+      // 先补 user_account —— legacy 表只有 trade_record，FK 目标不存在会直接违例
+      store.db.prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role)
+         VALUES (1, 'legacy_user', 'dummy-hash', 'user')`,
+      ).run();
+      expect(() =>
+        store.db.prepare(
+          `INSERT INTO user_trade_record
+           (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee)
+           VALUES (1, 'sh600000', 'buy', '2025-01-01', '09:30:01', 50, 10, 0)`,
+        ).run(),
+      ).not.toThrow();
+      // 同日 + 同成交时间 → 唯一键冲突（quantity 不同也冲突，quantity 不进主键）
+      expect(() =>
+        store.db.prepare(
+          `INSERT INTO user_trade_record
+           (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee)
+           VALUES (1, 'sh600000', 'buy', '2025-01-01', '09:30:01', 999, 10, 0)`,
+        ).run(),
+      ).toThrow(/UNIQUE/);
+
       // 4. 新列可写（三态 0/1 合法，2 被 CHECK 拦）
       store.db.prepare('UPDATE user_trade_record SET strategy_match = 1').run();
       expect((store.db.prepare('SELECT strategy_match FROM user_trade_record').get() as any).strategy_match).toBe(1);
