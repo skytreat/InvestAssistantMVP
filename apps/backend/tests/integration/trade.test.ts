@@ -40,7 +40,7 @@ describe('Trade · 买入 + 持仓查询', () => {
       headers: authHeaders(),
       payload: {
         asset_code: TRADE_CODE, trade_type: 'buy',
-        trade_date: TRADE_DATE, quantity: 100, price: 10.0, fee: 5,
+        trade_date: TRADE_DATE, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 5,
         trade_reason: '集成测试买入',
       },
     });
@@ -81,8 +81,8 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'sell',
-        trade_date: TRADE_DATE, quantity: 999, price: 11.0,
+        asset_code: TRADE_CODE, trade_type: 'reduce',
+        trade_date: TRADE_DATE, trade_time: '09:00:02', quantity: 999, price: 11.0,
         trade_reason: '测试卖出超持仓',
       },
     });
@@ -98,8 +98,8 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'sell',
-        trade_date: sellDate, quantity: 100, price: 11.0,
+        asset_code: TRADE_CODE, trade_type: 'reduce',
+        trade_date: sellDate, trade_time: '09:00:03', quantity: 100, price: 11.0,
         trade_reason: '测试清仓卖出',
       },
     });
@@ -115,7 +115,7 @@ describe('Trade · 参数校验', () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, quantity: 0, price: 10 },
+      payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:04', quantity: 0, price: 10 },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -124,7 +124,7 @@ describe('Trade · 参数校验', () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, quantity: -1, price: 10 },
+      payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:05', quantity: -1, price: 10 },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -133,7 +133,7 @@ describe('Trade · 参数校验', () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, quantity: 10, price: -1 },
+      payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:06', quantity: 10, price: -1 },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -142,7 +142,7 @@ describe('Trade · 参数校验', () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { trade_type: 'buy', trade_date: TRADE_DATE, quantity: 10, price: 10 },
+      payload: { trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:07', quantity: 10, price: 10 },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -151,29 +151,38 @@ describe('Trade · 参数校验', () => {
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
-      payload: { asset_code: TRADE_CODE, trade_type: 'fly', trade_date: TRADE_DATE, quantity: 10, price: 10 },
+      payload: { asset_code: TRADE_CODE, trade_type: 'fly', trade_date: TRADE_DATE, trade_time: '09:00:08', quantity: 10, price: 10 },
     });
     expect(res.statusCode).toBe(400);
   });
 
   it('duplicate（同日同标的同方向）→ 409 TRADE_DUPLICATE', async () => {
     // 先清一次（前一组测完持仓=0，这次新开）
-    const TRADE2 = 'szTEST02';
-    const BUY_DATE = new Date().toISOString().slice(0, 10);
-    bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(bundle.userId, TRADE2);
+const TRADE2 = 'szTEST02';
+const BUY_DATE = new Date().toISOString().slice(0, 10);
+bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(bundle.userId, TRADE2);
 
-    await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
-      headers: authHeaders(),
-      payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, quantity: 10, price: 10, trade_reason: 'dup1' },
-    });
-    const dup = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
-      headers: authHeaders(),
-      payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, quantity: 20, price: 11, trade_reason: 'dup2' },
-    });
-    expect(dup.statusCode).toBe(409);
-    const body = JSON.parse(dup.body);
-    expect(body.error).toBe('TRADE_DUPLICATE');
-  });
+await bundle.app.inject({
+  method: 'POST', url: '/api/trades',
+  headers: authHeaders(),
+  payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, trade_time: '09:00:09', quantity: 10, price: 10, trade_reason: 'dup1' },
+});
+// T87：同日同标的同类型、**不同成交时间** → 201 追加成功（B-11 裁决：同日分笔可追加）
+const appended = await bundle.app.inject({
+  method: 'POST', url: '/api/trades',
+  headers: authHeaders(),
+  payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, trade_time: '09:00:10', quantity: 20, price: 11, trade_reason: 'dup2' },
+});
+expect(appended.statusCode).toBe(201);
+
+// T87：**相同**成交时间才算重复 → 409 TRADE_DUPLICATE
+const dup = await bundle.app.inject({
+  method: 'POST', url: '/api/trades',
+  headers: authHeaders(),
+  payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, trade_time: '09:00:10', quantity: 30, price: 12, trade_reason: 'dup3' },
+});
+expect(dup.statusCode).toBe(409);
+const body = JSON.parse(dup.body);
+expect(body.error).toBe('TRADE_DUPLICATE');
+});
 });

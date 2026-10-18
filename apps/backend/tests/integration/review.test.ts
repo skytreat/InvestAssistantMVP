@@ -37,9 +37,9 @@ beforeAll(async () => {
   // 卖出 40 @ 12 → 盈亏 +80（盈利）
   // 卖出 60 @ 8  → 盈亏 -120（亏损）
   // 胜率 50%，平均盈利 80，平均亏损 120 → 盈亏比 0.67
-  await postTrade({ asset_code: CODE, trade_type: 'buy', trade_date: D1, quantity: 100, price: 10.0, fee: 0, trade_reason: '复盘测试买入' });
-  await postTrade({ asset_code: CODE, trade_type: 'sell', trade_date: D2, quantity: 40, price: 12.0, fee: 0, trade_reason: '复盘测试止盈' });
-  await postTrade({ asset_code: CODE, trade_type: 'clear', trade_date: D3, quantity: 60, price: 8.0, fee: 0, trade_reason: '复盘测试止损' });
+  await postTrade({ asset_code: CODE, trade_type: 'buy', trade_date: D1, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 0, trade_reason: '复盘测试买入' });
+  await postTrade({ asset_code: CODE, trade_type: 'reduce', trade_date: D2, trade_time: '09:00:02', quantity: 40, price: 12.0, fee: 0, trade_reason: '复盘测试止盈' });
+  await postTrade({ asset_code: CODE, trade_type: 'clear', trade_date: D3, trade_time: '09:00:03', quantity: 60, price: 8.0, fee: 0, trade_reason: '复盘测试止损' });
 });
 
 afterAll(async () => {
@@ -86,7 +86,7 @@ describe('Review · PATCH 复盘 4 字段', () => {
 
   it('PATCH strategy_match=0 → 0（三态"否"，非 NULL）', async () => {
     const list = await bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${CODE}&trade_type=sell`, headers: authHeaders(),
+      method: 'GET', url: `/api/trades?asset_code=${CODE}&trade_type=reduce`, headers: authHeaders(),
     });
     const tradeId = JSON.parse(list.body).data[0].id;
 
@@ -96,7 +96,7 @@ describe('Review · PATCH 复盘 4 字段', () => {
     });
 
     const after = await bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${CODE}&trade_type=sell`, headers: authHeaders(),
+      method: 'GET', url: `/api/trades?asset_code=${CODE}&trade_type=reduce`, headers: authHeaders(),
     });
     expect(JSON.parse(after.body).data[0].strategy_match).toBe(0);
   });
@@ -109,7 +109,7 @@ describe('Review · PATCH 复盘 4 字段', () => {
 
     const patch = await bundle.app.inject({
       method: 'PATCH', url: `/api/trades/${before.id}`, headers: authHeaders(),
-      payload: { trade_type: 'sell', price: 999, quantity: 1, remark: '只改备注' },
+      payload: { trade_type: 'reduce', price: 999, quantity: 1, remark: '只改备注' },
     });
     expect(patch.statusCode).toBe(200);
 

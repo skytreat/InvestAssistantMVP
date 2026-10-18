@@ -34,12 +34,17 @@ function seed(uid: number, code: string) {
   ).run(uid, `user_${uid}`, 'dummy-hash');
 }
 
+/** T87：trade_time 必填，测试里按序号生成以避免同日撞唯一键 */
+const insSeq = new Map<number, number>();
 function ins(uid: number, code: string, type: string, date: string, qty: number, price = 10) {
+  const seq = (insSeq.get(uid) ?? 0) + 1;
+  insSeq.set(uid, seq);
+  const time = `${String(9 + Math.floor(seq / 3600)).padStart(2, '0')}:${String(Math.floor(seq / 60) % 60).padStart(2, '0')}:${String(seq % 60).padStart(2, '0')}`;
   db.db.prepare(
     `INSERT INTO user_trade_record
-     (user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted)
-     VALUES (?, ?, ?, ?, ?, ?, 0, 0)`,
-  ).run(uid, code, type, date, qty, price);
+     (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+  ).run(uid, code, type, date, time, qty, price);
 }
 
 describe('T84 时点回放：日期交错不能绕过校验', () => {
@@ -69,7 +74,7 @@ describe('T84 时点回放：日期交错不能绕过校验', () => {
     const uid = 8003, code = 'sh600519';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-09-01', 100);
-    ins(uid, code, 'sell', '2026-09-10', 60);
+    ins(uid, code, 'reduce', '2026-09-10', 60);
 
     // 09-10 当天第一笔已卖 60，剩 40；第二笔卖 50 必须被拒
     expect(validateSufficientHolding(uid, code, 50, '2026-09-10')).toBe(false);
@@ -136,7 +141,7 @@ describe('T84 calcPosition：asOf 时点参数', () => {
     const uid = 8011, code = 'sh600000';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-08-01', 100);
-    ins(uid, code, 'sell', '2026-08-06', 150);  // 超卖 50 —— 存量脏数据
+    ins(uid, code, 'reduce', '2026-08-06', 150);  // 超卖 50 —— 存量脏数据
 
     const pos = calcPosition(uid, code);
     expect(pos.totalQuantity).toBe(0);

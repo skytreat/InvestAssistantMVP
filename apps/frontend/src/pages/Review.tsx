@@ -45,7 +45,7 @@ interface ReviewStats {
 }
 
 const TRADE_TYPE_LABEL: Record<string, string> = {
-  buy: '买入', sell: '卖出', reduce: '减仓', clear: '清仓',
+  buy: '买入', add: '加仓', reduce: '减仓', clear: '清仓',
   dividend: '分红', bonus: '送股', transfer: '转增',
 };
 
@@ -331,7 +331,7 @@ export default function Review() {
         <label style={{ fontSize: 14 }}>交易类型：</label>
         <select style={inputStyle} value={tradeType} onChange={(e) => setTradeType(e.target.value)}>
           <option value="">全部</option>
-          {['buy','sell','reduce','clear','dividend','bonus','transfer'].map((t) => (
+          {['buy','add','reduce','clear','dividend','bonus','transfer'].map((t) => (
             <option key={t} value={t}>{TRADE_TYPE_LABEL[t]}</option>
           ))}
         </select>

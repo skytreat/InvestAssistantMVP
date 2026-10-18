@@ -14,6 +14,7 @@ interface DbTradeRow {
   asset_code: string;
   trade_type: string;
   trade_date: string;
+  trade_time: string;
   quantity: number;
   price: number;
   fee: number;
@@ -24,7 +25,7 @@ function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
   switch (row.trade_type) {
     case 'buy':
       return { date: row.trade_date, direction: 'buy', quantity: row.quantity, price: row.price, fee: row.fee };
-    case 'sell':
+    case 'add':
     case 'reduce':
     case 'clear':
       return { date: row.trade_date, direction: 'sell', quantity: row.quantity, price: row.price, fee: row.fee };
@@ -46,15 +47,19 @@ export function calcPosition(
   userId: number,
   assetCode: string,
   asOfDate?: string,
+  asOfTime?: string,
 ): PositionResult {
   const db = ConfigStore.getInstance().db;
   const rows = db.prepare(
-    `SELECT id, user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted
+    `SELECT id, user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted
      FROM user_trade_record
      WHERE user_id = ? AND asset_code = ? AND is_deleted = 0
-       AND (? IS NULL OR trade_date <= ?)
-     ORDER BY trade_date ASC, id ASC`,
-  ).all(userId, assetCode, asOfDate ?? null, asOfDate ?? null) as DbTradeRow[];
+       AND (? IS NULL OR (trade_date < ? OR (trade_date = ? AND trade_time <= ?)))
+     ORDER BY trade_date ASC, trade_time ASC, id ASC`,
+  ).all(
+    userId, assetCode,
+    asOfDate ?? null, asOfDate ?? null, asOfDate ?? null, asOfTime ?? '23:59:59',
+  ) as DbTradeRow[];
 
   const coreTrades = rows
     .map(mapToCoreTrade)
@@ -89,9 +94,10 @@ export function validateSufficientHolding(
   assetCode: string,
   sellQty: number,
   tradeDate?: string,
+  tradeTime?: string,
 ): boolean {
   if (sellQty <= 0) return false;
-  const pos = calcPosition(userId, assetCode, tradeDate);
+  const pos = calcPosition(userId, assetCode, tradeDate, tradeTime);
   return pos.totalQuantity >= sellQty;
 }
 
@@ -123,8 +129,8 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
     `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
      FROM user_trade_record
      WHERE user_id = ? AND is_deleted = 0
-       AND trade_type IN ('buy','sell','reduce','clear')
-     ORDER BY trade_date ASC, id ASC`
+       AND trade_type IN ('buy','add','reduce','clear')
+     ORDER BY trade_date ASC, trade_time ASC, id ASC`
   ).all(userId) as Array<Omit<ClosedTradePnl, 'realized_pnl'> & { fee: number }>;
 
   // 每个标的独立维护持仓量与成本基

@@ -12,25 +12,56 @@ import { writeSystemLog } from '../services/logger.js';
 
 const REDUCE_TYPES = new Set(['sell', 'reduce', 'clear']);
 
+/**
+ * T87：`trade_time` 格式校验（秒级 HH:mm:ss）
+ *
+ * B-11 裁决：`trade_time` 必填无默认 —— 不能给默认时间，因为那样
+ * 「同一天同一秒录入两笔」会静默撞唯一键，用户无从理解为何被拒。
+ * 缺失时前端预填当前时间；后端只做格式与范围校验。
+ */
+export function validateTradeTime(t: unknown): t is string {
+  if (typeof t !== 'string') return false;
+  if (!/^\d{2}:\d{2}:\d{2}$/.test(t)) return false;
+  const h = Number(t.slice(0, 2));
+  const m = Number(t.slice(3, 5));
+  const s = Number(t.slice(6, 8));
+  return h < 24 && m < 60 && s < 60;
+}
+
+/** 当前本地时间，秒级 HH:mm:ss */
+export function nowTradeTime(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export async function registerTradeRoutes(app: FastifyInstance) {
   // 录入交易
   app.post('/api/trades', async (request, reply) => {
     try {
       const body = request.body as {
-        asset_code: string;
+asset_code: string;
         trade_type: 'buy' | 'sell' | 'reduce' | 'clear' | 'dividend' | 'bonus' | 'transfer';
         trade_date: string;
+        trade_time?: string;   // T87：秒级 HH:mm:ss，必填无默认
         quantity: number;
         price: number;
         fee?: number;
         trade_reason?: string;
         remark?: string;
-        system_followed?: number;  // T39: 系统信号驱动的交易，由 cron 自动设置
+        system_followed?: number;  // T39: 由信号触发的导入（cron 自动导入）
       };
       const user = (request as any).user as { sub: number; username: string; role: string };
       if (!body?.asset_code || !body?.trade_type || !body?.trade_date ||
           body.quantity == null || body.price == null) {
-        return reply.code(400).send({ success: false, error: '必填字段缺失' });
+        return reply.code(400).send({ success: false, error: '必要字段缺失' });
+      }
+      // T87：trade_time 必填且格式合法
+      if (!validateTradeTime(body.trade_time)) {
+        return reply.code(400).send({
+          success: false, error: 'PARAM_INVALID',
+          message: 'trade_time 必填，格式 HH:mm:ss（秒级）',
+        });
       }
       if (body.quantity <= 0 || body.price < 0) {
         return reply.code(400).send({ success: false, error: '数量>0、价格>=0' });
@@ -56,7 +87,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 if (REDUCE_TYPES.has(body.trade_type)) {
         // T84（P0-13）：必须传 trade_date —— 以卖出发生时点回放，
         // 否则尚未发生的买入会支撑更早的卖出（日期交错绕过校验）
-        if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity, body.trade_date)) {
+        if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity, body.trade_date, body.trade_time)) {
           // B-10 裁决：HOLDING_INSUFFICIENT = HTTP 409（非 400）
           return reply.code(409).send({
             success: false,
@@ -69,10 +100,10 @@ if (REDUCE_TYPES.has(body.trade_type)) {
       const db = ConfigStore.getInstance().db;
       const info = db.prepare(
         `INSERT INTO user_trade_record
-         (user_id, asset_code, trade_type, trade_date, quantity, price, fee, trade_reason, remark, system_followed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, remark, system_followed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
-        user.sub, body.asset_code, body.trade_type, body.trade_date,
+        user.sub, body.asset_code, body.trade_type, body.trade_date, body.trade_time,
         body.quantity, body.price, body.fee ?? 0, tradeReason, body.remark ?? null,
         body.system_followed ?? null
       );
