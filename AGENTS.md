@@ -21,10 +21,13 @@
 | L2 体验 | `PRD.md` | **用户可见的旅程与交互** | 业务规则、技术契约 |
 | L2.5 规格 | `ui-spec.md` | **UI 长什么样**（Token / 组件规格 / 断点）| 什么时候做、排期 |
 | L3 契约 | `SDD.md` | **技术契约唯一权威**：API / DDL / 插件接口 / **C1-C12「怎么检」的 SQL** / 性能与安全门槛 | 用户故事、排期 |
+| **L3.5 行情** | `docs/tdx2db_schema.md`<br>`docs/tdx2db_schema_dump.sql` | **DuckDB 行情层的真实表/视图结构**（由 `tdx2db` Go 二进制写入，**代码只读**）| 业务规则、后端 API |
 | L4 计划 | `code_implementation_plan_v2.md` | **任务拆解 + 排期 + 依赖 + 验收 Gate + 偏差待办** | **不复述技术契约** |
+| **L5 运维** | `docs/deploy.md` | **怎么部署与运维**（systemd unit / 环境变量 / 目录权限）| 业务规则、任务排期 |
 | 决策 | `docs/adr/` | **为什么这么定** + 代价 + 备选方案否决理由 | 具体怎么做 |
 | 旁路 | `AGENTS.md`（本文）| agent 硬约束**摘要 + 指针** | 不复述细节 |
 | 旁路 | `docs/coding-standards.md` | **怎么写代码**（命名 / 风格 / 测试写法）| 不复述架构与验收 |
+| 证据 | `docs/audit/` `docs/archive/` | 审计发现与历史留档 | **不得作为执行依据** |
 
 ### 冲突裁决：按域，不按扁平优先级
 
@@ -280,12 +283,15 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 需求权威源 | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
 | PRD | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
 | SDD 设计文档 | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
-| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T94，48 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
+| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T98，52 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
 | **决策归档** | `docs/adr/` | **已接受 ADR 8 份** —— 决策结论 + 理由 + 代价 + 备选方案否决理由；索引见 `docs/adr/README.md`。**本文档与实施计划只引用决策，不重复决策理由** |
-| ~~旧实施计划~~ | `docs/client/MVP_code_implementation_plan.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系）|
+| ~~旧实施计划~~ | `docs/archive/MVP_code_implementation_plan_SUPERSEDED-2026-10-17.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系），已归档 |
+| ~~旧需求原件~~ | `docs/archive/Requirements_original_SUPERSEDED-2026-10-13.md` | ❌ **需求 V1.1（OCI 架构）**，已被 `Requirements_simplified.md` 取代，已归档 |
+| **行情层 Schema** | `docs/tdx2db_schema.md`<br>`docs/tdx2db_schema_dump.sql` | **DuckDB 真实表/视图结构**（tdx2db Go 二进制写入，Node 代码**只读**）。⚠️ **实现前必须实测 `DESCRIBE`** —— SDD §3.3「放行某张表可读」≠ 已知字段名 |
+| **部署运维** | `docs/deploy.md` | systemd unit / 环境变量 / 目录权限 / 日志位置 |
+| UI 规格 | `docs/client/ui-spec.md` | UI Token / 组件规格 / 断点 |
 | 编码规范 | `docs/coding-standards.md` | 命名、类型、SQL、错误处理、测试规范 |
 | 编码规则摘要 | `AGENTS.md`（本文） | AI agent 行为规则 + 架构硬约束 + 禁止 Out-Scope |
 | 黄金测试数据集 | `packages/core/tests/fixtures/golden/` | ⚠️ **目录存在但当前为空** —— 由 **T51** 填充（移动加权成本 5 场景 / RSI / MACD）。填之前「双端一致性断言」无载体可依 |
-| ADR 决策归档 | `docs/adr/` | **架构决策记录**（当前已 8 份，见 `README.md` 索引）|
 | Wave Gate 落档 | `docs/audit/wave-N-gate.md` | 每波收尾必写；**无文件 = 未执行 = FAIL** |
 | **审计记录** | `docs/audit/*.md` | 静态审计 Gap 清单、UX 交叉核对、动态探针记录（**属证据，非计划内容**）；实施计划 §3/§10/§11 已迁出至此，plan 内只留紧凑索引 |

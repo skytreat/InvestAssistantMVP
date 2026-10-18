@@ -1,10 +1,22 @@
 # MVP 代码实施计划（Phase 1-4 任务拆解）
 
-> **唯一真相源**（按优先级排序）：
-> 1. [`Requirements_simplified.md`](Requirements_simplified.md) — **业务规则权威**（WHAT，MVP In-Scope 边界、双口径公式、验收标准）
-> 2. [`PRD.md`](PRD.md) — **用户体验权威**（用户故事、交互细节、页面布局）
-> 3. [`SDD.md`](SDD.md) — **工程落地权威**（技术选型、DDL、时序图、API 设计）
-> 4. [`MVP_code_implementation_plan.md`](MVP_code_implementation_plan.md) — **实施顺序**（本文档，T 任务拆解）
+> # ⛔ 本文档已归档，禁止作为执行依据
+>
+> **已被 [`../client/code_implementation_plan_v2.md`](../client/code_implementation_plan_v2.md)（T49-T98，52 任务）完全取代。**
+> 下文原「唯一真相源」清单**已全部失效**，其中两条还带着**已被推翻的错误**：
+> - 「扁平优先级 Requirements > PRD > SDD > plan」—— **错**。现行按**域**裁决，见 `../../AGENTS.md` 分层职责表
+> - `MVP_code_implementation_plan.md` 指向本文档自身（自引用，已失效）
+> - Phase 1-4 体系与 T49-T98 完全不对应
+>
+> 现行真相源：`../client/Requirements_simplified.md`（业务规则）/ `../client/PRD.md`（交互）/ `../client/SDD.md`（技术契约）/ `../client/code_implementation_plan_v2.md`（排期）/ `../adr/`（决策理由）。
+>
+> **以下内容仅作历史留档。**
+>
+> ~~**唯一真相源**（按优先级排序）：
+> 1. `Requirements_simplified.md` — 业务规则权威
+> 2. `PRD.md` — 用户体验权威
+> 3. `SDD.md` — 工程落地权威
+> 4. `MVP_code_implementation_plan.md` — 实施顺序（本文档，T 任务拆解）~~
 >
 > **架构硬约束**：AGENTS.md 锁死 3 个 workspace（`packages/core` / `apps/backend` / `apps/frontend`）、better-sqlite3 推荐、Node ≥22、禁止前端直接 import core
 > **任务粒度**：1-3 人天；每个 Phase 最后一条 commit 打 `fix:` 或 `test:` 前缀后验收清卡
