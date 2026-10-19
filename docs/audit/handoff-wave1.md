@@ -13,6 +13,10 @@ Wave 1 的 21 个 T 任务已在本地完成并 commit，测试全绿（backend 
 但**尚未 push、尚未跑 G1~G8 gate、尚未写 `docs/audit/wave-1-audit.md`**。
 下一台机器的任务是：**push → 跑 gate → 写审计文档 → 合并 PR #15 → 开始 Wave 2**。
 
+> 🔴 **先读 §4.1 再开始** —— 本波有 **6 个任务的代码未经独立审查**（sub-agent 被取消后由主 agent
+> 接手修复并提交，其中 T57 是从压扁的 10K 单行文件重建的）。「测试全绿」**不等于**「代码是对的」。
+> gate 阶段的职责就是补上这双眼睛。
+
 ---
 
 ## 1. 立即要做的 3 件事
@@ -56,9 +60,14 @@ git push origin fix/t84-holding-sufficient   # 推 21 个 commit 到 PR #15
 | `09d5e17` | — | 流程文档：交付单元改为「一个 Wave 一个 PR」 |
 | `4fa301f` | T84 | 持仓充足性校验改时点回放（P0-13） |
 
-**已知偏差（需在 gate 文档里如实登记）**：`455dd8b` 把 T88/T83/T96/T93 合并成一条 commit。
-原因是 4 个任务在 `pluginEngine.ts` 的 `builtinPlugins` 与 `executePlugin` 两区域交织，
-`t88-plugin-timing.test.ts` 也跨 3 个任务断言，强切会产生半拉子中间提交，破坏可 revert 前提。
+**已知偏差（需在 gate 文档里如实登记）**：
+
+1. `455dd8b` 把 T88/T83/T96/T93 合并成一条 commit。
+   原因是 4 个任务在 `pluginEngine.ts` 的 `builtinPlugins` 与 `executePlugin` 两区域交织，
+   `t88-plugin-timing.test.ts` 也跨 3 个任务断言，强切会产生半拉子中间提交，破坏可 revert 前提。
+2. 🔴 **6 个任务的代码未经独立审查**（T51 / T52 / T53 / T55 / T57 / T94）——
+   sub-agent 被取消后由主 agent 接手修复并提交，其中 T57 是从压扁的 10K 单行文件重建的。
+   详见 **§4.1**，gate 必须补审。
 
 ---
 
@@ -96,6 +105,43 @@ T59 + T89a + T90（同批）→ T60 → T92 → 跑 G1~G8 → 写 docs/audit/wav
 | L | T93 未把 `PluginSignal.signalType` 改名为 SDD §5.3 的 `direction`（改名会打断 `routes/stockscan.ts:165` / `routes/admin.ts`） | T88 批 agent | T90 批次一并裁决 |
 | M | `ParamField.type` 保留了 SDD 没有的 `'integer'`；`options` 仍是 `string[]`（SDD 是 `{label,value}[]`） | T88 批 agent | 前端表单依赖现状，需裁决是否改 SDD |
 | N | `signal.ts` 改升序后，`Dashboard.tsx:172` 用 `page_size=5` 无日期过滤 → 仪表盘会显示**最旧** 5 条 | T54 agent | **需确认是否回退为 DESC** |
+
+---
+
+## 4.1 🔴 代码审查覆盖度不足 —— 6 个任务的代码未经独立审查（gate 必须补审）
+
+上一节的 14 项问题**全部来自 sub-agent 的自述报告**。但本波有 6 个任务是
+**sub-agent 被取消后、由主 agent 接手修复并提交**的 —— 这些代码**只有一双眼睛看过**，
+且部分是我在「半成品」状态下重建的。**gate 时必须补审，不要默认它们是对的。**
+
+### 4.1.1 未经审查的 6 个任务
+
+| T | sub-agent 原始产出的状态 | 主 agent 接手时做了什么 | 审查风险 |
+|---|---|---|---|
+| T51 | 完整可用 | 仅补 `apps/backend/package.json` 依赖声明（card 验收点 4 要求三处都装） | 🟢 低。adapters 的「只做两件事」（数组补齐 + 柱值×2）是否真的没夹带第三件事，需核 |
+| T52 | 完整可用 | **未改** —— 原样通过，golden 逐位相等断言直接绿 | 🟡 中。**KDJ 是唯一递归指标，core 与前端两份实现「原样入库」**。需确认两份确实同公式同初值（不是恰好在测试数据上相同） |
+| T53 | 完整可用 | **未改** —— 原样通过 | 🟡 中。`fq` 四值映射 `v_stock_qfq/v_stock_bfq/v_stock_hfq/raw_kline_daily` **表名未经 DESCRIBE 实测核实**（AGENTS.md 铁律要求实测；SDD §3.3「放行可读」≠ 已知表名） |
+| T55 | ⚠️ 实现有 bug | 修 `buildPoolQuery` 的 `bind()` 求值顺序错位；改 1 处错误测试断言 | 🟡 中。JOIN 的 3 张表（`raw_symbol_class` / `raw_basic_daily` / `raw_tdx_blocks_member`）列名同样是**照卡片抄的** |
+| T57 | 🔴 **半成品** | **大面积重建**：文件被压成 1 行 10K 字符、缺 2 个 `}`、hook 同步（Fastify v5 挂死）、`registerUser` helper 未定义、refresh 段 5 处注册漏带 admin token | 🔴 **高**。从压扁单行重建到 367 行，测试 25/25 绿，**但断言是否覆盖 plan 第 250 行 T57 卡片要求的全部越权场景，必须逐条对照复核** |
+| T94 | ⚠️ 实现可用、测试错 | 修插件 fixture 缺 `return`（`({...})` 在 IIFE 里被解析成块语句）；修 hook 同步 | 🟡 中。`reloadPluginsFromDir` 会对**每个**文件重跑 `createPluginSandbox` → 沙盒顶层代码被执行两次（副作用 + 性能），需确认是否可接受 |
+
+### 4.1.2 必须补做的三件事
+
+1. **对照 plan 卡片逐条核 T57 的断言覆盖度** —— 卡片要求「注册入口的越权用例必须齐
+   （对应 `cba9556` 修复的同类漏洞，不得重开）」。我重建了文件，但没独立验证
+   「齐」这个字。
+2. **DESCRIBE 实测 T53/T55 用到的 6 个表/视图真实列名** ——
+   `v_stock_qfq` / `v_stock_bfq` / `v_stock_hfq` / `raw_kline_daily` /
+   `raw_symbol_class` / `raw_basic_daily` / `raw_tdx_blocks_member`。
+   **AGENTS.md 已明令「实现前必须 DESCRIBE 实测」，本波这两处是照卡片抄的，属未闭环。**
+3. **T52 的两份 KDJ 实现做「非测试数据」交叉验证** —— 用另一组随机行情喂给两端，
+   确认逐位相等（当前只验证了 golden 那一组 221 条）。
+
+### 4.1.3 方法论提醒
+
+本波有 **4 次**「照抄注释/推测就动手」类缺陷（见 §5），根因是**没有独立第二双眼睛**。
+本节列的 6 个任务正是在「sub-agent 产出的代码没有第二个人看过」的状态下入库的。
+**gate 阶段的职责就是补上这双眼睛** —— 不要因为「测试全绿」就放行。
 
 ---
 
