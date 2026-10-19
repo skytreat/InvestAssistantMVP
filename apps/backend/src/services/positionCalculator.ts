@@ -24,8 +24,12 @@ interface DbTradeRow {
 function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
   switch (row.trade_type) {
     case 'buy':
-      return { date: row.trade_date, direction: 'buy', quantity: row.quantity, price: row.price, fee: row.fee };
+    // 🔴 §4-A（P0）：`add`（加仓）**必须**映射为 buy —— 它是买入，仓位应增加。
+    //   原实现把 add / reduce / clear 一起映射为 sell → **加仓后持仓直接归零**，
+    //   且已实现盈亏被错记为卖出价差（实测：买 100@10 + 加仓 100@12 → 期望 200 股/均价 11，
+    //   实得 0 股/已实现 200）。T49 落地了 `add` 类型但成本计算分支没跟上。
     case 'add':
+      return { date: row.trade_date, direction: 'buy', quantity: row.quantity, price: row.price, fee: row.fee };
     case 'reduce':
     case 'clear':
       return { date: row.trade_date, direction: 'sell', quantity: row.quantity, price: row.price, fee: row.fee };

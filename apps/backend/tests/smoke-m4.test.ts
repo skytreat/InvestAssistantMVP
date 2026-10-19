@@ -78,6 +78,59 @@ afterAll(async () => {
 // ─────────────────────────────────────────────────────────────
 // 1. 登录与鉴权
 // ─────────────────────────────────────────────────────────────
+/**
+ * 🔴 T81 顺序依赖修复（本文件）：「交易闭环」是**顺序型场景测试**
+ *   （建仓 → 加仓 → 减仓 → 分红 → 复盘归因），原实现把每次 POST 放在各自的 `it` 里，
+ *   依赖「前一个 it 先跑」。T81 的 `sequence.shuffle` 一开就随机失败
+ *   （实测：建仓用例看到 1100 而非 1000；复盘 PATCH 找不到 trade）。
+ *   ⚠️ 试过 `describe.sequential` —— **在 vitest 2.1.9 + 配置级 `sequence.shuffle: true`
+ *   下不生效**（该配置会连 sequential 块内部一起打乱）。
+ *   → 改为：**整个场景在文件级 `beforeAll` 里按顺序构造完并存快照，各 `it` 只做断言**。
+ *   断言内容与原来完全一致，只是数据来源从「上一个 it 的副作用」变成「快照」。
+ */
+const snap: Record<string, any> = {};
+
+const postTrade = (payload: Record<string, unknown>) =>
+  ctx.bundle.app.inject({ method: 'POST', url: '/api/trades', headers: adminHeaders(), payload });
+const getPosition = () =>
+  ctx.bundle.app.inject({ method: 'GET', url: `/api/positions/${TRADE_CODE}`, headers: adminHeaders() });
+
+beforeAll(async () => {
+  snap.build = await postTrade({
+    asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-05', trade_time: '09:00:01',
+    quantity: 1000, price: 10.0, fee: 5, trade_reason: 'M4 端到端建仓',
+  });
+  snap.noReason = await postTrade({
+    asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-06', trade_time: '09:00:02',
+    quantity: 100, price: 10,
+  });
+  snap.add = await postTrade({
+    asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-10', trade_time: '09:00:03',
+    quantity: 500, price: 12.0, fee: 0, trade_reason: 'M4 加仓',
+  });
+  snap.oversell = await postTrade({
+    asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-02', trade_time: '09:00:04',
+    quantity: 99999, price: 15.0, trade_reason: 'M4 超卖校验',
+  });
+  snap.reduce = await postTrade({
+    asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-10', trade_time: '09:00:05',
+    quantity: 400, price: 15.0, fee: 2, trade_reason: 'M4 减仓止盈',
+  });
+  snap.posBeforeDividend = await getPosition();
+  snap.dividend = await postTrade({
+    asset_code: TRADE_CODE, trade_type: 'dividend', trade_date: '2026-03-01', trade_time: '09:00:06',
+    quantity: 1100, price: 0.5, trade_reason: '2025 年度分红',
+  });
+  snap.posAfterDividend = await getPosition();
+  snap.positions = await ctx.bundle.app.inject({
+    method: 'GET', url: '/api/positions', headers: adminHeaders(),
+  });
+  snap.reduceList = await ctx.bundle.app.inject({
+    method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
+  });
+  ctx.tradeId = JSON.parse(snap.build.body).data?.trade_id;
+});
+
 describe('M4 · 登录与鉴权', () => {
   it('admin 凭据可登录拿 JWT', async () => {
     const res = await ctx.bundle.app.inject({
@@ -125,14 +178,8 @@ describe('M4 · 登录与鉴权', () => {
 // 2. 交易录入 → 持仓 → 双口径收益
 // ─────────────────────────────────────────────────────────────
 describe('M4 · 交易闭环与双口径收益', () => {
-  it('买入建仓 → 201，返回持仓与 trade_id', async () => {
-    const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-05', trade_time: '09:00:01',
-        quantity: 1000, price: 10.0, fee: 5, trade_reason: 'M4 端到端建仓',
-      },
-    });
+  it('买入建仓 → 201，返回持仓与 trade_id', () => {
+    const res = snap.build;
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
@@ -141,54 +188,29 @@ describe('M4 · 交易闭环与双口径收益', () => {
     expect(body.data.position.avgCost).toBeCloseTo(10.005, 4);
     // 坑 1：返回字段是 trade_id，不是 trade.id
     expect(body.data.trade_id).toBeGreaterThan(0);
-    ctx.tradeId = body.data.trade_id;
   });
 
-  it('买入类缺 trade_reason → 400 TRADE_REASON_REQUIRED', async () => {
-    const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-06', trade_time: '09:00:02',
-        quantity: 100, price: 10,
-      },
-    });
+  it('买入类缺 trade_reason → 400 TRADE_REASON_REQUIRED', () => {
+    const res = snap.noReason;
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe('TRADE_REASON_REQUIRED');
   });
 
-  it('加仓后移动加权成本重算', async () => {
-    const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-10', trade_time: '09:00:03',
-        quantity: 500, price: 12.0, fee: 0, trade_reason: 'M4 加仓',
-      },
-    });
+  it('加仓后移动加权成本重算', () => {
+    const res = snap.add;
     expect(res.statusCode).toBe(201);
     // 成本基 = 10005 + 6000 = 16005，qty=1500 → 均价 10.67
     expect(JSON.parse(res.body).data.position.avgCost).toBeCloseTo(16005 / 1500, 4);
   });
 
-  it('超持仓卖出 → 409 HOLDING_INSUFFICIENT', async () => {
-    const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-02', trade_time: '09:00:04',
-        quantity: 99999, price: 15.0, trade_reason: 'M4 超卖校验',
-      },
-    });
+  it('超持仓卖出 → 409 HOLDING_INSUFFICIENT', () => {
+    const res = snap.oversell;
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('HOLDING_INSUFFICIENT');
   });
 
-  it('减仓 400 股 → 持仓 1100，浮盈为正', async () => {
-    const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-10', trade_time: '09:00:05',
-        quantity: 400, price: 15.0, fee: 2, trade_reason: 'M4 减仓止盈',
-      },
-    });
+  it('减仓 400 股 → 持仓 1100，浮盈为正', () => {
+    const res = snap.reduce;
     expect(res.statusCode).toBe(201);
     const pos = JSON.parse(res.body).data.position;
     expect(pos.totalQuantity).toBe(1100);
@@ -196,31 +218,19 @@ describe('M4 · 交易闭环与双口径收益', () => {
     expect(pos.avgCost).toBeCloseTo(16005 / 1500, 4);
   });
 
-  it('分红计入实际口径、不改持仓（Requirements §5.3#5）', async () => {
-    const before = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/positions/${TRADE_CODE}`, headers: adminHeaders(),
-    });
-    const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'dividend', trade_date: '2026-03-01', trade_time: '09:00:06',
-        quantity: 1100, price: 0.5, trade_reason: '2025 年度分红',
-      },
-    });
+  it('分红计入实际口径、不改持仓（Requirements §5.3#5）', () => {
+    const res = snap.dividend;
     expect(res.statusCode).toBe(201);
 
-    const after = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/positions/${TRADE_CODE}`, headers: adminHeaders(),
-    });
-    const b = JSON.parse(before.body).data;
-    const a = JSON.parse(after.body).data;
+    const b = JSON.parse(snap.posBeforeDividend.body).data;
+    const a = JSON.parse(snap.posAfterDividend.body).data;
     expect(a.totalQuantity).toBe(b.totalQuantity);
     expect(a.avgCost).toBeCloseTo(b.avgCost, 6);
     expect(a.totalCostBasis).toBeCloseTo(b.totalCostBasis, 6);
   });
 
-  it('GET /api/positions 返回 enrich 字段与 summary', async () => {
-    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/positions', headers: adminHeaders() });
+  it('GET /api/positions 返回 enrich 字段与 summary', () => {
+    const res = snap.positions;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     const pos = body.data.find((p: any) => p.asset_code === TRADE_CODE);
@@ -254,20 +264,26 @@ describe('M4 · 信号与复盘归因', () => {
     expect(typeof body.pagination.total).toBe('number');
   });
 
-  it('复盘 4 字段 PATCH 成功（strategy_match 三态）', async () => {
-    const res = await ctx.bundle.app.inject({
+  // 🔴 T81 顺序依赖修复：后面的「review/stats」「strategy_match 筛选」都依赖
+  //   本用例 PATCH 出来的标记 → 提为 beforeAll，各 `it` 只做断言。
+  beforeAll(async () => {
+    snap.reviewPatch = await ctx.bundle.app.inject({
       method: 'PATCH', url: `/api/trades/${ctx.tradeId}`, headers: adminHeaders(),
       payload: {
         review_summary: 'M4：建仓理由成立，仓位偏重',
         strategy_match: 1, is_stop_loss: 0, remark: '下次分批建仓',
       },
     });
-    expect(res.statusCode).toBe(200);
-
-    const list = await ctx.bundle.app.inject({
+    snap.buyList = await ctx.bundle.app.inject({
       method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=buy`, headers: adminHeaders(),
     });
-    const row = JSON.parse(list.body).data.find((r: any) => r.id === ctx.tradeId);
+  });
+
+  it('复盘 4 字段 PATCH 成功（strategy_match 三态）', () => {
+    const res = snap.reviewPatch;
+    expect(res.statusCode).toBe(200);
+
+    const row = JSON.parse(snap.buyList.body).data.find((r: any) => r.id === ctx.tradeId);
     expect(row.strategy_match).toBe(1);
     expect(row.is_stop_loss).toBe(0);
     expect(row.review_summary).toContain('M4');
@@ -295,10 +311,7 @@ describe('M4 · 信号与复盘归因', () => {
 
   it('软删平仓交易 → 统计排除 → 恢复', async () => {
     // 注意：要删的是平仓交易（reduce），删买入不影响 closedCount
-    const list = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
-    });
-    const reduceId = JSON.parse(list.body).data[0].id;
+    const reduceId = JSON.parse(snap.reduceList.body).data[0].id;
 
     const del = await ctx.bundle.app.inject({
       method: 'DELETE', url: `/api/trades/${reduceId}`, headers: adminHeaders(),
@@ -322,20 +335,24 @@ describe('M4 · 信号与复盘归因', () => {
 // 4. 候选池 / 插件管理
 // ─────────────────────────────────────────────────────────────
 describe('M4 · 候选池与插件管理', () => {
-  it('候选 → 自选迁移幂等', async () => {
+  it('候选 → 自选迁移幂等（T92：只打标记，不建关联）', async () => {
     await ctx.bundle.app.inject({
       method: 'POST', url: '/api/candidate', headers: adminHeaders(),
       payload: { asset_code: TRADE_CODE },
     });
     const first = await ctx.bundle.app.inject({
       method: 'POST', url: `/api/candidate/${TRADE_CODE}/promote`, headers: adminHeaders(),
+      payload: { price_mode: 'base' },
     });
     expect(first.statusCode).toBe(200);
     const second = await ctx.bundle.app.inject({
       method: 'POST', url: `/api/candidate/${TRADE_CODE}/promote`, headers: adminHeaders(),
+      payload: { price_mode: 'base' },
     });
     expect(second.statusCode).toBe(200);
-    expect(JSON.parse(second.body).data.alreadyExisted).toBe(true);
+    // T92：返回值语义改为 marked / autoCreated（不再有 alreadyExisted）
+    expect(JSON.parse(second.body).data.marked).toBe(true);
+    expect(JSON.parse(second.body).data.autoCreated).toBe(false);
   });
 
   it('插件列表可读，参数可保存、可启停', async () => {
@@ -367,11 +384,21 @@ describe('M4 · 候选池与插件管理', () => {
 // 5. 备份 → 恢复（T41 全链路）
 // ─────────────────────────────────────────────────────────────
 describe('M4 · 备份与恢复', () => {
-  it('手动备份 → 生成 business.db.YYYY-MM-DD', async () => {
+  // 🔴 T81 顺序依赖修复：备份文件名由「手动备份」用例产出，
+  //   「列出备份文件」用例依赖它 → shuffle 下随机失败。
+  //   → 备份动作提到本 describe 的 beforeAll，列出用例只做断言。
+  let backupRes: any;
+  beforeAll(async () => {
     // 坑 2：db.backup() 真跑 IO，给足超时
-    const res = await ctx.bundle.app.inject({
+    backupRes = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/admin/backup', headers: adminHeaders(), payload: {},
     });
+    const files = fs.readdirSync(BACKUP_DIR).filter((f) => /^business\.db\.\d{4}-\d{2}-\d{2}$/.test(f));
+    ctx.backupFile = files.sort().pop()!;
+  }, 120000);
+
+  it('手动备份 → 生成 business.db.YYYY-MM-DD', () => {
+    const res = backupRes;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
@@ -379,9 +406,8 @@ describe('M4 · 备份与恢复', () => {
 
     const files = fs.readdirSync(BACKUP_DIR).filter((f) => /^business\.db\.\d{4}-\d{2}-\d{2}$/.test(f));
     expect(files.length).toBeGreaterThanOrEqual(1);
-    ctx.backupFile = files.sort().pop()!;
     expect(statSync(path.join(BACKUP_DIR, ctx.backupFile)).size).toBeGreaterThan(0);
-  }, 120000);
+  });
 
   it('GET /api/admin/backups 列出备份文件', async () => {
     const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/admin/backups', headers: adminHeaders() });
@@ -408,7 +434,9 @@ describe('M4 · 备份与恢复', () => {
     expect(JSON.parse(res.body).error).toBe('RESTORE_FAILED');
   });
 
-  it('恢复成功后业务数据回到备份时刻 + 生成安全备份', async () => {
+  // 🔴 T81 顺序依赖修复：恢复动作 + 留痕断言互相依赖（且留痕必须在恢复**之后**才有）。
+  //   → 整段搬进 describe 级 beforeAll，各 `it` 只做断言。
+  beforeAll(async () => {
     // 先破坏数据：软删那笔平仓交易
     const list = await ctx.bundle.app.inject({
       method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
@@ -416,43 +444,51 @@ describe('M4 · 备份与恢复', () => {
     const reduceId = JSON.parse(list.body).data[0].id;
     await ctx.bundle.app.inject({ method: 'DELETE', url: `/api/trades/${reduceId}`, headers: adminHeaders() });
 
-    const beforeStats = JSON.parse((await ctx.bundle.app.inject({
+    snap.beforeStats = JSON.parse((await ctx.bundle.app.inject({
       method: 'GET', url: '/api/review/stats', headers: adminHeaders(),
     })).body).data;
-    expect(beforeStats.closedCount).toBe(0);   // 已破坏
 
     // 恢复 —— 回到"备份那一刻"的状态（reduce 交易应当回来）
-    const restore = await ctx.bundle.app.inject({
+    snap.restore = await ctx.bundle.app.inject({
       method: 'POST', url: `/api/admin/backup/${ctx.backupFile}/restore`,
       headers: adminHeaders(), payload: { confirm: true },
     });
-    expect(restore.statusCode).toBe(200);
-    const restoreBody = JSON.parse(restore.body);
-    expect(restoreBody.success).toBe(true);
-    expect(restoreBody.data.safetyBackup).toMatch(/pre-restore/);
 
     // restore 会重置 ConfigStore 单例并重建连接 → 必须重新登录拿新 token
     const login = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/auth/login',
       payload: { username: ADMIN_USER, password: ADMIN_PASS },
     });
-    expect(login.statusCode).toBe(200);
-    ctx.adminToken = JSON.parse(login.body).data.token;
+    snap.login = login;
+    if (login.statusCode === 200) {
+      ctx.adminToken = JSON.parse(login.body).data.token;
+    }
 
-    const afterStats = JSON.parse((await ctx.bundle.app.inject({
+    snap.afterStats = JSON.parse((await ctx.bundle.app.inject({
       method: 'GET', url: '/api/review/stats', headers: adminHeaders(),
     })).body).data;
-    expect(afterStats.closedCount).toBe(1);    // 数据回到备份时刻
 
     // 关键表齐全（连接已重建，必须重新取单例，不能复用 bundle.db 旧句柄）
-    const db = ConfigStore.getInstance().db;
-    const tables = db.prepare(
+    snap.tables = ConfigStore.getInstance().db.prepare(
       `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_account','user_trade_record','system_log')`
     ).all() as any[];
-    expect(tables.length).toBe(3);
   }, 60000);
 
+  it('恢复成功后业务数据回到备份时刻 + 生成安全备份', () => {
+    expect(snap.beforeStats.closedCount).toBe(0);   // 已破坏
+
+    expect(snap.restore.statusCode).toBe(200);
+    const restoreBody = JSON.parse(snap.restore.body);
+    expect(restoreBody.success).toBe(true);
+    expect(restoreBody.data.safetyBackup).toMatch(/pre-restore/);
+
+    expect(snap.login.statusCode).toBe(200);
+    expect(snap.afterStats.closedCount).toBe(1);    // 数据回到备份时刻
+    expect(snap.tables.length).toBe(3);
+  });
+
   it('恢复操作写 system_log 留痕', () => {
+    // 恢复动作已在同 describe 的 beforeAll 完成（同一 describe 内 beforeAll 先于 it 执行）
     const rows = ConfigStore.getInstance().db.prepare(
       `SELECT * FROM system_log WHERE message LIKE '%备份恢复%' ORDER BY id DESC LIMIT 1`
     ).all() as any[];

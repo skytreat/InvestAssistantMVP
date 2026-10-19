@@ -112,7 +112,8 @@ function handCalcSpec(trades: RawTrade[]): HandResult {
  *   - add / reduce / clear → 一律按**卖出**处理
  *   - dividend / bonus / transfer → 不参与移动加权（直接被过滤掉）
  *
- * ⚠️ 与 handCalcSpec 的两处差异是**已取证的实现偏差**（见本文件末尾「偏差记录」describe），
+ * ⚠️ 与 handCalcSpec 剩余**一处**差异是**已取证的实现偏差**（bonus 送转不计入，
+ *    见本文件末尾「偏差记录」describe + §4-K 业务口径裁决），
  *    本函数只用于把当前行为钉住，不代表规格。
  */
 function handCalcCurrent(trades: RawTrade[]): HandResult {
@@ -120,10 +121,13 @@ function handCalcCurrent(trades: RawTrade[]): HandResult {
   let costBasis = 0;
   let realizedPnL = 0;
   for (const t of trades) {
-    if (t.tradeType === 'buy') {
+    // ✅ `add`（加仓）现按 buy 处理（§4-A P0 已修）—— 与 handCalcSpec 在这一点上已一致。
+    //    ⚠️ 剩余**唯一**差异是 `bonus`（送转）：spec 计入（股数增加、均价稀释），
+    //    当前实现**不计** —— 属 §4-K 业务口径裁决（未拍板），故此处保持差异不动。
+    if (t.tradeType === 'buy' || t.tradeType === 'add') {
       costBasis += t.quantity * t.price + t.fee;
       quantity += t.quantity;
-    } else if (t.tradeType === 'add' || t.tradeType === 'reduce' || t.tradeType === 'clear') {
+    } else if (t.tradeType === 'reduce' || t.tradeType === 'clear') {
       if (quantity <= 0) continue;
       const avgCost = costBasis / quantity;
       const sellQty = Math.min(t.quantity, quantity);
@@ -414,7 +418,7 @@ describe('yield_caliber_switch — 价格口径 / 实际口径独立可查', () 
 // ===========================================================================
 
 describe('偏差记录（已取证 · 本文件不改 src）', () => {
-  it('⚠️ trade_type=add（加仓）在 calcPosition 中被按**卖出**处理 → 持仓被清零', () => {
+  it('✅ trade_type=add（加仓）按 buy 处理 → 持仓累加、均价重算（§4-A P0 已修）', () => {
     // 取证：src/services/positionCalculator.ts mapToCoreTrade 把 'add' 与 'reduce'/'clear'
     //       归到同一分支并返回 direction:'sell'；Requirements §5.1 定义加仓 = 增加持仓。
     const uid = createUser();
@@ -432,15 +436,17 @@ describe('偏差记录（已取证 · 本文件不改 src）', () => {
     const current = handCalcCurrent(trades);
     const spec = handCalcSpec(trades);
 
-    // 当前实现：加仓被当成卖出 100 股 → 持仓 0、均价 0、已实现盈亏 200
-    expect(pos.totalQuantity).toBe(current.quantity);
-    expectAvgCostMatches(pos.avgCost, current.avgCost, '偏差记录 add（当前实现口径）');
-    expect(pos.totalQuantity).toBe(0);
-    expectAvgCostMatches(pos.realizedPnL, 200, '偏差记录 add 已实现盈亏');
+    // ✅ 偏差已消除（§4-A P0 修复）：`add`（加仓）现按 **buy** 处理 ——
+    //    买入 100@10 + 加仓 100@12 → 持仓 200、均价 11（不再被当成卖出清零）。
+    //    原实现把 add/reduce/clear 一起映射为 sell → 持仓归零 + 已实现盈亏被错记为 200。
+    expect(pos.totalQuantity).toBe(200);
+    expectAvgCostMatches(pos.avgCost, 11, 'add 加仓（修复后：200 股 / 均价 11）');
+    expectAvgCostMatches(pos.realizedPnL, 0, 'add 加仓不应产生已实现盈亏');
 
-    // 规格期望：加仓 100 股 @12 → 持仓 200、均价 11
-    expect(spec.quantity).toBe(200);
-    expectAvgCostMatches(spec.avgCost, 11, '偏差记录 add（规格口径手算）');
+    // 与规格手算一致
+    expect(pos.totalQuantity).toBe(spec.quantity);
+    expectAvgCostMatches(pos.avgCost, spec.avgCost, 'add 加仓（规格口径手算）');
+    expectAvgCostMatches(pos.avgCost, current.avgCost, 'add 加仓（当前实现口径）');
   });
 
   it('⚠️ calcPosition 对「未来买入」不回放：asOfDate 只取 trade_date <= 该日', () => {

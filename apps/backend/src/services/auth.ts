@@ -10,10 +10,28 @@ import bcrypt from 'bcryptjs';
  *   过期：1 天
  */
 
-const JWT_SECRET = Buffer.from(
-  process.env.JWT_SECRET ?? 'investassistant-mvp-dev-secret-change-me-in-prod-2026',
-  'utf-8'
-);
+/**
+ * JWT 签名密钥
+ *
+ * 🔴 SE3 判定不通过项（PR#15 交接文档 §4-D）：原实现带**明文硬编码兜底**
+ *   `'investassistant-mvp-dev-secret-change-me-in-prod-2026'` ——
+ *   密钥进了版本库，任何人拿到仓库就能伪造任意用户的 token。
+ *   → 改为**必须由环境变量提供**，缺失即启动失败。
+ *
+ * 密钥来源（按优先级）：
+ *   1. `process.env.JWT_SECRET`（生产 / 开发都用这个）
+ *   2. 无 —— 直接抛错。**不再有明文兜底**。
+ *
+ * ⚠️ 测试环境由 `tests/setup.ts` 注入安全临时密钥；本地开发见 `.env.local`。
+ */
+const JWT_SECRET_RAW = process.env.JWT_SECRET;
+if (!JWT_SECRET_RAW) {
+  throw new Error(
+    '[auth] JWT_SECRET 未设置 —— 拒绝以默认密钥启动。' +
+    '请在 .env.local / 系统环境变量中配置（见 docs/deploy.md §3）。',
+  );
+}
+const JWT_SECRET = Buffer.from(JWT_SECRET_RAW, 'utf-8');
 const JWT_TTL_SEC = 7 * 60 * 60 * 24;  // 7 天（SDD S4 access token）
 
 function b64url(buf: Buffer): string {
