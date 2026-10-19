@@ -2738,6 +2738,47 @@ sequenceDiagram
 | Mock | **msw**（Service Worker Worker）| Mock 东财 / Tushare / tdx2db 数据源拉取等外部依赖，不需要跑真实服务 |
 | 覆盖率 | **@vitest/coverage-v8** | Vitest 官方覆盖插件，输出 lcov + HTML 报告 |
 
+#### §12.5 验收项的测试载体索引（T91）
+
+> **本表是 §12.5「对应测试 Case」列的落地索引，不新增也不修改 §12.5 的技术契约**
+> ——§12.5 的验收项、通过标准、载体指定全部保持原文，本表只补一个状态：
+> 该验收项**当前是否已有可 grep 到的测试载体**。
+>
+> - 「SDD 指定测试载体」列 = §12.5 各行「对应测试 Case」列的原文（文件 + 用例名），路径写成仓库相对路径；
+> - 「状态」列 = **✅ 已有**（该**用例名**在全仓可 `grep -rn` 到）/ **❌ 待建**（文件或用例名缺失）；
+> - 自检命令：`grep -rn "<用例名>" apps packages`（对应实施计划 §12.1 G1.9）。
+
+| # | 原始需求 §9 验收项 | SDD 指定测试载体 | 状态 |
+|---|--------------------|------------------|------|
+| F1 | 用户可注册/登录，JWT 鉴权 | `apps/backend/tests/unit/auth.test.ts` · `apps/backend/tests/integration/auth.test.ts` → `login_success` / `login_wrong_password` | ❌ 待建（文件在，用例名未落地） |
+| F2 | 支持 7 种交易类型录入（买入/卖出/送转/派息/配股/增发/拆股） | `apps/backend/tests/integration/trade.test.ts` → `create_trade_all_types` | ❌ 待建（文件在，用例名未落地） |
+| F3 | 持仓实时聚合查询正确（移动加权成本） | `apps/backend/tests/unit/holding.test.ts` → `avg_cost_calc_5_scenarios` | ✅ 已有 |
+| F4 | 双口径收益率切换正确 | `apps/backend/tests/unit/holding.test.ts` → `yield_caliber_switch` | ✅ 已有 |
+| F5 | K 线图 + 副图指标渲染正确 | `apps/frontend` → `frontend.test.tsx` → `kline_render` | ❌ 待建（前端 0 测试，随 T61 交付） |
+| F6 | 策略插件信号生成 + 状态机（有→有不写信号，有→无只清除） | `packages/core/tests/plugin.test.ts` → `state_machine_4_paths`（§12.5 原文写作 `state machine_4_paths`，以实施计划 T91 的下划线写法为准） | ✅ 已有 |
+| F7 | 全市场条件选股 ≤ 3s | `apps/backend/tests/integration` → `scan_5000_target` | ❌ 待建 |
+| F8 | 每日 5 段自动化正确触发（17:00/17:01/17:02/17:03/17:05） | `apps/backend/tests/integration` → `cron_sequence_trigger` | ❌ 待建 |
+| F9 | 除权事件自动导入 + 候选池迁移 | `apps/backend/tests/integration` → `corporate_action_import` | ❌ 待建 |
+| F10 | SQLite 业务层备份恢复可用 | `apps/backend/tests/integration` → `backup_restore_sqlite` | ❌ 待建（`unit/backup.test.ts` 只覆盖备份侧，恢复侧 `restoreSQLiteBackup` 无用例） |
+| F11 | DuckDB 行情层备份恢复可用 | `apps/backend/tests/unit/backup.test.ts` → `backup_restore_duckdb` | ✅ 已有 |
+| PE1 | 首屏加载 ≤ 1.5s | Lighthouse Chrome DevTools（真机实测） | ❌ 待实测（需部署机） |
+| PE2 | 选股 ≤ 3s（5000+ 标的） | `apps/backend/tests/integration` → `scan_5000_target` | ❌ 待建 |
+| PE3 | K 线首渲染 ≤ 500ms | Chrome Performance Profiler（真机实测） | ❌ 待实测（需部署机） |
+| PE4 | API 单请求 P99 ≤ 200ms | autocannon（真机实测） | ❌ 待实测（需部署机） |
+| PE5 | SQLite WAL 模式 ≤ 10 并发读写 | SQLite 并发压测脚本 | ❌ 待建 |
+| PE6 | 插件超时（50ms）不影响主流程 | `packages/core/tests/plugin.test.ts` → `plugin_timeout_50ms` | ✅ 已有 |
+| SE1 | HTTPS 强制（HTTP 301 跳转） | `apps/backend/tests/http/`（必须真 listen，`inject()` 测不到） | ❌ 待建 |
+| SE2 | 密码 bcrypt cost=12 | `apps/backend/tests/unit/auth.test.ts`（断言 hash 前缀 `$2b$12$`） | ✅ 已有 |
+| SE3 | JWT 签名密钥环境变量注入 | 代码 grep + `.gitignore` 检查 | ❌ 待整改（`services/auth.ts` 存在明文兜底密钥，`grep` 判定不通过） |
+| SE4 | 插件沙盒约束（禁止 global/process/require） | `apps/backend/tests/unit/pluginEngine.test.ts` → `sandbox_violation_5_cases` | ❌ 待建（已覆盖 globalThis/process/require 3 例，用例名与 5 例口径未落地） |
+| SE5 | system_log 金额脱敏 | `apps/backend/tests/unit/logger.test.ts`（describe「logger — S6 脱敏」） | ✅ 已有 |
+| SE6 | admin API 路由二次角色校验 | `apps/backend/tests/integration/auth.test.ts` → `admin_role_guard` | ❌ 待建（文件在，用例名未落地） |
+| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a`（部署机实测） | ❌ 待实测（需部署机） |
+
+> **统计（2026-10-19）**：24 项中 **✅ 已有 7 项**（F3 / F4 / F6 / F11 / PE6 / SE2 / SE5）、
+> **❌ 17 项**（12 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
+> 剩余 ❌ 项的用例名落地前，实施计划 §12.1 G1.9（每个指定用例名全仓可 grep）**不能判 PASS**。
+
 ### 12.2 覆盖率目标
 
 | 模块 | 行覆盖率 | 分支覆盖率 | 说明 |
