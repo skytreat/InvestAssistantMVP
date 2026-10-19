@@ -255,7 +255,7 @@ export default function StockScan() {
             rows={3}
             value={paramsJson}
             onChange={(e) => setParamsJson(e.target.value)}
-            placeholder='{"period": 14, "threshold": 30}'
+            placeholder='{"period": 14, "oversold": 30, "overbought": 70}'
           />
         </div>
 
