@@ -18,6 +18,7 @@
     "@invest/core": "*",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^13.0.0",
+    "fast-technical-indicators": "1.1.6",
     "fastify": "^5.0.0"
   },
   "devDependencies": {

@@ -4,12 +4,23 @@ import { calculateMACD } from '../src/indicators/macd';
 describe('MACD §12.3 边界用例', () => {
   it('A11 输入单调上涨，MACD 柱状图应全非负', () => {
     // 线性上涨：EMA12（快）始终高于 EMA26（慢）→ DIF 全正 → DEA 全正 → MACD 柱全正
+    // ⚠️ T51 起 MACD 由 fast-technical-indicators 计算，EMA 用前 N 期 SMA 播种，
+    //    故前 (slowPeriod-1)+(signalPeriod-1) 根为 NaN（无值，非 0），断言只覆盖有值段。
     const closes: number[] = [];
     for (let i = 0; i < 60; i++) {
       closes.push(100 + i);
     }
-    const { macd } = calculateMACD(closes);
-    for (let i = 0; i < macd.length; i++) {
+    const { dif, dea, macd } = calculateMACD(closes);
+    const difWarmUp = 26 - 1;      // DIF 需要 slowPeriod 根播种
+    const deaWarmUp = 25 + 9 - 1;  // DEA / 柱值还要再等 signalPeriod 根
+    for (let i = 0; i < difWarmUp; i++) {
+      expect(Number.isNaN(dif[i])).toBe(true);
+    }
+    for (let i = 0; i < deaWarmUp; i++) {
+      expect(Number.isNaN(dea[i])).toBe(true);
+      expect(Number.isNaN(macd[i])).toBe(true);
+    }
+    for (let i = deaWarmUp; i < macd.length; i++) {
       expect(macd[i]).toBeGreaterThanOrEqual(0);
     }
   });

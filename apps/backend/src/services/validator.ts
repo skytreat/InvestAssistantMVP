@@ -7,15 +7,75 @@ import { writeSystemLog } from './logger.js';
 /** 校验结果三值（扩展 SKIP 用于 C11/C12 MVP） */
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
 
-/** 容差常量（集中定义，方便统一调整） */
+/**
+ * 容差 / 阈值常量（集中定义）
+ *
+ * T85（2026-10-17，B-14 裁决）按 Requirements §7 重整：
+ * 初稿的 C1~C8 定义是「数据内容校验」，Requirements 定义的是「数据新鲜度」，
+ * 二者完全不同。此处按 Requirements 补齐新鲜度类阈值。
+ */
 export const TOLERANCES = {
-  ROW_COUNT_DEVIATION: 0.10,    // C1 行数偏离 ±10%
-  QFQ_PRICE_DIFF: 0.01,         // C6 前复权价差 < 0.01 元
-  VOLUME_MULTIPLIER: 200,       // C7 极端成交量倍数
-  GBBQ_DROP_DIFF: 0.005,        // C8 除权跳变率差 < 0.5%
-  HFQ_FACTOR_DIFF: 0.0001,      // C9 复权因子抽样容差
-  TUSHARE_PRICE_DIFF: 0.01,     // C11 Tushare 价格容差
-  EASTMONEY_PRICE_DIFF: 0.02,   // C12 东财价格容差
+  // ── C1-C8 新鲜度类（Requirements §7.1）──
+  MIN_SYMBOL_COUNT: 3000,          // C1/C6 当日标的数下限（Requirements 明写 ≥3000）
+  EX_DIVIDEND_FRESH_DAYS: 7,       // C4 最新除权日 ≥ 当日 - 7 天
+  CLASS_COUNT_DROP: 0.10,          // C5 分类总数降幅 < 10%
+  MAX_OPEN_CLOSE_RATIO: 2,         // C7 开盘价 ≤ 收盘价 × 2
+  MAX_UPDATE_SECONDS: 120,         // C8 行情更新执行时长 ≤ 120s
+
+  // ── C9/C10 内容类（Requirements §7.2）──
+  QFQ_PRICE_DIFF: 0.01,            // C9 前复权价差容差 < 0.01 元
+  GBBQ_DROP_DIFF: 0.005,           // C10 除权跳变率差 < 0.5%
+
+  // ── C11/C12 跨源类（Requirements §7.3）──
+  TUSHARE_PRICE_DIFF: 0.01,        // C11 Tushare 价格容差
+  EASTMONEY_PRICE_DIFF: 0.02,      // C12 东财价格容差
+} as const;
+
+/**
+ * 跨源校验「执行参数」（T97）—— 抽样数 / 节流 / 退避 / 超时 / 降级阈值
+ *
+ * 与 `TOLERANCES` 的分工：`TOLERANCES` 是「比多算不算数」（判定内容），
+ * `EXEC_PARAMS` 是「怎么跑」（执行节奏）。T85 定前者，T97 定后者，二者不可互相替代。
+ *
+ * ⚠️ **C11 与 C12 的节流值不同且有据可循，严禁统一成一个常量**：
+ *   - C11 走 Tushare，有硬限额（daily 接口 50 次/分钟、每日 500 次）→ 100ms/只
+ *   - C12 走东方财富，调用无次数上限但会被软限流 → 500ms/只
+ */
+export const EXEC_PARAMS = {
+  // ── 抽样规模（Requirements §7.3「抽样 30 只 / 20 只」）──
+  C11_SAMPLE_SIZE: 30,
+  C12_SAMPLE_SIZE: 20,
+
+  // ── 节流（每只请求之间的固定间隔）──
+  C11_THROTTLE_MS: 100,
+  C12_THROTTLE_MS: 500,
+
+  // ── 单只超时 ──
+  C11_TIMEOUT_MS: 5_000,
+  C12_TIMEOUT_MS: 10_000,
+
+  // ── C12 退避重试序列：第 1 次失败等 200ms，第 2 次失败等 400ms，共重试 2 次 ──
+  RETRY_BACKOFF_MS: [200, 400],
+
+  // ── 总耗时上限（SDD §7.3 鲁棒性：跨源校验总 30s）──
+  MAX_TOTAL_MS: 30_000,
+
+  // ── 告警分级阈值（Requirements §7.3 唯一权威；匹配率目标见 PRD §6.2）──
+  C11_WARN_AT: 3,      // C11 mismatch > 3 只 → WARN（PRD §6.2 目标 ≤3/30 容差内）
+  C11_ERROR_AT: 5,     // C11 mismatch > 5 只 → ERROR
+  C12_WARN_AT: 5,      // C12 mismatch > 5 只有差异 → WARN（PRD §6.2 目标 ≤5/20 容差内）
+  C12_ERROR_GT: 0.1,   // C12 单只价差 > 0.1 元 → 计入「大幅差异只数」
+  C12_ERROR_COUNT_GT: 1, // C12  大幅差异只数 > 1 → ERROR（**幅度条件，不是计数条件**）
+
+  // ── 外部源整体不可用的降级判定（连续失败 → 整项 SKIP，不阻塞后续校验）──
+  C11_SKIP_CONSECUTIVE_FAILS: 5,
+  C12_SKIP_CONSECUTIVE_FAILS: 5,
+
+  // ── HTTP 层限流信号：命中即「跳过该只」，不再重试（SDD §7.3「被限流 → 跳过该只」）──
+  RATE_LIMIT_STATUSES: [429, 503],
+
+  // ── detail 字段截断长度，避免 system_log 被长文本撑爆 ──
+  MAX_DETAIL_CHARS: 200,
 } as const;
 
 export interface CheckSummary {
@@ -32,6 +92,19 @@ export interface CheckSummary {
 /** 单行包装：很多校验 SQL 只返回一行 */
 function firstRow<T>(rows: T[]): T | undefined {
   return rows.length > 0 ? rows[0] : undefined;
+}
+
+/**
+ * 节流 / 退避的唯一出口。
+ * 全部延时都必须经由本函数，禁止在文件内散落 `setTimeout(..., 字面量)`。
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
+/** 跨源校验总耗时守卫：已用时达到 MAX_TOTAL_MS 即中止剩余请求 */
+function withinTimeBudget(startedAt: number): boolean {
+  return Date.now() - startedAt < EXEC_PARAMS.MAX_TOTAL_MS;
 }
 
 /** 写 system_log（level 映射：PASS→SUCCESS, WARN→WARN, ERROR→ERROR, SKIP→SKIP） */
@@ -57,53 +130,42 @@ function logResult(checkId: string, result: CheckResult, detail: string, tradeDa
 // SQL 原样来自 SDD §5.7 C1，占位符 {{TRADE_DATE}} → 参数化 ?
 // ─────────────────────────────────────────────────────────────────
 
+/**
+ * C1：当日日线行数正常
+ *
+ * T85（B-14 裁决）：Requirements §7.1 定义为「当日标的数 ≥ 3000（正常 5000+）」，
+ * 失败级别 **ERROR**。初稿实现是「历史均值 ±10% 偏离」—— 与需求不符：
+ * 行情整体缺失时均值同步下跌，反而落在带内判 PASS。
+ * 改为绝对值阈值，并按 ADR-004「数据源缺失一律 SKIP，不得计为 PASS」补 SKIP 分支。
+ */
 const C1_SQL = `
-WITH today_counts AS (
-    SELECT COUNT(*) AS cnt
-    FROM v_stock_qfq
-    WHERE date = ?::date
-),
-avg_history AS (
-    SELECT AVG(cnt) * 0.9 AS lower_bound, AVG(cnt) * 1.1 AS upper_bound
-    FROM (
-        SELECT date, COUNT(*) AS cnt
-        FROM v_stock_qfq
-        WHERE date >= ?::date - INTERVAL 30 DAY
-          AND date < ?::date
-          AND date IN (SELECT date FROM raw_holidays)
-        GROUP BY date
-    ) hist
-)
 SELECT
-    tc.cnt AS actual_count,
-    ah.lower_bound,
-    ah.upper_bound,
+    COUNT(DISTINCT symbol) AS actual_count,
     CASE
-        WHEN tc.cnt BETWEEN ah.lower_bound AND ah.upper_bound THEN 'PASS'
-        WHEN tc.cnt > 0 THEN 'WARN'
+        WHEN COUNT(DISTINCT symbol) >= ? THEN 'PASS'
+        WHEN COUNT(DISTINCT symbol) = 0 THEN 'SKIP'
         ELSE 'ERROR'
     END AS result
-FROM today_counts tc CROSS JOIN avg_history ah
+FROM v_stock_qfq
+WHERE date = ?::date
 `;
 
 interface C1Row {
   actual_count: number;
-  lower_bound: number;
-  upper_bound: number;
   result: CheckResult;
 }
 
 async function checkC1(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C1Row>(C1_SQL, [tradeDate, tradeDate, tradeDate]);
+    const rows = await queryDuckDB<C1Row>(C1_SQL, [TOLERANCES.MIN_SYMBOL_COUNT, tradeDate]);
     const row = firstRow(rows);
 
     if (!row) {
-      return { checkId: 'C1', result: 'ERROR', detail: '无返回行（可能 DuckDB 无数据）', durationMs: Date.now() - start };
+      return { checkId: 'C1', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
 
-    const detail = `actual=${row.actual_count}, bounds=[${Math.round(row.lower_bound)}}, ${Math.round(row.upper_bound)}]`;
+    const detail = `当日标的数=${row.actual_count}（阈值 >=${TOLERANCES.MIN_SYMBOL_COUNT}）`;
     return { checkId: 'C1', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
     return { checkId: 'C1', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
@@ -154,107 +216,169 @@ async function checkC2(tradeDate: string): Promise<CheckSummary> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// C3：停牌日停牌标记一致性（MVP 仅实现 C3；C4/C5 SDD 标"略"）
-// SQL 原样来自 SDD §5.7 C3
+// T85（B-14）：C3-C5 原本实现的是「停牌标记」，与 Requirements §7.1 的
+// 「新鲜度校验」完全不同。本区块按 Requirements 重写：
+//   C3 复权因子更新时间（MAX(date) = 当日）
+//   C4 除权除息更新时间（最新除权日 ≥ 当日 - 7 天）—— 初稿 SQL 写 raw_gbbq.ex_date，
+//      该列不存在；2026-10-17 DESCRIBE 实测除权日期列是 `date`，已修正
+//   C5 板块/分类完整性 —— raw_tdx_blocks_member 无 date 列且为空表（实测 0 行），
+//      「按日算总量降幅」不可实现，改用 raw_symbol_class(class) 的分类数降幅
+// 原「停牌标记」实现移入 SDD §5.7「扩展校验」（不占 C 编号），见 ADR-004
 // ─────────────────────────────────────────────────────────────────
 
+/** C3：复权因子更新时间（Requirements §7.1，WARN） */
 const C3_SQL = `
-SELECT symbol, date,
+SELECT MAX(date) AS latest,
     CASE
-        WHEN volume = 0 AND close = LAG(close) OVER (PARTITION BY symbol ORDER BY date) THEN 'PASS'
-        WHEN volume > 0 THEN 'WARN'
-        ELSE 'ERROR'
+        WHEN MAX(date) = CAST(? AS DATE) THEN 'PASS'
+        WHEN MAX(date) IS NULL THEN 'SKIP'
+        ELSE 'WARN'
     END AS result
-FROM v_stock_qfq
-WHERE date = ?::date
-  AND volume = 0
+FROM raw_adjust_factor
 `;
 
 interface C3Row {
-  symbol: string;
+  latest: string | null;
   result: CheckResult;
 }
 
-async function checkC3toC5(tradeDate: string): Promise<CheckSummary> {
+async function checkC3(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C3Row>(C3_SQL, [tradeDate]);
-
-    if (rows.length === 0) {
-      return {
-        checkId: 'C3',
-        result: 'PASS',
-        detail: '当日无停牌股票',
-        durationMs: Date.now() - start,
-      };
+    const row = firstRow(await queryDuckDB<C3Row>(C3_SQL, [tradeDate]));
+    if (!row) {
+      return { checkId: 'C3', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
-
-    const warnCount = rows.filter((r) => r.result === 'WARN').length;
-    const errorCount = rows.filter((r) => r.result === 'ERROR').length;
-    let result: CheckResult = 'PASS';
-    if (errorCount > 0) result = 'ERROR';
-    else if (warnCount > 0) result = 'WARN';
-
-    return {
-      checkId: 'C3',
-      result,
-      detail: `停牌总数=${rows.length}, WARN=${warnCount}, ERROR=${errorCount}（C4/C5 MVP 暂略）`,
-      durationMs: Date.now() - start,
-    };
+    const detail = `复权因子最新日=${row.latest ?? '无'}（应为 ${tradeDate}）`;
+    return { checkId: 'C3', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C3', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return { checkId: 'C3', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
   }
 }
 
+/** C4：除权除息更新时间（Requirements §7.1，WARN） */
+const C4_SQL = `
+SELECT MAX(date) AS latest_ex,
+    CASE
+        WHEN MAX(date) >= CAST(? AS DATE) - INTERVAL 7 DAY THEN 'PASS'
+        WHEN MAX(date) IS NULL THEN 'SKIP'
+        ELSE 'WARN'
+    END AS result
+FROM raw_gbbq
+`;
+
+interface C4Row {
+  latest_ex: string | null;
+  result: CheckResult;
+}
+
+async function checkC4(tradeDate: string): Promise<CheckSummary> {
+  const start = Date.now();
+  try {
+    const row = firstRow(await queryDuckDB<C4Row>(C4_SQL, [tradeDate]));
+    if (!row) {
+      return { checkId: 'C4', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
+    }
+    const detail = `最新除权日=${row.latest_ex ?? '无'}（阈值 ≥ ${tradeDate} - ${TOLERANCES.EX_DIVIDEND_FRESH_DAYS} 天）`;
+    return { checkId: 'C4', result: row.result, detail, durationMs: Date.now() - start };
+  } catch (err) {
+    return { checkId: 'C4', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+  }
+}
+
+/** C5：板块/分类完整性（Requirements §7.1，WARN）
+ *
+ * ⚠️ 2026-10-17 实测：`raw_tdx_blocks_member(stock_symbol, block_code)` **无 date 列且为空表**，
+ *    故「按日统计板块成分总量降幅」不可实现。改用 `raw_symbol_class(symbol, class)`
+ *    的分类数降幅 —— 口径等价（数据源从板块切到资产分类），且可执行。
+ *    两者均为 WARN + 仅记录，不自动补跑（Requirements §7.1）。
+ */
+const C5_SQL = `
+WITH today_cnt AS (
+    SELECT COUNT(DISTINCT class) AS cnt
+    FROM raw_symbol_class c
+    WHERE EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = CAST(? AS DATE))
+),
+prev_day AS (
+    SELECT MAX(date) AS d FROM v_stock_qfq WHERE date < CAST(? AS DATE)
+),
+prev_cnt AS (
+    SELECT COUNT(DISTINCT class) AS cnt
+    FROM raw_symbol_class
+    WHERE EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = (SELECT d FROM prev_day))
+)
+SELECT t.cnt AS today_cnt, p.cnt AS prev_cnt,
+    CASE
+        WHEN t.cnt = 0 THEN 'SKIP'
+        WHEN p.cnt = 0 THEN 'SKIP'
+        WHEN (p.cnt - t.cnt) * 1.0 / p.cnt < ? THEN 'PASS'
+        ELSE 'WARN'
+    END AS result
+FROM today_cnt t CROSS JOIN prev_cnt p
+`;
+
+interface C5Row {
+  today_cnt: number;
+  prev_cnt: number;
+  result: CheckResult;
+}
+
+async function checkC5(tradeDate: string): Promise<CheckSummary> {
+  const start = Date.now();
+  try {
+    const row = firstRow(
+      await queryDuckDB<C5Row>(C5_SQL, [tradeDate, tradeDate, TOLERANCES.CLASS_COUNT_DROP]),
+    );
+    if (!row) {
+      return { checkId: 'C5', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
+    }
+    const detail = `分类数=${row.today_cnt}（前一交易日 ${row.prev_cnt}），降幅阈值 ${TOLERANCES.CLASS_COUNT_DROP * 100}%`;
+    return { checkId: 'C5', result: row.result, detail, durationMs: Date.now() - start };
+  } catch (err) {
+    return { checkId: 'C5', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+  }
+}
 // ─────────────────────────────────────────────────────────────────
 // C6：前复权因子一致性校验
 // SQL 原样来自 SDD §5.7 C6
 // ─────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────
+// C6：市值数据存在性（Requirements §7.1：当日标的数 ≥ 3000，WARN）
+// ⚠️ T85：初稿此处实现的是「前复权价格数学一致性」—— 那其实是 **C9** 的语义。
+//    按 B-14 裁决改为 Requirements 的 C6；原语义上移至 C9。
+// ─────────────────────────────────────────────────────────────────
+
 const C6_SQL = `
-WITH sampled AS (
-    SELECT UNNEST(ARRAY_AGG(symbol ORDER BY random() LIMIT 50)) AS symbol
-    FROM v_stock_qfq
-    WHERE date = ?::date
-)
-SELECT v.symbol,
-       v.close AS qfq_close,
-       ROUND(rk.close * v.qfq_factor, 2) AS raw_close_times_factor,
-       ABS(v.close - ROUND(rk.close * v.qfq_factor, 2)) AS diff,
-       CASE
-           WHEN ABS(v.close - ROUND(rk.close * v.qfq_factor, 2)) < 0.01 THEN 'PASS'
-           ELSE 'WARN'
-       END AS result
-FROM sampled s
-JOIN v_stock_qfq v ON s.symbol = v.symbol AND v.date = ?::date
-JOIN raw_kline_daily rk ON s.symbol = rk.symbol AND rk.date = ?::date
+SELECT
+    COUNT(*) AS total_cnt,
+    COUNT(floatmv) AS with_mv,
+    CASE
+        WHEN COUNT(*) >= ? THEN 'PASS'
+        WHEN COUNT(*) = 0 THEN 'SKIP'
+        ELSE 'WARN'
+    END AS result
+FROM v_stock_qfq
+WHERE date = ?::date
 `;
 
 interface C6Row {
-  symbol: string;
+  total_cnt: number;
+  with_mv: number;
   result: CheckResult;
 }
 
 async function checkC6(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C6Row>(C6_SQL, [tradeDate, tradeDate, tradeDate]);
-
-    if (rows.length === 0) {
-      return { checkId: 'C6', result: 'WARN', detail: '抽样 50 只无返回（raw_kline_daily 可能缺数据）', durationMs: Date.now() - start };
+    const row = firstRow(await queryDuckDB<C6Row>(C6_SQL, [TOLERANCES.MIN_SYMBOL_COUNT, tradeDate]));
+    if (!row) {
+      return { checkId: 'C6', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
-
-    const warnCount = rows.filter((r) => r.result === 'WARN').length;
-    const result: CheckResult = warnCount > 0 ? 'WARN' : 'PASS';
-
-    return {
-      checkId: 'C6',
-      result,
-      detail: `抽样=${rows.length}, WARN=${warnCount}（容差<${TOLERANCES.QFQ_PRICE_DIFF}元）`,
-      durationMs: Date.now() - start,
-    };
+    const detail = `当日标的数=${row.total_cnt}，其中有市值数据=${row.with_mv}（阈值 >=${TOLERANCES.MIN_SYMBOL_COUNT}）`;
+    return { checkId: 'C6', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C6', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return { checkId: 'C6', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
   }
 }
 
@@ -263,51 +387,42 @@ async function checkC6(tradeDate: string): Promise<CheckSummary> {
 // SQL 原样来自 SDD §5.7 C7
 // ─────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────
+// C7：日线价格合理性（Requirements §7.1：收盘价 ≠ 0 且 开盘价 ≤ 收盘价 × 2，WARN）
+// ⚠️ T85：初稿此处实现的是「成交量放大 200 倍」—— 那是 SDD 的扩展校验，
+//    与 Requirements 的 C7 无关，已移出。实测本地库有 12 条此类异常，该校验有真实价值。
+// ─────────────────────────────────────────────────────────────────
+
 const C7_SQL = `
-WITH recent AS (
-    SELECT symbol, date, volume,
-        AVG(volume) OVER (
-            PARTITION BY symbol
-            ORDER BY date
-            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
-        ) AS avg_30d
-    FROM v_stock_qfq
-    WHERE date BETWEEN ?::date - INTERVAL 30 DAY AND ?::date
-)
-SELECT symbol, date, volume, avg_30d,
+SELECT
+    COUNT(*) AS bad_cnt,
     CASE
-        WHEN volume = 0 THEN 'WARN'
-        WHEN avg_30d > 0 AND volume > 200 * avg_30d THEN 'WARN'
-        ELSE 'PASS'
+        WHEN COUNT(*) = 0 THEN 'PASS'
+        ELSE 'WARN'
     END AS result
-FROM recent
+FROM v_stock_qfq
 WHERE date = ?::date
+  AND (close = 0 OR open > close * ?)
 `;
 
 interface C7Row {
-  symbol: string;
-  volume: number;
-  avg_30d: number;
+  bad_cnt: number;
   result: CheckResult;
 }
 
 async function checkC7(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C7Row>(C7_SQL, [tradeDate, tradeDate, tradeDate]);
-
-    // WARN 计数：零成交 + 极端成交
-    const warnCount = rows.filter((r) => r.result === 'WARN').length;
-    const result: CheckResult = warnCount > 0 ? 'WARN' : 'PASS';
-
-    return {
-      checkId: 'C7',
-      result,
-      detail: `今日标的=${rows.length}, 异常=${warnCount}（极端倍数>${TOLERANCES.VOLUME_MULTIPLIER}）`,
-      durationMs: Date.now() - start,
-    };
+    const row = firstRow(await queryDuckDB<C7Row>(C7_SQL, [tradeDate, TOLERANCES.MAX_OPEN_CLOSE_RATIO]));
+    if (!row) {
+      return { checkId: 'C7', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
+    }
+    const detail = row.bad_cnt === 0
+      ? '当日无价格异常标的'
+      : `异常标的=${row.bad_cnt}（收盘价=0 或 开盘价 > 收盘价×${TOLERANCES.MAX_OPEN_CLOSE_RATIO}）`;
+    return { checkId: 'C7', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C7', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return { checkId: 'C7', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
   }
 }
 
@@ -316,56 +431,64 @@ async function checkC7(tradeDate: string): Promise<CheckSummary> {
 // SQL 原样来自 SDD §5.7 C8
 // ─────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────
+// C8：行情更新执行时长（Requirements §7.1：≤ 120s，WARN）
+// ⚠️ T85：初稿此处实现的是「数据滞后天数」—— 那是 SDD 的扩展校验，已移出。
+//    现按需求读 system_log 的 tdx2db_update 时间戳差。
+//    无该日志行（新库 / 从未跑过 tdx2db）→ SKIP，不得计为 PASS（ADR-004）。
+// ─────────────────────────────────────────────────────────────────
+
 const C8_SQL = `
-WITH raw AS (
-    SELECT v.symbol,
-           g.c1 / 10.0 AS cash_per_share,
-           g.c3 / 10.0 AS stock_transfer_ratio,
-           prev.close AS prev_close,
-           v.close AS ex_close,
-           (prev.close - v.close) / prev.close AS actual_drop,
-           (g.c1 / 10.0 / prev.close) + (g.c3 / 10.0) / (1 + g.c3 / 10.0) AS theoretical_drop
-    FROM v_stock_qfq v
-    JOIN raw_gbbq g ON v.symbol = g.symbol
-      AND g.date = ?::date
-      AND g.category = 1
-    JOIN v_stock_qfq prev ON v.symbol = prev.symbol
-      AND prev.date = ?::date - INTERVAL 1 DAY
-    WHERE v.date = ?::date
-)
-SELECT symbol, actual_drop, theoretical_drop,
-    CASE
-        WHEN ABS(actual_drop - theoretical_drop) < 0.005 THEN 'PASS'
-        ELSE 'WARN'
-    END AS result
-FROM raw
+SELECT
+    MAX(created_at) AS started_at,
+    CASE WHEN COUNT(*) = 0 THEN 'SKIP' ELSE 'PASS' END AS has_row
+FROM system_log
+WHERE log_type = 'tdx2db_update'
+  AND log_date = ?::date
 `;
 
 interface C8Row {
-  symbol: string;
-  result: CheckResult;
+  started_at: string | null;
+  has_row: CheckResult;
+}
+
+/** 把 system_log 的 'YYYY-MM-DD HH:MM:SS' 转成 Date（按本地时区） */
+function parseLocalTs(ts: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(ts);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
 }
 
 async function checkC8(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C8Row>(C8_SQL, [tradeDate, tradeDate, tradeDate]);
-
-    if (rows.length === 0) {
-      return { checkId: 'C8', result: 'PASS', detail: '当日无除权事件', durationMs: Date.now() - start };
+    const row = firstRow(await queryDuckDB<C8Row>(C8_SQL, [tradeDate]));
+    if (!row || row.has_row !== 'PASS' || !row.started_at) {
+      return {
+        checkId: 'C8',
+        result: 'SKIP',
+        detail: `无 ${tradeDate} 的 tdx2db_update 日志（无法判定执行时长）`,
+        durationMs: Date.now() - start,
+      };
     }
-
-    const warnCount = rows.filter((r) => r.result === 'WARN').length;
-    const result: CheckResult = warnCount > 0 ? 'WARN' : 'PASS';
-
+    const started = parseLocalTs(row.started_at);
+    if (!started) {
+      return {
+        checkId: 'C8', result: 'WARN',
+        detail: `tdx2db_update 时间戳格式异常：${row.started_at}`,
+        durationMs: Date.now() - start,
+      };
+    }
+    // 执行时长 = 校验时刻 - 行情更新开始时刻（本库无 tdx2db 结束日志，取近似上界）
+    const elapsedSec = Math.round((Date.now() - started.getTime()) / 1000);
+    const result: CheckResult = elapsedSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
     return {
-      checkId: 'C8',
-      result,
-      detail: `除权标的=${rows.length}, 偏差=${warnCount}（容差<${(TOLERANCES.GBBQ_DROP_DIFF * 100).toFixed(1)}%）`,
+      checkId: 'C8', result,
+      detail: `行情更新开始于 ${row.started_at}，至校验时已过 ${elapsedSec}s（上限 ${TOLERANCES.MAX_UPDATE_SECONDS}s）`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
-    return { checkId: 'C8', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return { checkId: 'C8', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
   }
 }
 
@@ -415,7 +538,7 @@ async function checkC9(tradeDate: string): Promise<CheckSummary> {
     return {
       checkId: 'C9',
       result: row.result,
-      detail: `mismatch=${row.mismatch_count}/100（容差<${TOLERANCES.HFQ_FACTOR_DIFF}）`,
+      detail: `mismatch=${row.mismatch_count}/100（容差<${TOLERANCES.QFQ_PRICE_DIFF}）`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
@@ -528,7 +651,7 @@ function parseTushareRow(
   };
 }
 
-/** 调用 Tushare 免费 daily 接口，5 秒超时 */
+/** 调用 Tushare 免费 daily 接口，超时取 EXEC_PARAMS.C11_TIMEOUT_MS */
 async function fetchTushareDaily(
   tsCode: string,
   tradeDate: string,
@@ -550,7 +673,7 @@ async function fetchTushareDaily(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(EXEC_PARAMS.C11_TIMEOUT_MS),
   });
 
   if (!res.ok) return null;
@@ -621,26 +744,37 @@ async function checkC11(tradeDate: string): Promise<CheckSummary> {
     };
   }
 
-  // 随机抽 30 只（Tushare Free 每日限额）
+  // 随机抽样 30 只（Tushare Free 每日 500 次限额，一次跑完不累积）
   const sampled = [...localRows]
     .sort(() => Math.random() - 0.5)
-    .slice(0, 30);
+    .slice(0, EXEC_PARAMS.C11_SAMPLE_SIZE);
 
   let match = 0;
   let mismatch = 0;
   let fetchFail = 0;
+  let consecutiveFail = 0;
+  let timedOut = false;
   const mismatchDetails: string[] = [];
 
   for (const row of sampled) {
+    // 总耗时守卫：超 30s 中止剩余请求，已比对的结果照常出结论
+    if (!withinTimeBudget(start)) {
+      timedOut = true;
+      break;
+    }
+
     const tsCode = convertToTsCode(row.symbol);
+    let failed = true;
     try {
       const tushare = await fetchTushareDaily(tsCode, tradeDate);
       if (!tushare) {
         fetchFail++;
       } else if (compareC11Rows(row, tushare)) {
         match++;
+        failed = false;
       } else {
         mismatch++;
+        failed = false;
         mismatchDetails.push(
           `${row.symbol}: local_close=${row.close} ts_close=${tushare.close} local_pre=${row.pre_close} ts_pre=${tushare.pre_close}`,
         );
@@ -648,27 +782,38 @@ async function checkC11(tradeDate: string): Promise<CheckSummary> {
     } catch {
       fetchFail++;
     }
+    consecutiveFail = failed ? consecutiveFail + 1 : 0;
 
-    // 100ms 节流，30 只 ≈ 3 秒完成
-    // Tushare Free 每日 500 次 / 每分钟 50 次，100ms 间隔远低于限流阈值
-    await new Promise((r) => setTimeout(r, 100));
+    // 100ms 节流/只（Tushare daily 限 50 次/分钟、每日 500 次；30 只 ≈ 3s 跑完）
+    await sleep(EXEC_PARAMS.C11_THROTTLE_MS);
   }
+
+  const abortNote = timedOut
+    ? `超时提前中止（总耗时上限 ${EXEC_PARAMS.MAX_TOTAL_MS}ms，仅比对 ${match + mismatch}/${sampled.length} 只）`
+    : '';
+  const detailTail = mismatchDetails.join('; ').slice(0, EXEC_PARAMS.MAX_DETAIL_CHARS);
 
   let result: CheckResult;
   let detail: string;
 
-  if (fetchFail >= sampled.length) {
+  if (fetchFail >= sampled.length || consecutiveFail >= EXEC_PARAMS.C11_SKIP_CONSECUTIVE_FAILS) {
+    // 外部源整体不可用（token 失效 / 429 限流耗尽 / 网络异常）→ SKIP，不阻塞后续校验
     result = 'SKIP';
-    detail = 'Tushare API 全部请求失败（可能 token 无效、429 限流或网络异常）';
+    detail = `Tushare API 整体不可用（fetchFail=${fetchFail}，连续失败 ${consecutiveFail} 次）${abortNote}`;
   } else if (mismatch === 0) {
     result = 'PASS';
-    detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）`;
-  } else if (mismatch <= 2) {
+    detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）${abortNote}`;
+  } else if (mismatch <= EXEC_PARAMS.C11_WARN_AT) {
+    // Requirements §7.3「>3 只不匹配 → WARN」：1~3 只即记 WARN，不计 PASS
     result = 'WARN';
-    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${mismatchDetails.join('; ').slice(0, 200)}`;
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
+  } else if (mismatch <= EXEC_PARAMS.C11_ERROR_AT) {
+    // 4~5 只：仍为 WARN（ERROR 只在 >5 只时触发）
+    result = 'WARN';
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
   } else {
     result = 'ERROR';
-    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${mismatchDetails.join('; ').slice(0, 200)}`;
+    detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
   }
 
   return {
@@ -695,17 +840,27 @@ interface C12Row {
   local_qfq_close: number;
 }
 
+/** 东财单次请求的结果分类（决定是「跳过该只」还是「值得退避重试」） */
+type EmFetchOutcome =
+  | { kind: 'ok'; close: number }
+  /** 被限流（429/503）→ 直接跳过该只，不浪费重试预算（SDD §7.3「被限流 → 跳过该只」）*/
+  | { kind: 'rate_limited' }
+  /** 网络异常 / 超时 / 非 200 / 无数据 → 退避重试耗尽后跳过该只 */
+  | { kind: 'unavailable' };
+
 /**
- * 调东财免费日K接口取前复权收盘价
+ * 调东财免费日K接口取前复权收盘价（单次尝试，不含重试）
  * @param symbol  sh600000 / sz000001 / bj8xxxxx（北交所跳过）
  * @param tradeDate  YYYY-MM-DD
- * @returns 前复权收盘价；不支持市场 / 超时 / 非 200 → null
  */
-async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<number | null> {
+async function fetchEastMoneyQfqOnce(
+  symbol: string,
+  tradeDate: string,
+): Promise<EmFetchOutcome> {
   const prefix = symbol.slice(0, 2).toLowerCase();
   const code = symbol.slice(2);
   const market = prefix === 'sh' ? '1' : prefix === 'sz' ? '0' : null;
-  if (!market) return null;
+  if (!market) return { kind: 'unavailable' };
 
   const begEnd = tradeDate.replace(/-/g, '');
   const url =
@@ -721,21 +876,42 @@ async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<num
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         Referer: 'https://quote.eastmoney.com/',
       },
-      signal: AbortSignal.timeout(10_000), // 单只 10s 超时
+      signal: AbortSignal.timeout(EXEC_PARAMS.C12_TIMEOUT_MS), // 单只 10s 超时
     });
-    if (!res.ok) return null;
+    const isRateLimited = (EXEC_PARAMS.RATE_LIMIT_STATUSES as readonly number[]).includes(res.status);
+    if (isRateLimited) return { kind: 'rate_limited' };
+    if (!res.ok) return { kind: 'unavailable' };
     const json = (await res.json()) as {
       data?: { klines?: string[] | null };
     };
     const klines = json?.data?.klines;
-    if (!Array.isArray(klines) || klines.length === 0) return null;
-    // "2024-01-02,10.50,10.60,10.40,10.55,1234567,12967890.00,0,3.21,2.05,1.23"
+    if (!Array.isArray(klines) || klines.length === 0) return { kind: 'unavailable' };
+    // fields2 顺序 = f51 日期, f52 开盘, f53 收盘, f54 最高, f55 最低, f56 量, f57 额, f58 振幅, f59 涨跌幅, f60 涨跌额, f61 换手
+    // => 收盘价是 parts[2]。2026-10-17 真实响应实测：1262.95,1288.00,1288.00,1261.00 与本地 close=1288 吻合
     const parts = String(klines[0]).split(',');
     const close = Number(parts[2]);
-    return Number.isFinite(close) ? close : null;
+    return Number.isFinite(close) ? { kind: 'ok', close } : { kind: 'unavailable' };
   } catch {
-    return null;
+    return { kind: 'unavailable' };
   }
+}
+
+/**
+ * 带退避重试的东财取价：失败（网络/超时/非 200）按 200ms → 400ms 退避重试 2 次，
+ * 仍失败则该只记为「跳过」（返回 null），绝不抛出、不阻塞后续标的。
+ * 被限流（429/503）不重试 —— 立刻跳过该只。
+ */
+async function fetchEastMoneyQfq(symbol: string, tradeDate: string): Promise<number | null> {
+  let outcome = await fetchEastMoneyQfqOnce(symbol, tradeDate);
+  for (
+    let attempt = 0;
+    outcome.kind === 'unavailable' && attempt < EXEC_PARAMS.RETRY_BACKOFF_MS.length;
+    attempt++
+  ) {
+    await sleep(EXEC_PARAMS.RETRY_BACKOFF_MS[attempt]);
+    outcome = await fetchEastMoneyQfqOnce(symbol, tradeDate);
+  }
+  return outcome.kind === 'ok' ? outcome.close : null;
 }
 
 async function checkC12(tradeDate: string): Promise<CheckSummary> {
@@ -752,49 +928,81 @@ async function checkC12(tradeDate: string): Promise<CheckSummary> {
       };
     }
 
-    // 随机抽 20 只
-    const sampled = [...localRows].sort(() => Math.random() - 0.5).slice(0, 20);
+    // 随机抽 20 只（Requirements §7.3）
+    const sampled = [...localRows]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, EXEC_PARAMS.C12_SAMPLE_SIZE);
 
     let match = 0;
     let mismatch = 0;
+    let bigDiff = 0;
     let fetchFail = 0;
+    let consecutiveFail = 0;
+    let sourceDown = false;
+    let timedOut = false;
     const details: string[] = [];
 
     for (const row of sampled) {
+      // 总耗时守卫：超 30s 中止剩余请求，已比对的结果照常出结论
+      if (!withinTimeBudget(start)) {
+        timedOut = true;
+        break;
+      }
+
       const emClose = await fetchEastMoneyQfq(row.symbol, tradeDate);
       if (emClose === null) {
         fetchFail++;
+        consecutiveFail++;
       } else {
+        consecutiveFail = 0;
         const diff = Math.abs(row.local_qfq_close - emClose);
         if (diff < TOLERANCES.EASTMONEY_PRICE_DIFF) {
           match++;
         } else {
           mismatch++;
+          if (diff > EXEC_PARAMS.C12_ERROR_GT) bigDiff++;
           details.push(
             `${row.symbol}: local=${row.local_qfq_close} em=${emClose} diff=${diff.toFixed(4)}`,
           );
         }
       }
 
-      // 500ms 节流，避免东财限流
-      await new Promise<void>((r) => setTimeout(r, 500));
+      // 连续多只失败 → 判定东财整体不可用，立即整项 SKIP（不阻塞后续校验）
+      if (consecutiveFail >= EXEC_PARAMS.C12_SKIP_CONSECUTIVE_FAILS) {
+        sourceDown = true;
+        break;
+      }
+
+      // 500ms 节流/只，避免东财限流
+      await sleep(EXEC_PARAMS.C12_THROTTLE_MS);
     }
+
+    const abortNote = timedOut
+      ? `超时提前中止（总耗时上限 ${EXEC_PARAMS.MAX_TOTAL_MS}ms，仅比对 ${match + mismatch}/${sampled.length} 只）`
+      : '';
+    const detailTail = details.join('; ').slice(0, EXEC_PARAMS.MAX_DETAIL_CHARS);
 
     let result: CheckSummary['result'];
     let detail: string;
 
-    if (fetchFail >= 5) {
+    if (sourceDown || fetchFail >= sampled.length) {
+      // 外部源整体不可用 / 全部请求失败 → SKIP（不是 ERROR），不阻塞后续校验
       result = 'SKIP';
-      detail = `东财 API 连续 ${fetchFail} 只请求失败 → 整项 SKIP`;
+      detail = `东财 API 整体不可用（fetchFail=${fetchFail}，连续失败 ${consecutiveFail} 次）${abortNote}`;
     } else if (mismatch === 0) {
       result = 'PASS';
-      detail = `20 只全 PASS（match=${match} fetchFail=${fetchFail}）`;
-    } else if (mismatch <= 2) {
-      result = 'WARN';
-      detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${details.join('; ').slice(0, 200)}`;
-    } else {
+      detail = `${sampled.length} 只全 PASS（match=${match} fetchFail=${fetchFail}）${abortNote}`;
+    } else if (bigDiff > EXEC_PARAMS.C12_ERROR_COUNT_GT) {
+      // Requirements §7.3：>1 只差异 > 0.1 元 → ERROR（幅度条件，与 mismatch 计数无关）
       result = 'ERROR';
-      detail = `mismatch=${mismatch} match=${match} fetchFail=${fetchFail} · ${details.join('; ').slice(0, 200)}`;
+      detail = `mismatch=${mismatch}（其中 ${bigDiff} 只差异 >${EXEC_PARAMS.C12_ERROR_GT} 元）match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
+    } else if (mismatch <= EXEC_PARAMS.C12_WARN_AT) {
+      result = 'WARN';
+      detail = `mismatch=${mismatch}（≤${EXEC_PARAMS.C12_WARN_AT}，PRD §6.2 容差内）match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
+    } else {
+      // >5 只有差异仍记 WARN：Requirements §7.3 对 C12 的 ERROR 只由「幅度」触发，计数只决定 WARN 级别
+      result = 'WARN';
+      detail = `mismatch=${mismatch}（>${EXEC_PARAMS.C12_WARN_AT}，均在 ${EXEC_PARAMS.C12_ERROR_GT} 元以内）match=${match} fetchFail=${fetchFail} · ${detailTail}${abortNote}`;
     }
 
     return {
@@ -821,7 +1029,9 @@ async function checkC12(tradeDate: string): Promise<CheckSummary> {
 const CHECKS: Array<(tradeDate: string) => Promise<CheckSummary>> = [
   checkC1,
   checkC2,
-  checkC3toC5,
+  checkC3,
+  checkC4,
+  checkC5,
   checkC6,
   checkC7,
   checkC8,

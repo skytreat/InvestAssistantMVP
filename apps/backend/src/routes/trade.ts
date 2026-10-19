@@ -12,25 +12,104 @@ import { writeSystemLog } from '../services/logger.js';
 
 const REDUCE_TYPES = new Set(['sell', 'reduce', 'clear']);
 
+/**
+ * T87：`trade_time` 格式校验（秒级 HH:mm:ss）
+ *
+ * B-11 裁决：`trade_time` 必填无默认 —— 不能给默认时间，因为那样
+ * 「同一天同一秒录入两笔」会静默撞唯一键，用户无从理解为何被拒。
+ * 缺失时前端预填当前时间；后端只做格式与范围校验。
+ */
+export function validateTradeTime(t: unknown): t is string {
+  if (typeof t !== 'string') return false;
+  if (!/^\d{2}:\d{2}:\d{2}$/.test(t)) return false;
+  const h = Number(t.slice(0, 2));
+  const m = Number(t.slice(3, 5));
+  const s = Number(t.slice(6, 8));
+  return h < 24 && m < 60 && s < 60;
+}
+
+/** 当前本地时间，秒级 HH:mm:ss */
+export function nowTradeTime(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * T58：同步 `user_asset_rel` 的 `rel_type='hold'` 关系
+ *
+ * 口径（以 `calcPosition` 的移动加权成本结果为准，与 GET /api/positions 同一口径）：
+ * - 持仓 > 0 → 关系存在：缺则 INSERT，软删则恢复（`is_deleted=0`）
+ * - 持仓 = 0（清仓）→ **软删**（`is_deleted=1`），不物理删除（AGENTS.md 硬约束）
+ *
+ * 幂等：先按 UNIQUE(user_id, asset_code, rel_type) 查现状，再决定 INSERT/UPDATE，
+ * 重复调用不会产生第二行，也不会抛 UNIQUE。
+ *
+ * ⚠️ 与 `exDividendSync.getHoldingBeforeDate` 的口径差异（**疑似，未修**）：
+ *    后者把 `bonus` 计入 +quantity，`calcPosition`（core 移动加权）不计 bonus。
+ *    「清仓后又有送转股」这类序列两者结论会相反。此处不擅自改动，等业务口径裁决。
+ */
+export function syncHoldRelation(userId: number, assetCode: string): { action: string; totalQuantity: number } {
+  const db = ConfigStore.getInstance().db;
+  const totalQuantity = calcPosition(userId, assetCode).totalQuantity;
+  const shouldHold = totalQuantity > 0;
+
+  const run = db.transaction(() => {
+    const existing = db.prepare(
+      'SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?'
+    ).get(userId, assetCode, 'hold') as { id: number; is_deleted: number } | undefined;
+
+    if (shouldHold) {
+      if (!existing) {
+        db.prepare(
+          `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'hold')`
+        ).run(userId, assetCode);
+        return 'created';
+      }
+      if (existing.is_deleted === 1) {
+        db.prepare('UPDATE user_asset_rel SET is_deleted = 0 WHERE id = ?').run(existing.id);
+        return 'restored';
+      }
+      return 'kept';
+    }
+
+    if (existing && existing.is_deleted === 0) {
+      db.prepare('UPDATE user_asset_rel SET is_deleted = 1 WHERE id = ?').run(existing.id);
+      return 'soft_deleted';
+    }
+    return 'noop';
+  });
+
+  return { action: run(), totalQuantity };
+}
+
 export async function registerTradeRoutes(app: FastifyInstance) {
   // 录入交易
   app.post('/api/trades', async (request, reply) => {
     try {
       const body = request.body as {
-        asset_code: string;
+asset_code: string;
         trade_type: 'buy' | 'sell' | 'reduce' | 'clear' | 'dividend' | 'bonus' | 'transfer';
         trade_date: string;
+        trade_time?: string;   // T87：秒级 HH:mm:ss，必填无默认
         quantity: number;
         price: number;
         fee?: number;
         trade_reason?: string;
         remark?: string;
-        system_followed?: number;  // T39: 系统信号驱动的交易，由 cron 自动设置
+        system_followed?: number;  // T39: 由信号触发的导入（cron 自动导入）
       };
       const user = (request as any).user as { sub: number; username: string; role: string };
       if (!body?.asset_code || !body?.trade_type || !body?.trade_date ||
           body.quantity == null || body.price == null) {
-        return reply.code(400).send({ success: false, error: '必填字段缺失' });
+        return reply.code(400).send({ success: false, error: '必要字段缺失' });
+      }
+      // T87：trade_time 必填且格式合法
+      if (!validateTradeTime(body.trade_time)) {
+        return reply.code(400).send({
+          success: false, error: 'PARAM_INVALID',
+          message: 'trade_time 必填，格式 HH:mm:ss（秒级）',
+        });
       }
       if (body.quantity <= 0 || body.price < 0) {
         return reply.code(400).send({ success: false, error: '数量>0、价格>=0' });
@@ -53,23 +132,26 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         tradeReason = body.trade_reason ?? null;
       }
 
-      if (REDUCE_TYPES.has(body.trade_type)) {
-        if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity)) {
-          return reply.code(400).send({
+if (REDUCE_TYPES.has(body.trade_type)) {
+        // T84（P0-13）：必须传 trade_date —— 以卖出发生时点回放，
+        // 否则尚未发生的买入会支撑更早的卖出（日期交错绕过校验）
+        if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity, body.trade_date, body.trade_time)) {
+          // B-10 裁决：HOLDING_INSUFFICIENT = HTTP 409（非 400）
+          return reply.code(409).send({
             success: false,
             error: 'HOLDING_INSUFFICIENT',
-            message: `持仓不足，无法${body.trade_type} ${body.asset_code}`,
+            message: `持仓不足：无法${body.trade_type} ${body.asset_code}`,
           });
-        }
+}
       }
 
       const db = ConfigStore.getInstance().db;
       const info = db.prepare(
         `INSERT INTO user_trade_record
-         (user_id, asset_code, trade_type, trade_date, quantity, price, fee, trade_reason, remark, system_followed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, remark, system_followed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
-        user.sub, body.asset_code, body.trade_type, body.trade_date,
+        user.sub, body.asset_code, body.trade_type, body.trade_date, body.trade_time,
         body.quantity, body.price, body.fee ?? 0, tradeReason, body.remark ?? null,
         body.system_followed ?? null
       );
@@ -79,11 +161,15 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         message: `录入${body.trade_type} ${body.asset_code} qty=${body.quantity} price=${body.price}`,
       });
 
+      // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
+      const holdRel = syncHoldRelation(user.sub, body.asset_code);
+
       reply.code(201).send({
         success: true,
         data: {
           trade_id: info.lastInsertRowid,
           position: calcPosition(user.sub, body.asset_code),
+          hold_rel: holdRel,
         },
       });
     } catch (err: any) {
@@ -193,11 +279,16 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     if (info.changes === 0) {
       return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
     }
+    // T58：软删交易后同步 hold 关系（删掉的是买入 → 持仓归零 → 软删 hold）
+    const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
+      { asset_code: string } | undefined;
+    const holdRel = row ? syncHoldRelation(user.sub, row.asset_code) : null;
     writeSystemLog({
       logType: 'trade', level: 'INFO',
       message: `${user.username} 软删除交易 id=${tradeId}`,
+      detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send({ success: true });
+    reply.send({ success: true, data: { hold_rel: holdRel } });
   });
 
   // T39: 恢复软删除
@@ -211,11 +302,16 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     if (info.changes === 0) {
       return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
     }
+    // T58：恢复交易 → 持仓回升 → hold 关系恢复
+    const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
+      { asset_code: string } | undefined;
+    const holdRel = row ? syncHoldRelation(user.sub, row.asset_code) : null;
     writeSystemLog({
       logType: 'trade', level: 'INFO',
       message: `${user.username} 恢复交易 id=${tradeId}`,
+      detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send({ success: true });
+    reply.send({ success: true, data: { hold_rel: holdRel } });
   });
 
   // 查询单个标的持仓

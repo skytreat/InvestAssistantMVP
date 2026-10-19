@@ -129,7 +129,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-05',
+        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-05', trade_time: '09:00:01',
         quantity: 1000, price: 10.0, fee: 5, trade_reason: 'M4 端到端建仓',
       },
     });
@@ -148,7 +148,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-06',
+        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-06', trade_time: '09:00:02',
         quantity: 100, price: 10,
       },
     });
@@ -160,7 +160,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-10',
+        asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-10', trade_time: '09:00:03',
         quantity: 500, price: 12.0, fee: 0, trade_reason: 'M4 加仓',
       },
     });
@@ -169,15 +169,15 @@ describe('M4 · 交易闭环与双口径收益', () => {
     expect(JSON.parse(res.body).data.position.avgCost).toBeCloseTo(16005 / 1500, 4);
   });
 
-  it('超持仓卖出 → 400 HOLDING_INSUFFICIENT', async () => {
+  it('超持仓卖出 → 409 HOLDING_INSUFFICIENT', async () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'sell', trade_date: '2026-02-02',
+        asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-02', trade_time: '09:00:04',
         quantity: 99999, price: 15.0, trade_reason: 'M4 超卖校验',
       },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('HOLDING_INSUFFICIENT');
   });
 
@@ -185,7 +185,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-10',
+        asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-10', trade_time: '09:00:05',
         quantity: 400, price: 15.0, fee: 2, trade_reason: 'M4 减仓止盈',
       },
     });
@@ -203,7 +203,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     const res = await ctx.bundle.app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'dividend', trade_date: '2026-03-01',
+        asset_code: TRADE_CODE, trade_type: 'dividend', trade_date: '2026-03-01', trade_time: '09:00:06',
         quantity: 1100, price: 0.5, trade_reason: '2025 年度分红',
       },
     });

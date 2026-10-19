@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateMovingWeightedCost, type TradeRecord } from '../src/movingWeightedCost';
+import { calculateMovingWeightedCost, PositionOversellError, type TradeRecord } from '../src/movingWeightedCost';
 
 describe('移动加权平均成本', () => {
   it('单笔买入', () => {
@@ -31,12 +31,16 @@ describe('移动加权平均成本', () => {
     expect(r.realizedPnL).toBeCloseTo(100, 2);  // 50 * (12 - 10)
   });
 
-  it('空仓卖出不报错', () => {
+  it('空仓卖出：T84 起改为抛 PositionOversellError（原「不报错」是 P0-13 的 bug 行为）', () => {
     const trades: TradeRecord[] = [
       { date: '2026-10-12', direction: 'sell', quantity: 50, price: 12, fee: 0 },
     ];
-    const r = calculateMovingWeightedCost(trades);
+    expect(() => calculateMovingWeightedCost(trades)).toThrow(PositionOversellError);
+
+    // 显示路径显式声明容错口径：不抛，且不产生负持仓
+    const r = calculateMovingWeightedCost(trades, { strictOversell: false });
     expect(r.totalQuantity).toBe(0);
     expect(r.avgCost).toBe(0);
+    expect(r.hasOversell).toBe(true);
   });
 });

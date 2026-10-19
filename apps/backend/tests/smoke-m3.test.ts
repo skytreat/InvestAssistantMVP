@@ -104,7 +104,7 @@ describe('M3 Trade + 持仓校验', () => {
   it('买入 sh600000 100 股', async () => {
     const res = await app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
+      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
@@ -116,9 +116,9 @@ describe('M3 Trade + 持仓校验', () => {
   it('卖出超持仓 → HOLDING_INSUFFICIENT', async () => {
     const res = await app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + '-dup', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
+      payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + '-dup', trade_time: '09:00:02', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
     expect(body.error).toBe('HOLDING_INSUFFICIENT');
@@ -127,7 +127,7 @@ describe('M3 Trade + 持仓校验', () => {
   it('卖出 50 股后持仓正确', async () => {
     const res = await app.inject({
       method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + 'b', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
+      payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + 'b', trade_time: '09:00:03', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);

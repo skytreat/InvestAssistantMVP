@@ -13,6 +13,8 @@ import os from 'node:os';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invest-md-'));
 const TEST_DB = path.join(tmpDir, 'md-test.db');
+// T81：顶层写 env 必须留原值并在 afterAll 还原，否则会漏给下一个测试文件
+const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import {
@@ -37,6 +39,8 @@ beforeAll(() => {
 
 afterAll(() => {
   cleanup();
+  if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+  else delete process.env.SQLITE_DB_PATH;
 });
 
 describe('marketData — batchGetDaily 空数组', () => {

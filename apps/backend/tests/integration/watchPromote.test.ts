@@ -100,8 +100,8 @@ describe('Positions · 现价 / 市值 enrich（T33）', () => {
   it('GET /api/positions 返回 totalQuantity + summary', async () => {
     bundle.db.db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
-       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted)
-       VALUES (?, ?, 'buy', '2025-08-01', 200, 1500, 5, 0)`
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
+       VALUES (?, ?, 'buy', '2025-08-01', '09:30:00', 200, 1500, 5, 0)`
     ).run(bundle.userId, CODE);
 
     const res = await bundle.app.inject({ method: 'GET', url: '/api/positions', headers: authHeaders() });

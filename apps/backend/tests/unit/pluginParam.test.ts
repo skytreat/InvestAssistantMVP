@@ -25,7 +25,9 @@ describe('validatePluginParams — 合法参数', () => {
     const result = validatePluginParams(rsiPlugin, {});
     expect(result.symbol).toBe('sh600000');
     expect(result.period).toBe(14);
-    expect(result.threshold).toBe(30);
+    // 按 T96 新契约：threshold 已拆为 oversold / overbought 两个字段
+    expect(result.oversold).toBe(30);
+    expect(result.overbought).toBe(70);
     expect(result.days).toBe(120);
   });
 
@@ -33,16 +35,17 @@ describe('validatePluginParams — 合法参数', () => {
     const result = validatePluginParams(rsiPlugin, { symbol: 'sz000001' });
     expect(result.symbol).toBe('sz000001');
     expect(result.period).toBe(14);  // default
-    expect(result.threshold).toBe(30);
+    expect(result.oversold).toBe(30);
+    expect(result.overbought).toBe(70);
     expect(result.days).toBe(120);
   });
 
   it('全部传参 → 原样返回', () => {
     const result = validatePluginParams(rsiPlugin, {
-      symbol: 'sh601318', period: 10, threshold: 25, days: 60,
+      symbol: 'sh601318', period: 10, oversold: 25, overbought: 75, days: 60,
     });
     expect(result).toEqual({
-      symbol: 'sh601318', period: 10, threshold: 25, days: 60,
+      symbol: 'sh601318', period: 10, oversold: 25, overbought: 75, days: 60,
     });
   });
 });
@@ -60,9 +63,24 @@ describe('validatePluginParams — 边界/错误', () => {
       .toThrow('大于最大值 30');
   });
 
-  it('threshold 非 number → 抛 PluginParamError', () => {
-    expect(() => validatePluginParams(rsiPlugin, { threshold: 'abc' as any }))
+  it('oversold 非 number → 抛 PluginParamError', () => {
+    expect(() => validatePluginParams(rsiPlugin, { oversold: 'abc' as any }))
       .toThrow('期望 number');
+  });
+
+  it('oversold == overbought(50/50) → 跨字段约束失败，抛 PluginParamError（按 T96 新契约）', () => {
+    // 注：oversold 范围 1-50、overbought 范围 50-100，单字段范围已隐含大小关系；
+    // 跨字段校验是不可绕过的防御性护栏，唯一可达边界是 50/50 相等
+    expect(() => validatePluginParams(rsiPlugin, { oversold: 50, overbought: 50 }))
+      .toThrow(PluginParamError);
+    expect(() => validatePluginParams(rsiPlugin, { oversold: 50, overbought: 50 }))
+      .toThrow('必须小于');
+  });
+
+  it('oversold < overbought → 通过', () => {
+    const result = validatePluginParams(rsiPlugin, { oversold: 20, overbought: 80 });
+    expect(result.oversold).toBe(20);
+    expect(result.overbought).toBe(80);
   });
 
   it('symbol 非 string → 抛 PluginParamError', () => {

@@ -27,9 +27,10 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     user_id INTEGER NOT NULL,
     asset_code TEXT NOT NULL,
     trade_type TEXT NOT NULL CHECK (
-        trade_type IN ('buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')
+        trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')
     ),
     trade_date TEXT NOT NULL,
+    trade_time TEXT NOT NULL,
     quantity REAL NOT NULL CHECK (quantity >= 0),
     price REAL NOT NULL CHECK (price >= 0),
     fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
     remark TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    UNIQUE(user_id, asset_code, trade_type, trade_date),
+    UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
 );
 CREATE INDEX IF NOT EXISTS idx_trade_user_date ON user_trade_record(user_id, trade_date DESC);
@@ -274,18 +275,31 @@ export class ConfigStore {
     }
   }
 
-  /**
-   * 补齐 user_trade_record 的 UNIQUE(user_id, asset_code, trade_type, trade_date) 约束
-   * SDD §5.2 除权自动导入需要幂等防重
-   * SQLite 不能 ALTER TABLE 加 UNIQUE，只能重建：CREATE new → INSERT SELECT → DROP old → RENAME
-   */
-  private _ensureTradeRecordUniqueConstraint(): void {
-    try {
-      // 检查现有表有没有 UNIQUE 约束
-      const hasUnique = this._db
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='user_trade_record' AND sql LIKE '%UNIQUE%'")
-        .get();
-      if (hasUnique) return;  // 约束已存在
+/**
+ * T87：把 user_trade_record 迁移到**最终 schema**：
+ *   - 新增 `trade_time TEXT NOT NULL`（秒级 HH:mm:ss）
+ *   - UNIQUE 改为 (user_id, asset_code, trade_type, trade_date, trade_time)  —— **quantity 不进主键**
+ *   - trade_type CHECK 改为 7 种（`add` 替换 `sell`，DEC-2 / T49）
+ *
+ * ⚠️ 为什么一次做完 T87 + T49 两项：AGENTS.md「DDL 变更判据」要求
+ * 「多个幂等重建若落在同一张表上，**合并为一次重建**，不要叠加多次 DROP/RENAME」。
+ * 因此本函数直接产出最终形态；T49 的 DDL 部分因此成为 no-op（应用层改动仍在 T49）。
+ *
+ * SQLite 不能 ALTER TABLE 加 NOT NULL 列 / 改 UNIQUE，只能重建：
+ *   CREATE new → INSERT SELECT → DROP old → RENAME
+ */
+private _ensureTradeRecordUniqueConstraint(): void {
+  try {
+    // 已达最终 schema？两个条件都要满足：UNIQUE 含 trade_time + 有 trade_time 列
+    const idx = this._db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='user_trade_record' AND sql LIKE '%UNIQUE%' AND sql LIKE '%trade_time%'",
+      )
+      .get();
+    const hasTimeCol = this._db
+      .prepare("SELECT 1 FROM pragma_table_info('user_trade_record') WHERE name = 'trade_time'")
+      .get();
+    if (idx && hasTimeCol) return;  // 已是最终 schema
 
       // 表为空 → 直接 DROP 再重建（最简单）
       const count = (this._db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
@@ -296,8 +310,9 @@ export class ConfigStore {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             asset_code TEXT NOT NULL,
-            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
+            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
             trade_date TEXT NOT NULL,
+            trade_time TEXT NOT NULL,
             quantity REAL NOT NULL CHECK (quantity >= 0),
             price REAL NOT NULL CHECK (price >= 0),
             fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
@@ -310,7 +325,7 @@ export class ConfigStore {
             is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
             remark TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            UNIQUE(user_id, asset_code, trade_type, trade_date),
+            UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
             FOREIGN KEY (user_id) REFERENCES user_account(id)
           )
         `);
@@ -331,8 +346,9 @@ export class ConfigStore {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             asset_code TEXT NOT NULL,
-            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
+            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
             trade_date TEXT NOT NULL,
+            trade_time TEXT NOT NULL,
             quantity REAL NOT NULL CHECK (quantity >= 0),
             price REAL NOT NULL CHECK (price >= 0),
             fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
@@ -345,18 +361,34 @@ export class ConfigStore {
             is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
             remark TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            UNIQUE(user_id, asset_code, trade_type, trade_date),
+            UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
             FOREIGN KEY (user_id) REFERENCES user_account(id)
           )
         `);
-        // INSERT OR IGNORE 跳过重复记录（以先插入的为准）
-        this._db.exec(`
+        // T87：存量记录的 trade_time 取 created_at 的时间部分；
+// created_at 形如 '2026-09-01 14:23:05' → substr(created_at, 12) 得 '14:23:05'。
+// 若 created_at 异常（NULL / 长度不足 / 非 HH:mm:ss）则回退 '00:00:00'。
+// ⚠️ 回退值可能与其它记录撞唯一键 → INSERT OR IGNORE 会跳过该条，
+//    故此处对回退行加 id 后缀秒位微调不可行（NOT NULL + 唯一），
+//    改为：撞键时保留先插入者（与既有迁移语义一致），并在日志中告警。
+this._db.exec(`
           INSERT OR IGNORE INTO user_trade_record (
-            user_id, asset_code, trade_type, trade_date, quantity, price, fee,
+            user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee,
             trade_reason, is_auto_import, is_deleted, review_summary,
             system_followed, strategy_match, is_stop_loss, remark, created_at
           )
-          SELECT user_id, asset_code, trade_type, trade_date, quantity, price, fee,
+          SELECT user_id, asset_code, trade_type, trade_date,
+                 CASE
+                   WHEN created_at IS NOT NULL
+                    AND length(created_at) >= 19
+                    AND substr(created_at, 12, 8) GLOB '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+                     AND substr(created_at, 14, 2) < '24'
+                    AND substr(created_at, 17, 2) < '60'
+                    AND substr(created_at, 20, 2) < '60'
+                   THEN substr(created_at, 12, 8)
+                   ELSE '00:00:00'
+                 END,
+                 quantity, price, fee,
                  trade_reason, is_auto_import, is_deleted, review_summary,
                  system_followed, strategy_match, is_stop_loss, remark, created_at
           FROM _trade_record_old
