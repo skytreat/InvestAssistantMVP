@@ -55,6 +55,19 @@ function cleanup(): void {
   else delete process.env.SQLITE_DB_PATH;
 }
 
+/**
+ * 清空该用户的关系行
+ *
+ * 🔴 T81 顺序依赖：同文件的用例共用一个临时库 → 前序用例种下的行会残留，
+ *   导致「软删的行不计入」这类**精确集合**断言随机失败（shuffle 下暴露）。
+ *   → 每个用例前先清干净。
+ */
+function cleanRelations(): void {
+  ConfigStore.getInstance().db
+    .prepare('DELETE FROM user_asset_rel WHERE user_id = ?')
+    .run(SIGNAL_USER_ID);
+}
+
 /** 铺自选 / 持仓 / 候选池数据 */
 function seedRelations(rows: Array<[string, string]>): void {
   const db = ConfigStore.getInstance().db;
@@ -63,6 +76,7 @@ function seedRelations(rows: Array<[string, string]>): void {
     `INSERT OR IGNORE INTO user_account (id, username, password_hash, role)
      VALUES (?, ?, 'x', 'admin')`,
   ).run(SIGNAL_USER_ID, 't85b_admin');
+  cleanRelations();
   const stmt = db.prepare(
     `INSERT OR REPLACE INTO user_asset_rel
        (user_id, asset_code, rel_type, is_deleted, created_at)

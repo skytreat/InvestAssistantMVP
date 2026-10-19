@@ -24,14 +24,48 @@ import bcrypt from 'bcryptjs';
  *
  * ⚠️ 测试环境由 `tests/setup.ts` 注入安全临时密钥；本地开发见 `.env.local`。
  */
-const JWT_SECRET_RAW = process.env.JWT_SECRET;
-if (!JWT_SECRET_RAW) {
-  throw new Error(
-    '[auth] JWT_SECRET 未设置 —— 拒绝以默认密钥启动。' +
-    '请在 .env.local / 系统环境变量中配置（见 docs/deploy.md §3）。',
-  );
+/**
+ * 读取 JWT 签名密钥（**惰性**）
+ *
+ * ⚠️ **为什么不能放在模块顶层**（2026-10-19 实测踩坑）：
+ *   `vitest.config.ts` 的 `coverage.include`（src 目录下所有 .ts）会让 v8 provider
+ *   **提前加载**本文件（为了收集未覆盖文件的覆盖率）—— 此时 `tests/setup.ts` 还没跑，
+ *   `process.env.JWT_SECRET` 尚未注入 → 顶层读 env 直接崩
+ *   （实测：带 `--coverage` 时 4 个测试文件在收集阶段就失败）。
+ *
+ *   → 改为**在实际使用 token 时才读取**：模块何时被求值都不影响，
+ *   只要调用 `signToken` / `verifyToken` 时 env 已就绪即可。
+ *
+ * 安全语义不变：**没有 JWT_SECRET 就不签名**（拒绝以默认密钥启动），
+ * 且**不再有明文兜底密钥**。
+ */
+/** 开发/测试兜底用的进程内随机密钥（**不硬编码、不落盘、进程结束即消失**） */
+let _devFallbackSecret: Buffer | null = null;
+
+function getJwtSecret(): Buffer {
+  const raw = process.env.JWT_SECRET;
+  if (raw) return Buffer.from(raw, 'utf-8');
+
+  // 生产环境：缺密钥 = 配置错误 → 拒绝启动（fail fast，别带着随机密钥上线）
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      '[auth] JWT_SECRET 未设置 —— 生产环境拒绝以随机密钥启动。' +
+      '请在系统环境变量中配置（见 docs/deploy.md §3）。',
+    );
+  }
+
+  // 开发 / 测试：进程内随机生成
+  //   ⚠️ 绝**不**回退到硬编码常量 —— 那会让密钥进版本库，任何人拿到仓库即可伪造 token。
+  //   随机密钥的代价是「重启即失效所有 token」，对开发/测试完全可接受。
+  if (!_devFallbackSecret) {
+    _devFallbackSecret = crypto.randomBytes(32);
+    console.warn(
+      '[auth] ⚠️ JWT_SECRET 未设置 —— 已使用进程内随机密钥（重启即失效）。' +
+      '生产请配置 JWT_SECRET 与 NODE_ENV=production（见 docs/deploy.md §3）。',
+    );
+  }
+  return _devFallbackSecret;
 }
-const JWT_SECRET = Buffer.from(JWT_SECRET_RAW, 'utf-8');
 const JWT_TTL_SEC = 7 * 60 * 60 * 24;  // 7 天（SDD S4 access token）
 
 function b64url(buf: Buffer): string {
@@ -104,7 +138,7 @@ export function signToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
   const h = b64url(Buffer.from(JSON.stringify(header)));
   const p = b64url(Buffer.from(JSON.stringify(fullPayload)));
   const signing = `${h}.${p}`;
-  const sig = b64url(crypto.createHmac('sha256', JWT_SECRET).update(signing).digest());
+  const sig = b64url(crypto.createHmac('sha256', getJwtSecret()).update(signing).digest());
   return `${signing}.${sig}`;
 }
 
@@ -113,7 +147,7 @@ export function verifyToken(token: string): JwtPayload | null {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
     const [h, p, sig] = parts;
-    const expectedSig = b64url(crypto.createHmac('sha256', JWT_SECRET).update(`${h}.${p}`).digest());
+    const expectedSig = b64url(crypto.createHmac('sha256', getJwtSecret()).update(`${h}.${p}`).digest());
     // 固定长度比较防止时序攻击
     const a = Buffer.from(sig);
     const b = Buffer.from(expectedSig);

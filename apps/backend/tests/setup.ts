@@ -78,13 +78,35 @@ function restoreEnv(snapshot: EnvBaseline): void {
 }
 
 /**
+ * 确保测试进程里有 JWT_SECRET。
+ *
+ * 🔴 **必须每个测试文件都调用**（2026-10-19 实测）：
+ *   带 `--coverage` 时，vitest 给每个测试文件独立的模块上下文，`process.env` 不保证
+ *   在文件之间共享；而 `globalThis` 守卫又让「只跑一次」的兜底在后续文件里失效
+ *   → 后续文件里 `auth.ts` 签名抛错 → 用例红。
+ *   → 故此函数**不受** `globalThis` 守卫保护，每次 setup 加载都执行。
+ */
+function ensureJwtSecret(): void {
+  if (!process.env.JWT_SECRET) {
+    process.env.JWT_SECRET = 'investassistant-mvp-test-secret-for-unit-tests-only';
+  }
+}
+
+/**
  * 进程级初始化 + 基线抓取（每个进程只执行一次）。
- * 必须在测试文件 import 之前跑完：auth.ts 顶层读 JWT_SECRET 就是靠这一步。
+ * 必须在测试文件 import 之前跑完：auth.ts 读 JWT_SECRET 就是靠这一步。
  */
 function initProcessBaseline(): EnvBaseline {
   const g = globalThis as unknown as Record<string, EnvBaseline | undefined>;
   const existing = g[GLOBAL_KEY];
-  if (existing) return existing;
+  if (existing) {
+    // 🔴 2026-10-19 实测（--coverage 场景）：`process.env` **不保证在测试文件之间共享**，
+    //   而 `globalThis[GLOBAL_KEY]` 守卫会让**兜底只在第一个文件执行** ——
+    //   后续文件的上下文里 `JWT_SECRET` 根本不存在 → `auth.ts` 签名抛错 → 用例红。
+    //   → 兜底必须**每个文件都执行**（不放在早退路径之后）。
+    ensureJwtSecret();
+    return existing;
+  }
 
   // 从 workspace 根目录加载 .env.local（白名单）
   const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -112,9 +134,7 @@ function initProcessBaseline(): EnvBaseline {
     delete process.env[key];
   }
 
-  if (!process.env.JWT_SECRET) {
-    process.env.JWT_SECRET = 'investassistant-mvp-test-secret-for-unit-tests-only';
-  }
+  ensureJwtSecret();
 
   // 兜底：SQLITE_DB_PATH 指向一个安全临时库，而不是回落到 data/business.db。
   // 没有它设 SQLITE_DB_PATH 的测试文件会写到开发库。
