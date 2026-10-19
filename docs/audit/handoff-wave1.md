@@ -16,6 +16,11 @@ Wave 1 的 21 个 T 任务已在本地完成并 commit，测试全绿（backend 
 > 🔴 **先读 §4.1 再开始** —— 本波有 **6 个任务的代码未经独立审查**（sub-agent 被取消后由主 agent
 > 接手修复并提交，其中 T57 是从压扁的 10K 单行文件重建的）。「测试全绿」**不等于**「代码是对的」。
 > gate 阶段的职责就是补上这双眼睛。
+>
+> 📌 **§4.2** 给出「agent 原始产出 → 最终实现」的**逐处改动清单**，
+> 用于区分「哪些是 agent 的业务逻辑（需重点审）/ 哪些是机械修复（低风险）」。
+> 注意：原始产出**未 commit，无 git diff 可查**（T57 原始版已永久丢失）——
+> 这也是 §6 列出的流程缺陷，**下一波起必须先留 WIP commit**。
 
 ---
 
@@ -145,6 +150,74 @@ T59 + T89a + T90（同批）→ T60 → T92 → 跑 G1~G8 → 写 docs/audit/wav
 
 ---
 
+## 4.2 agent 原始产出 → 最终实现的改动点清单（逐处）
+
+> ⚠️ **重要局限，先说清楚**：sub-agent 的原始产出**从未 commit**，因此
+> **没有 git diff / `git show` 可以还原**。T57 的原始版本（10K 字符单行）**已永久丢失**。
+> 下表是主 agent **逐处手工核对**后写下的改动记录 —— 它能告诉你
+> 「**最终代码里哪些部分是 agent 的业务逻辑（需重点审）、哪些是机械修复（低风险）**」，
+> 但**不能替代真正的 diff**。
+>
+> 🔴 **流程缺陷（已列入 §6 待改进）**：sub-agent 产出后**必须先 commit 原始版（WIP）**，
+> 再由主 agent 修复，这样 diff 永远可查。本波没做，代价就是 T57 原始版不可恢复。
+
+### T51 — 🟢 几乎全为 agent 原始产出
+
+| 改动 | 性质 | 说明 |
+|---|---|---|
+| `apps/backend/package.json` 加 `fast-technical-indicators: 1.1.6` | **主 agent 补** | card 验收点 4 要求 core+backend+frontend 三处都声明。agent 只装了 core+frontend |
+| 其余全部 | agent 原始产出 | adapters.ts、golden 4 个 JSON、rsi.ts/macd.ts 改造、index.ts 导出 |
+
+**审查重点**：`adapters.ts` 是否真的「只做两件事」（数组补齐 + 柱值×2），有没有夹带第三件事。
+
+### T52 — 🟢 全为 agent 原始产出（主 agent 未改一行）
+
+**审查重点**：两份 KDJ 是否同公式同初值。用 golden 之外的随机行情交叉验证（§4.1.2 第 3 条）。
+
+### T53 — 🟢 全为 agent 原始产出（主 agent 未改一行）
+
+**审查重点**：6 个表/视图名未经 DESCRIBE 实测（§4.1.2 第 2 条）。
+
+### T55 — 🟡 2 处改动
+
+| # | 位置 | agent 原始 | 最终 | 性质 |
+|---|---|---|---|---|
+| 1 | `stockscan.ts:193` + `:215` | `SELECT ${bind(view)} AS src_view` | 新增 `const srcViewPlaceholder = bind(view);`（提前到 `conditions` 之前），SQL 改用 `${srcViewPlaceholder}` | **主 agent 修 bug**（真 bug：参数与 `?` 错位 → DuckDB `INTEGER -> DATE`） |
+| 2 | `t55-stockscan-filter.test.ts` | `expect(filtered.length).toBeLessThan(base.length)` | 删除该断言，改为注释说明「LIMIT 5000 饱和时条数不变，只能断言结果里不含 ST 名称」 | **主 agent 修错误断言**（agent 写的断言在 LIMIT 饱和时永远不成立） |
+
+**审查重点**：JOIN 的 3 张表列名（`raw_symbol_class.is_st` / `raw_basic_daily.totalmv` /
+`raw_tdx_blocks_member`）是照卡片抄的，未经实测。
+
+### T57 — 🔴 改动最多（从半成品重建）
+
+| # | 位置 | agent 原始 | 最终 | 性质 |
+|---|---|---|---|---|
+| 1 | **整个文件结构** | **141 行，其中第 140 行是 10 047 字符的单行**（压扁，3 个 describe 挤在一起） | **418 行**，按语句边界重新拆行 + 补 2 个缺失的 `}` + 拆开被吞在行尾的 it 闭合 | **主 agent 重建** |
+| 2 | `makeApp()` 的 hook | `app.addHook('onRequest', (request) => {...})` —— **同步** | 改为 `async (request) => {...}` | **主 agent 修 bug**（Fastify v5 同步 hook → 请求永挂，`inject()` 15s timeout） |
+| 3 | `registerUser` helper | **未定义**（被调用但没写） | 补上，并加 `token` 参数 | **主 agent 补** |
+| 4 | `bootstrapAdminToken()` | 不存在 | 新增 | **主 agent 补** |
+| 5 | refresh 段 6 处注册 | 匿名 `registerRaw(app, {...})` | 全部加 `bootstrapAdminToken()` | **主 agent 修**（ConfigStore 单例 + 同一临时库 → 前一个 describe 的用户可见 → 匿名注册被正确拒 403 REGISTERISTRATION_CLOSED） |
+| 6 | `registerRaw` 调用跨行格式 | `{...}\n});` | `{...}, token)\n);` | 格式随 #5 一并调整 |
+| 7 | `auth.ts` 实现 | agent 原始产出 | **未改** | — |
+
+**审查重点（最高）**：`auth.ts` 是 agent 原始产出、主 agent 一行未改，
+而测试是主 agent 重建的 —— **测试可能只是在验证 agent 的实现，而不是验证卡片要求**。
+必须对照 plan 第 250 行 T57 卡片逐条核（§4.1.2 第 1 条）。
+
+### T94 — 🟡 2 处改动
+
+| # | 位置 | agent 原始 | 最终 | 性质 |
+|---|---|---|---|---|
+| 1 | `t94-strategy-reload.test.ts` 的 `VALID_PLUGIN_JS` | `({ id: ..., execute: ... })` | `return ({ id: ..., execute: ... })` | **主 agent 修**（裸 `({...})` 在沙盒的 `return (function(){...})()` 里被解析成**块语句** → 返回 undefined） |
+| 2 | 同文件 `env_leak.js` / `require_fs.js` fixture | 同样是裸 `({...})` | 同样加 `return` | **主 agent 修** |
+| 3 | 同文件 `makeApp()` 的 hook | 同步 | `async` | **主 agent 修 bug**（同 T57 #2） |
+| 4 | `strategy.ts` 实现 | agent 原始产出 | **未改** | — |
+
+**审查重点**：`reloadPluginsFromDir` 对**每个**文件重跑 `createPluginSandbox` →
+沙盒顶层代码被执行两次（副作用 + 性能），是否可接受需确认。
+
+---
+
 ## 5. 已固化进 AGENTS.md 的铁律（务必遵守）
 
 `7c98992` 新增了 **「注释不是规格。改动既有代码前，先证明『现状是错的』」** 门禁：
@@ -200,6 +273,22 @@ T59 + T89a + T90（同批）→ T60 → T92 → 跑 G1~G8 → 写 docs/audit/wav
 - 长提示词不会被取消（第一次是额度问题，第二次是人工取消）
 - Windows 换行：agent 用脚本写文件可能把 `\n` 吞掉 → 出现「整个文件压成一行」；
   恢复办法是按语句边界重新拆行，再用 `tsc` 定位缺哪个括号
+
+### 🔴 待改进的流程缺陷（本波踩到，代价已付）
+
+**sub-agent 产出后没有先 commit 原始版（WIP），导致原始产出不可 diff。**
+本波 T57 的 agent 原始版（10 047 字符单行）**已永久丢失**，无法 `git show` 还原，
+只能靠 §4.2 的人工记录。
+
+**下一波的正确做法**：
+```
+1. sub-agent 产出（不改 git）
+2. 主 agent 立刻 git add + commit -m "wip(T57): agent 原始产出"   ← 关键：先留档
+3. 主 agent 修复 → git commit --amend 或追加一条 fix commit
+4. 审查时用 git show / git diff 直接对比两版
+```
+代价是多一条 commit；但换来的是**任何时候都能回答「这一行是谁写的、为什么改」**。
+本波「一个 T 一条 commit」的规则与此冲突时，**留档优先** —— 留档 commit 可在 gate 后 squash。
 
 ---
 
