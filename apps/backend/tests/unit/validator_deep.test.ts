@@ -220,5 +220,10 @@ describe('validator_deep — runAllChecks 日志写入', () => {
     } finally {
       fetchSpy.mockRestore();
     }
-  });
+    // ⚠️ 超时说明（T81）：本用例是本文件**唯一**不 mock queryDuckDB 的用例，
+    //    会真的打 DuckDB。C5 的 `EXISTS (SELECT 1 FROM v_stock_qfq WHERE date=?)`
+    //    在 1.2GB 本地库上要 ~26s（视图非物化，date 过滤无法下推），
+    //    全量 runAllChecks 实测 ~25s —— 此前吃 vitest 默认 15s 必然 timeout。
+    //    这里显式给 60s，与同族用例 validator.test.ts 的 runAllChecks 一致。
+  }, 60_000);
 });

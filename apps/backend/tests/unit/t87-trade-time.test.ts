@@ -13,6 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// T81：顶层写 env 必须留原值并在 afterAll 还原，否则会漏给下一个测试文件
+const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-t87-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
 
@@ -28,6 +30,8 @@ afterAll(() => {
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
     try { fs.unlinkSync(f); } catch { /* ignore */ }
   }
+  if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+  else delete process.env.SQLITE_DB_PATH;
 });
 
 describe('T87 trade_time 格式校验', () => {
@@ -112,37 +116,42 @@ describe('T87 唯一键行为：同日分笔可追加', () => {
     ).run(userId, code, time, qty, price);
   }
 
+  // ⚠️ T81：下面每个用例都自带**独立的成交时间**（10:00/11:00/12:00/13:00/14:00 段），
+  //    不再依赖「上一个用例先插过 09:30:00」——否则打乱用例顺序就会互相撞 UNIQUE。
   it('同日同标的同类型、不同成交时间 → 均插入成功', () => {
-    ins('09:30:00', 100);
-    expect(() => ins('09:31:00', 200)).not.toThrow();
-    expect(() => ins('14:00:00', 300)).not.toThrow();
+    ins('10:00:00', 100);
+    expect(() => ins('10:01:00', 200)).not.toThrow();
+    expect(() => ins('10:02:00', 300)).not.toThrow();
   });
 
   it('同日同标的同类型、相同成交时间 → UNIQUE 冲突', () => {
-    expect(() => ins('09:30:00', 100)).toThrow(/UNIQUE/);
+    ins('11:00:00', 100);
+    expect(() => ins('11:00:00', 100)).toThrow(/UNIQUE/);
   });
 
   it('不同 quantity 不影响唯一性（quantity 不进主键）', () => {
-    // 上面的 '09:30:00' 已存在，不论 quantity 多少都应冲突
-    expect(() => ins('09:30:00', 999)).toThrow(/UNIQUE/);
+    ins('12:00:00', 100);
+    expect(() => ins('12:00:00', 999)).toThrow(/UNIQUE/);
   });
 
   it('不同 trade_type → 不冲突', () => {
+    ins('13:00:00', 100);
     expect(() =>
       db.db.prepare(
         `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-         VALUES (?, ?, 'reduce', '2026-09-01', '09:30:00', 50, 10, 0, 0)`,
+         VALUES (?, ?, 'reduce', '2026-09-01', '13:00:00', 50, 10, 0, 0)`,
       ).run(userId, code),
     ).not.toThrow();
   });
 
   it('不同 trade_date → 不冲突', () => {
+    ins('14:00:00', 100);
     expect(() =>
       db.db.prepare(
         `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-         VALUES (?, ?, 'buy', '2026-09-02', '09:30:00', 100, 10, 0, 0)`,
+         VALUES (?, ?, 'buy', '2026-09-02', '14:00:00', 100, 10, 0, 0)`,
       ).run(userId, code),
     ).not.toThrow();
   });

@@ -256,6 +256,9 @@ async function runAndPick(checkId: string): Promise<{ result: CheckResult; detai
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+  // T81：用例体内改的 TUSHARE_TOKEN 必须逐个用例还原，不能只靠 afterAll
+  if (ORIGINAL_TOKEN !== undefined) process.env.TUSHARE_TOKEN = ORIGINAL_TOKEN;
+  else delete process.env.TUSHARE_TOKEN;
 });
 
 afterAll(() => {

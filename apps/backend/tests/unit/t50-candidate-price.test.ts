@@ -123,12 +123,14 @@ describe('T50 POST /api/candidate —— 参数校验', () => {
   });
 
   it('candidate_base_price 非有限正数（0 / -1 / 字符串 / 对象 / 布尔）→ 400', async () => {
+    // T81：用独立标的（不与其它用例共用），保证「不落库」断言不被其它用例污染
+    const code = 'sh600521';
     for (const bad of [0, -1, '12.5', {}, true]) {
-      const res = await post('/api/candidate', { asset_code: 'sh600519', candidate_base_price: bad });
+      const res = await post('/api/candidate', { asset_code: code, candidate_base_price: bad });
       expect(res.statusCode, `price=${String(bad)}`).toBe(400);
       expect(res.json().error).toBe('PARAM_INVALID');
     }
-    expect(countRows('sh600519')).toBe(0);
+    expect(countRows(code)).toBe(0);
   });
 
   it('NaN / Infinity 在 JSON 传输层不可表达（实测 JSON.stringify 均为 "null"）→ 服务层直接拒', () => {
@@ -166,7 +168,15 @@ describe('T50 POST /api/candidate —— 参数校验', () => {
 // ══════════════════ T50-② 显式基准价被尊重 ══════════════════
 
 describe('T50 显式 candidate_base_price 优先', () => {
+  /** T81：把候选池恢复到「干净」状态 —— 三个用例各自建前置，不依赖执行顺序 */
+  function resetCandidate(code: string): void {
+    store.db
+      .prepare(`DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'candidate'`)
+      .run(TEST_UID, code);
+  }
+
   it('传了就用用户的值，source=user，不查行情日期', async () => {
+    resetCandidate('sh600036');
     const res = await post('/api/candidate', {
       asset_code: 'sh600036',
       candidate_reason: '银行板块低估',
@@ -185,6 +195,14 @@ describe('T50 显式 candidate_base_price 优先', () => {
   });
 
   it('同一标的存在过 → 409 DUPLICATE，**已有基准价不被覆盖**（固化语义）', async () => {
+    // T81：自带前置 —— 自己先建一条带基准价的候选
+    resetCandidate('sh600036');
+    store.db
+      .prepare(
+        `INSERT INTO user_asset_rel (user_id, asset_code, rel_type, candidate_base_price)
+         VALUES (?, 'sh600036', 'candidate', 33.5)`,
+      )
+      .run(TEST_UID);
     const before = rowOf('sh600036')?.candidate_base_price;
     const res = await post('/api/candidate', { asset_code: 'sh600036', candidate_base_price: 999 });
     expect(res.statusCode).toBe(409);
@@ -193,7 +211,14 @@ describe('T50 显式 candidate_base_price 优先', () => {
   });
 
   it('重复入池 + 显式基准价 → 不打 DuckDB 直接 409（override 路径无外部依赖）', async () => {
-    // sh600036 已存在于候选池；显式传基准价走 override 分支，全程不查行情库
+    // T81：自带前置 —— 自己先建一条候选；显式传基准价走 override 分支，全程不查行情库
+    resetCandidate('sh600036');
+    store.db
+      .prepare(
+        `INSERT INTO user_asset_rel (user_id, asset_code, rel_type, candidate_base_price)
+         VALUES (?, 'sh600036', 'candidate', 33.5)`,
+      )
+      .run(TEST_UID);
     const res = await post('/api/candidate', { asset_code: 'sh600036', candidate_base_price: 12 });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe('DUPLICATE');
@@ -269,6 +294,8 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
 
 describe('T50 GET /api/candidate —— 基准价 + 相对收益', () => {
   it('每条记录带 candidate_base_price / current_close / relative_return', async () => {
+    // T81：自带前置 —— 自己建一条候选，保证「列表非空」不依赖其它用例跑过
+    batchInsertCandidates(TEST_UID, ['sh600031']);
     const res = await app.inject({ method: 'GET', url: '/api/candidate' });
     expect(res.statusCode).toBe(200);
     const items = res.json().data as Array<Record<string, unknown>>;

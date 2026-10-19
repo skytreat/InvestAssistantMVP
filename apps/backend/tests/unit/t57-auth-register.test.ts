@@ -110,6 +110,21 @@ function bootstrapAdminToken(): string {
   return tokenFor(1, 'alice_admin', 'admin');
 }
 
+// ── T81：以下三个用例的前提与「同文件其它用例是否跑过」相关，
+//    打乱用例顺序时会互相打架（bootstrap 用例要求库空、403 用例要求库非空、
+//    409 用例要求同名用户已存在）→ 各自自带前置，不依赖执行顺序。
+/** 清空 user_account（本用例要求「库空」） */
+function resetUserTable(): void {
+  ConfigStore.getInstance().db.prepare('DELETE FROM user_account').run();
+}
+
+/** 保证库里至少有一个用户（匿名注册在库非空时返回 403 REGISTRATION_CLOSED） */
+function ensureUserExists(username: string): void {
+  ConfigStore.getInstance().db
+    .prepare(`INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, 'dummy-hash', 'admin')`)
+    .run(username);
+}
+
 async function refreshRaw(
   app: FastifyInstance,
   refreshToken: string,
@@ -174,24 +189,28 @@ await freshApp();
 afterAll(async () => {
 await app.close();
 });
-it('空库匿名注册首个用户 → 201 且 role=admin', async () => {
-const { status, body } =
-await registerRaw(app, { username: 'alice_admin', password: 'pw-alice-1'
-});
-expect(status).toBe(201);
-expect(body.success).toBe(true);
-const data = body.data as SessionShape;
-expect(data.user.role).toBe('admin');
-expect(typeof data.token).toBe('string');
-expect(typeof data.refresh_token).toBe('string');
-});
-it('库已有用户后匿名注册 → 403 REGISTRATION_CLOSED', async () => {
-const { status, body } =
-await registerRaw(app, { username: 'mallory', password: 'pw-mallory-1'
-});
-expect(status).toBe(403);
-expect(body.error).toBe('REGISTRATION_CLOSED');
-});
+ it('空库匿名注册首个用户 → 201 且 role=admin', async () => {
+ // T81：本用例的前提是「库空」，自己清库，不依赖其它用例的执行顺序
+ resetUserTable();
+ const { status, body } =
+ await registerRaw(app, { username: 'alice_admin', password: 'pw-alice-1'
+ });
+ expect(status).toBe(201);
+ expect(body.success).toBe(true);
+ const data = body.data as SessionShape;
+ expect(data.user.role).toBe('admin');
+ expect(typeof data.token).toBe('string');
+ expect(typeof data.refresh_token).toBe('string');
+ });
+ it('库已有用户后匿名注册 → 403 REGISTRATION_CLOSED', async () => {
+ // T81：自己保证「库非空」，不依赖 bootstrap 用例跑过
+ ensureUserExists('t57_seed_user');
+ const { status, body } =
+ await registerRaw(app, { username: 'mallory', password: 'pw-mallory-1'
+ });
+ expect(status).toBe(403);
+ expect(body.error).toBe('REGISTRATION_CLOSED');
+ });
 it('普通用户 token 注册 → 403 FORBIDDEN', async () => {
 const adminToken = tokenFor(1, 'alice_admin', 'admin');
 const created =
@@ -242,12 +261,15 @@ await registerRaw(app, { username: 'mallory5', password: '  ' }, adminToken);
 expect(status).toBe(400);
 expect(body.error).toBe('PARAM_INVALID');
 });
-it('重复用户名 → 409', async () => {
-const adminToken = tokenFor(1, 'alice_admin', 'admin');
-const { status } =
-await registerRaw(app, { username: 'alice_admin', password: 'pw-dup-1234' }, adminToken);
-expect(status).toBe(409);
-});
+ it('重复用户名 → 409', async () => {
+ const adminToken = tokenFor(1, 'alice_admin', 'admin');
+ // T81：自带前置 —— 先建一个同名用户再重试，不依赖 bootstrap 用例跑过
+ const seeded = await registerRaw(app, { username: 'dup_user_t57', password: 'pw-dup-seed-1' }, adminToken);
+ expect(seeded.status).toBe(201);
+ const { status } =
+ await registerRaw(app, { username: 'dup_user_t57', password: 'pw-dup-1234' }, adminToken);
+ expect(status).toBe(409);
+ });
 it('非法 role 值 → 400 PARAM_INVALID', async () => {
 const adminToken = tokenFor(1, 'alice_admin', 'admin');
 const { status, body } =

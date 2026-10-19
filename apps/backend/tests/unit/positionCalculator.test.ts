@@ -12,6 +12,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 // --- 关键：在 import src 之前设置 SQLITE_DB_PATH，确保 ConfigStore 构造时用临时库 ---
+// T81：顶层写 env 必须留原值并在 afterAll 还原，否则会漏给下一个测试文件
+const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-position-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
 
@@ -40,6 +42,8 @@ afterAll(() => {
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
     try { fs.unlinkSync(f); } catch { /* ignore */ }
   }
+  if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+  else delete process.env.SQLITE_DB_PATH;
 });
 
 describe('positionCalculator — calcPosition', () => {

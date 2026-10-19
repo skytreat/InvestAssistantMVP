@@ -160,6 +160,12 @@ describe('T56 幂等：INSERT OR IGNORE + duplicates', () => {
   });
 
   it('重复项进 duplicates，**不报错**，已有记录不被覆盖', async () => {
+    // T81：自带前置（先造两条已存在的候选），不依赖上一个用例跑过
+    store.db
+      .prepare(`DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code IN ('sh600001', 'sh600002')`)
+      .run(TEST_UID);
+    batchInsertCandidates(TEST_UID, ['sh600001', 'sh600002']);
+
     const res = await batch({ asset_codes: ['sh600001', 'sh600004', 'sh600002', 'sh600005'] });
     expect(res.statusCode).toBe(201);
     const d = res.json().data;
@@ -203,6 +209,11 @@ describe('T56 幂等：INSERT OR IGNORE + duplicates', () => {
   });
 
   it('watch 关系不与 candidate 冲突（三列 UNIQUE 独立共存）', async () => {
+    // T81：自带前置（先造一条 candidate 候选），不依赖上一个用例跑过
+    store.db
+      .prepare(`DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = 'sh600001'`)
+      .run(TEST_UID);
+    batchInsertCandidates(TEST_UID, ['sh600001']);
     store.db
       .prepare(
         `INSERT OR IGNORE INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, 'sh600001', 'watch')`,
@@ -245,16 +256,21 @@ describe('T56 事务：中途失败全量回滚', () => {
   });
 
   it('回滚后再用合法 user 重试 → 整批成功（证明回滚没有留下「半截」状态）', () => {
-    const batchCodes = ['sh605001', 'sh605002', 'sh605003'];
+    // T81：自带独立代码段，不依赖同文件其它用例的执行顺序（打乱顺序后仍然自洽）
+    const batchCodes = ['sh605011', 'sh605012', 'sh605013'];
     const r = batchInsertCandidates(TEST_UID, batchCodes);
     expect(r).toEqual({ added: 3, skipped: 0, duplicates: [] });
     expect(countFor(TEST_UID, batchCodes)).toBe(3);
   });
 
   it('混合场景：已存在 + 新增 同批提交，两类计数都正确（事务内逐条判定不互相污染）', () => {
-    const r = batchInsertCandidates(TEST_UID, ['sh605001', 'sh605100', 'sh605002', 'sh605101']);
-    expect(r).toEqual({ added: 2, skipped: 2, duplicates: ['sh605001', 'sh605002'] });
-    expect(countFor(TEST_UID, ['sh605001', 'sh605002', 'sh605100', 'sh605101'])).toBe(4);
+    // T81：自带前置（先造两条已存在），不依赖上一个用例跑过
+    const exist = ['sh605021', 'sh605022'];
+    const fresh = ['sh605023', 'sh605024'];
+    batchInsertCandidates(TEST_UID, exist);
+    const r = batchInsertCandidates(TEST_UID, [exist[0], fresh[0], exist[1], fresh[1]]);
+    expect(r).toEqual({ added: 2, skipped: 2, duplicates: [exist[0], exist[1]] });
+    expect(countFor(TEST_UID, [...exist, ...fresh])).toBe(4);
   });
 });
 
@@ -272,6 +288,11 @@ describe('T56 性能与 system_log', () => {
   });
 
   it('成功批次写 system_log（log_type=trigger_manual，见文件头说明）', async () => {
+    // T81：自带前置 —— 自己跑一批 100 条，再查日志，不依赖上一个用例跑过
+    const codes = codesOf(100, 'sh63');
+    const res = await batch({ asset_codes: codes });
+    expect(res.statusCode).toBe(201);
+
     const logs = store.db
       .prepare(
         `SELECT log_type, level, message, detail FROM system_log

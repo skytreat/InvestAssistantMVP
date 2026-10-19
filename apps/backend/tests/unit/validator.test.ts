@@ -7,13 +7,15 @@
  *   - TOLERANCES 常量可见
  *   - checkResult 写入 system_log
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, afterAll } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invest-val-'));
 const TEST_DB = path.join(tmpDir, 'val-test.db');
+// T81：顶层写 env 必须留原值并在 afterAll 还原，否则会漏给下一个测试文件
+const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import {
@@ -28,6 +30,12 @@ function cleanup(): void {
   }
   try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
 }
+
+// T81：还原顶层写过的 env，避免漏给下一个测试文件
+afterAll(() => {
+  if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+  else delete process.env.SQLITE_DB_PATH;
+});
 
 describe('validator — TOLERANCES 常量', () => {
   it('TOLERANCES 包含所有关键阈值（T85 按 Requirements §7 重整）', () => {
@@ -77,19 +85,22 @@ describe('validator — runAllChecks 结构', () => {
 
 describe('validator — C11 SKIP 条件', () => {
   it('TUSHARE_TOKEN 未设置 → C11 结果 SKIP', async () => {
+    // T81：env 改动必须还原（用 try/finally 保证断言失败时也还原）
     const origToken = process.env.TUSHARE_TOKEN;
     delete process.env.TUSHARE_TOKEN;
 
-    const summaries = await runAllChecks('2026-10-15');
-    const c11 = summaries.find(s => s.checkId === 'C11');
-    expect(c11).toBeDefined();
-    expect(c11!.result).toBe('SKIP');
-    expect(c11!.detail).toContain('TUSHARE_TOKEN');
-
-    if (origToken !== undefined) {
-      process.env.TUSHARE_TOKEN = origToken;
-    } else {
-      delete process.env.TUSHARE_TOKEN;
+    try {
+      const summaries = await runAllChecks('2026-10-15');
+      const c11 = summaries.find(s => s.checkId === 'C11');
+      expect(c11).toBeDefined();
+      expect(c11!.result).toBe('SKIP');
+      expect(c11!.detail).toContain('TUSHARE_TOKEN');
+    } finally {
+      if (origToken !== undefined) {
+        process.env.TUSHARE_TOKEN = origToken;
+      } else {
+        delete process.env.TUSHARE_TOKEN;
+      }
     }
   }, 60_000);
 });

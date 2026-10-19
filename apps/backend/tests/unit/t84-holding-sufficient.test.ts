@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// T81：顶层写 env 必须留原值并在 afterAll 还原，否则会漏给下一个测试文件
+const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-t84-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
 
@@ -26,6 +28,8 @@ afterAll(() => {
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
     try { fs.unlinkSync(f); } catch { /* ignore */ }
   }
+  if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+  else delete process.env.SQLITE_DB_PATH;
 });
 
 function seed(uid: number, code: string) {

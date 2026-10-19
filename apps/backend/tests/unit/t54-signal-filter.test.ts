@@ -19,6 +19,8 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 // --- 必须在 import src 之前覆盖 SQLITE_DB_PATH（隔离开发库）---
+// T81：顶层写 env 必须留原值并在 afterAll 还原，否则会漏给下一个测试文件
+const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-t54-filter-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
 
@@ -86,6 +88,8 @@ afterAll(async () => {
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
     try { fs.unlinkSync(f); } catch { /* ignore */ }
   }
+  if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+  else delete process.env.SQLITE_DB_PATH;
 });
 
 interface SignalRow {
