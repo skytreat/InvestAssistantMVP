@@ -37,6 +37,47 @@ jobs:
       - name: Run backend unit tests
         run: npx vitest run apps/backend/tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
 
+      # 顺序敏感守卫（T81 / F-Q11）：打乱顺序连跑 2 次，两次结果必须一致且全绿。
+      # 用例之间若存在隐式顺序依赖（env 泄漏 / ConfigStore 单例 / DuckDB 单例残留），
+      # 靠固定顺序侥幸通过的用例会在这里被随机顺序打出来。
+      - name: Shuffle guard - backend unit tests (seed 1)
+        run: >
+          npx vitest run apps/backend/tests/unit
+          --pool=forks --poolOptions.forks.singleFork=true
+          --sequence.shuffle --sequence.seed=1
+          --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed1.json
+
+      - name: Shuffle guard - backend unit tests (seed 2)
+        run: >
+          npx vitest run apps/backend/tests/unit
+          --pool=forks --poolOptions.forks.singleFork=true
+          --sequence.shuffle --sequence.seed=2
+          --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed2.json
+
+      # 两次运行必须跑出同一批用例、且全部通过（比对 用例名→状态 集合，忽略耗时）
+      - name: Shuffle guard - 两次结果必须一致
+        run: >
+          node -e "
+          const fs=require('fs');
+          const load=(p)=>{
+            const j=JSON.parse(fs.readFileSync(p,'utf8'));
+            const rows=(j.testResults||[]).flatMap(f=>(f.assertionResults||[]).map(a=>((a.fullName||a.ancestorTitles.join(' > ')+' > '+a.title))+'::'+a.status));
+            return {total:j.numTotalTests,failed:j.numFailedTests,passed:j.numPassedTests,rows:rows.sort()};
+          };
+          const a=load(process.argv[1]),b=load(process.argv[2]);
+          if(a.total!==b.total||a.failed!==b.failed||a.passed!==b.passed||a.rows.join('|')!==b.rows.join('|')){
+            console.error('SHUFFLE GUARD FAILED');
+            console.error('run1',JSON.stringify({total:a.total,failed:a.failed,passed:a.passed}));
+            console.error('run2',JSON.stringify({total:b.total,failed:b.failed,passed:b.passed}));
+            const s1=new Set(a.rows),s2=new Set(b.rows);
+            console.error('only in run1:',a.rows.filter(r=>!s2.has(r)).slice(0,20));
+            console.error('only in run2:',b.rows.filter(r=>!s1.has(r)).slice(0,20));
+            process.exit(1);
+          }
+          if(a.failed!==0){console.error('SHUFFLE GUARD FAILED: failed tests',a.failed);process.exit(1);}
+          console.log('shuffle guard OK: total='+a.total+' passed='+a.passed+' failed='+a.failed);
+          " ${{ runner.temp }}/shuffle-seed1.json ${{ runner.temp }}/shuffle-seed2.json
+
       # Backend integration tests — 同上 fork 策略
       - name: Run backend integration tests
         run: npx vitest run apps/backend/tests/integration --pool=forks --poolOptions.forks.singleFork=true
