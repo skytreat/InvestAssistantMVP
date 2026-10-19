@@ -44,5 +44,6 @@ opencode.jsonc
 *.opencode‑skill.md
 .opencode/*
 !.opencode/skills/.gitkeep
-# Playwright CLI output (may contain credentials)
+# Playwright CLI：项目配置入库（.playwright/），会话产物忽略（.playwright-cli/）
+# .playwright-cli/ 含截图 / console 日志 / 页面快照，可能夹带凭证
 .playwright-cli/
