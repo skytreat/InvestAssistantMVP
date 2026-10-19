@@ -100,12 +100,35 @@ afterAll(async () => {
 }, 5000);
 
 // === Trade + HOLDING_INSUFFICIENT ===
+/**
+ * 🔴 T81 顺序依赖修复：本块是**顺序型场景测试**（买入 → 超卖校验 → 卖出 50 → 查持仓），
+ *   原实现把每次 POST 放在各自的 `it` 里，依赖「前一个 it 先跑」。
+ *   T81 的 `sequence.shuffle` 一开就随机失败（实测：卖出 50 拿到 409、持仓看到 100）。
+ *   ⚠️ 试过 `describe.sequential` —— **在 vitest 2.1.9 + 配置级 `sequence.shuffle: true`
+ *   下不生效**（该配置会连 sequential 块内部一起打乱）。
+ *   → 改为：**场景在 beforeAll 里按顺序构造完并存快照，各 `it` 只做断言**。
+ */
 describe('M3 Trade + 持仓校验', () => {
-  it('买入 sh600000 100 股', async () => {
-    const res = await app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
+  const snap: Record<string, any> = {};
+
+  beforeAll(async () => {
+    snap.buy = await app.inject({
+      method: 'POST', url: '/api/trade', headers: adminHeaders(),
+      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
     });
+    snap.oversell = await app.inject({
+      method: 'POST', url: '/api/trade', headers: adminHeaders(),
+      payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + '-dup', trade_time: '09:00:02', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
+    });
+    snap.sell50 = await app.inject({
+      method: 'POST', url: '/api/trade', headers: adminHeaders(),
+      payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + 'b', trade_time: '09:00:03', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
+    });
+    snap.positions = await app.inject({ method: 'GET', url: '/api/holding', headers: adminHeaders() });
+  });
+
+  it('买入 sh600000 100 股', () => {
+    const res = snap.buy;
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
@@ -113,30 +136,24 @@ describe('M3 Trade + 持仓校验', () => {
     expect(body.data.position.avgCost).toBeCloseTo((1000 + 1) / 100, 4);
   });
 
-  it('卖出超持仓 → HOLDING_INSUFFICIENT', async () => {
-    const res = await app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + '-dup', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
-    });
-    expect(res.statusCode).toBe(400);
+  it('卖出超持仓 → HOLDING_INSUFFICIENT', () => {
+    const res = snap.oversell;
+    expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(false);
     expect(body.error).toBe('HOLDING_INSUFFICIENT');
   });
 
-  it('卖出 50 股后持仓正确', async () => {
-    const res = await app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'sell', trade_date: TRADE_DATE + 'b', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
-    });
+  it('卖出 50 股后持仓正确', () => {
+    const res = snap.sell50;
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
     expect(body.data.position.totalQuantity).toBe(50);
   });
 
-  it('GET /api/positions 返回 sh600000', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/positions', headers: adminHeaders() });
+  it('GET /api/holding 返回 sh600000', () => {
+    const res = snap.positions;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
@@ -148,24 +165,34 @@ describe('M3 Trade + 持仓校验', () => {
 
 // === Watch + Candidate（UNIQUE 三列独立共存） ===
 describe('M3 Watch/Candidate 列表（UNIQUE 三列独立共存）', () => {
-  it('POST /api/watch → 201', async () => {
-    const res = await app.inject({
+  const snap: Record<string, any> = {};
+  // 🔴 T81 顺序依赖修复：本块同样是顺序型场景（加 watch → 查 watch → 删 watch），
+  //   「GET /api/watch」依赖「POST /api/watch」先跑 → shuffle 下随机失败。
+  //   → 场景在 beforeAll 里构造完，各 `it` 只做断言。
+  beforeAll(async () => {
+    snap.watchAdd = await app.inject({
       method: 'POST', url: '/api/watch', headers: adminHeaders(),
       payload: { asset_code: 'sz000001' },
     });
-    expect([201, 409]).toContain(res.statusCode);
-  });
-
-  it('POST /api/candidate → 201（candidate 和 watch 互不冲突）', async () => {
-    const res = await app.inject({
+    snap.candidateAdd = await app.inject({
       method: 'POST', url: '/api/candidate', headers: adminHeaders(),
       payload: { asset_code: 'sz000001' },
     });
-    expect(res.statusCode).toBe(201);
+    snap.watchList = await app.inject({ method: 'GET', url: '/api/watch', headers: adminHeaders() });
+  });
+
+  it('POST /api/watch → 201', () => {
+    const res = snap.watchAdd;
+    expect([201, 409]).toContain(res.statusCode);
+  });
+
+  it('POST /api/candidate → 201（candidate 和 watch 互不冲突）', () => {
+    // candidate 的创建也提到 beforeAll（DELETE 用例断言「candidate 还在」依赖它）
+    expect(snap.candidateAdd.statusCode).toBe(201);
   });
 
   it('GET /api/watch 返回 sz000001', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/watch', headers: adminHeaders() });
+    const res = snap.watchList;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.some((w: any) => w.asset_code === 'sz000001')).toBe(true);
@@ -182,7 +209,7 @@ describe('M3 Watch/Candidate 列表（UNIQUE 三列独立共存）', () => {
 // === Admin + Signal ===
 describe('M3 Admin 手动触发 + Signal 查询', () => {
   it('admin run-datacheck → system_log 有 trigger_manual', async () => {
-    const res = await app.inject({ method: 'POST', url: '/api/admin/run-datacheck', headers: adminHeaders() });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/datacheck/trigger', headers: adminHeaders() });
     expect([200, 500]).toContain(res.statusCode);
     const logs = db.db
       .prepare("SELECT * FROM system_log WHERE log_type='trigger_manual' ORDER BY id DESC LIMIT 5").all();
@@ -203,7 +230,7 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
     });
     const userTok = JSON.parse(loginRes.body).data.token;
     const res = await app.inject({
-      method: 'POST', url: '/api/admin/run-datacheck',
+      method: 'POST', url: '/api/admin/datacheck/trigger',
       headers: { Authorization: `Bearer ${userTok}` },
     });
     expect(res.statusCode).toBe(403);
@@ -211,7 +238,7 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
 });
 
 // === Scheduler + Backup ===
-describe('M3 Scheduler + Backup', () => {
+describe.sequential('M3 Scheduler + Backup', () => {
   it('registerCronJobs → 4 段 cron 注册', async () => {
     registerCronJobs(app);
     const jobs = app.scheduler.getAllJobs();

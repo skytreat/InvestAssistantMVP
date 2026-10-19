@@ -25,6 +25,8 @@ interface ParamField {
   unit?: string;
   description?: string;
   required?: boolean;
+  /** T85b ①：运行时注入字段（用户不可配置，表单不渲染） */
+  runtimeInjected?: boolean;
 }
 
 interface PluginItem {
@@ -67,11 +69,11 @@ export default function Settings() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/plugins');
+      const res = await api.get('/strategy/plugins');
       if (res.data.success) setPlugins(res.data.data ?? []);
-      else setError(res.data.error ?? '加载失败');
+      else setError(res.data.message ?? '加载失败');
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '加载失败');
+      setError(err?.response?.data?.message ?? '加载失败');
     } finally {
       setLoading(false);
     }
@@ -118,12 +120,12 @@ export default function Settings() {
     setSaving(p.id);
     setError(null);
     try {
-      await api.post(`/plugins/${p.id}/config`, { params });
+      await api.post(`/strategy/plugins/${p.id}/config`, { params });
       setMsg(`已保存「${p.name}」参数`);
       setExpanded(null);
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '保存失败');
+      setError(err?.response?.data?.message ?? '保存失败');
     } finally {
       setSaving(null);
     }
@@ -133,11 +135,11 @@ export default function Settings() {
     const next = p.enabled ? 0 : 1;
     setError(null);
     try {
-      await api.post(`/plugins/${p.id}/toggle`, { enabled: next });
+      await api.post(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
       setMsg(`已${next ? '启用' : '禁用'}「${p.name}」`);
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '操作失败');
+      setError(err?.response?.data?.message ?? '操作失败');
     }
   };
 
@@ -237,7 +239,9 @@ export default function Settings() {
 
             {expanded === p.id && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
-                {(p.paramSchema ?? []).map((f) => renderField(p, f))}
+                {/* T85b ①：runtimeInjected 的参数（如 symbol）由后端运行时注入，
+                    不该作为用户可配置项出现在表单里 */}
+                {(p.paramSchema ?? []).filter((f) => !f.runtimeInjected).map((f) => renderField(p, f))}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
                     {saving === p.id ? '保存中...' : '保存'}

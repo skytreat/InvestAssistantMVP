@@ -45,7 +45,7 @@ interface ReviewStats {
 }
 
 const TRADE_TYPE_LABEL: Record<string, string> = {
-  buy: '买入', sell: '卖出', reduce: '减仓', clear: '清仓',
+  buy: '买入', add: '加仓', reduce: '减仓', clear: '清仓',
   dividend: '分红', bonus: '送股', transfer: '转增',
 };
 
@@ -174,7 +174,7 @@ export default function Review() {
 
   const fetchStats = async () => {
     try {
-      const res = await api.get('/review/stats');
+      const res = await api.get('/review/yield');
       if (res.data.success) setStats(res.data.data);
     } catch { /* ignore */ }
   };
@@ -206,7 +206,7 @@ export default function Review() {
         setTotal(res.data.pagination?.total ?? 0);
       }
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '加载失败');
+      setError(err?.response?.data?.message ?? '加载失败');
     } finally {
       setLoading(false);
     }
@@ -239,23 +239,23 @@ export default function Review() {
       }
       if (editForm.remark !== editingTrade.remark) payload.remark = editForm.remark || null;
       if (Object.keys(payload).length === 0) { setEditingTrade(null); return; }
-      await api.patch(`/trades/${editingTrade.id}`, payload);
+      await api.patch(`/trade/${editingTrade.id}`, payload);
       setEditingTrade(null);
       fetchTrades(page);
       fetchStats();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '保存失败');
+      setError(err?.response?.data?.message ?? '保存失败');
     }
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('确认软删除此交易？')) return;
     try {
-      await api.delete(`/trades/${id}`);
+      await api.post(`/trade/${id}/soft-delete`);
       fetchTrades(page);
       fetchStats();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '删除失败');
+      setError(err?.response?.data?.message ?? '删除失败');
     }
   };
 
@@ -331,7 +331,7 @@ export default function Review() {
         <label style={{ fontSize: 14 }}>交易类型：</label>
         <select style={inputStyle} value={tradeType} onChange={(e) => setTradeType(e.target.value)}>
           <option value="">全部</option>
-          {['buy','sell','reduce','clear','dividend','bonus','transfer'].map((t) => (
+          {['buy','add','reduce','clear','dividend','bonus','transfer'].map((t) => (
             <option key={t} value={t}>{TRADE_TYPE_LABEL[t]}</option>
           ))}
         </select>

@@ -14,13 +14,20 @@ import {
 
 const TRADE_TYPES: { value: string; label: string }[] = [
   { value: 'buy', label: '买入' },
-  { value: 'sell', label: '卖出' },
+  { value: 'add', label: '加仓' },
   { value: 'reduce', label: '减仓' },
   { value: 'clear', label: '清仓' },
   { value: 'dividend', label: '分红' },
   { value: 'bonus', label: '送股' },
   { value: 'transfer', label: '转托管' },
 ];
+
+/** T87：成交时间（秒级 HH:mm:ss），默认当前时间 */
+function nowTimeStr(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
 
 function todayStr(): string {
   const d = new Date();
@@ -187,6 +194,7 @@ export default function TradeInput() {
   const [assetCode, setAssetCode] = useState('');
   const [tradeType, setTradeType] = useState<string>('buy');
   const [tradeDate, setTradeDate] = useState<string>(todayStr());
+  const [tradeTime, setTradeTime] = useState<string>(nowTimeStr());
   const [quantity, setQuantity] = useState<string>('');
   const [price, setPrice] = useState<string>('');
   const [fee, setFee] = useState<string>('0');
@@ -206,6 +214,7 @@ export default function TradeInput() {
       asset_code: assetCode,
       trade_type: tradeType,
       trade_date: tradeDate,
+    trade_time: tradeTime,
       quantity: Number(quantity),
       price: Number(price),
       fee: Number(fee) || 0,
@@ -213,11 +222,11 @@ export default function TradeInput() {
     };
 
     try {
-      const res = await api.post('/trades', payload);
+      const res = await api.post('/trade', payload);
       if (res.data.success) {
         setResult(res.data.data as TradeResult);
       } else {
-        const errMsg = res.data.error ?? '请求失败';
+        const errMsg = res.data.message ?? '请求失败';
         if (errMsg === 'HOLDING_INSUFFICIENT') {
           setError('持仓不足');
         } else {
@@ -225,7 +234,7 @@ export default function TradeInput() {
         }
       }
     } catch (err: any) {
-      const errMsg = err?.response?.data?.error ?? '网络错误';
+      const errMsg = err?.response?.data?.message ?? '网络错误';
       if (errMsg === 'HOLDING_INSUFFICIENT') {
         setError('持仓不足');
       } else {
@@ -261,16 +270,29 @@ export default function TradeInput() {
             </select>
           </div>
 
-          <div style={formRowStyle}>
-            <label style={labelStyle}>交易日期</label>
-            <input
-              style={{ ...inputStyle, flex: 1 }}
-              type="date"
-              value={tradeDate}
-              onChange={(e) => setTradeDate(e.target.value)}
-              required
-            />
-          </div>
+<div style={formRowStyle}>
+              <label style={labelStyle}>交易日期</label>
+              <input
+                style={{ ...inputStyle, flex: 1 }}
+                type="date"
+                value={tradeDate}
+                onChange={(e) => setTradeDate(e.target.value)}
+                required
+              />
+            </div>
+
+            <div style={formRowStyle}>
+              <label style={labelStyle}>成交时间</label>
+              <input
+                style={{ ...inputStyle, flex: 1 }}
+                type="time"
+                step="1"
+                value={tradeTime}
+                onChange={(e) => setTradeTime(e.target.value)}
+                required
+              />
+            </div>
+            {/* T87：同日同标的同类型可分笔录入，唯一键含成交时间；提交前请确认成交时间无误 */}
 
           <div style={formRowStyle}>
             <label style={labelStyle}>数量</label>

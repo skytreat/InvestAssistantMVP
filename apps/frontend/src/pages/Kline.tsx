@@ -326,7 +326,7 @@ export default function Kline() {
         setIndicators(body.data.indicators);
         setSignals(body.data.signals ?? []);
       } else {
-        setErr(body.message ?? body.error ?? '加载失败');
+        setErr(body.message ?? '加载失败');
         setKlines([]);
         setIndicators(null);
       }

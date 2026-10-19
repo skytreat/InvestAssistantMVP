@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcClosedTradePnLs } from '../services/positionCalculator.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * 复盘统计 API（T38）
@@ -19,7 +20,7 @@ const ACTIVE_TRADE_TYPES = "('buy','sell','reduce','clear')";
 
 export async function registerReviewRoutes(app: FastifyInstance) {
   // 复盘统计卡片数据
-  app.get('/api/review/stats', async (request, reply) => {
+  app.get('/api/review/yield', async (request, reply) => {
     const user = (request as any).user as { sub: number };
     const db = ConfigStore.getInstance().db;
 
@@ -62,9 +63,7 @@ export async function registerReviewRoutes(app: FastifyInstance) {
 
     const totalRealizedPnl = closed.reduce((s, c) => s + c.realized_pnl, 0);
 
-    reply.send({
-      success: true,
-      data: {
+    reply.send(ok({
         totalTrades: totalRow.cnt,
         reviewedCount: reviewedRow.cnt,
         closedCount,
@@ -75,8 +74,7 @@ export async function registerReviewRoutes(app: FastifyInstance) {
         avgLoss,
         profitLossRatio,
         totalRealizedPnl: parseFloat(totalRealizedPnl.toFixed(2)),
-      },
-    });
+      }));
   });
 
   // 带复盘信息的交易列表（用于复盘页表格）
@@ -115,10 +113,6 @@ export async function registerReviewRoutes(app: FastifyInstance) {
        ORDER BY trade_date DESC, id DESC LIMIT ? OFFSET ?`
     ).all(...params, limit, offset) as any[];
 
-    reply.send({
-      success: true,
-      data: rows,
-      pagination: { page, limit, total: countRow.cnt, totalPages: Math.ceil(countRow.cnt / limit) },
-    });
+    reply.send(ok(rows, { pagination: { page, limit, total: countRow.cnt, totalPages: Math.ceil(countRow.cnt / limit) } }));
   });
 }

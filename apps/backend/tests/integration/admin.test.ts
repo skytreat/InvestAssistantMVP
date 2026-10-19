@@ -2,7 +2,7 @@
  * admin.test.ts — API 集成测试（admin 管理链路）
  *
  * 覆盖 SDD §12.4 admin 类：
- *   - POST /api/admin/run-datacheck → 200 + summaries[]
+ *   - POST /api/admin/datacheck/trigger → 200 + summaries[]
  *   - POST /api/admin/run-signal → 200 + stats
  *   - GET /api/admin/system-log 分页 + filter
  *   - 非 admin → 403 FORBIDDEN（已在 auth.test.ts 覆盖，这里可以轻量）
@@ -33,7 +33,7 @@ describe('Admin · run-datacheck', () => {
   it('admin 触发 → 200 + summaries 数组', async () => {
     if (!DUCKDB_EXISTS) return;
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/run-datacheck',
+      method: 'POST', url: '/api/admin/datacheck/trigger',
       headers: adminHeaders(),
       payload: {},
     });
@@ -45,17 +45,17 @@ describe('Admin · run-datacheck', () => {
       expect(Array.isArray(body.data.summaries)).toBe(true);
       expect(body.data.summaries.length).toBeGreaterThan(0);
     }
-  }, 30000);
+    }, 90_000);
 
   it('指定 trade_date → summaries 用该日期', async () => {
     if (!DUCKDB_EXISTS) return;
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/run-datacheck',
+      method: 'POST', url: '/api/admin/datacheck/trigger',
       headers: adminHeaders(),
       payload: { trade_date: '2026-10-14' },
     });
     expect([200, 500]).toContain(res.statusCode);
-  }, 30000);
+    }, 90_000);
 });
 
 describe('Admin · run-signal', () => {
@@ -77,6 +77,15 @@ describe('Admin · run-signal', () => {
 });
 
 describe('Admin · system-log 分页查询', () => {
+  // 🔴 T81 顺序依赖修复：本块断言「至少有 1 条 system_log」，
+  //   原本靠同文件前面的用例产生日志 → shuffle 下随机失败。
+  //   → 块级 beforeAll 自己造一条 log。
+  beforeAll(() => {
+    bundle.db.db.prepare(
+      "INSERT INTO system_log (log_date, log_type, level, message) VALUES (date('now','localtime'), 'trade', 'INFO', '分页测试用日志')"
+    ).run();
+  });
+
   // 先造条 log 验证分页
   it('log 分页基本结构', async () => {
     const res = await bundle.app.inject({

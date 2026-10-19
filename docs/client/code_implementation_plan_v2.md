@@ -677,13 +677,13 @@ DEC-12(已定, §13.4) ──→ T85-T94
 |---|---|---|
 | 🔒 **G1.1** | **三项数据正确性断言全过**：T84 时点超卖拒绝 / T87 同日同标的同类型**不同时间可并存** / T49 7 种类型 + 四处 `TRADE_TYPES` 清单一致 | `tests/unit/positionCalculator.test.ts` + `tests/integration/trade.test.ts` |
 | 🔒 **G1.2** | **`runAllChecks()` 返回长度 = 12**（硬断言 `toHaveLength(12)`），且 `checkId` **覆盖 C1-C12 无重复无占位**（当前 `checkC3toC5` 一律返回 `'C3'`）。⚠️ **口径以 `Requirements_simplified.md` §7.1 为准**（C3-C8 为数据新鲜度类），详见 §13.1 B-14 | T85 新增用例 + 浏览器探针 |
-| 🔒 **G1.3** | 信号段返回 **`{total:2, success:2, timeout:0}`**，且 `user_strategy_signal` 新增行数 **> 0** | T88 + 动态探针<br>⚠️ **2026-10-18 增补**：该断言**只验「插件能跑通」，不验「跑的是用户的标的」** —— 实测现状 `executeAllPlugins` 传空参 → 所有插件落到硬编码 `symbol:'sh600000'`，即使 `{total:2, success:2}` 全绿，Signals 页也**永远只有 1 只标的**。故本条拆为两条：<br>· **G1.3a**：`{total:2, success:2, timeout:0}` + `user_strategy_signal` 新增行数 > 0（T88）<br>· 🔒 **G1.3b**（新增，T85b 交付）：**信号标的域 = 用户自选 ∪ 持仓** —— 造 3 watch + 2 hold → 生成的信号 `asset_code` **覆盖这 5 只**且**不含集合外标的**；同时断言 `batchGetDailyKlines` 对 N 只标的**只发 1 次** DuckDB 查询（AGENTS.md 插件硬约束 2） |
+| 🔒 **G1.3** | 信号段**全部执行成功**（`success === total`、`timeout === 0`、`error === 0`），且 `user_strategy_signal` 新增行数 **> 0** | T88 + 动态探针<br>⚠️ **2026-10-18 修订**（T85b ① 落地后同步）：原断言写死 `{total:2, success:2, timeout:0}`，其中 `total:2` 是**「插件数」**这个无意义口径 —— T85b ① 把信号域收敛到「自选 ∪ 持仓」后，执行次数变为 **插件数 × 标的数**（实测 2 插件 × 5 标的 = 10）。故改为**关系式断言**（`success === total`），不写死具体数字 —— 否则每加一个标的就得改门槛。<br>· **G1.3a**：全部执行成功（`success === total` / `timeout === 0` / `error === 0`）+ `user_strategy_signal` 新增行数 > 0（T88 + T85b ①）<br>· 🔒 **G1.3b**（T85b ① 交付）：**信号标的域 = 用户自选 ∪ 持仓** —— 造 3 watch + 2 hold → 生成的信号 `asset_code` **全部落在该集合内**、**不含集合外标的**、**且不含硬编码的 `sh600000`**（旧行为的残留）；同时断言整个标的域**只发 1 次** DuckDB 日线查询（SDD §5.3 P8 / AGENTS.md 插件硬约束 2） |
 | **G1.4** | **响应契约全绿**：全部路由成功体含 `code===0`+`data`+`timestamp`+`success===true`；错误体含字符串 `code`+`message`+`data===null`+`timestamp`+`success===false` | T89a 契约测试遍历全部路由<br>⚠️ **本阶段 `success` 仍保留**（删它属 T89b / Wave 8） |
 | **G1.4b** | **前端不再把裸错误码显示给用户**：`grep -rn 'data\.error' apps/frontend/src` 归零；登录密码错误显示「用户名或密码错误」而非错误码 | T89a ⑥ 的 36 处适配 |
 | **G1.5** | **路由契约 22 条全绿**（SDD §4.4 逐条）+ 旧名全部 404 | T90 契约测试 |
 | 🔒 **G1.6** | **全库数据体检**：无负持仓 / 无负成本 / 无「同日+同标的+同类型+同时刻」重复 | 只读脚本 + 断言 |
 | **G1.7** | 用例数**只增不减**（对比 Wave 1 起始基线 219） | `vitest run` 计数 |
-| **G1.8** | `tsc --noEmit` 三 workspace **0 error** | CI |
+| **G1.8** | `tsc --noEmit` 三 workspace **0 error** | CI<br>⚠️ **2026-10-19 实测**：core 的 `dist/` 是 gitignored，backend tsconfig 无 `paths` → `tsc` 走 dist；core 改了没重建时**只有 tsc 会红，CI 全绿**（CI 无 typecheck 步骤，属 T86）。本波已重建；根因归 T86 |
 | **G1.9** | SDD §12.5 每个指定用例名在全仓可 grep 到（T91 交付物） | grep 自检 |
 
 > ⚠️ **G1.4/G1.5 必须同批交付前端适配** —— 否则前端全量 404 / 白屏，Wave 2 无法在其上作业。

@@ -1,0 +1,157 @@
+{
+  "note": "移动加权成本 5 场景（SDD §12.3 A1-A5）。avg_cost = 总成本基 / 总持仓数量；卖出不改变 avg_cost（平均法）；卖出后成本基按剩余数量等比减少。",
+  "scenarios": [
+    {
+      "id": "A1",
+      "name": "首次买入（历史持仓为空）",
+      "trades": [
+        {
+          "date": "2026-10-10",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 10,
+          "fee": 0
+        }
+      ],
+      "expected": {
+        "totalQuantity": 100,
+        "avgCost": 10,
+        "totalCostBasis": 1000,
+        "realizedPnL": 0,
+        "totalFee": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "A2",
+      "name": "连续多次买入不同价格 → 平均化",
+      "trades": [
+        {
+          "date": "2026-10-10",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 10,
+          "fee": 0
+        },
+        {
+          "date": "2026-10-11",
+          "direction": "buy",
+          "quantity": 200,
+          "price": 15,
+          "fee": 0
+        },
+        {
+          "date": "2026-10-12",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 20,
+          "fee": 0
+        }
+      ],
+      "expected": {
+        "totalQuantity": 400,
+        "avgCost": 15,
+        "totalCostBasis": 6000,
+        "realizedPnL": 0,
+        "totalFee": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "A3",
+      "name": "减仓 → avgCost 不变，realizedPnL 累计",
+      "trades": [
+        {
+          "date": "2026-10-10",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 10,
+          "fee": 0
+        },
+        {
+          "date": "2026-10-15",
+          "direction": "sell",
+          "quantity": 30,
+          "price": 15,
+          "fee": 0
+        }
+      ],
+      "expected": {
+        "totalQuantity": 70,
+        "avgCost": 10,
+        "totalCostBasis": 700,
+        "realizedPnL": 150,
+        "totalFee": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "A4",
+      "name": "清仓再买入 → 新持仓成本以新买入价为准",
+      "trades": [
+        {
+          "date": "2026-10-10",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 10,
+          "fee": 0
+        },
+        {
+          "date": "2026-10-20",
+          "direction": "sell",
+          "quantity": 100,
+          "price": 12,
+          "fee": 0
+        },
+        {
+          "date": "2026-10-21",
+          "direction": "buy",
+          "quantity": 50,
+          "price": 20,
+          "fee": 0
+        }
+      ],
+      "expected": {
+        "totalQuantity": 50,
+        "avgCost": 20,
+        "totalCostBasis": 1000,
+        "realizedPnL": 200,
+        "totalFee": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "A5",
+      "name": "送转股（direction=buy + price=0）→ 成本按比例稀释",
+      "trades": [
+        {
+          "date": "2026-10-10",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 10,
+          "fee": 0
+        },
+        {
+          "date": "2026-10-30",
+          "direction": "buy",
+          "quantity": 100,
+          "price": 0,
+          "fee": 0
+        }
+      ],
+      "expected": {
+        "totalQuantity": 200,
+        "avgCost": 5,
+        "totalCostBasis": 1000,
+        "realizedPnL": 0,
+        "totalFee": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    }
+  ]
+}

@@ -56,8 +56,8 @@ describe('exDividendSync — getHoldingBeforeDate', () => {
     ).run(uid, 'div_user_101', 'dummy');
     db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
-       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, trade_reason, is_deleted)
-       VALUES (?, ?, 'buy', '2026-10-01', 100, 10.0, 0, 'test', 0)`
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
+       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 100, 10.0, 0, 'test', 0)`
     ).run(uid, 'sh600000');
 
     const holding = getHoldingBeforeDate(db, uid, 'sh600000', '2026-10-30');
@@ -72,13 +72,13 @@ describe('exDividendSync — getHoldingBeforeDate', () => {
     ).run(uid, 'div_user_102', 'dummy');
     db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
-       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, trade_reason, is_deleted)
-       VALUES (?, ?, 'buy', '2026-10-01', 200, 10.0, 0, 'b', 0)`
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
+       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 200, 10.0, 0, 'b', 0)`
     ).run(uid, 'sh600000');
     db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
-       (user_id, asset_code, trade_type, trade_date, quantity, price, fee, trade_reason, is_deleted)
-       VALUES (?, ?, 'reduce', '2026-10-10', 50, 12.0, 0, 'r', 0)`
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
+       VALUES (?, ?, 'reduce', '2026-10-10', '09:30:00', 50, 12.0, 0, 'r', 0)`
     ).run(uid, 'sh600000');
 
     // reduce 在公式里是 -quantity，所以 200 - 50 = 150

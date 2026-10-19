@@ -77,6 +77,10 @@ function summary(checkId: string, result: string) {
 }
 
 beforeEach(() => {
+  // ⚠️ T81：必须还原上一用例留下的 spy（vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate') /
+  //    vi.spyOn(validatorNs, 'runAllChecks')），否则后跑的用例会命中上一个用例的
+  //    mock 实现（表现为「降级链」用例拿到 SKIP / 二次校验拿到旧结果）。
+  vi.restoreAllMocks();
   h.execImpl = (_f, _a, cb) => cb(null, '', '');
   logMock.mockReset();
 });

@@ -1,4 +1,5 @@
 export * from './plugin';
 export * from './movingWeightedCost';
-export * from './indicators/rsi';
-export * from './indicators/macd';
+export * from './indicators/adapters';
+export * from './indicators/kdj';
+export * from './indicators/bollinger';

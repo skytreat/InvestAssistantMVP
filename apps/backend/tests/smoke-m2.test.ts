@@ -11,7 +11,7 @@
 //   ✅ system_log 至少有 datacheck + plugin_execute + dividend_import 三类日志
 //
 // 注意：
-//   - runAllChecks 返回 10 条（C4/C5 MVP 合并到 checkC3toC5，返回 checkId='C3'）
+  //   - runAllChecks 返回 12 项（C4/C5 已于 T85 补齐，此前只产出 10 个 checkId）
 //   - pluginEngine 直接调用写 plugin_execute logType，signal_generate 由 scheduler cron 产生
 //   - 不要 mock DuckDB——让真实 DuckDB 不可用，验证 gracefully catch 后仍写 system_log
 
@@ -78,15 +78,15 @@ afterAll(async () => {
 // M2 C1-C3,C6-C12 数据校验（DuckDB 不可用时每条 ERROR 也必须写 system_log）
 // ========================================================================
 describe('M2 C1-C12 数据校验', () => {
-  it('runAllChecks 返回 10 条 CheckSummary（C1/C2/C3/C6/C7/C8/C9/C10/C11/C12）', async () => {
+  it('runAllChecks 返回 12 项 CheckSummary（C1-C12 齐全，T85 补齐 C4/C5 后不再缺项）', async () => {
     const summaries = await runAllChecks(tradeDate);
-    // CHECKS 数组共 10 条：checkC1, checkC2, checkC3toC5, checkC6, checkC7, checkC8, checkC9, checkC10, checkC11, checkC12
-    expect(summaries).toHaveLength(10);
+    // T85 前：CHECKS 只注册 10 个函数，C4/C5 从未实现（见 plan §13.2 I-16）
+    expect(summaries).toHaveLength(12);
 
-    const validCheckIds = ['C1', 'C2', 'C3', 'C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12'];
+    const validCheckIds = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12'];
     const seenIds = new Set<string>();
     for (const s of summaries) {
-      // checkId 必须是合法的 C1/C2/C3/C6-C12（C4/C5 MVP 跳过，合并到 C3）
+      // checkId 不得越界或重复 —— T85 后 12 项齐全，C4/C5 各自独立
       expect(validCheckIds).toContain(s.checkId);
       expect(seenIds.has(s.checkId)).toBe(false);  // 无重复
       seenIds.add(s.checkId);
@@ -98,17 +98,20 @@ describe('M2 C1-C12 数据校验', () => {
   }, 60000);
 
   it('runAllChecks 每条结果都写入 system_log（DuckDB 不可用时 ERROR 也会写）', async () => {
+    // 🔴 T81 顺序依赖修复：日志由**上一个**用例产生 → shuffle 下随机失败。
+    //   → 本用例自己先跑一次 runAllChecks。
+    await runAllChecks(tradeDate).catch(() => []);
     // 等上一条写完（writeSystemLog 内部是同步写 SQLite，但多线程可能有竞争）
     await new Promise((r) => setTimeout(r, 100));
 
     const rows = db.db
       .prepare(
-        "SELECT check_item, level, message FROM system_log WHERE log_type='datacheck' ORDER BY id DESC LIMIT 10"
+        "SELECT check_item, level, message FROM system_log WHERE log_type='datacheck' ORDER BY id DESC LIMIT 12"
       )
       .all() as { check_item: string; level: string; message: string }[];
 
     // 至少有若干条 datacheck 日志（DuckDB 不可用时每条 ERROR 也会写）
-    expect(rows.length).toBeGreaterThanOrEqual(10);
+    expect(rows.length).toBeGreaterThanOrEqual(12);
     // 每个 level 必须是合法值
     const validLevels = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
     for (const r of rows) {
@@ -136,6 +139,8 @@ describe('M2 插件引擎', () => {
   });
 
   it('executeAllPlugins 写入 system_log（plugin_execute logType）', async () => {
+    // 🔴 T81 顺序依赖修复：自己先跑一次 executeAllPlugins
+    await executeAllPlugins().catch(() => []);
     await new Promise((r) => setTimeout(r, 100));
 
     // executeAllPlugins 内部写 plugin_execute logType（每个插件执行一条 + 批量汇总一条）
@@ -171,6 +176,8 @@ describe('M2 除权自动导入', () => {
   });
 
   it('importDividendEvents 写入 system_log（dividend_import logType）', async () => {
+    // 🔴 T81 顺序依赖修复：自己先跑一次 importDividendEvents
+    await importDividendEvents(tradeDate).catch(() => []);
     await new Promise((r) => setTimeout(r, 100));
 
     const row = db.db
@@ -203,6 +210,16 @@ describe('M2 scheduler 4 段 cron 注册', () => {
 // M2 全链路日志验证
 // ========================================================================
 describe('M2 全链路日志验证', () => {
+  // 🔴 T81 顺序依赖修复：三类日志分别由上面 3 个 describe 产出
+  //   （datacheck / plugin_execute / dividend_import）→ shuffle 下 describe 顺序随机，
+  //   本 describe 可能先跑 → 查不到任何日志。
+  //   → 改为**自己触发**这 3 个动作，再断言日志齐备。
+  beforeAll(async () => {
+    await runAllChecks(tradeDate).catch(() => []);
+    await executeAllPlugins().catch(() => []);
+    await importDividendEvents(tradeDate).catch(() => []);
+  });
+
   it('system_log 有三类记录：datacheck + plugin_execute + dividend_import', () => {
     const types = db.db
       .prepare(

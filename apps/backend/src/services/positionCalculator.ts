@@ -14,6 +14,7 @@ interface DbTradeRow {
   asset_code: string;
   trade_type: string;
   trade_date: string;
+  trade_time: string;
   quantity: number;
   price: number;
   fee: number;
@@ -23,8 +24,12 @@ interface DbTradeRow {
 function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
   switch (row.trade_type) {
     case 'buy':
+    // 🔴 §4-A（P0）：`add`（加仓）**必须**映射为 buy —— 它是买入，仓位应增加。
+    //   原实现把 add / reduce / clear 一起映射为 sell → **加仓后持仓直接归零**，
+    //   且已实现盈亏被错记为卖出价差（实测：买 100@10 + 加仓 100@12 → 期望 200 股/均价 11，
+    //   实得 0 股/已实现 200）。T49 落地了 `add` 类型但成本计算分支没跟上。
+    case 'add':
       return { date: row.trade_date, direction: 'buy', quantity: row.quantity, price: row.price, fee: row.fee };
-    case 'sell':
     case 'reduce':
     case 'clear':
       return { date: row.trade_date, direction: 'sell', quantity: row.quantity, price: row.price, fee: row.fee };
@@ -35,21 +40,36 @@ function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
 
 /**
  * 算单个标的当前持仓（含已实现盈亏）
+ *
+ * T84：`asOfDate` 指定「回放到哪个时点」，只回放 `trade_date <= asOfDate` 的记录。
+ * 卖出校验必须用它 —— 否则**尚未发生的买入**会支撑**更早的卖出**（P0-13）。
+ *
+ * ⚠️ 显示路径传 `strictOversell: false`：存量脏数据不应让持仓卡整页 500，
+ * 但脏状态通过 `hasOversell` / `oversellDetail` 暴露，不得静默吞掉。
  */
-export function calcPosition(userId: number, assetCode: string): PositionResult {
+export function calcPosition(
+  userId: number,
+  assetCode: string,
+  asOfDate?: string,
+  asOfTime?: string,
+): PositionResult {
   const db = ConfigStore.getInstance().db;
   const rows = db.prepare(
-    `SELECT id, user_id, asset_code, trade_type, trade_date, quantity, price, fee, is_deleted
+    `SELECT id, user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted
      FROM user_trade_record
      WHERE user_id = ? AND asset_code = ? AND is_deleted = 0
-     ORDER BY trade_date ASC, id ASC`
-  ).all(userId, assetCode) as DbTradeRow[];
+       AND (? IS NULL OR (trade_date < ? OR (trade_date = ? AND trade_time <= ?)))
+     ORDER BY trade_date ASC, trade_time ASC, id ASC`,
+  ).all(
+    userId, assetCode,
+    asOfDate ?? null, asOfDate ?? null, asOfDate ?? null, asOfTime ?? '23:59:59',
+  ) as DbTradeRow[];
 
   const coreTrades = rows
     .map(mapToCoreTrade)
     .filter((t): t is CoreTrade => t !== null);
 
-  return calculateMovingWeightedCost(coreTrades);
+  return calculateMovingWeightedCost(coreTrades, { strictOversell: false });
 }
 
 /**
@@ -66,12 +86,22 @@ export function calcAllPositions(userId: number): Array<{ asset_code: string } &
 }
 
 /**
- * sell 前校验持仓充足（T25 核心，AGENTS.md 硬约束）
- * 返回 true = 可卖；false = 持仓不足
+ * sell/reduce/clear 前校验持仓充足（T25 核心 + T84 P0-13）
+ *
+ * 🔴 `tradeDate` 是**必传**的正确性参数：以卖出发生时点回放，
+ * 只计入 `trade_date <= tradeDate` 的记录，避免未来买入支撑过去的卖出。
+ *
+ * 返回 true = 可卖；false = 持仓不足。
  */
-export function validateSufficientHolding(userId: number, assetCode: string, sellQty: number): boolean {
+export function validateSufficientHolding(
+  userId: number,
+  assetCode: string,
+  sellQty: number,
+  tradeDate?: string,
+  tradeTime?: string,
+): boolean {
   if (sellQty <= 0) return false;
-  const pos = calcPosition(userId, assetCode);
+  const pos = calcPosition(userId, assetCode, tradeDate, tradeTime);
   return pos.totalQuantity >= sellQty;
 }
 
@@ -103,8 +133,8 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
     `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
      FROM user_trade_record
      WHERE user_id = ? AND is_deleted = 0
-       AND trade_type IN ('buy','sell','reduce','clear')
-     ORDER BY trade_date ASC, id ASC`
+       AND trade_type IN ('buy','add','reduce','clear')
+     ORDER BY trade_date ASC, trade_time ASC, id ASC`
   ).all(userId) as Array<Omit<ClosedTradePnl, 'realized_pnl'> & { fee: number }>;
 
   // 每个标的独立维护持仓量与成本基

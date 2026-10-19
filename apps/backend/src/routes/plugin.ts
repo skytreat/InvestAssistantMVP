@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { getAllPlugins, builtinPlugins } from '../services/pluginEngine.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * 插件管理 API（T40）
@@ -12,7 +13,7 @@ import { writeSystemLog } from '../services/logger.js';
  */
 
 export async function registerPluginRoutes(app: FastifyInstance) {
-  app.get('/api/plugins', async (request, reply) => {
+  app.get('/api/strategy/plugins', async (request, reply) => {
     const user = (request as any).user as { sub: number; username: string };
     const db = ConfigStore.getInstance().db;
     const allPlugins = getAllPlugins();
@@ -32,10 +33,10 @@ export async function registerPluginRoutes(app: FastifyInstance) {
       };
     });
 
-    return reply.send({ success: true, data: result });
+    return reply.send(ok(result));
   });
 
-  app.post('/api/plugins/:id/config', async (request, reply) => {
+  app.put('/api/strategy/plugins/:id/config', async (request, reply) => {
     const user = (request as any).user as { sub: number; username: string };
     const { id } = request.params as { id: string };
     const { params } = request.body as { params: Record<string, unknown> };
@@ -47,10 +48,10 @@ export async function registerPluginRoutes(app: FastifyInstance) {
     ).run(user.sub, id, JSON.stringify(params));
 
     writeSystemLog({ logType: 'signal_generate', level: 'INFO', message: `${user.username} 更新插件 ${id} 参数` });
-    return reply.send({ success: true });
+    return reply.send(ok(null));
   });
 
-  app.post('/api/plugins/:id/toggle', async (request, reply) => {
+  app.put('/api/strategy/plugins/:id/toggle', async (request, reply) => {
     const user = (request as any).user as { sub: number; username: string };
     const { id } = request.params as { id: string };
     const { enabled } = request.body as { enabled: number };
@@ -69,6 +70,6 @@ export async function registerPluginRoutes(app: FastifyInstance) {
     }
 
     writeSystemLog({ logType: 'signal_generate', level: 'INFO', message: `${user.username} ${enabled ? '启用' : '禁用'}插件 ${id}` });
-    return reply.send({ success: true });
+    return reply.send(ok(null));
   });
 }

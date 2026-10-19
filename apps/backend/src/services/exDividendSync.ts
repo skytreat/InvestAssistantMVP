@@ -117,19 +117,22 @@ export async function importDividendEvents(exDate?: string): Promise<ImportResul
     const db = config.db;
 
     // 3-4. 主流程 + 事务（better-sqlite3 同步事务，内部无 await）
-    const insertDividendStmt = db.prepare(
-      `INSERT OR IGNORE INTO user_trade_record
-         (user_id, asset_code, trade_type, trade_date, quantity, price, fee,
-          trade_reason, is_auto_import, is_deleted)
-       VALUES (?, ?, 'dividend', ?, ?, ?, 0, ?, 1, 0)`
-    );
+// T87：trade_time 必填。除权事件是「按日」的批量导入，同日同一标的只应有一条，
+// 因此统一用固定值 '00:00:00' —— 依赖 UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)
+ // 保证同一天重复导入被忽略（INSERT OR IGNORE），与既有防重语义一致。
+const insertDividendStmt = db.prepare(
+  `INSERT OR IGNORE INTO user_trade_record
+  (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee,
+  trade_reason, is_auto_import, is_deleted)
+  VALUES (?, ?, 'dividend', ?, '00:00:00', ?, ?, 0, ?, 1, 0)`
+);
 
-    const insertBonusStmt = db.prepare(
-      `INSERT OR IGNORE INTO user_trade_record
-         (user_id, asset_code, trade_type, trade_date, quantity, price, fee,
-          trade_reason, is_auto_import, is_deleted)
-       VALUES (?, ?, 'bonus', ?, ?, 0, 0, ?, 1, 0)`
-    );
+const insertBonusStmt = db.prepare(
+  `INSERT OR IGNORE INTO user_trade_record
+  (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee,
+  trade_reason, is_auto_import, is_deleted)
+  VALUES (?, ?, 'bonus', ?, '00:00:00', ?, 0, 0, ?, 1, 0)`
+);
 
     const runImport = db.transaction((evtList: DividendEvent[]) => {
       for (const evt of evtList) {

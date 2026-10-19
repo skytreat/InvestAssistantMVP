@@ -40,10 +40,10 @@ export default function Login() {
         login(newToken, user.username, user.role);
         navigate('/');
       } else {
-        setError(res.data.error ?? '登录失败');
+        setError(res.data.message ?? '登录失败');
       }
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '网络错误');
+      setError(err?.response?.data?.message ?? '网络错误');
     } finally {
       setLoading(false);
     }

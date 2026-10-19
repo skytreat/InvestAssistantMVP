@@ -17,7 +17,9 @@
     "build": "tsup",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "fast-technical-indicators": "1.1.6"
+  },
   "devDependencies": {
     "@vitest/coverage-v8": "^2.1.0",
     "tsup": "^8.3.0",

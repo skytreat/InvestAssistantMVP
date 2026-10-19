@@ -132,6 +132,44 @@ export async function batchGetDailyRange(
 }
 
 /**
+ * 按 view 分组的批量区间取日线（**每个 view 1 次 IN 查询**）
+ *
+ * 🔴 T85b ①：选股路径的候选可能来自多个 view（`v_stock_qfq` / `v_etf_qfq`），
+ *   而 {@link batchGetDailyRange} 只支持单 view。��这里按 view 分组各发 1 条
+ *   IN 查询 —— 总量 = view 数（≤2），**不是 symbol 数**。
+ *
+ * @param symbolsByView view 名 → 该 view 下的 symbol 列表
+ */
+export async function batchGetDailyRangeByView(
+  symbolsByView: Map<string, string[]>,
+  fromDate: string,
+  toDate: string,
+): Promise<Map<string, DailyKline[]>> {
+  const result = new Map<string, DailyKline[]>();
+  for (const [view, symbols] of symbolsByView) {
+    if (symbols.length === 0) continue;
+    const placeholders = symbols.map(() => '?').join(', ');
+    const rows = await queryDuckDB<DailyKlineRow>(
+      `SELECT symbol, date, open, high, low, close, volume, amount
+       FROM ${view}
+       WHERE date BETWEEN ? AND ? AND symbol IN (${placeholders})
+       ORDER BY symbol, date ASC`,
+      [fromDate, toDate, ...symbols],
+    );
+    for (const row of rows) {
+      const { symbol, date: d, open, high, low, close, volume, amount } = row;
+      const list = result.get(symbol);
+      if (list) {
+        list.push({ date: d, open, high, low, close, volume, amount });
+      } else {
+        result.set(symbol, [{ date: d, open, high, low, close, volume, amount }]);
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * 批量取多个标的的最新收盘价（**1 次查询**，T33 仪表盘持仓卡用）
  *
  * 用窗口函数 ROW_NUMBER 取每个 symbol 最新一条，避免"先按日期定位再 IN 查"两次往返。
@@ -184,39 +222,146 @@ export function toDateString(value: unknown): string {
   return String(value);
 }
 
+// ─────────────────────────────────────────────────────────────────
+// 交易日历（口径以实测为准，见下方「raw_holidays 语义更正」）
+// ─────────────────────────────────────────────────────────────────
+
 /**
- * 查询某天是不是交易日（raw_holidays 有 date 列 = 交易日）
+ * 🔴 `raw_holidays` 语义更正（2026-10-19 实测，I-20）
  *
- * SDD D2 实测：raw_holidays **只有一个 date 列**（没有 is_trading_day）
- * 有行 = 交易日；没行 = 非交易日
+ * **该表存的是「休市日」黑名单，不是交易日。** 原实现的注释「有行 = 交易日」是错的。
+ *
+ * 实测证据（`/opt/invol/quotes.duckdb`）：
+ * - 表内 680 行，范围 1991-01-01 ~ 2030-10-07
+ * - 其中「该日 `v_stock_qfq` 有行情」的行数 = **0** → 全是休市日
+ * - `v_stock_qfq` 的 8799 个不同日期，**没有一个**在该表里
+ * - 2026-10-01 ~ 10-07（国庆）全部在表内且**无行情**；10-08/09/12 不在表内且**有行情**
+ *
+ * 且该表**只含工作日休市日**（周末不在表内）→ 判定交易日需同时排除周末。
+ */
+
+/** 日历口径的「休市日」判定：该日是否在 raw_holidays 黑名单中 */
+async function isHolidayListed(date: string): Promise<boolean> {
+  const rows = await queryDuckDB<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
+    [date]
+  );
+  return rows.length > 0 && Number(rows[0].count) > 0;
+}
+
+/** 该日是否为工作日（周一~周五）—— 纯本地计算，不查库 */
+function isWeekday(date: string): boolean {
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return false;
+  const dow = d.getUTCDay();
+  return dow >= 1 && dow <= 5;
+}
+
+/**
+ * 查询某天是不是交易日
+ *
+ * 口径（2026-10-19 实测修正）：**工作日 且 不在 `raw_holidays` 休市黑名单中**。
+ *
+ * ⚠️ 这是**日历口径**，与「当天有没有行情数据」正交 —— 行情管道停摆时，
+ * 某个交易日依然会被判为交易日（正确：那样才能暴露数据陈旧，而不是掩盖它）。
  */
 export async function isTradingDay(date: string): Promise<boolean> {
+  if (!isWeekday(date)) return false;
   try {
-    const rows = await queryDuckDB<{ count: number }>(
-      'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
-      [date]
-    );
-    return rows.length > 0 && rows[0].count > 0;
+    return !(await isHolidayListed(date));
   } catch {
     return false;
   }
 }
 
 /**
- * 获取指定日期及之前最近的交易日（往前回溯找）
- * 返回找到的交易日，如果全部非交易日返回 null
+ * 日历口径的最近交易日（≤ referenceDate）
+ *
+ * 只依赖 `raw_holidays` + 工作日判定，**不依赖行情数据是否到位** ——
+ * 这样数据陈旧时校验会如实报错，而不是把 tradeDate 回退到「有数据的最后一天」造成假绿。
+ *
+ * @param referenceDate 参考日，默认今天（UTC）
+ * @returns YYYY-MM-DD；往前 30 天内无交易日则返回 null
  */
-export async function getLatestTradingDay(date: string): Promise<string | null> {
+export async function resolveTargetTradeDate(referenceDate?: string): Promise<string | null> {
+  const ref = referenceDate ?? new Date().toISOString().slice(0, 10);
   try {
-    const rows = await queryDuckDB<{ date: unknown }>(
-      `SELECT date FROM raw_holidays WHERE date <= ? ORDER BY date DESC LIMIT 1`,
-      [date]
+    // ⚠️ **必须显式 ::DATE**（2026-10-19 实测踩坑）：
+    //   `generate_series(DATE, DATE, INTERVAL 1 DAY)` 返回的是 **TIMESTAMP**，
+    //   `MAX(timestamp)` 的驱动层值是 `{micros: BigInt}` —— `normalizeValue` 不认这个形态
+    //   → 序列化直接炸（`TypeError: Do not know how to serialize a BigInt`）。
+    //   cast 成 DATE 后驱动返回 `{days}`，才能被 normalizeValue 正确归一。
+    const rows = await queryDuckDB<{ d: unknown }>(
+      `SELECT MAX(candidate)::DATE AS d FROM (
+         SELECT g::DATE AS candidate
+         FROM generate_series(CAST(? AS DATE) - INTERVAL 30 DAY, CAST(? AS DATE), INTERVAL 1 DAY) AS t(g)
+         WHERE EXTRACT(ISODOW FROM g) BETWEEN 1 AND 5
+           AND NOT EXISTS (SELECT 1 FROM raw_holidays WHERE date = g)
+       ) s`,
+      [ref, ref]
     );
     if (rows.length === 0) return null;
-    const val = rows[0].date;
+    const val = rows[0].d;
     if (val === null || val === undefined) return null;
     return toDateString(val);
   } catch {
     return null;
   }
+}
+
+/**
+ * 数据口径的最近有行情日期（≤ referenceDate）
+ *
+ * 与 {@link resolveTargetTradeDate} 的区别：**看数据有没有到位**，不判断日历。
+ * 用于「查行情」的场合（选股 / 最新价 / 批量取日线）—— 必须落在真有数据的那天，
+ * 否则查出来是 0 行。
+ *
+ * ⚠️ 与 `resolveTargetTradeDate` 的差值即为**行情陈旧度**（可用于告警）。
+ */
+export async function resolveLatestQuoteDate(referenceDate?: string): Promise<string | null> {
+  const ref = referenceDate ?? new Date().toISOString().slice(0, 10);
+  // ⚠️ **性能**（2026-10-19 实测）：`v_stock_qfq` / `v_etf_qfq` 是**实时计算的视图**，
+  //   对它们做 `MAX(date)` 要扫 1800 万 + 300 万行 → 实测 **14148ms**。
+  //   底层 `raw_kline_daily` 同样语义（市场全量日线）只要 **6ms**。
+  //   → 主路径走底层表；表不可用时回退到视图（慢但正确）。
+  let fastVal: unknown = null;
+  try {
+    const fast = await queryDuckDB<{ d: unknown }>(
+      'SELECT MAX(date) AS d FROM raw_kline_daily WHERE date <= ?',
+      [ref]
+    );
+    fastVal = fast[0]?.d;
+  } catch {
+    fastVal = null; // 快速路径不可用 → 走视图兜底
+  }
+  if (fastVal !== null && fastVal !== undefined) {
+    return toDateString(fastVal);
+  }
+
+  // 回退：视图（raw_kline_daily 缺失或为空时）
+  try {
+    const rows = await queryDuckDB<{ d: unknown }>(
+      `SELECT MAX(d) AS d FROM (
+         SELECT MAX(date) AS d FROM v_stock_qfq WHERE date <= ?
+         UNION ALL
+         SELECT MAX(date) AS d FROM v_etf_qfq WHERE date <= ?
+       ) s`,
+      [ref, ref]
+    );
+    if (rows.length === 0) return null;
+    const val = rows[0].d;
+    if (val === null || val === undefined) return null;
+    return toDateString(val);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @deprecated 旧名，语义已修正为「最近有行情的交易日」。
+ * 保留是为了不打断既有 import；新代码请用 {@link resolveTargetTradeDate}
+ * （日历口径）或 {@link resolveLatestQuoteDate}（数据口径），别再用这个含糊的名字。
+ */
+export async function getLatestTradingDay(date: string): Promise<string | null> {
+  return resolveLatestQuoteDate(date);
 }

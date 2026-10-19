@@ -2,7 +2,7 @@
  * other.test.ts — Signal 分页查询 + Watch/Candidate CRUD 集成测试
  *
  * 覆盖：
- *   src/routes/signal.ts   —— GET /api/signals 默认分页 / plugin_id 过滤 / page_size 上限 / page=0 兜底
+ *   src/routes/signal.ts   —— GET /api/signal 默认分页 / plugin_id 过滤 / page_size 上限 / page=0 兜底
  *   src/routes/watch.ts    —— POST 201 / 同 asset 409 / DELETE 不存在 404 / UNIQUE 三列独立共存
  *
  * 不 mock，走真实 SQLite + Fastify inject。
@@ -10,6 +10,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createTestApp, makeUserToken, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
+
+/**
+ * 🔴 2026-10-19 CI 教训：CI 环境只有 12KB 空壳行情库（无 `v_stock_qfq` 等表）。
+ *   `POST /api/candidate` 需**查行情库**来固化基准价（T50 语义）→ 无库时返回 503。
+ *   → 依赖真实行情库的用例在 CI 无库时跳过。
+ */
+import { marketDataAvailable } from '../_marketData.js';
+
+/** 真实行情库是否可用（顶层 await 判定一次） */
+const MARKET_DATA_AVAILABLE = await marketDataAvailable();
 
 const WATCH_USER = 'int_watch_user';
 const WATCH_PASS = 'int_watch_user123';
@@ -48,7 +58,7 @@ afterAll(async () => {
 // ────────────────────────────────────────────────────────────
 // Signal 路由覆盖 src/routes/signal.ts (10-46 行)
 // ────────────────────────────────────────────────────────────
-describe('GET /api/signals · 分页查询', () => {
+describe('GET /api/signal · 分页查询', () => {
   beforeAll(() => {
     const db = bundle.db.db;
     // 先清干净，避免计数不准
@@ -76,7 +86,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('默认分页 → 返回 data + pagination 结构，totalPages ≥ 1', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals',
+      url: '/api/signal',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -95,7 +105,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('plugin_id 过滤 → 每行 plugin_id 匹配', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals?plugin_id=rsi_oversold',
+      url: '/api/signal?plugin_id=rsi_oversold',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -111,7 +121,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('page_size=999 → 截断到 200（Math.min(200, ...)）', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals?page_size=999',
+      url: '/api/signal?page_size=999',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -123,7 +133,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('page=0 → Math.max(1, ...) 兜底 page=1', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals?page=0',
+      url: '/api/signal?page=0',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -188,19 +198,27 @@ describe('Watch CRUD · 38-42', () => {
 });
 
 describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
+  // 依赖真实行情库（POST /api/candidate 需查行情固化基准价）→ CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
+  // 🔴 T92：候选池路由归属收敛到 `routes/candidate.ts`（T50 实现）后，
+  //   `POST /api/candidate` 的入参校验**变严**了 —— 要求 `sh600000 / sz000001` 格式
+  //   （旧 `watch.ts` 只要求非空）。本用例原用裸码 '000001' → 400 PARAM_INVALID。
+  //   改用全系统统一的带前缀格式，语义（UNIQUE 三列独立）不变。
+  const CODE = 'sz000001';
+
   beforeAll(() => {
-    // 确保 watch 表里有一条 000001（独立的 rel_type）
+    // 确保 watch 表里有一条同 asset_code（独立的 rel_type）
     bundle.db.db.prepare(
       'INSERT OR IGNORE INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)'
-    ).run(watchUserId, '000001', 'watch');
+    ).run(watchUserId, CODE, 'watch');
   });
 
-  it('POST /api/candidate 对同一 asset_code → 201（验证 UNIQUE 三列独立）', async () => {
+  itReal('POST /api/candidate 对同一 asset_code → 201（验证 UNIQUE 三列独立）', async () => {
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/candidate',
       headers: watchHeaders(),
-      payload: { asset_code: '000001' },
+      payload: { asset_code: CODE },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
@@ -210,10 +228,21 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     // 验证数据库里 watch + candidate 共存
     const rows = bundle.db.db.prepare(
       'SELECT asset_code, rel_type FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND is_deleted = 0 ORDER BY rel_type'
-    ).all(watchUserId, '000001') as { asset_code: string; rel_type: string }[];
+    ).all(watchUserId, CODE) as { asset_code: string; rel_type: string }[];
     expect(rows.length).toBe(2);
     const types = new Set(rows.map(r => r.rel_type));
     expect(types.has('watch')).toBe(true);
     expect(types.has('candidate')).toBe(true);
+  });
+
+  itReal('POST /api/candidate 非法 asset_code 格式 → 400 PARAM_INVALID（T92 收敛后更严）', async () => {
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/candidate',
+      headers: watchHeaders(),
+      payload: { asset_code: '000001' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('PARAM_INVALID');
   });
 });

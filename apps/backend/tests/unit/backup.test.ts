@@ -5,23 +5,39 @@
  *   1. _deleteOldBackups：超过 RETENTION_DAYS 的文件被删除，过期阈值边界
  *   2. backupSQLite 成功路径：返回 { success: true, size } 且 writeSystemLog 调 INFO
  *   3. backupSQLite 失败降级：db.backup 抛错 → 返回 { success: false, error } 且 writeSystemLog 调 ERROR
+ *   4. **backup_restore_duckdb**（SDD §12.5 F11）：真跑 DuckDB 备份 → 恢复 → COUNT(*) 一致
  *
  * 关键：backup.ts 顶层有 `const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup')`
  *       必须在 backup.ts 被 evaluate 之前设好 env，因此用动态 import + top-level await 保证时序。
  *       ConfigStore 构造是惰性的，静态 import 没问题。
+ *
+ * ⚠️ **隔离铁律**：本文件的 SQLite 库、备份目录、DuckDB 文件**全部在 mkdtemp 临时目录**里，
+ *    绝不读写 `data/quotes.duckdb`（1.2GB 真实行情库）与 `data/business.db`。
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { DuckDBInstance } from '@duckdb/node-api';
 
 // === 必须在 backup.ts 被加载前设好 env ===
-const TEST_BACKUP_DIR = path.resolve('data', 'backup-test');
-const TEST_DB = path.resolve('data', 'backup-test.db');
+const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-backup-'));
+const TEST_BACKUP_DIR = path.join(TMP_DIR, 'backup');
+const TEST_DB = path.join(TMP_DIR, 'backup-test.db');
+/** F11 用：临时 DuckDB（被备份对象）—— 绝不碰 data/quotes.duckdb */
+const TEST_DUCKDB = path.join(TMP_DIR, 'quotes-test.duckdb');
+/** F11 用：GZIP 导出专用源库（backupDuckDB 内部不关 instance，会锁住 TEST_DUCKDB） */
+const TEST_DUCKDB_GZIP = path.join(TMP_DIR, 'quotes-gzip-source.duckdb');
+/** F11 用：恢复目标 DuckDB */
+const RESTORE_DUCKDB = path.join(TMP_DIR, 'quotes-restored.duckdb');
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const ORIGINAL_BACKUP_DIR = process.env.BACKUP_DIR;
+const ORIGINAL_DUCKDB_PATH = process.env.DUCKDB_PATH;
 
 process.env.SQLITE_DB_PATH = TEST_DB;
 process.env.BACKUP_DIR = TEST_BACKUP_DIR;
+process.env.DUCKDB_PATH = TEST_DUCKDB;
 
 // 静态 import ConfigStore —— 构造惰性，getInstance 首次调用才 new，此时 env 已设好
 import { ConfigStore } from '../../src/config/configStore.js';
@@ -31,7 +47,7 @@ import * as loggerNs from '../../src/services/logger.js';
 
 // 动态 import backup.js —— 此时 env 已设，backup.ts 内 BACKUP_DIR 会正确读到 TEST_BACKUP_DIR
 const backupMod = await import('../../src/services/backup.js');
-const { backupSQLite, _deleteOldBackups } = backupMod;
+const { backupSQLite, backupDuckDB, _deleteOldBackups } = backupMod;
 
 // ================================================================
 
@@ -65,6 +81,10 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
     }
 
     // 触发 ConfigStore 初始化（首次 getInstance 会读 SQLITE_DB_PATH，创建 .db 文件 + DDL）
+    // ⚠️ 先 resetInstance：vitest 开了 sequence.shuffle，文件内两个 describe 的执行顺序不固定，
+    //    另一个 describe 的 afterAll 可能已经把连接 close 掉了 —— 不重开会报
+    //    "The database connection is not open"。
+    ConfigStore.resetInstance();
     ConfigStore.getInstance();
   });
 
@@ -89,6 +109,11 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
       process.env.BACKUP_DIR = ORIGINAL_BACKUP_DIR;
     } else {
       delete process.env.BACKUP_DIR;
+    }
+    if (ORIGINAL_DUCKDB_PATH !== undefined) {
+      process.env.DUCKDB_PATH = ORIGINAL_DUCKDB_PATH;
+    } else {
+      delete process.env.DUCKDB_PATH;
     }
 
     vi.restoreAllMocks();
@@ -241,4 +266,199 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
       vi.restoreAllMocks();
     });
   });
+});
+
+// ================================================================
+// F11 · backup_restore_duckdb（SDD §12.5 验收项 F11）
+//
+// 通过标准：「`COPY TO PARQUET GZIP` → `COPY FROM` 恢复 → COUNT(*) 一致」
+//
+// ⚠️ 隔离铁律：
+//   - 被备份对象是**临时目录里新建的一次性 DuckDB**（含 raw_daily 表 + v_stock_qfq 视图），
+//     绝不读写 `data/quotes.duckdb`（1.2GB 真实行情库）；
+//   - 备份产物写到临时 BACKUP_DIR，不落仓库；
+//   - 恢复目标是另一个临时 DuckDB 文件。
+//   - 本用例**真跑** COPY TO / COPY FROM / COUNT(*)，不做 mock。
+// ================================================================
+
+const DUCKDB_DDL = `CREATE TABLE raw_daily (
+    symbol VARCHAR, date DATE, open DOUBLE, high DOUBLE, low DOUBLE,
+    close DOUBLE, volume BIGINT, amount DOUBLE)`;
+
+const DUCKDB_ROWS: Array<{ symbol: string; date: string; close: number }> = [
+  { symbol: 'sh600001', date: '2026-10-12', close: 10.5 },
+  { symbol: 'sh600002', date: '2026-10-12', close: 20.25 },
+  { symbol: 'sh600003', date: '2026-10-12', close: 30.75 },
+  { symbol: 'sh600001', date: '2026-10-09', close: 10.1 },
+  { symbol: 'sh600002', date: '2026-10-09', close: 19.8 },
+  { symbol: 'sh600003', date: '2026-10-09', close: 30.2 },
+];
+
+/** 造临时 DuckDB（表 + v_stock_qfq 视图）并写入 6 行，返回行数 */
+async function createTempDuckDB(file: string): Promise<number> {
+  const inst = await DuckDBInstance.create(file);
+  const conn = await inst.connect();
+  try {
+    await conn.runAndReadAll(DUCKDB_DDL);
+    await conn.runAndReadAll(`CREATE VIEW v_stock_qfq AS SELECT * FROM raw_daily`);
+    for (const r of DUCKDB_ROWS) {
+      await conn.runAndReadAll(
+        `INSERT INTO raw_daily VALUES ('${r.symbol}', DATE '${r.date}', ` +
+        `${r.close}, ${r.close * 1.01}, ${r.close * 0.99}, ${r.close}, 1000000, ${r.close * 1000000})`,
+      );
+    }
+    const res = await conn.runAndReadAll('SELECT COUNT(*) AS c FROM v_stock_qfq');
+    return Number(res.getRows()[0][0]);
+  } finally {
+    conn.closeSync();
+    inst.closeSync();
+  }
+}
+
+/** 从 parquet 恢复到目标 DuckDB（`COPY ... FROM`），返回恢复后的行数 */
+async function restoreFromParquet(parquetPath: string, targetFile: string): Promise<number> {
+  const inst = await DuckDBInstance.create(targetFile);
+  const conn = await inst.connect();
+  try {
+    await conn.runAndReadAll(`DROP TABLE IF EXISTS v_stock_qfq`);
+    await conn.runAndReadAll(DUCKDB_DDL.replace('raw_daily', 'v_stock_qfq'));
+    await conn.runAndReadAll(`COPY v_stock_qfq FROM '${parquetPath}' (FORMAT PARQUET)`);
+    const res = await conn.runAndReadAll('SELECT COUNT(*) AS c FROM v_stock_qfq');
+    return Number(res.getRows()[0][0]);
+  } finally {
+    conn.closeSync();
+    inst.closeSync();
+  }
+}
+
+/** 在临时 DuckDB 上执行 COPY TO PARQUET GZIP，返回产物路径 */
+async function copyToParquetGzip(sourceFile: string, outFile: string): Promise<string> {
+  const inst = await DuckDBInstance.create(sourceFile);
+  const conn = await inst.connect();
+  try {
+    await conn.runAndReadAll(`COPY v_stock_qfq TO '${outFile}' (FORMAT PARQUET, COMPRESSION GZIP)`);
+    return outFile;
+  } finally {
+    conn.closeSync();
+    inst.closeSync();
+  }
+}
+
+describe('backup_restore_duckdb — SDD §12.5 F11（DuckDB 行情层备份恢复）', () => {
+  let sourceCount = 0;
+  let parquetPath = '';
+
+  beforeAll(async () => {
+    // 0. 强制指向临时行情库 + 临时 SQLite
+    //    （上一个 describe 的 afterAll 已把 env 还原成原值：
+    //      若不重设，backupDuckDB 会去读真实的 data/quotes.duckdb —— 违反隔离铁律）
+    process.env.DUCKDB_PATH = TEST_DUCKDB;
+    process.env.SQLITE_DB_PATH = TEST_DB;
+    expect(process.env.DUCKDB_PATH).toBe(TEST_DUCKDB);
+
+    // 重新打开临时 SQLite（上一个 describe 已把连接 close 掉），保证备份日志能落库
+    ConfigStore.resetInstance();
+    ConfigStore.getInstance();
+
+    // 1. 造临时行情库（被备份对象）
+    sourceCount = await createTempDuckDB(TEST_DUCKDB);
+    expect(sourceCount).toBe(DUCKDB_ROWS.length);
+
+    // 1b. GZIP 导出专用源库（独立文件：backupDuckDB 不关 instance，会锁住 TEST_DUCKDB）
+    expect(await createTempDuckDB(TEST_DUCKDB_GZIP)).toBe(DUCKDB_ROWS.length);
+
+    // 2. 走真实备份实现（services/backup.ts → backupDuckDB，COPY v_stock_qfq TO parquet）
+    cleanupBackupDir();
+    const result = await backupDuckDB();
+    expect(result.success, `DuckDB 备份失败: ${result.error ?? ''}`).toBe(true);
+    expect(typeof result.size).toBe('number');
+    expect(result.size!).toBeGreaterThan(0);
+
+    // 3. 找到备份产物
+    const files = fs.readdirSync(TEST_BACKUP_DIR).filter((f) => f.endsWith('.parquet'));
+    expect(files, '备份目录里应产生 parquet 产物').toHaveLength(1);
+    parquetPath = path.join(TEST_BACKUP_DIR, files[0]);
+    expect(fs.existsSync(parquetPath)).toBe(true);
+    expect(fs.statSync(parquetPath).size).toBeGreaterThan(0);
+  }, 60000);
+
+  afterAll(() => {
+    // 还原 env
+    if (ORIGINAL_DUCKDB_PATH !== undefined) {
+      process.env.DUCKDB_PATH = ORIGINAL_DUCKDB_PATH;
+    } else {
+      delete process.env.DUCKDB_PATH;
+    }
+    if (ORIGINAL_SQLITE_DB_PATH !== undefined) {
+      process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
+    } else {
+      delete process.env.SQLITE_DB_PATH;
+    }
+    // ⚠️ 这里**不**关闭 ConfigStore 连接、**不**删临时目录：
+    //    vitest 开了 sequence.shuffle，本 describe 可能排在另一个 describe 前面，
+    //    关连接/删目录会让后续 describe 的用例报 "database connection is not open"。
+    //    统一由文件末尾的根级 afterAll 收尾。
+  });
+
+  it('backup_restore_duckdb：COPY TO parquet → COPY FROM 恢复 → COUNT(*) 与源库一致', async () => {
+    const restoredCount = await restoreFromParquet(parquetPath, RESTORE_DUCKDB);
+    expect(restoredCount).toBe(sourceCount);
+    expect(restoredCount).toBe(6);
+  }, 60000);
+
+  it('backup_restore_duckdb：SDD 指定的 COPY TO PARQUET GZIP → 恢复 → COUNT(*) 一致', async () => {
+    const gzipPath = path.join(TMP_DIR, 'v_stock_qfq.gzip.parquet');
+    await copyToParquetGzip(TEST_DUCKDB_GZIP, gzipPath);
+    expect(fs.existsSync(gzipPath)).toBe(true);
+    expect(fs.statSync(gzipPath).size).toBeGreaterThan(0);
+
+    const restoredCount = await restoreFromParquet(gzipPath, RESTORE_DUCKDB);
+    expect(restoredCount).toBe(sourceCount);
+    expect(restoredCount).toBe(6);
+  }, 60000);
+
+  it('恢复出来的数据内容与源库一致（symbol / date / close 抽样比对）', async () => {
+    // ⚠️ 自带恢复步骤：vitest 开了 sequence.shuffle，用例顺序不固定，
+    //    本用例不能依赖前两个用例已经恢复过 RESTORE_DUCKDB。
+    const contentTarget = path.join(TMP_DIR, 'quotes-restored-content.duckdb');
+    const restoredCount = await restoreFromParquet(parquetPath, contentTarget);
+    expect(restoredCount).toBe(sourceCount);
+
+    const inst = await DuckDBInstance.create(contentTarget);
+    const conn = await inst.connect();
+    try {
+      const res = await conn.runAndReadAll(
+        `SELECT symbol, date, close FROM v_stock_qfq ORDER BY symbol, date`,
+      );
+      const rows = res.getRows().map((r) => ({
+        symbol: String(r[0]),
+        date: String(r[1]),
+        close: Number(r[2]),
+      }));
+      expect(rows).toHaveLength(6);
+      expect(rows[0]).toEqual({ symbol: 'sh600001', date: '2026-10-09', close: 10.1 });
+      expect(rows[5]).toEqual({ symbol: 'sh600003', date: '2026-10-12', close: 30.75 });
+    } finally {
+      conn.closeSync();
+      inst.closeSync();
+    }
+  }, 60000);
+
+  it('备份产物落在临时 BACKUP_DIR，且不触碰真实行情库 data/quotes.duckdb', () => {
+    expect(parquetPath.startsWith(TEST_BACKUP_DIR)).toBe(true);
+    expect(path.resolve(parquetPath)).not.toContain(path.join('data', 'quotes.duckdb'));
+    // 被备份的确实是临时文件
+    expect(process.env.DUCKDB_PATH).toBe(TEST_DUCKDB);
+    expect(TEST_DUCKDB.startsWith(TMP_DIR)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 文件级收尾（根级 afterAll）：所有 describe 跑完之后才关连接 / 删临时目录
+// ⚠️ vitest 开了 sequence.shuffle，describe 之间顺序不固定 —— 清理必须放在根级，
+//    否则先跑的 describe 会把后续 describe 的依赖（SQLite 连接 / 临时 DuckDB）删掉。
+// ---------------------------------------------------------------------------
+afterAll(() => {
+  try { (ConfigStore.getInstance().db as any).close(); } catch { /* ignore */ }
+  try { rmSync(TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
 });
