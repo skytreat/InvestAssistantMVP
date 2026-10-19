@@ -151,24 +151,24 @@ describe('Auth · /api/auth/seed 越权防护', () => {
 
 describe('Auth · 鉴权 hook', () => {
   it('保护路由无 token → 401 NO_TOKEN', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/trades' });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/trade' });
     expect(res.statusCode).toBe(401);
     const body = JSON.parse(res.body);
-    expect(body.error).toBe('NO_TOKEN');
+    expect(body.error).toBe('UNAUTHORIZED');
   });
 
   it('垃圾 token → 401 INVALID_TOKEN', async () => {
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/trades',
+      method: 'GET', url: '/api/trade',
       headers: { authorization: 'Bearer garbage.garbage.garbage' },
     });
     expect(res.statusCode).toBe(401);
-    expect(JSON.parse(res.body).error).toBe('INVALID_TOKEN');
+    expect(JSON.parse(res.body).error).toBe('UNAUTHORIZED');
   });
 
   it('非法前缀（不带 Bearer）→ 401 NO_TOKEN', async () => {
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/trades',
+      method: 'GET', url: '/api/trade',
       headers: { authorization: bundle.adminToken },  // 没有 "Bearer " 前缀
     });
     expect(res.statusCode).toBe(401);
@@ -178,7 +178,7 @@ describe('Auth · 鉴权 hook', () => {
 describe('Auth · admin 路由权限', () => {
   it('非 admin 访问 /api/admin/* → 403 FORBIDDEN', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/run-datacheck',
+      method: 'POST', url: '/api/admin/datacheck/trigger',
       headers: { authorization: `Bearer ${userToken}` },
     });
     expect(res.statusCode).toBe(403);
@@ -188,7 +188,7 @@ describe('Auth · admin 路由权限', () => {
   it('admin 访问 /api/admin/* → 不返回 403（可能业务错但权限放行）', async () => {
     // DuckDB 可能慢，只测不被 403 拒绝
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/run-datacheck',
+      method: 'POST', url: '/api/admin/datacheck/trigger',
       headers: { authorization: `Bearer ${bundle.adminToken}` },
     });
     expect(res.statusCode).not.toBe(403);

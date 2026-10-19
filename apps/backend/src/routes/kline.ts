@@ -10,6 +10,7 @@ import {
   MACD_DEFAULT_SIGNAL_PERIOD,
 } from '@invest/core';
 import { ConfigStore } from '../config/configStore.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * K 线行情数据接口（SDD F5 验收项）
@@ -98,7 +99,7 @@ function parseBoundedInt(
 }
 
 export async function registerKlineRoutes(app: FastifyInstance) {
-  app.get('/api/kline/:symbol', async (request, reply) => {
+  app.get('/api/quote/:symbol/kline', async (request, reply) => {
     const { symbol } = request.params as { symbol: string };
     const query = request.query as {
       days?: number;
@@ -112,20 +113,12 @@ export async function registerKlineRoutes(app: FastifyInstance) {
 
     // symbol 基本校验
     if (!/^(sh|sz)\d{6}$/.test(symbol)) {
-      return reply.code(400).send({
-        success: false,
-        error: 'INVALID_SYMBOL',
-        message: 'symbol 格式应为 sh600000 / sz000001',
-      });
+      return reply.code(400).send(fail(400, 'SYMBOL_NOT_FOUND', 'symbol 格式应为 sh600000 / sz000001'));
     }
 
     // fq 白名单：非法值直接 400，绝不静默回落 qfq（否则用户以为在看别的复权口径）
     if (!isFq(fq)) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: `fq 仅支持 ${FQ_VALUES.join(' / ')}，收到 "${String(fq)}"`,
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', `fq 仅支持 ${FQ_VALUES.join(' / ')}，收到 "${String(fq)}"`));
     }
 
     const periodInputs: Array<{
@@ -144,11 +137,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
     for (const p of periodInputs) {
       const parsed = parseBoundedInt(p.raw, p.range.min, p.range.max);
       if (parsed === 'INVALID') {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: `${p.name} 取值非法（需为 ${p.range.min}~${p.range.max} 的整数）`,
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', `${p.name} 取值非法（需为 ${p.range.min}~${p.range.max} 的整数）`));
       }
       resolvedPeriods.push(parsed === null ? p.fallback : parsed);
     }
@@ -184,10 +173,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       const klines = rows.reverse();
 
       if (klines.length === 0) {
-        return reply.send({
-          success: true,
-          data: { symbol, fq, symbolClass, klines: [], indicators: null },
-        });
+        return reply.send(ok({ symbol, fq, symbolClass, klines: [], indicators: null }));
       }
 
       const closes = klines.map((k) => k.close);
@@ -210,9 +196,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
          ORDER BY trade_date ASC`
       ).all(symbol) as Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>;
 
-      return reply.send({
-        success: true,
-        data: {
+      return reply.send(ok({
           symbol,
           fq,
           symbolClass,
@@ -232,16 +216,11 @@ export async function registerKlineRoutes(app: FastifyInstance) {
             },
           },
           signals,
-        },
-      });
+        }));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       app.log.warn({ err, symbol, fq, days }, 'K 线查询失败');
-      return reply.code(500).send({
-        success: false,
-        error: 'KLINE_QUERY_FAILED',
-        message: msg,
-      });
+      return reply.code(500).send(fail(500, 'KLINE_QUERY_FAILED', msg));
     }
   });
 }

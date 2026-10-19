@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { hashPassword, verifyPassword, signToken } from '../services/auth.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * Auth routes —— Phase 3 T25 前置依赖 + T57（register / refresh）
@@ -169,7 +170,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
     try {
       const body = request.body as { username?: string; password?: string };
       if (!body?.username || !body?.password) {
-        return reply.code(400).send({ success: false, error: '用户名和密码不能为空' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', '用户名和密码不能为空'));
       }
       const db = ConfigStore.getInstance().db;
       const row = db.prepare(
@@ -177,12 +178,12 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       ).get(body.username) as AccountRow | undefined;
 
       if (!row || !verifyPassword(body.password, row.password_hash)) {
-        return reply.code(401).send({ success: false, error: '用户名或密码错误' });
+        return reply.code(401).send(fail(401, 'UNAUTHORIZED', '用户名或密码错误'));
       }
       const session = issueSession(db, row);
-      reply.send({ success: true, data: session });
+      reply.send(ok(session));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
@@ -201,17 +202,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const requestedRole = body.role ?? 'user';
 
       if (username.length < USERNAME_MIN_LEN || username.length > USERNAME_MAX_LEN) {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: `username 长度需在 ${USERNAME_MIN_LEN}~${USERNAME_MAX_LEN} 之间`,
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', `username 长度需在 ${USERNAME_MIN_LEN}~${USERNAME_MAX_LEN} 之间`));
       }
       if (password.length === 0) {
-        return reply.code(400).send({ success: false, error: 'PARAM_INVALID', message: '密码不能为空' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', '密码不能为空'));
       }
       if (requestedRole !== 'user' && requestedRole !== 'admin') {
-        return reply.code(400).send({ success: false, error: 'PARAM_INVALID', message: 'role 只能是 user 或 admin' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'role 只能是 user 或 admin'));
       }
 
       const db = ConfigStore.getInstance().db;
@@ -219,7 +216,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const existing = db.prepare('SELECT id FROM user_account WHERE username = ?').get(username);
       if (existing) {
-        return reply.code(409).send({ success: false, error: `用户 ${username} 已存在` });
+        return reply.code(409).send(fail(409, 'INTERNAL_ERROR', `用户 ${username} 已存在`));
       }
 
       // 角色裁决 + INSERT 放进同一个事务，避免「判定首用户」与「插入」之间的竞态
@@ -262,9 +259,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       });
 
       const session = issueSession(db, { id: created.id, username, role: created.role });
-      return reply.code(201).send({ success: true, data: session });
+      return reply.code(201).send(ok(session));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
@@ -280,7 +277,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const body = (request.body ?? {}) as { refresh_token?: string; refreshToken?: string };
       const presented = (body.refresh_token ?? body.refreshToken ?? '').trim();
       if (presented.length === 0) {
-        return reply.code(400).send({ success: false, error: 'PARAM_INVALID', message: 'refresh_token 不能为空' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'refresh_token 不能为空'));
       }
 
       const db = ConfigStore.getInstance().db;
@@ -293,7 +290,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         | undefined;
 
       const invalid = () =>
-        reply.code(401).send({ success: false, error: 'UNAUTHORIZED', message: 'refresh token 无效或已过期' });
+        reply.code(401).send(fail(401, 'UNAUTHORIZED', 'refresh token 无效或已过期'));
 
       if (!row) return invalid();
       if (!row.refresh_token_hash || !equalHex(row.refresh_token_hash, presentedHash)) return invalid();
@@ -307,12 +304,12 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         | { refresh_token_hash: string | null }
         | undefined;
       if (!stillSame?.refresh_token_hash || equalHex(stillSame.refresh_token_hash, presentedHash)) {
-        return reply.code(500).send({ success: false, error: 'INTERNAL_ERROR', message: 'refresh token 轮换失败' });
+        return reply.code(500).send(fail(500, 'INTERNAL_ERROR', 'refresh token 轮换失败'));
       }
 
-      return reply.send({ success: true, data: session });
+      return reply.send(ok(session));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
@@ -330,13 +327,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       if (body.password?.trim()) {
         password = body.password.trim();
       } else if (isProd) {
-        return reply.code(400).send({ success: false, error: 'SEED_PASSWORD_REQUIRED', message: '生产环境必须显式提供初始密码，禁止硬编码默认值' });
+        return reply.code(400).send(fail(400, 'SEED_PASSWORD_REQUIRED', '生产环境必须显式提供初始密码，禁止硬编码默认值'));
       } else {
         password = 'admin123';  // 仅开发环境兜底
       }
 
       if (requestedRole !== 'user' && requestedRole !== 'admin') {
-        return reply.code(400).send({ success: false, error: 'role 只能是 user 或 admin' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'role 只能是 user 或 admin'));
       }
 
       const db = ConfigStore.getInstance().db;
@@ -347,17 +344,13 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           // 安全硬约束：本路由是公开路由（bootstrap 用），一旦库里有用户，
           // 任何能访问 8080 的人都能自建 admin 账号 = 权限全面失守。
           // 因此 admin 只允许"系统里的第一个用户"拿到。
-          return reply.code(403).send({
-            success: false,
-            error: 'ADMIN_ALREADY_EXISTS',
-            message: `系统已有 ${userCount} 个用户，不允许再创建 admin。已有 admin 请用 PATCH /api/admin/users/:id/role 转让。`,
-          });
+          return reply.code(403).send(fail(403, 'ADMIN_ALREADY_EXISTS', `系统已有 ${userCount} 个用户，不允许再创建 admin。已有 admin 请用 PATCH /api/admin/users/:id/role 转让。`));
         }
       }
 
       const existing = db.prepare('SELECT id FROM user_account WHERE username = ?').get(username);
       if (existing) {
-        return reply.code(409).send({ success: false, error: `用户 ${username} 已存在` });
+        return reply.code(409).send(fail(409, 'INTERNAL_ERROR', `用户 ${username} 已存在`));
       }
       const role = requestedRole;
       const hash = hashPassword(password);
@@ -370,12 +363,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         detail: `role=${role}`,
       });
       const token = signToken({ sub: Number(info.lastInsertRowid), username, role });
-      reply.code(201).send({
-        success: true,
-        data: { user: { id: info.lastInsertRowid, username, role }, token },
-      });
+      reply.code(201).send(ok({ user: { id: info.lastInsertRowid, username, role }, token }));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 }

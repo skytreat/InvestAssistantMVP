@@ -23,6 +23,7 @@ import {
   type Plugin,
 } from '../services/pluginEngine.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * 与 pluginEngine.ts:584 的 PLUGIN_FILENAME_RE 同款正则。
@@ -128,7 +129,7 @@ export async function registerStrategyRoutes(app: FastifyInstance) {
   const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     const user = currentUser(request);
     if (!user || user.role !== 'admin') {
-      return reply.code(403).send({ success: false, error: 'FORBIDDEN', message: '仅 admin 可热加载插件' });
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可热加载插件'));
     }
 
     try {
@@ -139,7 +140,7 @@ export async function registerStrategyRoutes(app: FastifyInstance) {
         message: `${user.username} 热加载插件: loaded=${result.loaded} failed=${result.errors.length}`,
         detail: JSON.stringify({ dir: result.dir, errors: result.errors }),
       });
-      return reply.code(200).send({ success: true, data: result });
+      return reply.code(200).send(ok(result));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeSystemLog({
@@ -147,7 +148,7 @@ export async function registerStrategyRoutes(app: FastifyInstance) {
         level: 'ERROR',
         message: `热加载插件失败: ${msg}`,
       });
-      return reply.code(500).send({ success: false, error: 'INTERNAL_ERROR', message: msg });
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', msg));
     }
   };
 

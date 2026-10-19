@@ -222,11 +222,11 @@ export default function TradeInput() {
     };
 
     try {
-      const res = await api.post('/trades', payload);
+      const res = await api.post('/trade', payload);
       if (res.data.success) {
         setResult(res.data.data as TradeResult);
       } else {
-        const errMsg = res.data.error ?? '请求失败';
+        const errMsg = res.data.message ?? '请求失败';
         if (errMsg === 'HOLDING_INSUFFICIENT') {
           setError('持仓不足');
         } else {
@@ -234,7 +234,7 @@ export default function TradeInput() {
         }
       }
     } catch (err: any) {
-      const errMsg = err?.response?.data?.error ?? '网络错误';
+      const errMsg = err?.response?.data?.message ?? '网络错误';
       if (errMsg === 'HOLDING_INSUFFICIENT') {
         setError('持仓不足');
       } else {

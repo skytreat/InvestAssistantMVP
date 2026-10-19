@@ -15,6 +15,8 @@ import {
 } from '../services/pluginEngine.js';
 import { resolveLatestQuoteDate, batchGetDailyRangeByView } from '../services/marketData.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
+import { defaultMessage } from '../lib/errorMessages.js';
 
 /** 品种类型（PRD §5.6「标的类型（股票/ETF）」） */
 export type ScanAssetType = 'stock' | 'etf' | 'all';
@@ -69,15 +71,18 @@ export interface AppliedScanFilters {
   minAmount: number;
 }
 
+/** 选股响应体（T89a：统一 envelope，SDD §4.2） */
 export interface StockScanResponse {
-  success: boolean;
-  data?: {
+  code: number;
+  data: {
     totalCandidates: number;   // 候选池（DuckDB 初筛后）
     total: number;              // pass 插件条件的数量
     results: StockScanResult[];
     tradeDate: string;
     filters?: AppliedScanFilters;
   };
+  timestamp: string;
+  success: boolean;
   timeMs?: number;
   error?: string;
 }
@@ -306,12 +311,12 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         : allPlugins.find((p) => p.name === body.plugin_name);
 
       if (!plugin) {
-        return reply.code(400).send({ success: false, error: 'PLUGIN_NOT_FOUND' });
+        return reply.code(400).send(fail(400, 'PLUGIN_NOT_FOUND', defaultMessage('PLUGIN_NOT_FOUND')));
       }
 
       const parsed = parseScanFilters(body);
       if (!parsed.ok) {
-        return reply.code(400).send({ success: false, error: 'PARAM_INVALID', message: parsed.message });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', parsed.message));
       }
       const { maxResults, ...filters } = parsed.value;
 
@@ -331,17 +336,13 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       const nameBySymbol = new Map(stocks.map((s) => [s.symbol, s.name]));
 
       if (stocks.length === 0) {
-        return reply.send({
-          success: true,
-          data: {
+        return reply.send(ok({
             totalCandidates: 0,
             total: 0,
             results: [],
             tradeDate,
             filters,
-          },
-          timeMs: Date.now() - startTotal,
-        } satisfies StockScanResponse);
+          }));
       }
 
       // ---- 4. IN 查询拿全部候选日线（SDD §5.3 硬约束） ----
@@ -434,17 +435,13 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         detail: JSON.stringify({ tradeDate, ...filters, maxResults, timeMs: totalMs }),
       });
 
-      return reply.send({
-        success: true,
-        data: {
+      return reply.send(ok({
           totalCandidates: scannedCount,
           total: passResults.length,
           results: limited,
           tradeDate,
           filters,
-        },
-        timeMs: totalMs,
-      } satisfies StockScanResponse);
+        }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeSystemLog({
@@ -453,10 +450,7 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         message: `条件选股失败: ${msg}`,
         detail: msg,
       });
-      return reply.code(500).send({
-        success: false,
-        error: msg,
-      } satisfies StockScanResponse);
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', msg));
     }
   });
 
@@ -469,6 +463,6 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       category: p.category,
       paramSchema: p.paramSchema,
     }));
-    reply.send({ success: true, data: plugins });
+    reply.send(ok(plugins));
   });
 }

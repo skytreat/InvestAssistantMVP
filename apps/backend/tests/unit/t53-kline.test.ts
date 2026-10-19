@@ -99,7 +99,7 @@ describe('T53 · fq 四值白名单', () => {
   ];
 
   it.each(CASES)('fq=$fq → 200 且映射到 $expectedView，首行 close=$base', async ({ fq, expectedView, base }) => {
-    const res = await bundle.app.inject({ method: 'GET', url: `/api/kline/sh600000?fq=${fq}`, headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: `/api/quote/sh600000/kline?fq=${fq}`, headers: headers() });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
       data: { fq: string; klines: Array<{ close: number }> };
@@ -112,7 +112,7 @@ describe('T53 · fq 四值白名单', () => {
   });
 
   it('非法 fq → 400 PARAM_INVALID，且不查询 DuckDB（不静默回落 qfq）', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/kline/sh600000?fq=xxx', headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh600000/kline?fq=xxx', headers: headers() });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body) as { error: string; message: string };
     expect(body.error).toBe('PARAM_INVALID');
@@ -121,17 +121,17 @@ describe('T53 · fq 四值白名单', () => {
   });
 
   it('非法 symbol → 400 INVALID_SYMBOL', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/kline/badcode', headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/badcode/kline', headers: headers() });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body) as { error: string };
-    expect(body.error).toBe('INVALID_SYMBOL');
+    expect(body.error).toBe('SYMBOL_NOT_FOUND');
   });
 });
 
 describe('T53 · ETF 路由', () => {
   it('class=etf 的标的走 v_etf_qfq，而不是 v_stock_qfq', async () => {
     symbolClass = 'etf';
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/kline/sh500001?fq=qfq', headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh500001/kline?fq=qfq', headers: headers() });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
       data: { symbolClass: string; klines: Array<{ close: number }> };
@@ -145,7 +145,7 @@ describe('T53 · ETF 路由', () => {
 
 describe('T53 · indicators 含 ma60（走 core 适配层）', () => {
   it('ma60 长度等于 klines 长度，且与 calculateSMA(closes, 60) 逐位一致', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/kline/sh600000?fq=qfq', headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh600000/kline?fq=qfq', headers: headers() });
     const body = JSON.parse(res.body) as {
       data: {
         klines: Array<{ close: number }>;
@@ -181,7 +181,7 @@ describe('T53 · rsi / macd period 走 query 参数', () => {
   it('rsi_period / macd_* 透传到 indicators.params', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/kline/sh600000?fq=qfq&rsi_period=6&macd_fast=5&macd_slow=20&macd_signal=4',
+      url: '/api/quote/sh600000/kline?fq=qfq&rsi_period=6&macd_fast=5&macd_slow=20&macd_signal=4',
       headers: headers(),
     });
     const body = JSON.parse(res.body) as {
@@ -196,7 +196,7 @@ describe('T53 · rsi / macd period 走 query 参数', () => {
   });
 
   it('非法 period → 400 PARAM_INVALID', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/kline/sh600000?rsi_period=1', headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh600000/kline?rsi_period=1', headers: headers() });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body) as { error: string };
     expect(body.error).toBe('PARAM_INVALID');
@@ -217,7 +217,7 @@ describe('T53 · signals 升序返回，与 klines 同序', () => {
       insert.run(bundle.userId, SYMBOL, `p_${d}`, d);
     }
 
-    const res = await bundle.app.inject({ method: 'GET', url: `/api/kline/${SYMBOL}?fq=qfq`, headers: headers() });
+    const res = await bundle.app.inject({ method: 'GET', url: `/api/quote/${SYMBOL}/kline?fq=qfq`, headers: headers() });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
       data: {

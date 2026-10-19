@@ -74,10 +74,10 @@ export default function Admin() {
         setLogs(res.data.data ?? []);
         setTotal(res.data.pagination?.total ?? 0);
       } else {
-        setLogError(res.data.error ?? '请求失败');
+        setLogError(res.data.message ?? '请求失败');
       }
     } catch (err: any) {
-      setLogError(err?.response?.data?.error ?? '网络错误');
+      setLogError(err?.response?.data?.message ?? '网络错误');
     } finally {
       setLogLoading(false);
     }
@@ -85,7 +85,7 @@ export default function Admin() {
 
   const fetchCheckSummary = async () => {
     try {
-      const res = await api.get('/datacheck/latest');
+      const res = await api.get('/admin/datacheck/result');
       if (res.data.success) setCheckSummaries(res.data.data ?? []);
     } catch { /* ignore */ }
   };
@@ -101,15 +101,15 @@ export default function Admin() {
     setDatacheckError(null);
     setDatacheckResult(null);
     try {
-      const res = await api.post('/admin/run-datacheck');
+      const res = await api.post('/admin/datacheck/trigger');
       if (res.data.success) {
         setDatacheckResult(res.data.data);
         fetchCheckSummary();
       } else {
-        setDatacheckError(res.data.error ?? '请求失败');
+        setDatacheckError(res.data.message ?? '请求失败');
       }
     } catch (err: any) {
-      setDatacheckError(err?.response?.data?.error ?? '网络错误');
+      setDatacheckError(err?.response?.data?.message ?? '网络错误');
     } finally {
       setDatacheckLoading(false);
     }
@@ -124,10 +124,10 @@ export default function Admin() {
       if (res.data.success) {
         setSignalResult(res.data.data);
       } else {
-        setSignalError(res.data.error ?? '请求失败');
+        setSignalError(res.data.message ?? '请求失败');
       }
     } catch (err: any) {
-      setSignalError(err?.response?.data?.error ?? '网络错误');
+      setSignalError(err?.response?.data?.message ?? '网络错误');
     } finally {
       setSignalLoading(false);
     }
@@ -140,7 +140,7 @@ export default function Admin() {
         alert('备份已触发，请稍候查看日志');
       }
     } catch (err: any) {
-      alert('备份失败: ' + (err?.response?.data?.error ?? String(err)));
+      alert('备份失败: ' + (err?.response?.data?.message ?? String(err)));
     }
   };
 
@@ -161,10 +161,10 @@ export default function Admin() {
         );
         if (r.status === 'SUCCESS') fetchCheckSummary();
       } else {
-        setRerunErr(res.data.error ?? '请求失败');
+        setRerunErr(res.data.message ?? '请求失败');
       }
     } catch (err: any) {
-      setRerunErr(err?.response?.data?.error ?? '网络错误');
+      setRerunErr(err?.response?.data?.message ?? '网络错误');
     } finally {
       setRerunLoading(false);
     }

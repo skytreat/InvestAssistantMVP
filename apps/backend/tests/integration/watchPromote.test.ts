@@ -12,7 +12,7 @@
  *   - price_mode 必填且白名单（base / current）
  *   - 非法 symbol → 400 PARAM_INVALID
  *   - 迁移写 system_log（log_type='candidate_migrate'，**不再是 'trade'**）
- *   - GET /api/positions 返回 totalQuantity / marketValue 等 enrich 字段
+ *   - GET /api/holding 返回 totalQuantity / marketValue 等 enrich 字段
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
@@ -39,7 +39,7 @@ afterAll(async () => {
 describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联）', () => {
   const promote = (asset: string, body: Record<string, unknown> = { price_mode: 'base' }) =>
     bundle.app.inject({
-      method: 'POST', url: `/api/candidate/${asset}/promote`,
+      method: 'POST', url: `/api/candidate/${asset}/migrate`,
       headers: authHeaders(), payload: body,
     });
 
@@ -118,7 +118,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
 
   it('非法 symbol → 400 PARAM_INVALID', async () => {
     const bad = await bundle.app.inject({
-      method: 'POST', url: '/api/candidate/BADCODE/promote', headers: authHeaders(),
+      method: 'POST', url: '/api/candidate/BADCODE/migrate', headers: authHeaders(),
       payload: { price_mode: 'base' },
     });
     expect(bad.statusCode).toBe(400);
@@ -144,14 +144,14 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
 });
 
 describe('Positions · 现价 / 市值 enrich（T33）', () => {
-  it('GET /api/positions 返回 totalQuantity + summary', async () => {
+  it('GET /api/holding 返回 totalQuantity + summary', async () => {
     bundle.db.db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
        VALUES (?, ?, 'buy', '2025-08-01', '09:30:00', 200, 1500, 5, 0)`
     ).run(bundle.userId, CODE);
 
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/positions', headers: authHeaders() });
+    const res = await bundle.app.inject({ method: 'GET', url: '/api/holding', headers: authHeaders() });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
@@ -186,7 +186,7 @@ describe('Positions · 现价 / 市值 enrich（T33）', () => {
     const token = JSON.parse(seed.body).data.token;
 
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/positions', headers: { authorization: `Bearer ${token}` },
+      method: 'GET', url: '/api/holding', headers: { authorization: `Bearer ${token}` },
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).data).toEqual([]);

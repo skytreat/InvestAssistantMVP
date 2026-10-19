@@ -79,11 +79,11 @@ export default function StockScan() {
         setRowMsg(`${symbol} 已在候选池`);
       } else {
         markRow(symbol, 'error');
-        setErrorMsg(res.data?.error ?? '加入候选失败');
+        setErrorMsg(res.data?.message ?? '加入候选失败');
       }
     } catch (err: any) {
       markRow(symbol, 'error');
-      setErrorMsg('加入候选失败：' + (err?.response?.data?.error ?? String(err)));
+      setErrorMsg('加入候选失败：' + (err?.response?.data?.message ?? String(err)));
     }
   };
 
@@ -97,11 +97,11 @@ export default function StockScan() {
         setRowMsg(`${symbol} 已加入自选`);
       } else {
         markRow(symbol, 'error');
-        setErrorMsg(res.data?.error ?? '加入自选失败');
+        setErrorMsg(res.data?.message ?? '加入自选失败');
       }
     } catch (err: any) {
       markRow(symbol, 'error');
-      setErrorMsg('加入自选失败：' + (err?.response?.data?.error ?? String(err)));
+      setErrorMsg('加入自选失败：' + (err?.response?.data?.message ?? String(err)));
     }
   };
 
@@ -183,10 +183,10 @@ export default function StockScan() {
         setTradeDate(res.data.data.tradeDate);
         setTimeMs(res.data.timeMs ?? 0);
       } else {
-        setErrorMsg(res.data?.error ?? '选股失败');
+        setErrorMsg(res.data?.message ?? '选股失败');
       }
     } catch (err: any) {
-      setErrorMsg('选股请求失败：' + (err?.response?.data?.error ?? String(err)));
+      setErrorMsg('选股请求失败：' + (err?.response?.data?.message ?? String(err)));
     } finally {
       setLoading(false);
     }

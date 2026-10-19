@@ -270,6 +270,12 @@ describe('T94 — POST /api/strategy/reload 路由（app.inject，不占端口�
       headers: { authorization: `Bearer ${tokenFor(1, 'the_admin', 'admin')}` },
     });
     expect(aliasRes.statusCode).toBe(mainRes.statusCode);
-    expect(aliasRes.json()).toEqual(mainRes.json());
+    // ⚠️ T89a：响应体新增 `timestamp`（SDD §4.2）→ 两次调用时间戳不同，
+    //    不能整体 deep-equal；只比对**业务字段**（data / code / success）。
+    const a = aliasRes.json();
+    const m = mainRes.json();
+    expect(a.code).toBe(m.code);
+    expect(a.success).toBe(m.success);
+    expect(a.data).toEqual(m.data);
   });
 });

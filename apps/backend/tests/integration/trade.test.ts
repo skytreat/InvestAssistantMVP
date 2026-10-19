@@ -3,7 +3,7 @@
  *
  * 覆盖 SDD §12.4 trade 类：
  *   - buy 201 + 返回 position
- *   - GET /api/trades 过滤 asset_code
+ *   - GET /api/trade 过滤 asset_code
  *   - sell 超持仓 → 400 HOLDING_INSUFFICIENT
  *   - sell 恰好持仓 → 201 + position.qty=0
  *   - duplicate trade (同日同标的同方向) → 409
@@ -44,7 +44,7 @@ async function seedBuy(assetCode: string, quantity = 100, price = 10.0, fee = 5)
   bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')
     .run(bundle.userId, assetCode);
   const res = await bundle.app.inject({
-    method: 'POST', url: '/api/trades',
+    method: 'POST', url: '/api/trade',
     headers: authHeaders(),
     payload: {
       asset_code: assetCode, trade_type: 'buy',
@@ -60,7 +60,7 @@ describe('Trade · 买入 + 持仓查询', () => {
     const CODE = 'szTEST01';
     await seedBuy(CODE);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${CODE}`,
+      method: 'GET', url: `/api/trade?asset_code=${CODE}`,
       headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -71,11 +71,11 @@ describe('Trade · 买入 + 持仓查询', () => {
     expect(Number(mine.quantity)).toBe(100);
   });
 
-  it('GET /api/trades → 列表有刚录的那条', async () => {
+  it('GET /api/trade → 列表有刚录的那条', async () => {
     const CODE = 'szTEST11';
     await seedBuy(CODE);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${CODE}`,
+      method: 'GET', url: `/api/trade?asset_code=${CODE}`,
       headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -85,11 +85,11 @@ describe('Trade · 买入 + 持仓查询', () => {
     expect(mine).toBeDefined();
   });
 
-  it('GET /api/positions/:asset_code → qty=100', async () => {
+  it('GET /api/holding/:asset_code → qty=100', async () => {
     const CODE = 'szTEST12';
     await seedBuy(CODE);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/positions/${CODE}`,
+      method: 'GET', url: `/api/holding/${CODE}`,
       headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -105,7 +105,7 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
     const CODE = 'szTEST21';
     await seedBuy(CODE, 100, 10.0, 5);
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: {
         asset_code: CODE, trade_type: 'reduce',
@@ -124,7 +124,7 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
     await seedBuy(CODE, 100, 10.0, 5);
     const sellDate = new Date(Date.now() + 86400000).toISOString().slice(0, 10);  // 次日避免 UNIQUE
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: {
         asset_code: CODE, trade_type: 'reduce',
@@ -142,7 +142,7 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
 describe('Trade · 参数校验', () => {
   it('quantity=0 → 400', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:04', quantity: 0, price: 10 },
     });
@@ -151,7 +151,7 @@ describe('Trade · 参数校验', () => {
 
   it('quantity<0 → 400', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:05', quantity: -1, price: 10 },
     });
@@ -160,7 +160,7 @@ describe('Trade · 参数校验', () => {
 
   it('price<0 → 400', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: { asset_code: TRADE_CODE, trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:06', quantity: 10, price: -1 },
     });
@@ -169,7 +169,7 @@ describe('Trade · 参数校验', () => {
 
   it('缺 asset_code → 400', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: { trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:07', quantity: 10, price: 10 },
     });
@@ -178,7 +178,7 @@ describe('Trade · 参数校验', () => {
 
   it('非法 trade_type → 400', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'POST', url: '/api/trade',
       headers: authHeaders(),
       payload: { asset_code: TRADE_CODE, trade_type: 'fly', trade_date: TRADE_DATE, trade_time: '09:00:08', quantity: 10, price: 10 },
     });
@@ -192,13 +192,13 @@ const BUY_DATE = new Date().toISOString().slice(0, 10);
 bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(bundle.userId, TRADE2);
 
 await bundle.app.inject({
-  method: 'POST', url: '/api/trades',
+  method: 'POST', url: '/api/trade',
   headers: authHeaders(),
   payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, trade_time: '09:00:09', quantity: 10, price: 10, trade_reason: 'dup1' },
 });
 // T87：同日同标的同类型、**不同成交时间** → 201 追加成功（B-11 裁决：同日分笔可追加）
 const appended = await bundle.app.inject({
-  method: 'POST', url: '/api/trades',
+  method: 'POST', url: '/api/trade',
   headers: authHeaders(),
   payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, trade_time: '09:00:10', quantity: 20, price: 11, trade_reason: 'dup2' },
 });
@@ -206,7 +206,7 @@ expect(appended.statusCode).toBe(201);
 
 // T87：**相同**成交时间才算重复 → 409 TRADE_DUPLICATE
 const dup = await bundle.app.inject({
-  method: 'POST', url: '/api/trades',
+  method: 'POST', url: '/api/trade',
   headers: authHeaders(),
   payload: { asset_code: TRADE2, trade_type: 'buy', trade_date: BUY_DATE, trade_time: '09:00:10', quantity: 30, price: 12, trade_reason: 'dup3' },
 });

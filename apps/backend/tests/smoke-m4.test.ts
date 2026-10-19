@@ -5,7 +5,7 @@
  *        插件管理 → 管理员备份 → 备份恢复 → 权限边界
  *
  * ⚠️ 三个已知坑（HANDOVER 里记过）：
- *   1. POST /api/trades 返回的是 data.trade_id，不是 data.trade.id
+ *   1. POST /api/trade 返回的是 data.trade_id，不是 data.trade.id
  *   2. POST /api/admin/backup 会真跑 db.backup()，大库时超过 vitest 默认 15s
  *      → 必须给显式 timeout，且 BACKUP_DIR 指向临时目录
  *   3. 不 listen 端口，全部走 app.inject()，避免 singleFork 下 EADDRINUSE
@@ -91,9 +91,9 @@ afterAll(async () => {
 const snap: Record<string, any> = {};
 
 const postTrade = (payload: Record<string, unknown>) =>
-  ctx.bundle.app.inject({ method: 'POST', url: '/api/trades', headers: adminHeaders(), payload });
+  ctx.bundle.app.inject({ method: 'POST', url: '/api/trade', headers: adminHeaders(), payload });
 const getPosition = () =>
-  ctx.bundle.app.inject({ method: 'GET', url: `/api/positions/${TRADE_CODE}`, headers: adminHeaders() });
+  ctx.bundle.app.inject({ method: 'GET', url: `/api/holding/${TRADE_CODE}`, headers: adminHeaders() });
 
 beforeAll(async () => {
   snap.build = await postTrade({
@@ -123,10 +123,10 @@ beforeAll(async () => {
   });
   snap.posAfterDividend = await getPosition();
   snap.positions = await ctx.bundle.app.inject({
-    method: 'GET', url: '/api/positions', headers: adminHeaders(),
+    method: 'GET', url: '/api/holding', headers: adminHeaders(),
   });
   snap.reduceList = await ctx.bundle.app.inject({
-    method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
+    method: 'GET', url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
   });
   ctx.tradeId = JSON.parse(snap.build.body).data?.trade_id;
 });
@@ -144,18 +144,18 @@ describe('M4 · 登录与鉴权', () => {
     expect(body.data.user.role).toBe('admin');
   });
 
-  it('无 token 访问 /api/positions → 401', async () => {
-    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/positions' });
+  it('无 token 访问 /api/holding → 401', async () => {
+    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/holding' });
     expect(res.statusCode).toBe(401);
   });
 
   it('伪造 token → 401 INVALID_TOKEN', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/positions',
+      method: 'GET', url: '/api/holding',
       headers: { authorization: 'Bearer not.a.real.token' },
     });
     expect(res.statusCode).toBe(401);
-    expect(JSON.parse(res.body).error).toBe('INVALID_TOKEN');
+    expect(JSON.parse(res.body).error).toBe('UNAUTHORIZED');
   });
 
   it('普通用户访问 admin 路由 → 403', async () => {
@@ -229,7 +229,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     expect(a.totalCostBasis).toBeCloseTo(b.totalCostBasis, 6);
   });
 
-  it('GET /api/positions 返回 enrich 字段与 summary', () => {
+  it('GET /api/holding 返回 enrich 字段与 summary', () => {
     const res = snap.positions;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -254,9 +254,9 @@ describe('M4 · 交易闭环与双口径收益', () => {
 // 3. 信号 / 复盘归因
 // ─────────────────────────────────────────────────────────────
 describe('M4 · 信号与复盘归因', () => {
-  it('GET /api/signals 结构完整（可为空列表）', async () => {
+  it('GET /api/signal 结构完整（可为空列表）', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/signals?page=1&page_size=10', headers: adminHeaders(),
+      method: 'GET', url: '/api/signal?page=1&page_size=10', headers: adminHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -268,14 +268,14 @@ describe('M4 · 信号与复盘归因', () => {
   //   本用例 PATCH 出来的标记 → 提为 beforeAll，各 `it` 只做断言。
   beforeAll(async () => {
     snap.reviewPatch = await ctx.bundle.app.inject({
-      method: 'PATCH', url: `/api/trades/${ctx.tradeId}`, headers: adminHeaders(),
+      method: 'PATCH', url: `/api/trade/${ctx.tradeId}`, headers: adminHeaders(),
       payload: {
         review_summary: 'M4：建仓理由成立，仓位偏重',
         strategy_match: 1, is_stop_loss: 0, remark: '下次分批建仓',
       },
     });
     snap.buyList = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=buy`, headers: adminHeaders(),
+      method: 'GET', url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=buy`, headers: adminHeaders(),
     });
   });
 
@@ -289,8 +289,8 @@ describe('M4 · 信号与复盘归因', () => {
     expect(row.review_summary).toContain('M4');
   });
 
-  it('GET /api/review/stats 胜率/盈亏比口径正确', async () => {
-    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/stats', headers: adminHeaders() });
+  it('GET /api/review/yield 胜率/盈亏比口径正确', async () => {
+    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: adminHeaders() });
     expect(res.statusCode).toBe(200);
     const s = JSON.parse(res.body).data;
     // 本链路只有 1 笔平仓（reduce 400 @15，均价 10.67 → 盈利）
@@ -302,7 +302,7 @@ describe('M4 · 信号与复盘归因', () => {
 
   it('strategy_match 筛选可用', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/trades?strategy_match=1', headers: adminHeaders(),
+      method: 'GET', url: '/api/trade?strategy_match=1', headers: adminHeaders(),
     });
     const rows = JSON.parse(res.body).data as any[];
     expect(rows.length).toBeGreaterThanOrEqual(1);
@@ -314,19 +314,19 @@ describe('M4 · 信号与复盘归因', () => {
     const reduceId = JSON.parse(snap.reduceList.body).data[0].id;
 
     const del = await ctx.bundle.app.inject({
-      method: 'DELETE', url: `/api/trades/${reduceId}`, headers: adminHeaders(),
+      method: 'POST', url: `/api/trade/${reduceId}/soft-delete`, headers: adminHeaders(),
     });
     expect(del.statusCode).toBe(200);
 
-    const gone = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/stats', headers: adminHeaders() });
+    const gone = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: adminHeaders() });
     expect(JSON.parse(gone.body).data.closedCount).toBe(0);
 
     const restore = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/trades/${reduceId}/restore`, headers: adminHeaders(),
+      method: 'POST', url: `/api/trade/${reduceId}/restore`, headers: adminHeaders(),
     });
     expect(restore.statusCode).toBe(200);
 
-    const back = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/stats', headers: adminHeaders() });
+    const back = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: adminHeaders() });
     expect(JSON.parse(back.body).data.closedCount).toBe(1);
   });
 });
@@ -341,12 +341,12 @@ describe('M4 · 候选池与插件管理', () => {
       payload: { asset_code: TRADE_CODE },
     });
     const first = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/candidate/${TRADE_CODE}/promote`, headers: adminHeaders(),
+      method: 'POST', url: `/api/candidate/${TRADE_CODE}/migrate`, headers: adminHeaders(),
       payload: { price_mode: 'base' },
     });
     expect(first.statusCode).toBe(200);
     const second = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/candidate/${TRADE_CODE}/promote`, headers: adminHeaders(),
+      method: 'POST', url: `/api/candidate/${TRADE_CODE}/migrate`, headers: adminHeaders(),
       payload: { price_mode: 'base' },
     });
     expect(second.statusCode).toBe(200);
@@ -356,25 +356,25 @@ describe('M4 · 候选池与插件管理', () => {
   });
 
   it('插件列表可读，参数可保存、可启停', async () => {
-    const list = await ctx.bundle.app.inject({ method: 'GET', url: '/api/plugins', headers: adminHeaders() });
+    const list = await ctx.bundle.app.inject({ method: 'GET', url: '/api/strategy/plugins', headers: adminHeaders() });
     expect(list.statusCode).toBe(200);
     const plugins = JSON.parse(list.body).data as any[];
     expect(plugins.length).toBeGreaterThan(0);
     const target = plugins[0];
 
     const cfg = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/plugins/${target.id}/config`, headers: adminHeaders(),
+      method: 'PUT', url: `/api/strategy/plugins/${target.id}/config`, headers: adminHeaders(),
       payload: { params: { period: 14 } },
     });
     expect(cfg.statusCode).toBe(200);
 
     const toggle = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/plugins/${target.id}/toggle`, headers: adminHeaders(),
+      method: 'PUT', url: `/api/strategy/plugins/${target.id}/toggle`, headers: adminHeaders(),
       payload: { enabled: 0 },
     });
     expect(toggle.statusCode).toBe(200);
 
-    const after = await ctx.bundle.app.inject({ method: 'GET', url: '/api/plugins', headers: adminHeaders() });
+    const after = await ctx.bundle.app.inject({ method: 'GET', url: '/api/strategy/plugins', headers: adminHeaders() });
     const reloaded = (JSON.parse(after.body).data as any[]).find((p) => p.id === target.id);
     expect(reloaded.enabled).toBe(0);
   });
@@ -439,13 +439,13 @@ describe('M4 · 备份与恢复', () => {
   beforeAll(async () => {
     // 先破坏数据：软删那笔平仓交易
     const list = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
+      method: 'GET', url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
     });
     const reduceId = JSON.parse(list.body).data[0].id;
-    await ctx.bundle.app.inject({ method: 'DELETE', url: `/api/trades/${reduceId}`, headers: adminHeaders() });
+    await ctx.bundle.app.inject({ method: 'POST', url: `/api/trade/${reduceId}/soft-delete`, headers: adminHeaders() });
 
     snap.beforeStats = JSON.parse((await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/review/stats', headers: adminHeaders(),
+      method: 'GET', url: '/api/review/yield', headers: adminHeaders(),
     })).body).data;
 
     // 恢复 —— 回到"备份那一刻"的状态（reduce 交易应当回来）
@@ -465,7 +465,7 @@ describe('M4 · 备份与恢复', () => {
     }
 
     snap.afterStats = JSON.parse((await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/review/stats', headers: adminHeaders(),
+      method: 'GET', url: '/api/review/yield', headers: adminHeaders(),
     })).body).data;
 
     // 关键表齐全（连接已重建，必须重新取单例，不能复用 bundle.db 旧句柄）
@@ -518,11 +518,12 @@ describe('M4 · 权限边界收尾', () => {
     })).body).data.find((u: any) => u.username === ADMIN_USER);
 
     const res = await ctx.bundle.app.inject({
-      method: 'PATCH', url: `/api/admin/users/${me.id}/role`, headers: adminHeaders(),
+      method: 'PATCH', url: `/api/admin/role/${me.id}`, headers: adminHeaders(),
       payload: { role: 'user' },
     });
     expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toContain('禁止降级');
+        // T89a：中文文案在 `message`（`error`/`code` 是错误码）
+    expect(JSON.parse(res.body).message).toContain('禁止降级');
   });
 
   it('全程无明文 token / 密码落 system_log（AGENTS.md 安全硬约束）', () => {

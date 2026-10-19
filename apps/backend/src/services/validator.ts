@@ -323,32 +323,55 @@ async function checkC4(tradeDate: string): Promise<CheckSummary> {
  *    的分类数降幅 —— 口径等价（数据源从板块切到资产分类），且可执行。
  *    两者均为 WARN + 仅记录，不自动补跑（Requirements §7.1）。
  */
+// 🔴 T85b ④（I-22）：Requirements §7.1 的 C5 是「**板块数据**完整」，
+//   数据源应为**板块明细表**（`raw_tdx_blocks_info` / `_member`）。
+//   实测两张表均 **0 行**（板块数据从未采集）→ 「总量降幅」无从谈起。
+//   原实现（T85）改用 `raw_symbol_class` 的 class 维度计数 —— 那是**另一口径**
+//   （分类数，不是板块数），且在板块表为空时仍报 PASS/WARN，**掩盖了数据源缺失**。
+//
+//   本次改为：
+//   · 主口径 = 板块明细表行数（真正的「板块数据总量」）
+//   · 板块表为空 → **SKIP**（数据源缺失 ≠ 校验通过），并在 detail 里明示
+//   · 同时记录 class='block' 标的数作为**参考信号**（不参与判定）
 const C5_SQL = `
-WITH today_cnt AS (
-    SELECT COUNT(DISTINCT class) AS cnt
-    FROM raw_symbol_class c
-    WHERE EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = CAST(? AS DATE))
+WITH today_blocks AS (
+    SELECT COUNT(*) AS cnt FROM raw_tdx_blocks_info
 ),
 prev_day AS (
     SELECT MAX(date) AS d FROM v_stock_qfq WHERE date < CAST(? AS DATE)
 ),
-prev_cnt AS (
-    SELECT COUNT(DISTINCT class) AS cnt
-    FROM raw_symbol_class
-    WHERE EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = (SELECT d FROM prev_day))
+prev_blocks AS (
+    SELECT COUNT(*) AS cnt FROM raw_tdx_blocks_info
+),
+today_ref AS (
+    SELECT COUNT(*) AS cnt FROM raw_symbol_class WHERE class = 'block'
+),
+prev_ref AS (
+    SELECT COUNT(*) AS cnt FROM raw_symbol_class
+    WHERE class = 'block'
+      AND EXISTS (SELECT 1 FROM v_stock_qfq v WHERE v.date = (SELECT d FROM prev_day))
 )
-SELECT t.cnt AS today_cnt, p.cnt AS prev_cnt,
+SELECT
+    t.cnt AS today_cnt,
+    p.cnt AS prev_cnt,
+    tr.cnt AS today_ref,
+    pr.cnt AS prev_ref,
     CASE
         WHEN t.cnt = 0 THEN 'SKIP'
         WHEN p.cnt = 0 THEN 'SKIP'
         WHEN (p.cnt - t.cnt) * 1.0 / p.cnt < ? THEN 'PASS'
         ELSE 'WARN'
     END AS result
-FROM today_cnt t CROSS JOIN prev_cnt p
+FROM today_blocks t
+CROSS JOIN prev_blocks p
+CROSS JOIN today_ref tr
+CROSS JOIN prev_ref pr
 `;
 
 interface C5Row {
   today_cnt: number;
+  today_ref: number;
+  prev_ref: number;
   prev_cnt: number;
   result: CheckResult;
 }
@@ -362,7 +385,12 @@ async function checkC5(tradeDate: string): Promise<CheckSummary> {
     if (!row) {
       return { checkId: 'C5', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
-    const detail = `分类数=${row.today_cnt}（前一交易日 ${row.prev_cnt}），降幅阈值 ${TOLERANCES.CLASS_COUNT_DROP * 100}%`;
+    const detail =
+      `板块数=${row.today_cnt}（前一交易日 ${row.prev_cnt}），降幅阈值 ${TOLERANCES.CLASS_COUNT_DROP * 100}%；` +
+      `参考：class='block' 标的数 ${row.today_ref}（前一交易日 ${row.prev_ref}）` +
+      (Number(row.today_cnt) === 0
+        ? ' —— ⚠️ **板块明细表为空（raw_tdx_blocks_info 0 行）**，无法校验板块数据完整性，本项判 SKIP'
+        : '');
     return { checkId: 'C5', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
     return { checkId: 'C5', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };

@@ -360,7 +360,7 @@ describe('T50 POST /api/candidate/:asset_code/promote —— price_mode', () => 
   });
 
   it("price_mode='base' → 写 migrated_price_mode='base' + migrated_from_candidate=1", async () => {
-    const res = await post('/api/candidate/sh600036/promote', { price_mode: 'base' });
+    const res = await post('/api/candidate/sh600036/migrate', { price_mode: 'base' });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.price_mode).toBe('base');
     expect(res.json().data.marked).toBe(true);
@@ -371,14 +371,14 @@ describe('T50 POST /api/candidate/:asset_code/promote —— price_mode', () => 
   });
 
   it("price_mode='current' → 写 migrated_price_mode='current'", async () => {
-    const res = await post('/api/candidate/sh600036/promote', { price_mode: 'current' });
+    const res = await post('/api/candidate/sh600036/migrate', { price_mode: 'current' });
     expect(res.statusCode).toBe(200);
     expect(rowOf('sh600036')?.migrated_price_mode).toBe('current');
   });
 
   it('price_mode 缺省 / 非法值 → 400，且候选记录未被标记', async () => {
     for (const body of [{}, { price_mode: 'last' }, { price_mode: 1 }, { price_mode: null }]) {
-      const res = await post('/api/candidate/sh600036/promote', body);
+      const res = await post('/api/candidate/sh600036/migrate', body);
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe('PARAM_INVALID');
     }
@@ -388,19 +388,19 @@ describe('T50 POST /api/candidate/:asset_code/promote —— price_mode', () => 
   });
 
   it('候选池中不存在该标的 → 404 SYMBOL_NOT_FOUND', async () => {
-    const res = await post('/api/candidate/sh999997/promote', { price_mode: 'base' });
+    const res = await post('/api/candidate/sh999997/migrate', { price_mode: 'base' });
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe('SYMBOL_NOT_FOUND');
   });
 
   it('asset_code 路径参数非法 → 400', async () => {
-    const res = await post('/api/candidate/xx/promote', { price_mode: 'base' });
+    const res = await post('/api/candidate/xx/migrate', { price_mode: 'base' });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('PARAM_INVALID');
   });
 
   it('PRD S5：只打标记，**不自动创建 watch 关联**', async () => {
-    const res = await post('/api/candidate/sh600036/promote', { price_mode: 'base' });
+    const res = await post('/api/candidate/sh600036/migrate', { price_mode: 'base' });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.autoCreated).toBe(false);
     expect(rowOf('sh600036', 'watch')).toBeUndefined();

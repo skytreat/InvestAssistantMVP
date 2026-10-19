@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
+import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
 
@@ -22,7 +23,7 @@ type AuthedRequest = FastifyRequest & { user: JwtPayload };
  *      作为同日同刻的确定性 tie-break，避免分页抖动。
  */
 export async function registerSignalRoutes(app: FastifyInstance) {
-  app.get('/api/signals', async (request, reply) => {
+  app.get('/api/signal', async (request, reply) => {
     try {
       const user = (request as AuthedRequest).user;
       const q = request.query as Record<string, string | undefined>;
@@ -65,13 +66,9 @@ export async function registerSignalRoutes(app: FastifyInstance) {
         `SELECT * FROM user_strategy_signal ${whereSql} ORDER BY trade_date ASC, created_at ASC, id ASC LIMIT ? OFFSET ?`
       ).all(...params, pageSize, (page - 1) * pageSize);
 
-      reply.send({
-        success: true,
-        data: rows,
-        pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) },
-      });
+      reply.send(ok(rows, { pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) } }));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 }

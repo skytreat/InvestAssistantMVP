@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { queryDuckDB } from '../db/duckdb.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * 标的搜索接口（SDD §5.5 选股页 autocomplete）
@@ -19,7 +20,7 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
     const keyword = String(q).trim();
 
     if (keyword.length === 0) {
-      return reply.send({ success: true, data: [] });
+      return reply.send(ok([]));
     }
 
     // 支持：纯数字（600000）、带前缀（sh600000）、中文名模糊匹配
@@ -33,11 +34,11 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
         [`%${keyword}%`, `%${keyword}%`]
       );
 
-      return reply.send({ success: true, data: rows });
+      return reply.send(ok(rows));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       app.log.warn({ err, keyword }, 'symbol search failed');
-      return reply.code(500).send({ success: false, error: 'SEARCH_FAILED', message: msg });
+      return reply.code(500).send(fail(500, 'SEARCH_FAILED', msg));
     }
   });
 }

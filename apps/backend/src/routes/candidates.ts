@@ -28,6 +28,7 @@ import {
   requireUser,
 } from '../services/candidateService.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
 
 interface BatchCandidateBody {
   asset_codes?: unknown;
@@ -42,51 +43,27 @@ export async function registerBatchCandidateRoutes(app: FastifyInstance): Promis
 
     // ── 参数校验：先类型后内容，全部 400 PARAM_INVALID ──
     if (!Array.isArray(body.asset_codes)) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: 'asset_codes 必填且必须是数组',
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_codes 必填且必须是数组'));
     }
     if (body.asset_codes.length === 0) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: 'asset_codes 不能为空数组',
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_codes 不能为空数组'));
     }
     if (body.asset_codes.length > MAX_BATCH_CANDIDATES) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: `asset_codes 单次最多 ${MAX_BATCH_CANDIDATES} 条，当前 ${body.asset_codes.length} 条`,
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', `asset_codes 单次最多 ${MAX_BATCH_CANDIDATES} 条，当前 ${body.asset_codes.length} 条`));
     }
     const invalid = body.asset_codes.filter((c) => !isValidAssetCode(c));
     if (invalid.length > 0) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: `以下标���格式非法（应为 sh600000 / sz000001）: ${invalid.join(', ')}`,
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', `以下标���格式非法（应为 sh600000 / sz000001）: ${invalid.join(', ')}`));
     }
 
     let reason: string | null = null;
     if (body.candidate_reason !== undefined && body.candidate_reason !== null) {
       if (typeof body.candidate_reason !== 'string') {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: 'candidate_reason 必须是字符串',
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'candidate_reason 必须是字符串'));
       }
       reason = body.candidate_reason.trim();
       if (reason.length > MAX_REASON_LENGTH) {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: `candidate_reason 不得超过 ${MAX_REASON_LENGTH} 字符`,
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', `candidate_reason 不得超过 ${MAX_REASON_LENGTH} 字符`));
       }
       if (reason === '') reason = null;
     }
@@ -118,6 +95,6 @@ export async function registerBatchCandidateRoutes(app: FastifyInstance): Promis
       }),
     });
 
-    return reply.code(201).send({ success: true, data: result });
+    return reply.code(201).send(ok(result));
   });
 }

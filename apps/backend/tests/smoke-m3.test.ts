@@ -113,18 +113,18 @@ describe('M3 Trade + 持仓校验', () => {
 
   beforeAll(async () => {
     snap.buy = await app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
+      method: 'POST', url: '/api/trade', headers: adminHeaders(),
       payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
     });
     snap.oversell = await app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
+      method: 'POST', url: '/api/trade', headers: adminHeaders(),
       payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + '-dup', trade_time: '09:00:02', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
     });
     snap.sell50 = await app.inject({
-      method: 'POST', url: '/api/trades', headers: adminHeaders(),
+      method: 'POST', url: '/api/trade', headers: adminHeaders(),
       payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + 'b', trade_time: '09:00:03', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
     });
-    snap.positions = await app.inject({ method: 'GET', url: '/api/positions', headers: adminHeaders() });
+    snap.positions = await app.inject({ method: 'GET', url: '/api/holding', headers: adminHeaders() });
   });
 
   it('买入 sh600000 100 股', () => {
@@ -152,7 +152,7 @@ describe('M3 Trade + 持仓校验', () => {
     expect(body.data.position.totalQuantity).toBe(50);
   });
 
-  it('GET /api/positions 返回 sh600000', () => {
+  it('GET /api/holding 返回 sh600000', () => {
     const res = snap.positions;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -209,7 +209,7 @@ describe('M3 Watch/Candidate 列表（UNIQUE 三列独立共存）', () => {
 // === Admin + Signal ===
 describe('M3 Admin 手动触发 + Signal 查询', () => {
   it('admin run-datacheck → system_log 有 trigger_manual', async () => {
-    const res = await app.inject({ method: 'POST', url: '/api/admin/run-datacheck', headers: adminHeaders() });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/datacheck/trigger', headers: adminHeaders() });
     expect([200, 500]).toContain(res.statusCode);
     const logs = db.db
       .prepare("SELECT * FROM system_log WHERE log_type='trigger_manual' ORDER BY id DESC LIMIT 5").all();
@@ -230,7 +230,7 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
     });
     const userTok = JSON.parse(loginRes.body).data.token;
     const res = await app.inject({
-      method: 'POST', url: '/api/admin/run-datacheck',
+      method: 'POST', url: '/api/admin/datacheck/trigger',
       headers: { Authorization: `Bearer ${userTok}` },
     });
     expect(res.statusCode).toBe(403);

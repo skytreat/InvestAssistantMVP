@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * 资产快照查询 API（T37）
@@ -30,7 +31,7 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
       total_profit_actual: number;
     } | undefined;
 
-    return reply.send({ success: true, data: row ?? null });
+    return reply.send(ok(row ?? null));
   });
 
   /** 近 N 天历史（收益曲线数据） */
@@ -54,7 +55,7 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
       total_profit_actual: number;
     }>;
 
-    return reply.send({ success: true, data: rows });
+    return reply.send(ok(rows));
   });
 }
 

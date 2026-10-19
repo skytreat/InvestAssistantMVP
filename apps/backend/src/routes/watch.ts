@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
+import { defaultMessage } from '../lib/errorMessages.js';
 
 /**
  * user_asset_rel CRUD —— **自选（watch）部分**
@@ -33,25 +35,25 @@ function _crud(app: FastifyInstance, relType: 'watch') {
     const rows = db.prepare(
       'SELECT * FROM user_asset_rel WHERE user_id = ? AND rel_type = ? AND is_deleted = 0 ORDER BY created_at DESC'
     ).all(user.sub, relType);
-    reply.send({ success: true, data: rows });
+    reply.send(ok(rows));
   });
 
   // POST —— 新增
   app.post(`/api/${relType}`, async (request, reply) => {
     const user = (request as any).user;
     const body = request.body as { asset_code?: string };
-    if (!body?.asset_code) return reply.code(400).send({ success: false, error: 'asset_code 必填' });
+    if (!body?.asset_code) return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_code 必填'));
     const db = ConfigStore.getInstance().db;
     try {
       const info = db.prepare(
         `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)`
       ).run(user.sub, body.asset_code, relType);
-      reply.code(201).send({ success: true, data: { id: info.lastInsertRowid } });
+      reply.code(201).send(ok({ id: info.lastInsertRowid }));
     } catch (err: any) {
       if (String(err).includes('UNIQUE')) {
-        return reply.code(409).send({ success: false, error: 'DUPLICATE', message: `${body.asset_code} 已在 ${relType} 列表` });
+        return reply.code(409).send(fail(409, 'DUPLICATE', `${body.asset_code} 已在 ${relType} 列表`));
       }
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
@@ -64,8 +66,8 @@ function _crud(app: FastifyInstance, relType: 'watch') {
       `UPDATE user_asset_rel SET is_deleted = 1
        WHERE user_id = ? AND asset_code = ? AND rel_type = ? AND is_deleted = 0`
     ).run(user.sub, asset, relType);
-    if (info.changes === 0) return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
-    reply.send({ success: true, data: null });
+    if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
+    reply.send(ok(null));
   });
 
 }

@@ -1,5 +1,5 @@
 /**
- * T54 —— GET /api/signals 筛选能力
+ * T54 —— GET /api/signal 筛选能力
  *
  * 覆盖 src/routes/signal.ts 新增的 `asset_code` / `start_date` / `end_date`：
  *   ① 单 symbol 过滤只回该标的
@@ -101,7 +101,7 @@ interface SignalRow {
 }
 
 async function query(qs: string): Promise<{ rows: SignalRow[]; total: number }> {
-  const res = await app.inject({ method: 'GET', url: `/api/signals?page_size=200&${qs}` });
+  const res = await app.inject({ method: 'GET', url: `/api/signal?page_size=200&${qs}` });
   expect(res.statusCode).toBe(200);
   const body = JSON.parse(res.body) as {
     success: boolean; data: SignalRow[]; pagination: { total: number };
@@ -119,7 +119,7 @@ describe('T54 · asset_code 单标的过滤', () => {
   });
 
   it('不存在的标的 → 空数组 + 200，不报错', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/signals?asset_code=sz999999' });
+    const res = await app.inject({ method: 'GET', url: '/api/signal?asset_code=sz999999' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.success).toBe(true);
@@ -208,7 +208,7 @@ describe('T54 · 排序 trade_date ASC', () => {
 describe('T54 · 参数化绑定（注入防护）', () => {
   it("asset_code 含引号/分号 → 按字面量匹配，不报 SQL 语法错", async () => {
     const qs = "asset_code=" + encodeURIComponent("sh600000'; DROP TABLE user_strategy_signal;--");
-    const res = await app.inject({ method: 'GET', url: `/api/signals?${qs}` });
+    const res = await app.inject({ method: 'GET', url: `/api/signal?${qs}` });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).data).toEqual([]);
     // 表还在
@@ -223,7 +223,7 @@ describe('T54 · 参数化绑定（注入防护）', () => {
     const literal = "2026-01-01' OR '1'='1";
     const res = await app.inject({
       method: 'GET',
-      url: `/api/signals?end_date=${encodeURIComponent(literal)}`,
+      url: `/api/signal?end_date=${encodeURIComponent(literal)}`,
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).data).toEqual([]);

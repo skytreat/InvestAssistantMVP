@@ -69,11 +69,11 @@ export default function Settings() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/plugins');
+      const res = await api.get('/strategy/plugins');
       if (res.data.success) setPlugins(res.data.data ?? []);
-      else setError(res.data.error ?? '加载失败');
+      else setError(res.data.message ?? '加载失败');
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '加载失败');
+      setError(err?.response?.data?.message ?? '加载失败');
     } finally {
       setLoading(false);
     }
@@ -120,12 +120,12 @@ export default function Settings() {
     setSaving(p.id);
     setError(null);
     try {
-      await api.post(`/plugins/${p.id}/config`, { params });
+      await api.post(`/strategy/plugins/${p.id}/config`, { params });
       setMsg(`已保存「${p.name}」参数`);
       setExpanded(null);
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '保存失败');
+      setError(err?.response?.data?.message ?? '保存失败');
     } finally {
       setSaving(null);
     }
@@ -135,11 +135,11 @@ export default function Settings() {
     const next = p.enabled ? 0 : 1;
     setError(null);
     try {
-      await api.post(`/plugins/${p.id}/toggle`, { enabled: next });
+      await api.post(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
       setMsg(`已${next ? '启用' : '禁用'}「${p.name}」`);
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '操作失败');
+      setError(err?.response?.data?.message ?? '操作失败');
     }
   };
 

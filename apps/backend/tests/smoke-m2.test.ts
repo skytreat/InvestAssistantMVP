@@ -98,6 +98,9 @@ describe('M2 C1-C12 数据校验', () => {
   }, 60000);
 
   it('runAllChecks 每条结果都写入 system_log（DuckDB 不可用时 ERROR 也会写）', async () => {
+    // 🔴 T81 顺序依赖修复：日志由**上一个**用例产生 → shuffle 下随机失败。
+    //   → 本用例自己先跑一次 runAllChecks。
+    await runAllChecks(tradeDate).catch(() => []);
     // 等上一条写完（writeSystemLog 内部是同步写 SQLite，但多线程可能有竞争）
     await new Promise((r) => setTimeout(r, 100));
 
@@ -136,6 +139,8 @@ describe('M2 插件引擎', () => {
   });
 
   it('executeAllPlugins 写入 system_log（plugin_execute logType）', async () => {
+    // 🔴 T81 顺序依赖修复：自己先跑一次 executeAllPlugins
+    await executeAllPlugins().catch(() => []);
     await new Promise((r) => setTimeout(r, 100));
 
     // executeAllPlugins 内部写 plugin_execute logType（每个插件执行一条 + 批量汇总一条）
@@ -171,6 +176,8 @@ describe('M2 除权自动导入', () => {
   });
 
   it('importDividendEvents 写入 system_log（dividend_import logType）', async () => {
+    // 🔴 T81 顺序依赖修复：自己先跑一次 importDividendEvents
+    await importDividendEvents(tradeDate).catch(() => []);
     await new Promise((r) => setTimeout(r, 100));
 
     const row = db.db
@@ -203,6 +210,16 @@ describe('M2 scheduler 4 段 cron 注册', () => {
 // M2 全链路日志验证
 // ========================================================================
 describe('M2 全链路日志验证', () => {
+  // 🔴 T81 顺序依赖修复：三类日志分别由上面 3 个 describe 产出
+  //   （datacheck / plugin_execute / dividend_import）→ shuffle 下 describe 顺序随机，
+  //   本 describe 可能先跑 → 查不到任何日志。
+  //   → 改为**自己触发**这 3 个动作，再断言日志齐备。
+  beforeAll(async () => {
+    await runAllChecks(tradeDate).catch(() => []);
+    await executeAllPlugins().catch(() => []);
+    await importDividendEvents(tradeDate).catch(() => []);
+  });
+
   it('system_log 有三类记录：datacheck + plugin_execute + dividend_import', () => {
     const types = db.db
       .prepare(

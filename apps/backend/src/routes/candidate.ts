@@ -31,6 +31,7 @@ import {
 } from '../services/candidateService.js';
 import type { PriceMode } from '../services/candidateService.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
 
 interface CreateCandidateBody {
   asset_code?: unknown;
@@ -50,7 +51,7 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
   app.get('/api/candidate', async (request, reply) => {
     const user = requireUser(request);
     const items = await listCandidatesWithReturn(user.sub);
-    return reply.send({ success: true, data: items });
+    return reply.send(ok(items));
   });
 
   // ── POST /api/candidate —— 新增候选（固化基准价）──
@@ -59,11 +60,7 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
     const body = (request.body ?? {}) as CreateCandidateBody;
 
     if (!isValidAssetCode(body.asset_code)) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: 'asset_code 必填且格式应为 sh600000 / sz000001',
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_code 必填且格式应为 sh600000 / sz000001'));
     }
 
     const assetCode = body.asset_code;
@@ -73,11 +70,7 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
     const overrides = new Map<string, number>();
     if (hasOverride) {
       if (!isValidBasePrice(body.candidate_base_price)) {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: 'candidate_base_price 必须是大于 0 的有限数值',
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'candidate_base_price 必须是大于 0 的有限数值'));
       }
       overrides.set(assetCode, body.candidate_base_price);
     }
@@ -85,19 +78,11 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
     let reason: string | null = null;
     if (body.candidate_reason !== undefined && body.candidate_reason !== null) {
       if (typeof body.candidate_reason !== 'string') {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: 'candidate_reason 必须是字符串',
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'candidate_reason 必须是字符串'));
       }
       reason = body.candidate_reason.trim();
       if (reason.length > MAX_REASON_LENGTH) {
-        return reply.code(400).send({
-          success: false,
-          error: 'PARAM_INVALID',
-          message: `candidate_reason 不得超过 ${MAX_REASON_LENGTH} 字符`,
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', `candidate_reason 不得超过 ${MAX_REASON_LENGTH} 字符`));
       }
       if (reason === '') reason = null;
     }
@@ -108,19 +93,10 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
       resolved = await resolveBasePrices([assetCode], overrides);
     } catch (err) {
       if (err instanceof QuoteUnavailableError) {
-        return reply.code(404).send({
-          success: false,
-          error: 'SYMBOL_NOT_FOUND',
-          message: `${err.message}；可显式传入 candidate_base_price 手动指定基准价`,
-          data: { missing_symbols: err.symbols },
-        });
+        return reply.code(404).send(fail(404, 'SYMBOL_NOT_FOUND', `${err.message}；可显式传入 candidate_base_price 手动指定基准价`));
       }
       if (err instanceof QuoteSourceUnavailableError) {
-        return reply.code(503).send({
-          success: false,
-          error: 'EXTERNAL_SOURCE_UNAVAILABLE',
-          message: err.message,
-        });
+        return reply.code(503).send(fail(503, 'EXTERNAL_SOURCE_UNAVAILABLE', err.message));
       }
       throw err;
     }
@@ -138,9 +114,7 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
         )
         .run(user.sub, assetCode, reason, base.basePrice);
 
-      return reply.code(201).send({
-        success: true,
-        data: {
+      return reply.code(201).send(ok({
           id: info.lastInsertRowid,
           asset_code: assetCode,
           rel_type: 'candidate',
@@ -148,41 +122,30 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
           candidate_base_price: base.basePrice,
           candidate_base_price_date: base.basePriceDate,
           base_price_source: base.source,
-        },
-      });
+        }));
     } catch (err) {
       if (String(err).includes('UNIQUE')) {
-        return reply.code(409).send({
-          success: false,
-          error: 'DUPLICATE',
-          message: `${assetCode} 已在 candidate 列表`,
-        });
+        return reply.code(409).send(fail(409, 'DUPLICATE', `${assetCode} 已在 candidate 列表`));
       }
       throw err;
     }
   });
 
   // ── POST /api/candidate/:asset_code/promote —— 迁移到自选（只打标记）──
-  app.post('/api/candidate/:asset_code/promote', async (request, reply) => {
+  app.post('/api/candidate/:id/migrate', async (request, reply) => {
     const user = requireUser(request);
-    const params = request.params as { asset_code?: string };
-    const assetCode = params.asset_code;
+    // T90：路由改名 `/api/candidate/:asset_code/promote` → `/api/candidate/:id/migrate`
+    //      ⇒ 路径参数名同步改为 :id（SDD §4.4:1272）
+    const params = request.params as { id?: string };
+    const assetCode = params.id;
 
     if (!isValidAssetCode(assetCode)) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: 'asset_code 格式应为 sh600000 / sz000001',
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_code 格式应为 sh600000 / sz000001'));
     }
 
     const body = (request.body ?? {}) as PromoteBody;
     if (typeof body.price_mode !== 'string' || !PRICE_MODES.includes(body.price_mode)) {
-      return reply.code(400).send({
-        success: false,
-        error: 'PARAM_INVALID',
-        message: "price_mode 必填且只能为 'base' 或 'current'",
-      });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', "price_mode 必填且只能为 'base' 或 'current'"));
     }
     const priceMode = body.price_mode as PriceMode;
 
@@ -196,9 +159,7 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
         message: `${user.username} ${assetCode} 从 candidate 迁移到 watch（price_mode=${priceMode}）`,
         detail: JSON.stringify({ assetCode, priceMode, marked: true, autoCreated: false }),
       });
-      return reply.send({
-        success: true,
-        data: {
+      return reply.send(ok({
           asset_code: assetCode,
           from: 'candidate',
           to: 'watch',
@@ -208,15 +169,10 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
           autoCreated: false,
           message: '已标记为迁移完成；不会自动加入自选，需手动从候选池加入自选',
           candidate: row,
-        },
-      });
+        }));
     } catch (err) {
       if (err instanceof CandidateNotFoundError) {
-        return reply.code(404).send({
-          success: false,
-          error: 'SYMBOL_NOT_FOUND',
-          message: err.message,
-        });
+        return reply.code(404).send(fail(404, 'SYMBOL_NOT_FOUND', err.message));
       }
       throw err;
     }

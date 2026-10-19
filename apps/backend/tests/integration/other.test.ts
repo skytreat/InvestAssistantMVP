@@ -2,7 +2,7 @@
  * other.test.ts — Signal 分页查询 + Watch/Candidate CRUD 集成测试
  *
  * 覆盖：
- *   src/routes/signal.ts   —— GET /api/signals 默认分页 / plugin_id 过滤 / page_size 上限 / page=0 兜底
+ *   src/routes/signal.ts   —— GET /api/signal 默认分页 / plugin_id 过滤 / page_size 上限 / page=0 兜底
  *   src/routes/watch.ts    —— POST 201 / 同 asset 409 / DELETE 不存在 404 / UNIQUE 三列独立共存
  *
  * 不 mock，走真实 SQLite + Fastify inject。
@@ -48,7 +48,7 @@ afterAll(async () => {
 // ────────────────────────────────────────────────────────────
 // Signal 路由覆盖 src/routes/signal.ts (10-46 行)
 // ────────────────────────────────────────────────────────────
-describe('GET /api/signals · 分页查询', () => {
+describe('GET /api/signal · 分页查询', () => {
   beforeAll(() => {
     const db = bundle.db.db;
     // 先清干净，避免计数不准
@@ -76,7 +76,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('默认分页 → 返回 data + pagination 结构，totalPages ≥ 1', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals',
+      url: '/api/signal',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -95,7 +95,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('plugin_id 过滤 → 每行 plugin_id 匹配', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals?plugin_id=rsi_oversold',
+      url: '/api/signal?plugin_id=rsi_oversold',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -111,7 +111,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('page_size=999 → 截断到 200（Math.min(200, ...)）', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals?page_size=999',
+      url: '/api/signal?page_size=999',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -123,7 +123,7 @@ describe('GET /api/signals · 分页查询', () => {
   it('page=0 → Math.max(1, ...) 兜底 page=1', async () => {
     const res = await bundle.app.inject({
       method: 'GET',
-      url: '/api/signals?page=0',
+      url: '/api/signal?page=0',
       headers: watchHeaders(),
     });
     expect(res.statusCode).toBe(200);

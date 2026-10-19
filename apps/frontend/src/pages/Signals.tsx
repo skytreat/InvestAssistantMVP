@@ -47,14 +47,14 @@ export default function Signals() {
       if (pluginId) params.plugin_id = pluginId;
       if (direction) params.direction = direction;
 
-      const res = await api.get('/signals', { params });
+      const res = await api.get('/signal', { params });
       if (res.data.success) {
         setRows(res.data.data ?? []);
       } else {
-        setError(res.data.error ?? '请求失败');
+        setError(res.data.message ?? '请求失败');
       }
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? '网络错误');
+      setError(err?.response?.data?.message ?? '网络错误');
     } finally {
       setLoading(false);
     }

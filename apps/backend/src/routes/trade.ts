@@ -3,6 +3,8 @@ import { ConfigStore } from '../config/configStore.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
 import { batchGetLatestClose } from '../services/marketData.js';
 import { writeSystemLog } from '../services/logger.js';
+import { ok, fail } from '../lib/envelope.js';
+import { defaultMessage } from '../lib/errorMessages.js';
 
 /**
  * 交易 + 持仓 API（T25 + T26 + T39）
@@ -85,7 +87,7 @@ export function syncHoldRelation(userId: number, assetCode: string): { action: s
 
 export async function registerTradeRoutes(app: FastifyInstance) {
   // 录入交易
-  app.post('/api/trades', async (request, reply) => {
+  app.post('/api/trade', async (request, reply) => {
     try {
       const body = request.body as {
 asset_code: string;
@@ -102,20 +104,17 @@ asset_code: string;
       const user = (request as any).user as { sub: number; username: string; role: string };
       if (!body?.asset_code || !body?.trade_type || !body?.trade_date ||
           body.quantity == null || body.price == null) {
-        return reply.code(400).send({ success: false, error: '必要字段缺失' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', '必要字段缺失'));
       }
       // T87：trade_time 必填且格式合法
       if (!validateTradeTime(body.trade_time)) {
-        return reply.code(400).send({
-          success: false, error: 'PARAM_INVALID',
-          message: 'trade_time 必填，格式 HH:mm:ss（秒级）',
-        });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_time 必填，格式 HH:mm:ss（秒级）'));
       }
       if (body.quantity <= 0 || body.price < 0) {
-        return reply.code(400).send({ success: false, error: '数量>0、价格>=0' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', '数量>0、价格>=0'));
       }
       if (!['buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].includes(body.trade_type)) {
-        return reply.code(400).send({ success: false, error: 'trade_type 非法' });
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_type 非法'));
       }
 
       const AUTO_IMPORT_TYPES = new Set(['dividend', 'bonus', 'transfer']);
@@ -125,7 +124,7 @@ asset_code: string;
         tradeReason = body.trade_reason ?? `自动导入 - ${body.trade_date} ${body.trade_type}`;
       } else if (NEED_REASON_TYPES.has(body.trade_type)) {
         if (!body.trade_reason?.trim()) {
-          return reply.code(400).send({ success: false, error: 'TRADE_REASON_REQUIRED', message: 'trade_reason 必填，说明本次交易原因' });
+          return reply.code(400).send(fail(400, 'TRADE_REASON_REQUIRED', 'trade_reason 必填，说明本次交易原因'));
         }
         tradeReason = body.trade_reason.trim();
       } else {
@@ -137,11 +136,7 @@ asset_code: string;
         // 否则尚未发生的买入会支撑更早的卖出（日期交错绕过校验）
         if (!validateSufficientHolding(user.sub, body.asset_code, body.quantity, body.trade_date, body.trade_time)) {
           // B-10 裁决：HOLDING_INSUFFICIENT = HTTP 409（非 400）
-          return reply.code(409).send({
-            success: false,
-            error: 'HOLDING_INSUFFICIENT',
-            message: `持仓不足：无法${body.trade_type} ${body.asset_code}`,
-          });
+          return reply.code(409).send(fail(409, 'HOLDING_INSUFFICIENT', `持仓不足：无法${body.trade_type} ${body.asset_code}`));
         }
       }
 
@@ -164,24 +159,21 @@ asset_code: string;
       // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
       const holdRel = syncHoldRelation(user.sub, body.asset_code);
 
-      reply.code(201).send({
-        success: true,
-        data: {
+      reply.code(201).send(ok({
           trade_id: info.lastInsertRowid,
           position: calcPosition(user.sub, body.asset_code),
           hold_rel: holdRel,
-        },
-      });
+        }));
     } catch (err: any) {
       if (String(err).includes('UNIQUE')) {
-        return reply.code(409).send({ success: false, error: 'TRADE_DUPLICATE', message: '同日同标的同方向交易已存在' });
+        return reply.code(409).send(fail(409, 'TRADE_DUPLICATE', '同日同标的同方向交易已存在'));
       }
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
   // 查询交易记录（T39: 增强筛选+分页）
-  app.get('/api/trades', async (request, reply) => {
+  app.get('/api/trade', async (request, reply) => {
     try {
       const user = (request as any).user;
       const q = request.query as any;
@@ -222,18 +214,14 @@ asset_code: string;
          ORDER BY trade_date DESC, id DESC LIMIT ? OFFSET ?`
       ).all(...params, limit, offset) as any[];
 
-      reply.send({
-        success: true,
-        data: rows,
-        pagination: { page, limit, total: countRow.cnt, totalPages: Math.ceil(countRow.cnt / limit) },
-      });
+      reply.send(ok(rows, { pagination: { page, limit, total: countRow.cnt, totalPages: Math.ceil(countRow.cnt / limit) } }));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
   // T39: PATCH 复盘字段（只允许改 review_note/strategy_match/is_stop_loss/remark）
-  app.patch('/api/trades/:id', async (request, reply) => {
+  app.patch('/api/trade/:id', async (request, reply) => {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const body = request.body as Record<string, any>;
@@ -247,7 +235,7 @@ asset_code: string;
       }
     }
     if (updates.length === 0) {
-      return reply.code(400).send({ success: false, error: '无有效更新字段' });
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', '无有效更新字段'));
     }
     params.push(tradeId);
     params.push(user.sub);
@@ -259,17 +247,17 @@ asset_code: string;
         logType: 'trade', level: 'SUCCESS',
         message: `${user.username} 更新复盘字段 trade_id=${tradeId}`,
       });
-      reply.send({ success: true });
+      reply.send(ok(null));
     } catch (err: any) {
       if (String(err).includes('no such column')) {
-        return reply.code(500).send({ success: false, error: 'DDL未就绪，请联系管理员' });
+        return reply.code(500).send(fail(500, 'DB_UNAVAILABLE', 'DDL 未就绪，请联系管理员'));
       }
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
   // T39: 软删除交易
-  app.delete('/api/trades/:id', async (request, reply) => {
+  app.post('/api/trade/:id/soft-delete', async (request, reply) => {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const db = ConfigStore.getInstance().db;
@@ -277,7 +265,7 @@ asset_code: string;
       `UPDATE user_trade_record SET is_deleted = 1 WHERE id = ? AND user_id = ? AND is_deleted = 0`
     ).run(tradeId, user.sub);
     if (info.changes === 0) {
-      return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
+      return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     }
     // T58：软删交易后同步 hold 关系（删掉的是买入 → 持仓归零 → 软删 hold）
     const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
@@ -288,11 +276,11 @@ asset_code: string;
       message: `${user.username} 软删除交易 id=${tradeId}`,
       detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send({ success: true, data: { hold_rel: holdRel } });
+    reply.send(ok({ hold_rel: holdRel }));
   });
 
   // T39: 恢复软删除
-  app.post('/api/trades/:id/restore', async (request, reply) => {
+  app.post('/api/trade/:id/restore', async (request, reply) => {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const db = ConfigStore.getInstance().db;
@@ -300,7 +288,7 @@ asset_code: string;
       `UPDATE user_trade_record SET is_deleted = 0 WHERE id = ? AND user_id = ? AND is_deleted = 1`
     ).run(tradeId, user.sub);
     if (info.changes === 0) {
-      return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
+      return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     }
     // T58：恢复交易 → 持仓回升 → hold 关系恢复
     const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
@@ -311,28 +299,28 @@ asset_code: string;
       message: `${user.username} 恢复交易 id=${tradeId}`,
       detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send({ success: true, data: { hold_rel: holdRel } });
+    reply.send(ok({ hold_rel: holdRel }));
   });
 
   // 查询单个标的持仓
-  app.get('/api/positions/:asset_code', async (request, reply) => {
+  app.get('/api/holding/:asset_code', async (request, reply) => {
     try {
       const user = (request as any).user;
       const assetCode = (request.params as any).asset_code as string;
       const pos = calcPosition(user.sub, assetCode);
-      reply.send({ success: true, data: { asset_code: assetCode, ...pos } });
+      reply.send(ok({ asset_code: assetCode, ...pos }));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 
   // 查询全部持仓（T33：带现价 / 市值 / 盈亏 / 仓位占比，供仪表盘持仓卡使用）
-  app.get('/api/positions', async (request, reply) => {
+  app.get('/api/holding', async (request, reply) => {
     try {
       const user = (request as any).user;
       const positions = calcAllPositions(user.sub);
       if (positions.length === 0) {
-        return reply.send({ success: true, data: [] });
+        return reply.send(ok([]));
       }
 
       // 1 次 IN 查询拿全量最新价（AGENTS.md DuckDB 硬约束：禁止逐标的循环查）
@@ -365,9 +353,8 @@ asset_code: string;
         weight: totalMarketValue > 0 && p.marketValue !== null ? p.marketValue / totalMarketValue : null,
       }));
 
-      return reply.send({
-        success: true,
-        data: withWeight,
+      // T89a：summary 是**顶层**字段（前端 Dashboard.tsx 读 `res.data.summary`）
+      return reply.send(ok(withWeight, {
         summary: {
           totalMarketValue,
           totalCostBasis: withWeight.reduce((s, p) => s + p.totalCostBasis, 0),
@@ -376,9 +363,9 @@ asset_code: string;
           priceDate,
           positionCount: withWeight.length,
         },
-      });
+      }));
     } catch (err) {
-      reply.code(500).send({ success: false, error: String(err) });
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 }

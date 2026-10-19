@@ -141,13 +141,13 @@ export default function Dashboard() {
     (async () => {
       setPosLoading(true);
       try {
-        const res = await api.get('/positions');
+        const res = await api.get('/holding');
         if (res.data.success) {
           setPositions(res.data.data ?? []);
           setPosSummary(res.data.summary ?? null);
-        } else setPosError(res.data.error ?? '请求失败');
+        } else setPosError(res.data.message ?? '请求失败');
       } catch (err: any) {
-        setPosError(err?.response?.data?.error ?? '网络错误');
+        setPosError(err?.response?.data?.message ?? '网络错误');
       } finally {
         setPosLoading(false);
       }
@@ -158,9 +158,9 @@ export default function Dashboard() {
       try {
         const res = await api.get('/asset-stat/latest');
         if (res.data.success) setStat(res.data.data ?? null);
-        else setStatError(res.data.error ?? '请求失败');
+        else setStatError(res.data.message ?? '请求失败');
       } catch (err: any) {
-        setStatError(err?.response?.data?.error ?? '网络错误');
+        setStatError(err?.response?.data?.message ?? '网络错误');
       } finally {
         setStatLoading(false);
       }
@@ -169,11 +169,11 @@ export default function Dashboard() {
     (async () => {
       setSigLoading(true);
       try {
-        const res = await api.get('/signals', { params: { page_size: 5 } });
+        const res = await api.get('/signal', { params: { page_size: 5 } });
         if (res.data.success) setSignals(res.data.data ?? []);
-        else setSigError(res.data.error ?? '请求失败');
+        else setSigError(res.data.message ?? '请求失败');
       } catch (err: any) {
-        setSigError(err?.response?.data?.error ?? '网络错误');
+        setSigError(err?.response?.data?.message ?? '网络错误');
       } finally {
         setSigLoading(false);
       }
@@ -185,9 +185,9 @@ export default function Dashboard() {
         try {
           const res = await api.get('/admin/system-log', { params: { page_size: 5 } });
           if (res.data.success) setLogs(res.data.data ?? []);
-          else setLogError(res.data.error ?? '请求失败');
+          else setLogError(res.data.message ?? '请求失败');
         } catch (err: any) {
-          setLogError(err?.response?.data?.error ?? '网络错误');
+          setLogError(err?.response?.data?.message ?? '网络错误');
         } finally {
           setLogLoading(false);
         }

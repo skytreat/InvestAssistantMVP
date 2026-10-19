@@ -188,7 +188,7 @@ function nextTime(): string {
 }
 
 async function postTrade(payload: Record<string, unknown>) {
-  return app.inject({ method: 'POST', url: '/api/trades', payload: { trade_time: nextTime(), ...payload } });
+  return app.inject({ method: 'POST', url: '/api/trade', payload: { trade_time: nextTime(), ...payload } });
 }
 
 describe('T58 · 买入后 hold 关系存在', () => {
@@ -290,7 +290,7 @@ describe('T58 · 软删 / 恢复交易同步 hold', () => {
     const buy = await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'a' });
     expect(buy.statusCode).toBe(201);
     const tradeId = (JSON.parse(buy.body).data as { trade_id: number }).trade_id;
-    const del = await app.inject({ method: 'DELETE', url: `/api/trades/${tradeId}` });
+    const del = await app.inject({ method: 'POST', url: `/api/trade/${tradeId}/soft-delete` });
     expect(del.statusCode).toBe(200);
     return tradeId;
   }
@@ -307,7 +307,7 @@ describe('T58 · 软删 / 恢复交易同步 hold', () => {
     const tradeId = await seedSoftDeletedTrade(code);
     expect(holdRow(code)!.is_deleted).toBe(1);
 
-    const res = await app.inject({ method: 'POST', url: `/api/trades/${tradeId}/restore` });
+    const res = await app.inject({ method: 'POST', url: `/api/trade/${tradeId}/restore` });
     expect(res.statusCode).toBe(200);
     expect(holdRow(code)!.is_deleted).toBe(0);
   });
