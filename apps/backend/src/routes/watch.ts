@@ -3,18 +3,29 @@ import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from '../services/logger.js';
 
 /**
- * user_asset_rel CRUD（watch / hold / candidate 三种 rel_type 独立共存，AGENTS.md 硬约束）
+ * user_asset_rel CRUD —— **自选（watch）部分**
+ *
+ * 🔴 T92：候选池（candidate）的路由归属已收敛到 `routes/candidate.ts`
+ *   （T50 的基准价固化 + price_mode + 「只打标记不建关联」的 promote）。
+ *   本文件此前用 `_crud(app, 'candidate')` **重复注册**了同一批
+ *   `/api/candidate*` 路径 → 与 `routes/candidate.ts` 冲突，且行为是旧版
+ *   「promote 直接 INSERT 建 watch 关联」，违反 PRD S5 / SDD §12.3 B6。
+ *   → candidate 的 CRUD 与 promote **全部移出本文件**。
+ *
+ * ⚠️ 同时移除了 `POST /api/watch/:asset_code/promote`（自选 → 候选的反向迁移）：
+ *   · SDD §4.4 **无此路由**（只有 `POST /api/candidate/:id/migrate`）
+ *   · 无任何调用方（前端未使用，测试未覆盖）
+ *   · schema 里没有能表达「自选降级为候选」的标记位
+ *     （`migrated_from_candidate` 语义是「由候选迁来」，用在自选行上会讲错故事）
+ *   ⇒ 移除并登记为偏差（T92 保守原则：两个方向都不自动建关联）
+ *
  * - POST   /api/watch          新增自选
- * - DELETE /api/watch/:asset   删除自选
+ * - DELETE /api/watch/:asset   软删自选
  * - GET    /api/watch          列出自选
- * - POST   /api/candidate      新增候选
- * - DELETE /api/candidate/:asset
- * - GET    /api/candidate
- * - POST   /api/candidate/:asset/promote  候选迁移到自选（Requirements §6.3，SDD 候选跟踪池）
  *
  * UNIQUE(user_id, asset_code, rel_type) 保证 watch/hold/candidate 可独立共存
  */
-function _crud(app: FastifyInstance, relType: 'watch' | 'candidate') {
+function _crud(app: FastifyInstance, relType: 'watch') {
   // GET —— 列表
   app.get(`/api/${relType}`, async (request, reply) => {
     const user = (request as any).user;
@@ -57,54 +68,8 @@ function _crud(app: FastifyInstance, relType: 'watch' | 'candidate') {
     reply.send({ success: true, data: null });
   });
 
-  // 候选 → 自选迁移（候选跟踪池命中后升级为自选）
-  // 幂等：已在自选里返回 alreadyWatched，不报错；候选记录保留（migrated 标记 +1）
-  app.post(`/api/${relType}/:asset_code/promote`, async (request, reply) => {
-    const user = (request as any).user;
-    const asset = (request.params as any).asset_code as string;
-    if (!/^(sh|sz)\d{6}$/.test(asset)) {
-      return reply.code(400).send({ success: false, error: 'INVALID_SYMBOL', message: 'symbol 格式应为 sh600000 / sz000001' });
-    }
-    const fromType = relType === 'candidate' ? 'candidate' : 'watch';
-    const toType = relType === 'candidate' ? 'watch' : 'candidate';
-    const db = ConfigStore.getInstance().db;
-
-    try {
-      const migrate = db.transaction(() => {
-        // 已存在（含软删）→ 恢复 + 标记迁移
-        const existing = db.prepare(
-          'SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?'
-        ).get(user.sub, asset, toType) as { id: number; is_deleted: number } | undefined;
-
-        if (existing) {
-          db.prepare('UPDATE user_asset_rel SET is_deleted = 0, migrated_from_candidate = 1 WHERE id = ?')
-            .run(existing.id);
-          return { alreadyExisted: true, restored: existing.is_deleted === 1 };
-        }
-
-        db.prepare(
-          `INSERT INTO user_asset_rel (user_id, asset_code, rel_type, migrated_from_candidate)
-           VALUES (?, ?, ?, 1)`
-        ).run(user.sub, asset, toType);
-        return { alreadyExisted: false, restored: false };
-      });
-
-      const info = migrate();
-
-      writeSystemLog({
-        logType: 'trade', level: 'INFO',
-        message: `${user.username} ${asset} 从 ${fromType} 迁移到 ${toType}`,
-        detail: JSON.stringify(info),
-      });
-
-      return reply.send({ success: true, data: { asset_code: asset, from: fromType, to: toType, ...info } });
-    } catch (err: any) {
-      return reply.code(500).send({ success: false, error: String(err) });
-    }
-  });
 }
 
 export async function registerWatchRoutes(app: FastifyInstance) {
   _crud(app, 'watch');
-  _crud(app, 'candidate');
 }

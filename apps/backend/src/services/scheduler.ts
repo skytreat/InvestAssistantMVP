@@ -8,7 +8,7 @@ import { runAllChecks } from './validator.js';
 import { executeAllPlugins } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
-import { persistSignals, getTradeDate } from './signalService.js';
+import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from './signalService.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
 import { runFullBackup } from './backup.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
@@ -131,7 +131,18 @@ export function registerCronJobs(app: FastifyInstance): void {
         logType: 'signal_generate', level: 'INFO', message: '插件信号生成开始',
       });
       try {
-        const result = await executeAllPlugins();
+        // 🔴 T85b ①（I-19）：信号只对**用户的自选 ∪ 持仓**生成（PRD M4）。
+        //   修复前 executeAllPlugins() 传空参 → 插件落到硬编码 symbol:'sh600000'，
+        //   用户的标的一只都跑不到。
+        const signalSymbols = resolveSignalSymbols(SIGNAL_USER_ID);
+        if (signalSymbols.length === 0) {
+          writeSystemLog({
+            logType: 'signal_generate', level: 'INFO',
+            message: '信号生成跳过：用户无自选/持仓标的（signal 域为空）',
+            detail: JSON.stringify({ userId: SIGNAL_USER_ID }),
+          });
+        }
+        const result = await executeAllPlugins({ symbols: signalSymbols });
         // T27 补：从 result.results 里筛 SUCCESS 的，每个 plugin 单独持久化（保留 pluginId）
         // 数据口径（T85b ②）：信号要落在**确有行情**的那天（算指标必须有数据）
         const tradeDate = (await resolveLatestQuoteDate()) ?? getTradeDate();

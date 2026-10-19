@@ -125,7 +125,30 @@ describe('Review · PATCH 复盘 4 字段', () => {
 });
 
 describe('Review · strategy_match 筛选', () => {
+  // 🔴 T81 顺序依赖修复：原实现依赖**兄弟用例**（上面的 PATCH 用例）先跑并留下
+  //   strategy_match 标记 —— T81 的 `sequence.shuffle` 一开就随机失败
+  //   （实测：shuffle 关 → 10/10 绿；shuffle 开 → 2 个筛选用例红）。
+  //   改为每个用例**自己**准备带标记的数据，与兄弟用例解耦。
+  const seedMarked = async (assetCode: string, tradeType: string, marked: 0 | 1) => {
+    await postTrade({
+      asset_code: assetCode, trade_type: tradeType, trade_date: '2025-04-01',
+      trade_time: '09:00:09', quantity: 10, price: 10.0, fee: 0, trade_reason: '筛选测试',
+    });
+    const list = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/trades?asset_code=${assetCode}&trade_type=${tradeType}`,
+      headers: authHeaders(),
+    });
+    const tradeId = JSON.parse(list.body).data[0].id;
+    await bundle.app.inject({
+      method: 'PATCH', url: `/api/trades/${tradeId}`, headers: authHeaders(),
+      payload: { strategy_match: marked },
+    });
+  };
+
   it('GET /api/trades?strategy_match=1 → 只返回符合策略的', async () => {
+    const MARKED = 'szREVIEWM1';
+    await seedMarked(MARKED, 'buy', 1);
     const res = await bundle.app.inject({
       method: 'GET', url: `/api/trades?strategy_match=1`, headers: authHeaders(),
     });
@@ -136,6 +159,8 @@ describe('Review · strategy_match 筛选', () => {
   });
 
   it('GET /api/trades?strategy_match=0 → 只返回不符合策略的', async () => {
+    const MARKED = 'szREVIEWM0';
+    await seedMarked(MARKED, 'buy', 0);
     const res = await bundle.app.inject({
       method: 'GET', url: `/api/trades?strategy_match=0`, headers: authHeaders(),
     });

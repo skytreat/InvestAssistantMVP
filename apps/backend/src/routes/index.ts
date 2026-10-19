@@ -6,6 +6,8 @@ import { registerTradeRoutes } from './trade.js';
 import { registerSignalRoutes } from './signal.js';
 import { registerAdminRoutes } from './admin.js';
 import { registerWatchRoutes } from './watch.js';
+import { registerCandidateRoutes } from './candidate.js';
+import { registerBatchCandidateRoutes } from './candidates.js';
 import { registerKlineRoutes } from './kline.js';
 import { registerStockScanRoutes } from './stockscan.js';
 import { registerSymbolSearchRoutes } from './symbolSearch.js';
@@ -54,6 +56,9 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerSignalRoutes(app);
   await registerAdminRoutes(app);
   await registerWatchRoutes(app);
+  // T92：候选池路由归属收敛到 candidate.ts / candidates.ts（此前未注册 → 整块功能不可达）
+  await registerCandidateRoutes(app);
+  await registerBatchCandidateRoutes(app);
   await registerKlineRoutes(app);
   await registerStockScanRoutes(app);
   await registerSymbolSearchRoutes(app);

@@ -33,55 +33,82 @@ function authHeaders() {
   return { authorization: `Bearer ${bundle.adminToken}` };
 }
 
+/**
+ * 🔴 T81 顺序依赖修复：本文件原先三个 describe 共享 `szTEST01` 的持仓状态
+ *   （describe 1 买入 → describe 2 卖出）。T81 的 `sequence.shuffle` 一开，
+ *   「GET 列表」可能先于「买入」跑（0 行），「卖出恰好 100 股」可能先于建仓跑（409）。
+ *   （实测：shuffle 关 → 全绿；shuffle 开 → 2 个用例红。）
+ *   → 改为**每个用例用独立标的并自建仓**。
+ */
+async function seedBuy(assetCode: string, quantity = 100, price = 10.0, fee = 5): Promise<void> {
+  bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')
+    .run(bundle.userId, assetCode);
+  const res = await bundle.app.inject({
+    method: 'POST', url: '/api/trades',
+    headers: authHeaders(),
+    payload: {
+      asset_code: assetCode, trade_type: 'buy',
+      trade_date: TRADE_DATE, trade_time: '09:00:01', quantity, price, fee,
+      trade_reason: '集成测试建仓',
+    },
+  });
+  expect(res.statusCode, '建仓应成功').toBe(201);
+}
+
 describe('Trade · 买入 + 持仓查询', () => {
-  it('买入 szTEST01 100 股 @ 10.0 → 201', async () => {
+  it('买入 100 股 @ 10.0 → 201', async () => {
+    const CODE = 'szTEST01';
+    await seedBuy(CODE);
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/trades',
+      method: 'GET', url: `/api/trades?asset_code=${CODE}`,
       headers: authHeaders(),
-      payload: {
-        asset_code: TRADE_CODE, trade_type: 'buy',
-        trade_date: TRADE_DATE, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 5,
-        trade_reason: '集成测试买入',
-      },
     });
-    expect(res.statusCode).toBe(201);
-    const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
-    expect(body.data.trade_id).toBeGreaterThan(0);
-    expect(body.data.position.totalQuantity).toBe(100);
-    expect(body.data.position.avgCost).toBeCloseTo(10.05, 4);  // (1000+5)/100
+    expect(res.statusCode).toBe(200);
+    const rows = JSON.parse(res.body).data;
+    const mine = rows.find((r: any) => r.asset_code === CODE && r.trade_date === TRADE_DATE);
+    expect(mine, '买入应落库').toBeDefined();
+    expect(mine.trade_type).toBe('buy');
+    expect(Number(mine.quantity)).toBe(100);
   });
 
   it('GET /api/trades → 列表有刚录的那条', async () => {
+    const CODE = 'szTEST11';
+    await seedBuy(CODE);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/trades?asset_code=${TRADE_CODE}`,
+      method: 'GET', url: `/api/trades?asset_code=${CODE}`,
       headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const rows = JSON.parse(res.body).data;
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    const mine = rows.find((r: any) => r.asset_code === TRADE_CODE && r.trade_date === TRADE_DATE);
+    const mine = rows.find((r: any) => r.asset_code === CODE && r.trade_date === TRADE_DATE);
     expect(mine).toBeDefined();
   });
 
   it('GET /api/positions/:asset_code → qty=100', async () => {
+    const CODE = 'szTEST12';
+    await seedBuy(CODE);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/positions/${TRADE_CODE}`,
+      method: 'GET', url: `/api/positions/${CODE}`,
       headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.data.totalQuantity).toBe(100);
+    // 均价含手续费：(1000+5)/100 = 10.05
+    expect(body.data.avgCost).toBeCloseTo(10.05, 4);
   });
 });
 
 describe('Trade · HOLDING_INSUFFICIENT', () => {
   it('卖出超过持仓 → 409 HOLDING_INSUFFICIENT', async () => {
+    const CODE = 'szTEST21';
+    await seedBuy(CODE, 100, 10.0, 5);
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'reduce',
+        asset_code: CODE, trade_type: 'reduce',
         trade_date: TRADE_DATE, trade_time: '09:00:02', quantity: 999, price: 11.0,
         trade_reason: '测试卖出超持仓',
       },
@@ -93,12 +120,14 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
   });
 
   it('卖出恰好 100 股 → 201 + position=0', async () => {
+    const CODE = 'szTEST22';
+    await seedBuy(CODE, 100, 10.0, 5);
     const sellDate = new Date(Date.now() + 86400000).toISOString().slice(0, 10);  // 次日避免 UNIQUE
     const res = await bundle.app.inject({
       method: 'POST', url: '/api/trades',
       headers: authHeaders(),
       payload: {
-        asset_code: TRADE_CODE, trade_type: 'reduce',
+        asset_code: CODE, trade_type: 'reduce',
         trade_date: sellDate, trade_time: '09:00:03', quantity: 100, price: 11.0,
         trade_reason: '测试清仓卖出',
       },

@@ -3,7 +3,7 @@ import { ConfigStore } from '../config/configStore.js';
 import { runAllChecks } from '../services/validator.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from '../services/marketData.js';
 import { executeAllPlugins } from '../services/pluginEngine.js';
-import { persistSignals, getTradeDate } from '../services/signalService.js';
+import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from '../services/signalService.js';
 import { writeSystemLog } from '../services/logger.js';
 
 /**
@@ -35,7 +35,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     if (user.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN' });
     try {
       writeSystemLog({ logType: 'trigger_manual', level: 'INFO', message: `${user.username} 手动触发信号生成` });
-      const result = await executeAllPlugins();
+      // 🔴 T85b ①（I-19）：手动触发同样按**用户的自选 ∪ 持仓**生成信号（PRD M4），
+      //   不再只对硬编码的 sh600000。
+      const signalSymbols = resolveSignalSymbols(SIGNAL_USER_ID);
+      const result = await executeAllPlugins({ symbols: signalSymbols });
       // 数据口径：信号要落在**确有行情**的那天（算指标必须有数据）
       const tradeDate = (request.body as any)?.trade_date ?? (await resolveLatestQuoteDate()) ?? getTradeDate();
       let totalInserted = 0, totalSkipped = 0;

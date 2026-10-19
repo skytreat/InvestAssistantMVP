@@ -25,6 +25,8 @@ interface ParamField {
   unit?: string;
   description?: string;
   required?: boolean;
+  /** T85b ①：运行时注入字段（用户不可配置，表单不渲染） */
+  runtimeInjected?: boolean;
 }
 
 interface PluginItem {
@@ -237,7 +239,9 @@ export default function Settings() {
 
             {expanded === p.id && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
-                {(p.paramSchema ?? []).map((f) => renderField(p, f))}
+                {/* T85b ①：runtimeInjected 的参数（如 symbol）由后端运行时注入，
+                    不该作为用户可配置项出现在表单里 */}
+                {(p.paramSchema ?? []).filter((f) => !f.runtimeInjected).map((f) => renderField(p, f))}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
                     {saving === p.id ? '保存中...' : '保存'}

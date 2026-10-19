@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS system_log (
     log_date TEXT NOT NULL,
     log_type TEXT NOT NULL CHECK (
         log_type IN ('tdx2db_update', 'datacheck', 'plugin_execute', 'signal_generate',
-                     'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade')
+                     'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade',
+                     'candidate_migrate')
     ),
     level TEXT NOT NULL CHECK (level IN ('INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS')),
     check_item TEXT,
@@ -214,7 +215,8 @@ export class ConfigStore {
    */
   private _ensureSystemLogCheckConstraint(): void {
     const EXPECTED_TYPES = ['tdx2db_update', 'datacheck', 'plugin_execute', 'signal_generate',
-                            'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade'];
+                            'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade',
+                            'candidate_migrate'];
     const EXPECTED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
 
     try {

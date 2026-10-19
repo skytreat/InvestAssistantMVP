@@ -1210,7 +1210,9 @@ CREATE TABLE IF NOT EXISTS system_log (
     log_type TEXT NOT NULL CHECK (
         log_type IN ('tdx2db_update', 'datacheck', 'signal_generate',
                      'dividend_import', 'backup', 'trigger_manual',
-                     'plugin_execute', 'startup', 'trade')   -- 后 3 个为代码实际在用，SDD 初稿遗漏（2026-10-17 实测补齐）
+                     'plugin_execute', 'startup', 'trade',
+                     'candidate_migrate')   -- 后 4 个为代码实际在用，SDD 初稿遗漏（2026-10-17 / 2026-10-19 实测补齐）
+                     -- candidate_migrate：候选池迁移打标记（T92）—— 原用 'trade' 记录属误用（这不是交易）
     ),
     level TEXT NOT NULL CHECK (level IN ('INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS')),
     check_item TEXT,

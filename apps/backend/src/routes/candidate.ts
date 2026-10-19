@@ -30,6 +30,7 @@ import {
   resolveBasePrices,
 } from '../services/candidateService.js';
 import type { PriceMode } from '../services/candidateService.js';
+import { writeSystemLog } from '../services/logger.js';
 
 interface CreateCandidateBody {
   asset_code?: unknown;
@@ -187,6 +188,14 @@ export async function registerCandidateRoutes(app: FastifyInstance): Promise<voi
 
     try {
       const row = markCandidateMigrated(user.sub, assetCode, priceMode);
+      // 🔴 T92：原实现用 `log_type='trade'` 记录候选迁移 —— **误用**（这不是交易）。
+      //   改用专用的 `candidate_migrate`（system_log.log_type CHECK 已扩该值）。
+      writeSystemLog({
+        logType: 'candidate_migrate',
+        level: 'INFO',
+        message: `${user.username} ${assetCode} 从 candidate 迁移到 watch（price_mode=${priceMode}）`,
+        detail: JSON.stringify({ assetCode, priceMode, marked: true, autoCreated: false }),
+      });
       return reply.send({
         success: true,
         data: {

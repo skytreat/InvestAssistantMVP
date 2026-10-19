@@ -96,6 +96,13 @@ export interface ParamField {
   unit?: string;
   description?: string;
   required?: boolean;
+  /**
+   * 运行时注入字段（T85b ①）
+   *
+   * 该参数**由调用方在执行时注入**（如 `symbol`），不是用户可配置项。
+   * 标上此标记后，前端参数表单**不渲染**它（用户不该能改「跑哪些标的」）。
+   */
+  runtimeInjected?: boolean;
 }
 
 /** 插件执行上下文（注入行情 + 算法） */
@@ -290,7 +297,7 @@ export const builtinPlugins: Plugin[] = [
       ],
     },
     paramSchema: [
-      { key: 'symbol', label: '标的代码', type: 'string', default: 'sh600000', required: true },
+      { key: 'symbol', label: '标的代码', type: 'string', default: 'sh600000', required: true, runtimeInjected: true },
       { key: 'period', label: 'RSI 周期', type: 'integer', default: 14, min: 5, max: 30 },
       { key: 'oversold', label: '超卖阈值', type: 'number', default: 30, min: 1, max: 50 },
       { key: 'overbought', label: '超买阈值', type: 'number', default: 70, min: 50, max: 100 },
@@ -375,7 +382,7 @@ export const builtinPlugins: Plugin[] = [
       fillAreas: { above: '#e74c3c', below: '#2ecc71' },
     },
     paramSchema: [
-      { key: 'symbol', label: '标的代码', type: 'string', default: 'sh600000', required: true },
+      { key: 'symbol', label: '标的代码', type: 'string', default: 'sh600000', required: true, runtimeInjected: true },
       { key: 'fast', label: '快线 EMA', type: 'integer', default: 12, min: 2, max: 30 },
       { key: 'slow', label: '慢线 EMA', type: 'integer', default: 26, min: 10, max: 60 },
       { key: 'signal', label: '信号线', type: 'integer', default: 9, min: 2, max: 20 },
@@ -1302,12 +1309,100 @@ export interface PluginBatchResult {
 }
 
 /**
+ * 批量执行参数（T85b ①）
+ */
+export interface ExecuteAllPluginsOptions {
+  /**
+   * 标的域。**不传** = 沿用旧行为（每个插件跑 1 次，用其 paramSchema 默认 symbol）。
+   * 传了 = 对「每个标的 × 每个插件」各执行 1 次，symbol 由运行时注入。
+   */
+  symbols?: string[];
+  /** 传给插件的用户参数（symbol 会被运行时覆盖） */
+  userParams?: Record<string, unknown>;
+  /** 预取窗口天数（默认 120，与内置插件 paramSchema 的 days 默认值一致） */
+  prefetchDays?: number;
+}
+
+/**
  * 依次执行所有内置 monitor 类插件（MVP 暂不并发，避免同时打 DuckDB）。
  * 自定义插件将来从 PLUGIN_ALLOWED_PATH 加载后追加执行。
+ *
+ * 🔴 T85b ①（I-19）：修复前恒定 `executePlugin(plugin, {}, ctx)` 传空参 →
+ *   插件落到 paramSchema 的硬编码默认 `symbol:'sh600000'` → **信号只对 1 只标的生效**，
+ *   用户的自选/持仓一只都跑不到（违反 PRD M4）。
+ *   现在支持传入**标的域**（自选 ∪ 持仓），并对整个标的域**批量预取**日线
+ *   （SDD §5.3 P8「1 次 IN 查询 → N 插件共享」）。
  */
-export async function executeAllPlugins(): Promise<PluginBatchResult> {
+export async function executeAllPlugins(
+  options: ExecuteAllPluginsOptions = {},
+): Promise<PluginBatchResult> {
   // 合并内置 + 磁盘加载（SDD §5.3 磁盘热加载）
   const monitorPlugins = getAllPlugins().filter(p => p.category === 'monitor');
+  const symbols = options.symbols;
+
+  // ── 标的域模式：批量预取 + 逐标的执行 ──
+  // ⚠️ 用 `symbols !== undefined` 判定（不是 `symbols.length > 0`）——
+  //    传了**空数组**表示「用户没有自选/持仓」→ 不该退回旧行为去跑硬编码 symbol。
+  if (symbols !== undefined) {
+    if (symbols.length === 0) {
+      const emptyStats: PluginBatchStats = {
+        total: 0, success: 0, timeout: 0, error: 0, skip: 0,
+      };
+      writeSystemLog({
+        logType: 'plugin_execute',
+        level: 'INFO',
+        message: '批量执行跳过：标的域为空（用户无自选/持仓）',
+        detail: JSON.stringify(emptyStats),
+      });
+      return { signals: [], stats: emptyStats, results: [] };
+    }
+    const days = options.prefetchDays ?? 120;
+    const end = new Date().toISOString().slice(0, 10);
+    const start = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    // 1 次 IN 查询拿回整个标的域的日线（N 个插件共享）
+    const prefetchKlines = await batchGetDailyRange(symbols, start, end);
+    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days });
+
+    const stats: PluginBatchStats = {
+      total: monitorPlugins.length * symbols.length,
+      success: 0,
+      timeout: 0,
+      error: 0,
+      skip: 0,
+    };
+    const allSignals: PluginSignal[] = [];
+    const results: PluginExecutionResult[] = [];
+
+    for (const plugin of monitorPlugins) {
+      for (const symbol of symbols) {
+        // symbol 由运行时注入（覆盖用户参数里的同名字段）
+        const params = { ...(options.userParams ?? {}), symbol };
+        const res = await executePlugin(plugin, params, ctx);
+        results.push(res);
+        if (res.status === 'SUCCESS') {
+          stats.success += 1;
+          allSignals.push(...res.signals);
+        } else if (res.status === 'TIMEOUT') {
+          stats.timeout += 1;
+        } else if (res.status === 'ERROR') {
+          stats.error += 1;
+        } else {
+          stats.skip += 1;
+        }
+      }
+    }
+
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'INFO',
+      message: `批量执行完成（标的域 ${symbols.length} 只） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip}`,
+      detail: JSON.stringify({ ...stats, symbolCount: symbols.length }),
+    });
+
+    return { signals: allSignals, stats, results };
+  }
+
+  // ── 旧行为（未传标的域）：每个插件跑 1 次 ──
   const ctx = buildPluginContext();
 
   const stats: PluginBatchStats = {
@@ -1321,7 +1416,7 @@ export async function executeAllPlugins(): Promise<PluginBatchResult> {
   const results: PluginExecutionResult[] = [];
 
   for (const plugin of monitorPlugins) {
-    const res = await executePlugin(plugin, {}, ctx);
+    const res = await executePlugin(plugin, options.userParams ?? {}, ctx);
     results.push(res);
     if (res.status === 'SUCCESS') {
       stats.success += 1;

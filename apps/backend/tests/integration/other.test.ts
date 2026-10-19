@@ -188,11 +188,17 @@ describe('Watch CRUD · 38-42', () => {
 });
 
 describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
+  // 🔴 T92：候选池路由归属收敛到 `routes/candidate.ts`（T50 实现）后，
+  //   `POST /api/candidate` 的入参校验**变严**了 —— 要求 `sh600000 / sz000001` 格式
+  //   （旧 `watch.ts` 只要求非空）。本用例原用裸码 '000001' → 400 PARAM_INVALID。
+  //   改用全系统统一的带前缀格式，语义（UNIQUE 三列独立）不变。
+  const CODE = 'sz000001';
+
   beforeAll(() => {
-    // 确保 watch 表里有一条 000001（独立的 rel_type）
+    // 确保 watch 表里有一条同 asset_code（独立的 rel_type）
     bundle.db.db.prepare(
       'INSERT OR IGNORE INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)'
-    ).run(watchUserId, '000001', 'watch');
+    ).run(watchUserId, CODE, 'watch');
   });
 
   it('POST /api/candidate 对同一 asset_code → 201（验证 UNIQUE 三列独立）', async () => {
@@ -200,7 +206,7 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
       method: 'POST',
       url: '/api/candidate',
       headers: watchHeaders(),
-      payload: { asset_code: '000001' },
+      payload: { asset_code: CODE },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
@@ -210,10 +216,21 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     // 验证数据库里 watch + candidate 共存
     const rows = bundle.db.db.prepare(
       'SELECT asset_code, rel_type FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND is_deleted = 0 ORDER BY rel_type'
-    ).all(watchUserId, '000001') as { asset_code: string; rel_type: string }[];
+    ).all(watchUserId, CODE) as { asset_code: string; rel_type: string }[];
     expect(rows.length).toBe(2);
     const types = new Set(rows.map(r => r.rel_type));
     expect(types.has('watch')).toBe(true);
     expect(types.has('candidate')).toBe(true);
+  });
+
+  it('POST /api/candidate 非法 asset_code 格式 → 400 PARAM_INVALID（T92 收敛后更严）', async () => {
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/candidate',
+      headers: watchHeaders(),
+      payload: { asset_code: '000001' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('PARAM_INVALID');
   });
 });
