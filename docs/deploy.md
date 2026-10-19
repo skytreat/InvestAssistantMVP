@@ -108,6 +108,10 @@ SQLITE_DB_PATH=/opt/invol/data/business.db
 # 备份目录
 BACKUP_DIR=/opt/invol/backup
 
+# 自定义插件目录（可选，默认 /opt/invol/plugins/strategies）
+# 该目录必须存在且对运行用户可写；不存在时后端只记 INFO 日志跳过磁盘加载（内置插件仍可用）
+# PLUGIN_ALLOWED_PATH=/opt/invol/plugins/strategies
+
 # JWT secret（生产务必改）
 JWT_SECRET=change-me-in-production
 ```

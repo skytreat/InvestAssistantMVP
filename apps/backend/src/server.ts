@@ -9,11 +9,12 @@ import { registerCronJobs } from './services/scheduler.js';
 /**
  * Fastify 后端入口
  * MVP 硬约束：只监听 127.0.0.1，CORS 只允许 127.0.0.1
- * 端口固定 8080（AGENTS.md 端口分配）
+ * 默认端口 8080（AGENTS.md 端口分配）；PORT 可覆盖（docs/deploy.md §3 的环境变量表已按可配置书写），
+ * 用途是避开宿主上已占用 8080 的其他服务（如本机的 llama-server），默认行为不变。
  */
 
 const HOST = '127.0.0.1';
-const PORT = 8080;
+const PORT = Number(process.env.PORT ?? 8080);
 
 async function bootstrap() {
   const app = Fastify({
