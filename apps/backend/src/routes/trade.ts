@@ -35,6 +35,54 @@ export function nowTradeTime(): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+/**
+ * T58：同步 `user_asset_rel` 的 `rel_type='hold'` 关系
+ *
+ * 口径（以 `calcPosition` 的移动加权成本结果为准，与 GET /api/positions 同一口径）：
+ * - 持仓 > 0 → 关系存在：缺则 INSERT，软删则恢复（`is_deleted=0`）
+ * - 持仓 = 0（清仓）→ **软删**（`is_deleted=1`），不物理删除（AGENTS.md 硬约束）
+ *
+ * 幂等：先按 UNIQUE(user_id, asset_code, rel_type) 查现状，再决定 INSERT/UPDATE，
+ * 重复调用不会产生第二行，也不会抛 UNIQUE。
+ *
+ * ⚠️ 与 `exDividendSync.getHoldingBeforeDate` 的口径差异（**疑似，未修**）：
+ *    后者把 `bonus` 计入 +quantity，`calcPosition`（core 移动加权）不计 bonus。
+ *    「清仓后又有送转股」这类序列两者结论会相反。此处不擅自改动，等业务口径裁决。
+ */
+export function syncHoldRelation(userId: number, assetCode: string): { action: string; totalQuantity: number } {
+  const db = ConfigStore.getInstance().db;
+  const totalQuantity = calcPosition(userId, assetCode).totalQuantity;
+  const shouldHold = totalQuantity > 0;
+
+  const run = db.transaction(() => {
+    const existing = db.prepare(
+      'SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?'
+    ).get(userId, assetCode, 'hold') as { id: number; is_deleted: number } | undefined;
+
+    if (shouldHold) {
+      if (!existing) {
+        db.prepare(
+          `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'hold')`
+        ).run(userId, assetCode);
+        return 'created';
+      }
+      if (existing.is_deleted === 1) {
+        db.prepare('UPDATE user_asset_rel SET is_deleted = 0 WHERE id = ?').run(existing.id);
+        return 'restored';
+      }
+      return 'kept';
+    }
+
+    if (existing && existing.is_deleted === 0) {
+      db.prepare('UPDATE user_asset_rel SET is_deleted = 1 WHERE id = ?').run(existing.id);
+      return 'soft_deleted';
+    }
+    return 'noop';
+  });
+
+  return { action: run(), totalQuantity };
+}
+
 export async function registerTradeRoutes(app: FastifyInstance) {
   // 录入交易
   app.post('/api/trades', async (request, reply) => {
@@ -113,11 +161,15 @@ if (REDUCE_TYPES.has(body.trade_type)) {
         message: `录入${body.trade_type} ${body.asset_code} qty=${body.quantity} price=${body.price}`,
       });
 
+      // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
+      const holdRel = syncHoldRelation(user.sub, body.asset_code);
+
       reply.code(201).send({
         success: true,
         data: {
           trade_id: info.lastInsertRowid,
           position: calcPosition(user.sub, body.asset_code),
+          hold_rel: holdRel,
         },
       });
     } catch (err: any) {
@@ -227,11 +279,16 @@ if (REDUCE_TYPES.has(body.trade_type)) {
     if (info.changes === 0) {
       return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
     }
+    // T58：软删交易后同步 hold 关系（删掉的是买入 → 持仓归零 → 软删 hold）
+    const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
+      { asset_code: string } | undefined;
+    const holdRel = row ? syncHoldRelation(user.sub, row.asset_code) : null;
     writeSystemLog({
       logType: 'trade', level: 'INFO',
       message: `${user.username} 软删除交易 id=${tradeId}`,
+      detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send({ success: true });
+    reply.send({ success: true, data: { hold_rel: holdRel } });
   });
 
   // T39: 恢复软删除
@@ -245,11 +302,16 @@ if (REDUCE_TYPES.has(body.trade_type)) {
     if (info.changes === 0) {
       return reply.code(404).send({ success: false, error: 'NOT_FOUND' });
     }
+    // T58：恢复交易 → 持仓回升 → hold 关系恢复
+    const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
+      { asset_code: string } | undefined;
+    const holdRel = row ? syncHoldRelation(user.sub, row.asset_code) : null;
     writeSystemLog({
       logType: 'trade', level: 'INFO',
       message: `${user.username} 恢复交易 id=${tradeId}`,
+      detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send({ success: true });
+    reply.send({ success: true, data: { hold_rel: holdRel } });
   });
 
   // 查询单个标的持仓

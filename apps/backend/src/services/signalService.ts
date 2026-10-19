@@ -13,6 +13,13 @@ import type { PluginSignal } from './pluginEngine.js';
  *   - signalType（BUY/SELL/HOLD）经 DIRECTION_MAP 映射为 SDD 的 direction（buy/sell/hold）
  *   - signalType 枚举已去掉 'ALERT'（SDD §5.3 无告警向）
  *
+ * T58 落库字段补全：
+ *   - `metrics_json` 由 T93 先行落地（serializeMetrics），T58 不重复实现，只补测试
+ *   - `is_final` 显式写 1（DDL 有 `DEFAULT 1`，但 INSERT 显式声明，避免后续默认值变更静默改语义）
+ *
+ * ⚠️ metrics_json 只序列化插件回传的数值明细（PluginSignal.metrics），
+ *    **不包含 ctx / token / 任何凭证**，也不包含 PluginSignal.detail 自由文本。
+ *
  * MVP 简化：固定 user_id=1（admin 默认 id=1），后续多用户扩展时按 user_asset_rel 分发
  */
 
@@ -22,10 +29,15 @@ const DIRECTION_MAP: Record<string, 'buy' | 'sell' | 'hold'> = {
   HOLD: 'hold',
 };
 
-/** INSERT 列顺序（persistSignals / persistBatchSignals 共用） */
-const INSERT_SQL = `INSERT OR IGNORE INTO user_strategy_signal
-     (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+/**
+ * INSERT 列顺序（persistSignals / persistBatchSignals 共用）
+ *
+ * T58：显式写入 `is_final = 1`。这里是常量而非用户输入，故用 SQL 字面量而非占位符；
+ * 真正来自外部的 9 个字段全部走 `?` 预编译绑定。
+ */
+export const SIGNAL_INSERT_SQL = `INSERT OR IGNORE INTO user_strategy_signal
+     (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json, is_final)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`;
 
 /** metrics 序列化成 metrics_json（无 metrics 时写 NULL，不写 'null' 字符串） */
 function serializeMetrics(metrics: Record<string, number> | undefined): string | null {
@@ -51,7 +63,7 @@ export function persistSignals(
   let skipped = 0;
   let errors = 0;
 
-  const stmt = db.prepare(INSERT_SQL);
+  const stmt = db.prepare(SIGNAL_INSERT_SQL);
 
   const tx = db.transaction(() => {
     for (const s of signals) {
@@ -89,7 +101,7 @@ export function persistBatchSignals(
   let skipped = 0;
   let errors = 0;
 
-  const stmt = db.prepare(INSERT_SQL);
+  const stmt = db.prepare(SIGNAL_INSERT_SQL);
 
   const tx = db.transaction(() => {
     for (const r of results) {
