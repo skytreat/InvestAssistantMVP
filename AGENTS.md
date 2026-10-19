@@ -144,7 +144,11 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 **验收标准**：`LISTEN = 0` **且** Step 3 无输出。**只满足前者不算收尾完成** —— `tsx watch` 不占端口但会在下次文件变动时复活后端。
 
 **起服务时的纪律**：
-- **必须用隔离库**。`.env.local` 无 `SQLITE_DB_PATH`，可直接覆盖（范式见 `apps/backend/tests/integration/_helpers.ts:17-21`：`mkdtempSync` + 覆盖 `SQLITE_DB_PATH` + `(ConfigStore as any)._instance = null`）。实测可让后端完全不碰 `apps/backend/data/business.db`。
+- **必须用隔离库**。`.env.local` **已有** `SQLITE_DB_PATH`，且指向仓库内 `data/business.db`；`node --env-file` 不覆盖已存在的环境变量，故**在命令行显式前置 `SQLITE_DB_PATH=<临时路径>` 即可覆盖**（范式见 `apps/backend/tests/integration/_helpers.ts:17-21`：`mkdtempSync` + 覆盖 `SQLITE_DB_PATH` + `(ConfigStore as any)._instance = null`）。
+  - ⚠️ **2026-10-18 修订**：本条原文写「`.env.local` 无 `SQLITE_DB_PATH`，可直接覆盖」—— 该前提已失效。若 `.env.local` 里的值指向**当前用户不可写**的目录（如 `/opt/invol/...`，该目录 root 拥有且 `deploy.md` §2 的 chown 尚未执行），启动会以 `SQLITE_CANTOPEN` 崩溃。
+  - ✅ `configStore.ts` 启动时 `fs.mkdirSync(dir, {recursive:true})` 会自动建父目录，故**只要父路径可写即可**，无需手工建目录。
+- **端口可覆盖**：`server.ts` 读 `PORT`（默认 8080）。宿主 8080 被别的服务（如 llama-server）占用时，`PORT=8081 npm run dev`。`.env.local` 里有注释掉的 `PORT=8080` 可按需启用。
+- ⚠️ **跑测试前必须先停掉后端**（2026-10-18 实测）：后端进程持有 `DUCKDB_PATH` 指向的 DuckDB 文件**独占锁**，此时跑 `npm test` 会让 `tests/unit/duckdbLeak.test.ts` 等 **12 个用例**报 `IO Error: Could not set lock on file ... Conflicting lock is held in /usr/bin/node (PID …)`。**这是环境冲突，不是代码回归** —— 先 `kill` 后端再跑测试即可全绿（实测 257/257 PASS）。
 - **日志重定向到文件**（`-RedirectStandardOutput`），便于起不来时定位。
 - **记 PID 只能记 `Start-Process -PassThru` 的返回值，不能当清理依据** —— 见上，包装层 PID 与监听 PID 无关。
 
@@ -258,6 +262,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 2. 沙盒禁止清单：`global` / `process` / `require` 全部不可访问；禁止文件系统 / 网络操作；
 3. `paramSchema` 声明的参数类型 + 范围，调用前必须先 validate（SDD §5.3 ParamField interface）；
 4. 自定义插件只能放 `/opt/invol/plugins/strategies/` 且仅限 `.js`；禁止动态 eval 用户上传的代码。
+   > ⚠️ **2026-10-18 修订**：该目录路径支持 env 覆盖 —— `PLUGIN_ALLOWED_PATH`（默认 `/opt/invol/plugins/strategies`）。改动的是**路径**，不是**约束**：仍只允许 `.js`、仍禁止 eval、仍做路径逃逸前缀校验。开发机无 `/opt/invol` 写权限时设 `PLUGIN_ALLOWED_PATH=<可写目录>` 即可，无需改代码。
 
 ## 📐 编码、命名、测试简要约束（完整详见 docs/coding‑standards.md）
 1. 命名：TS/JS 遵循通用TS约定；数据库表、字段全部`snake_case`；接口RESTful；常量全大写SNAKE_CASE。
@@ -283,7 +288,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | 需求权威源 | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
 | PRD | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
 | SDD 设计文档 | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
-| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T98，52 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
+| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T98，53 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
 | **决策归档** | `docs/adr/` | **已接受 ADR 8 份** —— 决策结论 + 理由 + 代价 + 备选方案否决理由；索引见 `docs/adr/README.md`。**本文档与实施计划只引用决策，不重复决策理由** |
 | ~~旧实施计划~~ | `docs/archive/MVP_code_implementation_plan_SUPERSEDED-2026-10-17.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系），已归档 |
 | ~~旧需求原件~~ | `docs/archive/Requirements_original_SUPERSEDED-2026-10-13.md` | ❌ **需求 V1.1（OCI 架构）**，已被 `Requirements_simplified.md` 取代，已归档 |

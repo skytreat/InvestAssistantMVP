@@ -44,3 +44,5 @@ opencode.jsonc
 *.opencode‑skill.md
 .opencode/*
 !.opencode/skills/.gitkeep
+# Playwright CLI output (may contain credentials)
+.playwright-cli/

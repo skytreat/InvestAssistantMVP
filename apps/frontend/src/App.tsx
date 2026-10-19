@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import TradeInput from './pages/TradeInput';
 import Signals from './pages/Signals';
@@ -8,6 +8,7 @@ import Kline from './pages/Kline';
 import StockScan from './pages/StockScan';
 import Review from './pages/Review';
 import Settings from './pages/Settings';
+import NotFound from './pages/NotFound';
 import { useUserStore } from './store/user';
 import { Navbar } from './pages/_shared';
 
@@ -28,7 +29,8 @@ export default function App() {
         <Route path="/review" element={<Review />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/admin" element={<Admin />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        {/* 未知路由显示 404 页，不再静默跳回仪表盘（拼错的路径本该显式报错） */}
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </div>
   );
