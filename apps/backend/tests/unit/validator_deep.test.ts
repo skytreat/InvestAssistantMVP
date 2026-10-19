@@ -202,7 +202,23 @@ describe('validator_deep — C10 除权事件覆盖', () => {
 });
 
 describe('validator_deep — runAllChecks 日志写入', () => {
+  /**
+   * ⚠️ 必须 mock 掉 global.fetch：
+   * runAllChecks 会真跑 C11（东财/腾讯行情源抽样比对），C12 单只超时 10s +
+   * 退避重试 2 次（200ms→400ms），在无外网/受限环境下单只可达 11s，
+   * 20 只抽样直接冲破 vitest 默认 15s 超时（本用例曾在 15s 处 timeout）。
+   *
+   * 这里让 fetch 立即失败 → C12 走「连续失败 ≥5 → 整项 SKIP」分支，
+   * 既隔离外部依赖，又顺带覆盖了降级路径。
+   */
   it('runAllChecks 不抛错（内部 try-catch 兜底）', async () => {
-    await expect(runAllChecks('2026-10-15')).resolves.toBeDefined();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('validator_deep: 网络已隔离'));
+    try {
+      await expect(runAllChecks('2026-10-15')).resolves.toBeDefined();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
