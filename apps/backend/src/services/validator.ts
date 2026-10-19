@@ -3,9 +3,41 @@
 // 所有 DuckDB SQL 模板来自 SDD §5.7，{{TRADE_DATE}} 由调度器注入
 import { queryDuckDB } from '../db/duckdb.js';
 import { writeSystemLog } from './logger.js';
+import { resolveTargetTradeDate } from './marketData.js';
 
 /** 校验结果三值（扩展 SKIP 用于 C11/C12 MVP） */
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
+
+/**
+ * 该日是否在 `raw_holidays` 休市黑名单中（DuckDB 不可用时保守返回 false）
+ *
+ * ⚠️ 语义更正（2026-10-19 实测，I-20）：`raw_holidays` 存的是**休市日**，
+ * 不是交易日。详见 `marketData.ts` 的「raw_holidays 语义更正」注释。
+ */
+async function isHolidayListedSafe(date: string): Promise<boolean> {
+  try {
+    const rows = await queryDuckDB<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
+      [date]
+    );
+    return rows.length > 0 && Number(rows[0].count) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** 该日是否有任何行情数据（DuckDB 不可用时保守返回 false） */
+async function hasQuoteDataOn(date: string): Promise<boolean> {
+  try {
+    const rows = await queryDuckDB<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM v_stock_qfq WHERE date = ?',
+      [date]
+    );
+    return rows.length > 0 && Number(rows[0].count) > 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 容差 / 阈值常量（集中定义）
@@ -174,22 +206,37 @@ async function checkC1(tradeDate: string): Promise<CheckSummary> {
 
 // ─────────────────────────────────────────────────────────────────
 // C2：交易日历匹配
-// SQL 原样来自 SDD §5.7 C2
+//
+// 🔴 2026-10-19 实测修正（I-20）：原 SQL 的 CASE 分支建立在
+// 「raw_holidays 有行 = 交易日」这一**错误假设**上，而实测证明
+// `raw_holidays` 存的是**休市日**黑名单。
+//
+// 实测证据：该表 680 行中「该日有行情」的为 0 行；v_stock_qfq 的 8799 个日期
+// 无一在表内。旧 SQL 的后果是**每个真实场景都判错**：
+//   2026-10-12 交易日有行情 → 旧判 WARN（应 PASS）
+//   2026-10-07 休市日无行情 → 旧判 ERROR（应 PASS）
+//   2026-10-18 交易日无行情 → 旧判 PASS（应 SKIP，即假绿）
+//
+// 正确口径：交易日 = 工作日 且 不在 raw_holidays 中。
+//   · 交易日 且 有行情 → PASS
+//   · 休市日   且 无行情 → PASS（休市本就没有行情）
+//   · 交易日 且 无行情 → SKIP（数据缺失，不算通过；对应「行情陈旧」场景）
+//   · 休市日   且 有行情 → ERROR（矛盾，数据源异常）
 // ─────────────────────────────────────────────────────────────────
 
 const C2_SQL = `
 SELECT
     CASE
         WHEN EXISTS (SELECT 1 FROM raw_holidays WHERE date = ?::date)
+          AND NOT EXISTS (SELECT 1 FROM v_stock_qfq WHERE date = ?::date)
+            THEN 'PASS'
+        WHEN NOT EXISTS (SELECT 1 FROM raw_holidays WHERE date = ?::date)
           AND EXISTS (SELECT 1 FROM v_stock_qfq WHERE date = ?::date)
             THEN 'PASS'
         WHEN NOT EXISTS (SELECT 1 FROM raw_holidays WHERE date = ?::date)
           AND NOT EXISTS (SELECT 1 FROM v_stock_qfq WHERE date = ?::date)
-            THEN 'PASS'
-        WHEN EXISTS (SELECT 1 FROM raw_holidays WHERE date = ?::date)
-          AND NOT EXISTS (SELECT 1 FROM v_stock_qfq WHERE date = ?::date)
-            THEN 'ERROR'
-        ELSE 'WARN'
+            THEN 'SKIP'
+        ELSE 'ERROR'
     END AS result
 `;
 
@@ -1042,25 +1089,50 @@ const CHECKS: Array<(tradeDate: string) => Promise<CheckSummary>> = [
 ];
 
 export async function runAllChecks(tradeDate?: string): Promise<CheckSummary[]> {
-  const date = tradeDate ?? new Date().toISOString().slice(0, 10);
+  // 单一事实源（T85b ②）：未显式指定时，用**日历口径**的当前交易日。
+  // ⚠️ 刻意不用「有行情数据的最后一天」—— 那样数据陈旧时会回退到旧日期，
+  //    C1/C3 全部 PASS → 假绿。日历口径能让陈旧如实暴露为 ERROR/WARN。
+  const date = tradeDate ?? (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
   const summaries: CheckSummary[] = [];
+
+  // ── 非交易日闸门（T85b ②）──────────────────────────────────────────
+  // 「当天没有行情数据」时，**不得**把「查到 0 条」判成 PASS —— 那是假绿。
+  // 典型场景：周末 / 法定假日 / 行情管道停摆（tdx2db 停跑）。
+  // 判定：tradeDate 当天既不在休市黑名单、也查不到任何行情 → 全部 SKIP。
+  // ⚠️ 休市日本来就没有行情，**不算**异常 —— 故此处只拦「日历上是交易日却没数据」。
+  const isHoliday = await isHolidayListedSafe(date);
+  const hasQuoteData = await hasQuoteDataOn(date);
+  const nonTradingDayNoData = !isHoliday && !hasQuoteData;
 
   for (const checkFn of CHECKS) {
     // 包裹 try-catch，单条 SQL 崩了不影响其他
     let summary: CheckSummary;
-    try {
-      summary = await checkFn(date);
-    } catch (err) {
-      // 从函数名反推 checkId
+    if (nonTradingDayNoData) {
+      // 该日是交易日但无任何行情数据 → 全部 SKIP（数据源缺失 ≠ 校验通过）
       const fnName = checkFn.name;
       const idMatch = fnName.match(/check(C\d+)/);
       const checkId = idMatch ? idMatch[1] : fnName;
       summary = {
         checkId,
-        result: 'ERROR',
-        detail: `未预期异常: ${String(err)}`,
+        result: 'SKIP',
+        detail: `${date} 是交易日但无行情数据（行情管道可能停摆），跳过本校验`,
         durationMs: 0,
       };
+    } else {
+      try {
+        summary = await checkFn(date);
+      } catch (err) {
+        // 从函数名反推 checkId
+        const fnName = checkFn.name;
+        const idMatch = fnName.match(/check(C\d+)/);
+        const checkId = idMatch ? idMatch[1] : fnName;
+        summary = {
+          checkId,
+          result: 'ERROR',
+          detail: `未预期异常: ${String(err)}`,
+          durationMs: 0,
+        };
+      }
     }
     summaries.push(summary);
 

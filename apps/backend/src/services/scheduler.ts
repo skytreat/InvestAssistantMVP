@@ -9,6 +9,7 @@ import { executeAllPlugins } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
 import { persistSignals, getTradeDate } from './signalService.js';
+import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
 import { runFullBackup } from './backup.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
@@ -101,7 +102,8 @@ export function registerCronJobs(app: FastifyInstance): void {
       writeSystemLog({
         logType: 'datacheck', level: 'INFO', message: 'C1-C12 校验开始',
       });
-      const date = new Date().toISOString().slice(0, 10);
+      // 单一事实源（T85b ②）：日历口径的当前交易日（数据陈旧会如实暴露，不会假绿）
+      const date = (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
       try {
         const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
         const errors = summaries.filter(s => s.result === 'ERROR').length;
@@ -131,7 +133,8 @@ export function registerCronJobs(app: FastifyInstance): void {
       try {
         const result = await executeAllPlugins();
         // T27 补：从 result.results 里筛 SUCCESS 的，每个 plugin 单独持久化（保留 pluginId）
-        const tradeDate = getTradeDate();
+        // 数据口径（T85b ②）：信号要落在**确有行情**的那天（算指标必须有数据）
+        const tradeDate = (await resolveLatestQuoteDate()) ?? getTradeDate();
         let totalInserted = 0;
         let totalSkipped = 0;
         let totalErrors = 0;

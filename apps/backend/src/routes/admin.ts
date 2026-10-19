@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { runAllChecks } from '../services/validator.js';
+import { resolveTargetTradeDate, resolveLatestQuoteDate } from '../services/marketData.js';
 import { executeAllPlugins } from '../services/pluginEngine.js';
 import { persistSignals, getTradeDate } from '../services/signalService.js';
 import { writeSystemLog } from '../services/logger.js';
@@ -19,7 +20,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     if (user.role !== 'admin') return reply.code(403).send({ success: false, error: 'FORBIDDEN', message: '仅 admin 可手动触发校验' });
     try {
       writeSystemLog({ logType: 'trigger_manual', level: 'INFO', message: `${user.username} 手动触发 C1-C12 校验` });
-      const date = (request.body as any)?.trade_date ?? getTradeDate();
+      // 单一事实源（T85b ②）：日历口径的当前交易日
+      const date = (request.body as any)?.trade_date ?? (await resolveTargetTradeDate()) ?? getTradeDate();
       const summaries = await runAllChecks(date);
       reply.send({ success: true, data: { trade_date: date, summaries } });
     } catch (err) {
@@ -34,7 +36,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     try {
       writeSystemLog({ logType: 'trigger_manual', level: 'INFO', message: `${user.username} 手动触发信号生成` });
       const result = await executeAllPlugins();
-      const tradeDate = (request.body as any)?.trade_date ?? getTradeDate();
+      // 数据口径：信号要落在**确有行情**的那天（算指标必须有数据）
+      const tradeDate = (request.body as any)?.trade_date ?? (await resolveLatestQuoteDate()) ?? getTradeDate();
       let totalInserted = 0, totalSkipped = 0;
       for (const p of result.results) {
         if (p.status !== 'SUCCESS' || p.signals.length === 0) continue;
@@ -138,7 +141,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       // 补跑成功后重跑一次校验，让管理员直接看到最新四色结果
       let checks: unknown = null;
       if (result.status === 'SUCCESS') {
-        checks = await runAllChecks(getTradeDate());
+        checks = await runAllChecks((await resolveTargetTradeDate()) ?? getTradeDate());
       }
       return reply.send({ success: true, data: { ...result, checks } });
     } catch (err) {

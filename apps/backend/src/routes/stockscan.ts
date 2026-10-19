@@ -13,7 +13,7 @@ import {
   type PluginExecutionResult,
   type PluginSignal,
 } from '../services/pluginEngine.js';
-import { getLatestTradingDay } from '../services/marketData.js';
+import { resolveLatestQuoteDate } from '../services/marketData.js';
 import { writeSystemLog } from '../services/logger.js';
 
 /** 品种类型（PRD §5.6「标的类型（股票/ETF）」） */
@@ -317,9 +317,12 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
 
       const userParams: Record<string, unknown> = body.params ?? {};
 
-      // ---- 2. 取最近交易日 ----
-      // 注意：当天可能是非交易日，DuckDB v_stock_qfq 里就没有当日数据
-      const latest = await getLatestTradingDay(new Date().toISOString().slice(0, 10));
+      // ---- 2. 取最近有行情数据的交易日 ----
+      // 🔴 T85b ②（I-20）：原实现用 `getLatestTradingDay()`，而那个函数查的是
+      // `raw_holidays`（**休市日**黑名单）→ 返回最近一个**休市日**（实测 2026-10-07），
+      // 按该日查 v_stock_qfq 必然 0 行 → totalCandidates 恒为 0（G6.3 第二根因）。
+      // 查行情必须落在**确有数据**的那天 → 用数据口径的 resolveLatestQuoteDate。
+      const latest = await resolveLatestQuoteDate(new Date().toISOString().slice(0, 10));
       const tradeDate = latest ?? new Date().toISOString().slice(0, 10);
 
       // ---- 3. DuckDB 查当日候选池（叠加公共过滤） ----
