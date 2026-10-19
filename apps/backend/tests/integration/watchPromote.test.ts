@@ -18,6 +18,16 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
+/**
+ * 🔴 2026-10-19 CI 教训：CI 环境只有 12KB 空壳行情库（无 `v_stock_qfq` 等表）。
+ *   `POST /api/candidate` 需**查行情库**来固化基准价（T50 语义）→ 无库时返回 503。
+ *   → 依赖真实行情库的用例在 CI 无库时跳过。
+ */
+import { marketDataAvailable } from '../_marketData.js';
+
+/** 真实行情库是否可用（顶层 await 判定一次） */
+const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+
 let bundle: TestAppBundle;
 const CODE = 'sh600519';
 
@@ -37,6 +47,8 @@ afterAll(async () => {
 });
 
 describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联）', () => {
+  // 依赖真实行情库（POST /api/candidate 需查行情固化基准价）→ CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
   const promote = (asset: string, body: Record<string, unknown> = { price_mode: 'base' }) =>
     bundle.app.inject({
       method: 'POST', url: `/api/candidate/${asset}/migrate`,
@@ -56,7 +68,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     return asset;
   };
 
-  it('先加候选，再 promote → **watch 不出现**、candidate 仍在且被标记', async () => {
+  itReal('先加候选，再 promote → **watch 不出现**、candidate 仍在且被标记', async () => {
     await seedCandidate(CODE);
 
     const promo = await promote(CODE);
@@ -87,7 +99,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     expect(row.migrated_price_mode).toBe('base');
   });
 
-  it('重复 promote 幂等 → 不报错、标记保持、watch 仍不出现', async () => {
+  itReal('重复 promote 幂等 → 不报错、标记保持、watch 仍不出现', async () => {
     const OWN = 'sh600520';
     await seedCandidate(OWN);
 
@@ -104,7 +116,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     expect(JSON.parse(watch.body).data.some((r: any) => r.asset_code === OWN)).toBe(false);
   });
 
-  it('price_mode 缺失 / 非法 → 400 PARAM_INVALID', async () => {
+  itReal('price_mode 缺失 / 非法 → 400 PARAM_INVALID', async () => {
     const OWN = 'sh600521';
     await seedCandidate(OWN);
     const missing = await promote(OWN, {});
@@ -116,7 +128,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     expect(JSON.parse(bad.body).error).toBe('PARAM_INVALID');
   });
 
-  it('非法 symbol → 400 PARAM_INVALID', async () => {
+  itReal('非法 symbol → 400 PARAM_INVALID', async () => {
     const bad = await bundle.app.inject({
       method: 'POST', url: '/api/candidate/BADCODE/migrate', headers: authHeaders(),
       payload: { price_mode: 'base' },
@@ -125,7 +137,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     expect(JSON.parse(bad.body).error).toBe('PARAM_INVALID');
   });
 
-  it('迁移写 system_log（log_type=candidate_migrate，**不再是 trade**）', async () => {
+  itReal('迁移写 system_log（log_type=candidate_migrate，**不再是 trade**）', async () => {
     const OWN = 'sh600522';
     await seedCandidate(OWN);
     await promote(OWN);

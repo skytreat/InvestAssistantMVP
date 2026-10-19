@@ -29,6 +29,17 @@ import { ConfigStore } from '../../src/config/configStore.js';
 import { resolveSignalSymbols, SIGNAL_USER_ID } from '../../src/services/signalService.js';
 import { executeAllPlugins } from '../../src/services/pluginEngine.js';
 import { getAllPlugins } from '../../src/services/pluginEngine.js';
+import * as duckdbMod from '../../src/db/duckdb.js';
+
+/**
+ * 🔴 2026-10-19 CI 教训：CI 环境只有 12KB 空壳行情库（无 `v_stock_qfq` 表），
+ *   依赖真行情的断言在**本地全绿、CI 全红**。
+ *   → 这里 mock 掉 DuckDB：本文件只验证**标的域口径与注入逻辑**，
+ *     不需要真实行情数据。
+ */
+function installDuckDBMock(): void {
+  vi.spyOn(duckdbMod, 'queryDuckDB').mockImplementation(async () => []);
+}
 
 function cleanup(): void {
   try {
@@ -89,12 +100,16 @@ describe('T85b ① — resolveSignalSymbols（标的域 = 自选 ∪ 持仓）',
   });
 
   it('无任何自选/持仓 → 空数组', () => {
-    expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual([]);
+    // ⚠️ 用**独立 userId** 判定：SIGNAL_USER_ID 的关系行由前序用例种下
+    //   （同文件共用一个临时库）→ 直接查 SIGNAL_USER_ID 会拿到残留。
+    //   这正是 T81 的顺序依赖：shuffle 下「无自选/持仓」可能排在种数据之后。
+    expect(resolveSignalSymbols(SIGNAL_USER_ID + 7777)).toEqual([]);
   });
 });
 
 describe('T85b ① — executeAllPlugins 的标的域注入', () => {
   it('信号只对传入的标的域产生，且不出现集合外的标的', async () => {
+    installDuckDBMock();
     seedRelations([['sh600001', 'watch'], ['sh600002', 'hold']]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
 
@@ -110,6 +125,7 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
   });
 
   it('stats.total = 插件数 × 标的数（不再是「插件数」这种无意义口径）', async () => {
+    installDuckDBMock();
     seedRelations([['sh600001', 'watch'], ['sh600002', 'watch'], ['sh600003', 'hold']]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
     const monitorCount = getAllPlugins().filter((p) => p.category === 'monitor').length;
@@ -119,12 +135,14 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
   });
 
   it('不传 symbols → 沿用旧行为（每个插件跑 1 次）', async () => {
+    installDuckDBMock();
     const monitorCount = getAllPlugins().filter((p) => p.category === 'monitor').length;
     const result = await executeAllPlugins();
     expect(result.stats.total).toBe(monitorCount);
   });
 
   it('空标的域 → 不执行任何插件（total = 0），不产生信号', async () => {
+    installDuckDBMock();
     const result = await executeAllPlugins({ symbols: [] });
     expect(result.stats.total).toBe(0);
     expect(result.signals).toHaveLength(0);

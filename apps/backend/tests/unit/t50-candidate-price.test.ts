@@ -22,6 +22,17 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { JwtPayload } from '../../src/services/auth.js';
 
+/**
+ * 🔴 2026-10-19 CI 教训：CI 环境只有 12KB 空壳行情库（无 `v_stock_qfq` 等表），
+ *   依赖**真实行情数据**的断言在本地全绿、CI 全红（PR #15 的后续 commit 从未过 CI）。
+ *   → 下面这些用例**需要真实行情库**，无库时跳过（与 `smoke-m1` 的既有做法一致：
+ *     「m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行」）。
+ */
+import { marketDataAvailable } from '../_marketData.js';
+
+/** 真实行情库是否可用（顶层 await 判定一次） */
+const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+
 // ── 隔离 SQLite（必须在 import ConfigStore 之前设置）──
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invest-t50-'));
 const tmpDbPath = path.join(tmpDir, 't50.db');
@@ -108,13 +119,15 @@ afterAll(async () => {
 // ══════════════════ T50-① 参数校验 ══════════════════
 
 describe('T50 POST /api/candidate —— 参数校验', () => {
-  it('缺 asset_code → 400 PARAM_INVALID，且不落库', async () => {
+  // 依赖真实行情库 → CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
+  itReal('缺 asset_code → 400 PARAM_INVALID，且不落库', async () => {
     const res = await post('/api/candidate', {});
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('PARAM_INVALID');
   });
 
-  it('asset_code 格式非法（sz00001 / ab600000 / 空串）→ 400', async () => {
+  itReal('asset_code 格式非法（sz00001 / ab600000 / 空串）→ 400', async () => {
     for (const bad of ['sz00001', 'ab600000', '', 'sh60000000']) {
       const res = await post('/api/candidate', { asset_code: bad });
       expect(res.statusCode, `asset_code=${bad}`).toBe(400);
@@ -122,7 +135,7 @@ describe('T50 POST /api/candidate —— 参数校验', () => {
     }
   });
 
-  it('candidate_base_price 非有限正数（0 / -1 / 字符串 / 对象 / 布尔）→ 400', async () => {
+  itReal('candidate_base_price 非有限正数（0 / -1 / 字符串 / 对象 / 布尔）→ 400', async () => {
     // T81：用独立标的（不与其它用例共用），保证「不落库」断言不被其它用例污染
     const code = 'sh600521';
     for (const bad of [0, -1, '12.5', {}, true]) {
@@ -133,7 +146,7 @@ describe('T50 POST /api/candidate —— 参数校验', () => {
     expect(countRows(code)).toBe(0);
   });
 
-  it('NaN / Infinity 在 JSON 传输层不可表达（实测 JSON.stringify 均为 "null"）→ 服务层直接拒', () => {
+  itReal('NaN / Infinity 在 JSON 传输层不可表达（实测 JSON.stringify 均为 "null"）→ 服务层直接拒', () => {
     // 实测：JSON.stringify(NaN) === 'null'，JSON.stringify(Infinity) === 'null'，
     // 故 HTTP 请求体永远送不到 NaN/Infinity，路由层的「null = 未指定」语义不会被绕过。
     // 这里在服务层断言该防线仍然成立（若将来有人改用非 JSON 绑定，需靠它兜住）。
@@ -144,7 +157,7 @@ describe('T50 POST /api/candidate —— 参数校验', () => {
     expect(isValidBasePrice(-0)).toBe(false);
   });
 
-  it('显式传 candidate_base_price: null 等价于「未指定」→ 走行情库', async () => {
+  itReal('显式传 candidate_base_price: null 等价于「未指定」→ 走行情库', async () => {
     const quote = await batchGetLatestClose(['sh600519'], 'qfq');
     const hit = quote.get('sh600519');
     const res = await post('/api/candidate', { asset_code: 'sh600519', candidate_base_price: null });
@@ -158,7 +171,7 @@ describe('T50 POST /api/candidate —— 参数校验', () => {
     }
   });
 
-  it('candidate_reason 非字符串 → 400', async () => {
+  itReal('candidate_reason 非字符串 → 400', async () => {
     const res = await post('/api/candidate', { asset_code: 'sh600519', candidate_reason: 123 });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('PARAM_INVALID');
@@ -228,7 +241,9 @@ describe('T50 显式 candidate_base_price 优先', () => {
 // ══════════════════ T50-③ 缺省基准价 = 加入日前复权收盘价 ══════════════════
 
 describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前复权收盘价', () => {
-  it('sh600000：基准价 == 行情库最新前复权收盘价；行情库不可用时降级为 404/503 且不落库', async () => {
+  // 依赖真实行情库 → CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
+  itReal('sh600000：基准价 == 行情库最新前复权收盘价；行情库不可用时降级为 404/503 且不落库', async () => {
     const quote = await batchGetLatestClose(['sh600000'], 'qfq');
     const hit = quote.get('sh600000');
 
@@ -251,7 +266,7 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
     }
   });
 
-  it('行情库查无此标的 → 404 SYMBOL_NOT_FOUND，且候选池里不产生 NULL 基准价脏记录', async () => {
+  itReal('行情库查无此标的 → 404 SYMBOL_NOT_FOUND，且候选池里不产生 NULL 基准价脏记录', async () => {
     const quote = await batchGetLatestClose(['sh999999'], 'qfq');
     const res = await post('/api/candidate', { asset_code: 'sh999999' });
 
@@ -269,7 +284,7 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
     }
   });
 
-  it('resolveBasePrices 对缺失标的抛 QuoteUnavailableError 并列出全部缺号', async () => {
+  itReal('resolveBasePrices 对缺失标的抛 QuoteUnavailableError 并列出全部缺号', async () => {
     const { resolveBasePrices, QuoteUnavailableError } = await import(
       '../../src/services/candidateService.js'
     );
@@ -283,7 +298,7 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
     expect(missing.sort()).toEqual(['sh999997', 'sh999998']);
   });
 
-  it('resolveBasePrices：override 命中的标的不查行情也返回 source=user', async () => {
+  itReal('resolveBasePrices：override 命中的标的不查行情也返回 source=user', async () => {
     const { resolveBasePrices } = await import('../../src/services/candidateService.js');
     const m = await resolveBasePrices(['sh999996'], new Map([['sh999996', 8.8]]));
     expect(m.get('sh999996')).toEqual({ basePrice: 8.8, basePriceDate: null, source: 'user' });

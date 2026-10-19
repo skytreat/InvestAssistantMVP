@@ -23,6 +23,17 @@ import path from 'node:path';
 import os from 'node:os';
 import Fastify from 'fastify';
 
+/**
+ * 🔴 2026-10-19 CI 教训：CI 环境只有 12KB 空壳行情库（无 `v_stock_qfq` 等表），
+ *   依赖**真实行情数据**的断言在本地全绿、CI 全红（PR #15 的后续 commit 从未过 CI）。
+ *   → 下面这些用例**需要真实行情库**，无库时跳过（与 `smoke-m1` 的既有做法一致：
+ *     「m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行」）。
+ */
+import { marketDataAvailable } from '../_marketData.js';
+
+/** 真实行情库是否可用（顶层 await 判定一次） */
+const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+
 // ── SQLite 隔离：选股路由会经 writeSystemLog 打开 ConfigStore，
 //    不隔离就会写到开发库 data/business.db（AGENTS.md / T60 隔离范式）──
 const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-t55-'));
@@ -182,6 +193,8 @@ describe('T55 — buildPoolQuery SQL 形状（纯函数）', () => {
 });
 
 describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
+  // 依赖真实行情库 → CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
   beforeAll(async () => {
     // 探针：确认本测试所依赖的数据前提仍成立（前提变了就报错，而不是让断言静默变绿）
     const blocks = await queryDuckDB<{ n: number }>('SELECT COUNT(*) AS n FROM raw_tdx_blocks_member');
@@ -196,13 +209,13 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     await closeDuckDBInstance();
   });
 
-  it('基础候选池 > 3000（实测 5561）且带出 name', async () => {
+  itReal('基础候选池 > 3000（实测 5561）且带出 name', async () => {
     const pool = await runPool(NO_FILTER);
     expect(pool.length).toBeGreaterThan(3000);
     expect(pool.some((r) => r.name !== null)).toBe(true);
   }, 60000);
 
-  it('exclude_st=true：结果里没有 ST / *ST 名称（实测 5561 → 5363）', async () => {
+  itReal('exclude_st=true：结果里没有 ST / *ST 名称（实测 5561 → 5363）', async () => {
     const base = await runPool(NO_FILTER);
     const filtered = await runPool(withFilter({ excludeSt: true }));
 
@@ -213,7 +226,7 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     expect(stNames).toHaveLength(0);
   }, 60000);
 
-  it('asset_type=etf：只回 ETF（与 raw_symbol_class.class 交叉核对）', async () => {
+  itReal('asset_type=etf：只回 ETF（与 raw_symbol_class.class 交叉核对）', async () => {
     const pool = await runPool(withFilter({ assetType: 'etf' }));
     expect(pool.length).toBeGreaterThan(100);
 
@@ -229,14 +242,14 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     expect(new Set(pool.map((r) => r.src_view))).toEqual(new Set(['v_etf_qfq']));
   }, 60000);
 
-  it('asset_type=all：同时含股票与 ETF', async () => {
+  itReal('asset_type=all：同时含股票与 ETF', async () => {
     const pool = await runPool(withFilter({ assetType: 'all' }));
     const views = new Set(pool.map((r) => r.src_view));
     expect(views.has('v_stock_qfq')).toBe(true);
     expect(views.has('v_etf_qfq')).toBe(true);
   }, 60000);
 
-  it('market_cap_max=50 亿：全部命中项 totalmv ≤ 50 亿', async () => {
+  itReal('market_cap_max=50 亿：全部命中项 totalmv ≤ 50 亿', async () => {
     const pool = await runPool(withFilter({ marketCapMaxYi: 50 }));
     const base = await runPool(NO_FILTER);
     expect(pool.length).toBeGreaterThan(0);
@@ -248,7 +261,7 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     }
   }, 60000);
 
-  it('过滤叠加（exclude_st + market_cap_max）结果同时满足两个条件', async () => {
+  itReal('过滤叠加（exclude_st + market_cap_max）结果同时满足两个条件', async () => {
     const pool = await runPool(withFilter({ excludeSt: true, marketCapMaxYi: 30 }));
     expect(pool.length).toBeGreaterThan(0);
     for (const row of pool) {
@@ -257,12 +270,12 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     }
   }, 60000);
 
-  it('industry_code：板块成分表为 0 行 → 返回 0 条（数据缺失，不是 SQL 错）', async () => {
+  itReal('industry_code：板块成分表为 0 行 → 返回 0 条（数据缺失，不是 SQL 错）', async () => {
     const pool = await runPool(withFilter({ industryCode: 'BK0001' }));
     expect(pool).toHaveLength(0);
   }, 60000);
 
-  it('候选池 + 日线加载 ≤ 15s（DuckDB 侧耗时上界，防劣化）', async () => {
+  itReal('候选池 + 日线加载 ≤ 15s（DuckDB 侧耗时上界，防劣化）', async () => {
     const t0 = Date.now();
     const pool = await runPool(withFilter({ excludeSt: true }));
     const daily = await loadCandidateDaily(pool, TRADE_DATE);
@@ -280,7 +293,7 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     expect(elapsed).toBeLessThan(15000);
   }, 60000);
 
-  it('loadCandidateDaily：按 view 分组取回，且不产生重复 symbol', async () => {
+  itReal('loadCandidateDaily：按 view 分组取回，且不产生重复 symbol', async () => {
     const pool = (await runPool(withFilter({ assetType: 'all' }))).slice(0, 300);
     const daily = await loadCandidateDaily(pool, TRADE_DATE);
     expect(daily.size).toBe(pool.length);
@@ -292,6 +305,8 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
 });
 
 describe('T55 — 路由契约（app.inject，不占端口）', () => {
+  // 依赖真实行情库 → CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
   let app: Awaited<ReturnType<typeof Fastify>>;
 
   beforeAll(async () => {
@@ -306,7 +321,7 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     await closeDuckDBInstance();
   });
 
-  it('非法 asset_type → 400 PARAM_INVALID（不静默回落 stock）', async () => {
+  itReal('非法 asset_type → 400 PARAM_INVALID（不静默回落 stock）', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/stockscan',
@@ -316,7 +331,7 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     expect(res.json().error).toBe('PARAM_INVALID');
   });
 
-  it('非法 market_cap_max / exclude_st → 400 PARAM_INVALID', async () => {
+  itReal('非法 market_cap_max / exclude_st → 400 PARAM_INVALID', async () => {
     const cap = await app.inject({
       method: 'POST',
       url: '/api/stockscan',
@@ -332,7 +347,7 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     expect(st.statusCode).toBe(400);
   });
 
-  it('未知插件 → 400 PLUGIN_NOT_FOUND（参数校验前先判插件）', async () => {
+  itReal('未知插件 → 400 PLUGIN_NOT_FOUND（参数校验前先判插件）', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/stockscan',
@@ -342,7 +357,7 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     expect(res.json().error).toBe('PLUGIN_NOT_FOUND');
   });
 
-  it('合法请求 200 且回显生效的 filters', async () => {
+  itReal('合法请求 200 且回显生效的 filters', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/stockscan',
@@ -369,7 +384,7 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     }
   });
 
-  it('GET /api/stockscan/plugins 仍返回 category（T83 的 plugins 列表未回退）', async () => {
+  itReal('GET /api/stockscan/plugins 仍返回 category（T83 的 plugins 列表未回退）', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/stockscan/plugins' });
     expect(res.statusCode).toBe(200);
     const plugins = res.json().data as { id: string; category: string }[];

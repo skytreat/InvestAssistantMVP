@@ -11,6 +11,16 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createTestApp, makeUserToken, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
+/**
+ * 🔴 2026-10-19 CI 教训：CI 环境只有 12KB 空壳行情库（无 `v_stock_qfq` 等表）。
+ *   `POST /api/candidate` 需**查行情库**来固化基准价（T50 语义）→ 无库时返回 503。
+ *   → 依赖真实行情库的用例在 CI 无库时跳过。
+ */
+import { marketDataAvailable } from '../_marketData.js';
+
+/** 真实行情库是否可用（顶层 await 判定一次） */
+const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+
 const WATCH_USER = 'int_watch_user';
 const WATCH_PASS = 'int_watch_user123';
 
@@ -188,6 +198,8 @@ describe('Watch CRUD · 38-42', () => {
 });
 
 describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
+  // 依赖真实行情库（POST /api/candidate 需查行情固化基准价）→ CI 无库时跳过
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
   // 🔴 T92：候选池路由归属收敛到 `routes/candidate.ts`（T50 实现）后，
   //   `POST /api/candidate` 的入参校验**变严**了 —— 要求 `sh600000 / sz000001` 格式
   //   （旧 `watch.ts` 只要求非空）。本用例原用裸码 '000001' → 400 PARAM_INVALID。
@@ -201,7 +213,7 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     ).run(watchUserId, CODE, 'watch');
   });
 
-  it('POST /api/candidate 对同一 asset_code → 201（验证 UNIQUE 三列独立）', async () => {
+  itReal('POST /api/candidate 对同一 asset_code → 201（验证 UNIQUE 三列独立）', async () => {
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/candidate',
@@ -223,7 +235,7 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     expect(types.has('candidate')).toBe(true);
   });
 
-  it('POST /api/candidate 非法 asset_code 格式 → 400 PARAM_INVALID（T92 收敛后更严）', async () => {
+  itReal('POST /api/candidate 非法 asset_code 格式 → 400 PARAM_INVALID（T92 收敛后更严）', async () => {
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/candidate',
