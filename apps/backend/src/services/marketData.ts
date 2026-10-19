@@ -132,6 +132,44 @@ export async function batchGetDailyRange(
 }
 
 /**
+ * 按 view 分组的批量区间取日线（**每个 view 1 次 IN 查询**）
+ *
+ * 🔴 T85b ①：选股路径的候选可能来自多个 view（`v_stock_qfq` / `v_etf_qfq`），
+ *   而 {@link batchGetDailyRange} 只支持单 view。��这里按 view 分组各发 1 条
+ *   IN 查询 —— 总量 = view 数（≤2），**不是 symbol 数**。
+ *
+ * @param symbolsByView view 名 → 该 view 下的 symbol 列表
+ */
+export async function batchGetDailyRangeByView(
+  symbolsByView: Map<string, string[]>,
+  fromDate: string,
+  toDate: string,
+): Promise<Map<string, DailyKline[]>> {
+  const result = new Map<string, DailyKline[]>();
+  for (const [view, symbols] of symbolsByView) {
+    if (symbols.length === 0) continue;
+    const placeholders = symbols.map(() => '?').join(', ');
+    const rows = await queryDuckDB<DailyKlineRow>(
+      `SELECT symbol, date, open, high, low, close, volume, amount
+       FROM ${view}
+       WHERE date BETWEEN ? AND ? AND symbol IN (${placeholders})
+       ORDER BY symbol, date ASC`,
+      [fromDate, toDate, ...symbols],
+    );
+    for (const row of rows) {
+      const { symbol, date: d, open, high, low, close, volume, amount } = row;
+      const list = result.get(symbol);
+      if (list) {
+        list.push({ date: d, open, high, low, close, volume, amount });
+      } else {
+        result.set(symbol, [{ date: d, open, high, low, close, volume, amount }]);
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * 批量取多个标的的最新收盘价（**1 次查询**，T33 仪表盘持仓卡用）
  *
  * 用窗口函数 ROW_NUMBER 取每个 symbol 最新一条，避免"先按日期定位再 IN 查"两次往返。
@@ -248,9 +286,14 @@ export async function isTradingDay(date: string): Promise<boolean> {
 export async function resolveTargetTradeDate(referenceDate?: string): Promise<string | null> {
   const ref = referenceDate ?? new Date().toISOString().slice(0, 10);
   try {
+    // ⚠️ **必须显式 ::DATE**（2026-10-19 实测踩坑）：
+    //   `generate_series(DATE, DATE, INTERVAL 1 DAY)` 返回的是 **TIMESTAMP**，
+    //   `MAX(timestamp)` 的驱动层值是 `{micros: BigInt}` —— `normalizeValue` 不认这个形态
+    //   → 序列化直接炸（`TypeError: Do not know how to serialize a BigInt`）。
+    //   cast 成 DATE 后驱动返回 `{days}`，才能被 normalizeValue 正确归一。
     const rows = await queryDuckDB<{ d: unknown }>(
-      `SELECT MAX(candidate) AS d FROM (
-         SELECT g AS candidate
+      `SELECT MAX(candidate)::DATE AS d FROM (
+         SELECT g::DATE AS candidate
          FROM generate_series(CAST(? AS DATE) - INTERVAL 30 DAY, CAST(? AS DATE), INTERVAL 1 DAY) AS t(g)
          WHERE EXTRACT(ISODOW FROM g) BETWEEN 1 AND 5
            AND NOT EXISTS (SELECT 1 FROM raw_holidays WHERE date = g)
@@ -277,6 +320,25 @@ export async function resolveTargetTradeDate(referenceDate?: string): Promise<st
  */
 export async function resolveLatestQuoteDate(referenceDate?: string): Promise<string | null> {
   const ref = referenceDate ?? new Date().toISOString().slice(0, 10);
+  // ⚠️ **性能**（2026-10-19 实测）：`v_stock_qfq` / `v_etf_qfq` 是**实时计算的视图**，
+  //   对它们做 `MAX(date)` 要扫 1800 万 + 300 万行 → 实测 **14148ms**。
+  //   底层 `raw_kline_daily` 同样语义（市场全量日线）只要 **6ms**。
+  //   → 主路径走底层表；表不可用时回退到视图（慢但正确）。
+  let fastVal: unknown = null;
+  try {
+    const fast = await queryDuckDB<{ d: unknown }>(
+      'SELECT MAX(date) AS d FROM raw_kline_daily WHERE date <= ?',
+      [ref]
+    );
+    fastVal = fast[0]?.d;
+  } catch {
+    fastVal = null; // 快速路径不可用 → 走视图兜底
+  }
+  if (fastVal !== null && fastVal !== undefined) {
+    return toDateString(fastVal);
+  }
+
+  // 回退：视图（raw_kline_daily 缺失或为空时）
   try {
     const rows = await queryDuckDB<{ d: unknown }>(
       `SELECT MAX(d) AS d FROM (

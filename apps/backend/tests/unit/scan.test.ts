@@ -92,6 +92,11 @@ function installDuckDBMock(): void {
     if (sql.includes('raw_holidays')) {
       return [{ date: TRADE_DATE }];
     }
+    // 1b. 最新有行情数据的日期（T85b ② resolveLatestQuoteDate）
+    //     —— 查行情必须落在真有数据的那天，否则查出来是 0 行
+    if (sql.includes('MAX(d)')) {
+      return [{ d: TRADE_DATE }];
+    }
     // 2. 候选池（buildPoolQuery）
     if (sql.includes('raw_symbol_name')) {
       return poolSymbols.map((s, idx) => ({
@@ -101,6 +106,20 @@ function installDuckDBMock(): void {
         name: s.name,
         totalmv: 10_000_000_000,
       }));
+    }
+    // 2b. 预取区间日线（T85b ①：按 view 分组的 1 次 IN 查询取整段区间）
+    //     形状 = 同时含 BETWEEN 与 IN ( → 必须排在下面两条分支之前
+    if (sql.includes('BETWEEN') && sql.includes('IN (')) {
+      const symbols = (params ?? []).slice(2).map((p) => String(p));
+      return symbols.flatMap((sym) => {
+        const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
+        // ⚠️ 必须带 symbol —— 真实 SQL 是 `SELECT symbol, date, ...`，
+        //    预取 map 以 symbol 为 key，缺了它缓存就永远 miss（会退化成逐只查库）
+        return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT).map((k) => ({
+          symbol: sym,
+          ...k,
+        })) as unknown as Record<string, unknown>[];
+      });
     }
     // 3. 批量 IN 取日线（loadCandidateDaily）
     if (sql.includes('IN (')) {
@@ -307,7 +326,7 @@ describe('scan — 选股扫描路径', () => {
 // ===========================================================================
 
 describe('scan — DuckDB 查询次数', () => {
-  it('候选池 1 次 + 批量日线 1 次 IN 查询（不走逐标的循环取日线）', async () => {
+  it('候选池 1 次 + 日线 IN 查询 2 次（单日批量 + 区间预取），查询数与标的数无关', async () => {
     queryDuckDBMock.mockClear();
 
     const res = await app.inject({
@@ -322,14 +341,19 @@ describe('scan — DuckDB 查询次数', () => {
     const batchCalls = calls.filter((s) => s.includes('IN ('));
 
     expect(poolCalls, '候选池查询应恰好 1 次').toHaveLength(1);
-    expect(batchCalls, '批量 IN 查询应恰好 1 次').toHaveLength(1);
+    // 1 次单日批量（loadCandidateDaily）+ 1 次区间预取（T85b ①）= 2 次，**与候选数无关**
+    expect(batchCalls, '批量 IN 查询应恰好 2 次（单日 + 区间预取）').toHaveLength(2);
   });
 
-  it('⚠️ 偏差记录：插件逐标的执行时，每个标的仍会各查 1 次区间行情（N 次查询）', () => {
-    // 取证：路由先用 loadCandidateDaily 做 1 次 IN 批量取回日线，但随后用
-    //       buildPluginContext() 逐标的执行插件，ctx.getDailyKlines 会**再查一次** DuckDB。
-    //       → 总查询数 = 1（池）+ 1（IN 批量）+ N（逐标的区间），与 SDD §5.3
-    //         「1 次 IN 查询 → N 插件共享」的硬约束存在差距。本用例锁定当前行为，不做修复。
+  it('✅ 偏差已消除（T85b ①）：插件逐标的执行**不再**各查 1 次区间行情', () => {
+    // 取证（修复前）：路由先用 loadCandidateDaily 做 1 次 IN 批量取回日线，但随后用
+    //   buildPluginContext() 逐标的执行插件，ctx.getDailyKlines 会**再查一次** DuckDB
+    //   → 总查询数 = 1（池）+ 1（IN 批量）+ N（逐标的区间），与 SDD §5.3
+    //     「1 次 IN 查询 → N 插件共享」的硬约束存在差距（PR#15 交接文档 §4-C 记为偏差）。
+    //
+    // T85b ① 修复：ctx 改为带**预取缓存**（按 view 分组 1 次区间 IN 查询），
+    //   插件执行时命中内存 → 逐标的区间查询归零。
+    //   本用例从「锁定偏差」升级为「**断言偏差已消除**」—— 防止回归。
     queryDuckDBMock.mockClear();
 
     return app.inject({
@@ -340,7 +364,9 @@ describe('scan — DuckDB 查询次数', () => {
       expect(res.statusCode).toBe(200);
       const calls = queryDuckDBMock.mock.calls.map((c) => String(c[0]));
       const rangeCalls = calls.filter((s) => s.includes('BETWEEN'));
-      expect(rangeCalls, '逐标的区间查询次数 = 候选标的数').toHaveLength(FAKE_SYMBOLS.length);
+      // 唯一一次 BETWEEN 查询 = 区间预取本身，不再有「每标的一次」
+      expect(rangeCalls, '逐标的区间查询应归零（只剩 1 次区间预取）').toHaveLength(1);
+      expect(rangeCalls.length, '区间查询次数必须与候选标的数无关').toBeLessThan(FAKE_SYMBOLS.length);
     });
   });
 });

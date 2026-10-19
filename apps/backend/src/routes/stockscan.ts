@@ -13,7 +13,7 @@ import {
   type PluginExecutionResult,
   type PluginSignal,
 } from '../services/pluginEngine.js';
-import { resolveLatestQuoteDate } from '../services/marketData.js';
+import { resolveLatestQuoteDate, batchGetDailyRangeByView } from '../services/marketData.js';
 import { writeSystemLog } from '../services/logger.js';
 
 /** 品种类型（PRD §5.6「标的类型（股票/ETF）」） */
@@ -347,9 +347,28 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       // ---- 4. IN 查询拿全部候选日线（SDD §5.3 硬约束） ----
       const klineMap = await loadCandidateDaily(stocks, tradeDate);
 
-      // ---- 5. 构建共享 PluginContext + 逐标的执行 ----
+      // ---- 5. 预取日线 + 构建共享 PluginContext + 逐标的执行 ----
+      // 🔴 T85b ①：此前 ctx.getDailyKlines() **每只标的单独查一次 DuckDB**
+      //   （5000 只 = 5000 次查询）→ 实测选股 15s+（PE2 要求 ≤3s）。
+      //   改为：按 view 分组各 1 次 IN 查询**批量**取回区间日线灌进 context，
+      //   插件执行时命中内存缓存，不再逐只打库。
+      // days 取「用户传入值 ?? 插件 paramSchema 的 days 默认值」
+      const daysField = (plugin.paramSchema ?? []).find((f) => f.key === 'days');
+      const scanDays = Math.max(1, Number(userParams.days ?? daysField?.default ?? 120));
+      const prefetchEnd = new Date().toISOString().slice(0, 10);
+      const prefetchStart = new Date(Date.now() - scanDays * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      const symbolsByView = new Map<string, string[]>();
+      for (const row of stocks) {
+        const list = symbolsByView.get(row.src_view);
+        if (list) list.push(row.symbol);
+        else symbolsByView.set(row.src_view, [row.symbol]);
+      }
+      const prefetchKlines = await batchGetDailyRangeByView(symbolsByView, prefetchStart, prefetchEnd);
+      const prefetch = { klines: prefetchKlines, windowDays: scanDays };
       // 复用同一个 ctx 实例（行情查询函数无状态）
-      const ctx = buildPluginContext();
+      const ctx = buildPluginContext(prefetch);
 
       const passResults: StockScanResult[] = [];
       let scannedCount = 0;

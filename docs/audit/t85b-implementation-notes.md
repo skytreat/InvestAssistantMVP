@@ -34,28 +34,44 @@
 | `raw_kline_daily` | symbol,open,high,low,close,amount,volume,up_count,down_count,date | ✅ |
 | `raw_symbol_class` | **symbol, class** | ✅（见 1.4） |
 
-### 1.3 T55 表名 —— 🔴 1 处不存在的列 + 1 处空表
+### 1.3 T55 表名 —— ✅ 全部正确（**我最初的告警是误报，已纠正**）
 
-| 代码引用 | 实测 | 判定 |
+初次静态扫描时我用 `grep -o "is_st"` 命中了 `stockscan.ts` 的 159/160/279 行，判定为
+「T55 引用了不存在的 `raw_symbol_class.is_st` 列」。**逐行核对后确认是误报**：
+
+| 命中位置 | 实际内容 | 真相 |
 |---|---|---|
-| `raw_basic_daily.totalmv` / `.floatmv` | date,symbol,close,preclose,change_pct,amplitude,turnover,**floatmv,totalmv** | ✅ |
-| `raw_tdx_blocks_member` | stock_symbol, block_code | ✅ 列名对，**但 0 行** |
-| `raw_symbol_class.is_st` | **实测只有 `symbol` + `class` 两列，没有 `is_st`** | 🔴 **不存在** |
+| 159/160 行 | **注释**：「`raw_symbol_class` 实测**只有 (symbol, class) 两列，没有 is_st / is_listing**……故 `exclude_st` 改为按 `raw_symbol_name.name` 的 ST/*ST 前缀判定」| 作者**已核实并写进注释** |
+| 279 行 | `exclude_st?: boolean` | **`exclude_st` 的子串**，与列名无关 |
 
-→ T55 的「排除 ST」功能当前**必然失效**（详见 §1.4 的修复方案）。
+代码里真正引用的列（`buildPoolQuery`）：
 
-### 1.4 T55 `is_st` 的正确替代方案（已实测）
+| 代码引用 | 实测列 | 判定 |
+|---|---|---|
+| `raw_symbol_name` (LEFT JOIN, 取 name) | symbol, name, class | ✅ |
+| `raw_basic_daily` (LEFT JOIN, 取 totalmv) | date,symbol,close,preclose,change_pct,amplitude,turnover,floatmv,totalmv | ✅ |
+| `raw_tdx_blocks_member` (EXISTS, 列名是 **stock_symbol** 不是 symbol) | stock_symbol, block_code | ✅ 作者同样已核实并注释 |
+| `raw_symbol_class` | symbol, class | ✅ |
 
-`raw_symbol_class` 无 ST 标记，但 `raw_symbol_name` 有 `name`：
+⇒ **T55 的表名/列名全部与实测一致**。PR#15 交接文档 §4.1.1 自评「列名是照卡片抄的」
+**低估了自己** —— 实际已按实测修正（含 `is_st` 不存在、`stock_symbol` 列名、板块表 0 行
+三处，都在代码注释里留了证据）。
+
+> 📌 **方法论记录**：这与 PR#15 §5 的「注释不是规格」是**同一个坑的两面** ——
+> 我用 grep 命中了注释里的**反例文字**，得出「代码引用了不存在的列」的错误结论。
+> **正确做法是逐行读上下文，而不是靠关键词命中数下判断。**
+
+### 1.4 排除 ST 的实际实现（已验证正确，无需修）
 
 ```
 raw_symbol_name 中 name LIKE '%ST%' → 205 条
-raw_symbol_name 中 name LIKE '%退%' → 1 条
 ```
 
-→ **排除 ST 应改为 `JOIN raw_symbol_name` + `name NOT LIKE '%ST%'`**（ST 前缀的 A 股名称即 ST 股）。
-注意 `raw_symbol_name` 只有 **8726** 行，而 `raw_symbol_class` 有 **12449** 行 → 3723 个标的无名称，
-`JOIN` 会丢掉它们 → 需用 **LEFT JOIN**（名称缺失时**不排除**，避免静默丢标的）。
+T55 用 `LEFT JOIN raw_symbol_name` + 名称前缀判定 + `COALESCE` 兜底
+（无名称记录的 585 只股票按「非 ST」放行，不误杀）—— 语义正确。
+
+⚠️ 仅剩一个**真实**的数据缺口：`raw_tdx_blocks_member` 是 **0 行** → 行业过滤必然返回 0 条
+（作者已在注释中如实登记为「数据缺失而非 SQL 错误」）。见 §1.5。
 
 ### 1.5 行情数据源缺失（→ T85b ④）
 

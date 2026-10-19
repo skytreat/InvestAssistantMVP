@@ -8,32 +8,14 @@ import { resolveTargetTradeDate } from './marketData.js';
 /** 校验结果三值（扩展 SKIP 用于 C11/C12 MVP） */
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
 
-/**
- * 该日是否在 `raw_holidays` 休市黑名单中（DuckDB 不可用时保守返回 false）
- *
- * ⚠️ 语义更正（2026-10-19 实测，I-20）：`raw_holidays` 存的是**休市日**，
- * 不是交易日。详见 `marketData.ts` 的「raw_holidays 语义更正」注释。
- */
-async function isHolidayListedSafe(date: string): Promise<boolean> {
-  try {
-    const rows = await queryDuckDB<{ count: number }>(
-      'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
-      [date]
-    );
-    return rows.length > 0 && Number(rows[0].count) > 0;
-  } catch {
-    return false;
-  }
-}
-
 /** 该日是否有任何行情数据（DuckDB 不可用时保守返回 false） */
 async function hasQuoteDataOn(date: string): Promise<boolean> {
   try {
-    const rows = await queryDuckDB<{ count: number }>(
-      'SELECT COUNT(*) AS count FROM v_stock_qfq WHERE date = ?',
+    const rows = await queryDuckDB<{ quote_rows: number }>(
+      'SELECT COUNT(*) AS quote_rows FROM v_stock_qfq WHERE date = ?',
       [date]
     );
-    return rows.length > 0 && Number(rows[0].count) > 0;
+    return rows.length > 0 && Number(rows[0].quote_rows) > 0;
   } catch {
     return false;
   }
@@ -74,7 +56,8 @@ export const TOLERANCES = {
  *   - C12 走东方财富，调用无次数上限但会被软限流 → 500ms/只
  */
 export const EXEC_PARAMS = {
-  // ── 抽样规模（Requirements §7.3「抽样 30 只 / 20 只」）──
+  // ── 抽样规模（Requirements §7.3「抽样 30 只 / 20 只」；§7.2 C9「抽样 100 只」）──
+  C9_SAMPLE_SIZE: 100,
   C11_SAMPLE_SIZE: 30,
   C12_SAMPLE_SIZE: 20,
 
@@ -545,47 +528,71 @@ async function checkC8(tradeDate: string): Promise<CheckSummary> {
 // ─────────────────────────────────────────────────────────────────
 
 const C9_SQL = `
-WITH latest_factors AS (
-    SELECT symbol, argmax(hfq_factor, date) AS latest_hfq
-    FROM raw_adjust_factor
-    GROUP BY symbol
-),
-sample AS (
-    SELECT UNNEST(ARRAY_AGG(symbol ORDER BY random() LIMIT 100)) AS symbol
+WITH sample AS (
+    SELECT symbol
     FROM v_stock_qfq
     WHERE date = ?::date
+    ORDER BY random()
+    LIMIT ?
+),
+joined AS (
+    SELECT
+        vh.close      AS hfq_close,
+        vb.close      AS bfq_close,
+        vh.hfq_factor AS view_hfq,
+        ra.hfq_factor AS src_hfq
+    FROM sample s
+    JOIN v_stock_hfq vh ON vh.symbol = s.symbol AND vh.date = ?::date
+    JOIN v_stock_bfq vb ON vb.symbol = s.symbol AND vb.date = ?::date
+    LEFT JOIN raw_adjust_factor ra ON ra.symbol = s.symbol AND ra.date = ?::date
 )
-SELECT COUNT(*) AS mismatch_count,
+SELECT
+    COUNT(*) AS sampled,
+    COALESCE(SUM(CASE WHEN ABS(hfq_close - bfq_close * view_hfq) >= ? THEN 1 ELSE 0 END), 0) AS math_mismatch,
+    COALESCE(SUM(CASE WHEN src_hfq IS NOT NULL AND ABS(src_hfq - view_hfq) >= ? THEN 1 ELSE 0 END), 0) AS factor_mismatch,
     CASE
-        WHEN COUNT(*) = 0 THEN 'PASS'
-        WHEN COUNT(*) <= 5 THEN 'WARN'
+        -- 抽样为空 = 该日没有任何可校验的标的 → SKIP（数据缺失 ≠ 校验通过）
+        WHEN COUNT(*) = 0 THEN 'SKIP'
+        WHEN COALESCE(SUM(CASE WHEN ABS(hfq_close - bfq_close * view_hfq) >= ? THEN 1 ELSE 0 END), 0)
+           + COALESCE(SUM(CASE WHEN src_hfq IS NOT NULL AND ABS(src_hfq - view_hfq) >= ? THEN 1 ELSE 0 END), 0) = 0
+            THEN 'PASS'
+        WHEN COALESCE(SUM(CASE WHEN ABS(hfq_close - bfq_close * view_hfq) >= ? THEN 1 ELSE 0 END), 0)
+           + COALESCE(SUM(CASE WHEN src_hfq IS NOT NULL AND ABS(src_hfq - view_hfq) >= ? THEN 1 ELSE 0 END), 0) <= 5
+            THEN 'WARN'
         ELSE 'ERROR'
     END AS result
-FROM sample s
-JOIN latest_factors lf ON s.symbol = lf.symbol
-JOIN v_stock_qfq v ON s.symbol = v.symbol AND v.date = ?::date
-WHERE ABS(lf.latest_hfq - v.qfq_factor) >= 0.0001
+FROM joined
 `;
 
 interface C9Row {
-  mismatch_count: number;
+  sampled: number;
+  math_mismatch: number;
+  factor_mismatch: number;
   result: CheckResult;
 }
 
 async function checkC9(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const rows = await queryDuckDB<C9Row>(C9_SQL, [tradeDate, tradeDate]);
-    const row = firstRow(rows);
+    const tol = TOLERANCES.QFQ_PRICE_DIFF;
+    const sampleSize = EXEC_PARAMS.C9_SAMPLE_SIZE;
+    const row = firstRow(await queryDuckDB<C9Row>(
+      C9_SQL,
+      [tradeDate, sampleSize, tradeDate, tradeDate, tradeDate, tol, tol, tol, tol, tol, tol],
+    ));
 
     if (!row) {
-      return { checkId: 'C9', result: 'PASS', detail: '抽样 100 只全部一致（无 mismatch）', durationMs: Date.now() - start };
+      return { checkId: 'C9', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
 
+    const math = Number(row.math_mismatch ?? 0);
+    const factor = Number(row.factor_mismatch ?? 0);
     return {
       checkId: 'C9',
       result: row.result,
-      detail: `mismatch=${row.mismatch_count}/100（容差<${TOLERANCES.QFQ_PRICE_DIFF}）`,
+      detail:
+        `抽样 ${row.sampled} 只：mismatch=${math + factor}` +
+        `（复权数学不一致=${math}，因子源不一致=${factor}，容差<${tol}，≤5→WARN / >5→ERROR）`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
@@ -1095,37 +1102,40 @@ export async function runAllChecks(tradeDate?: string): Promise<CheckSummary[]> 
   const date = tradeDate ?? (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
   const summaries: CheckSummary[] = [];
 
-  // ── 非交易日闸门（T85b ②）──────────────────────────────────────────
+  // ── 无行情数据闸门（T85b ②）──────────────────────────────────────
   // 「当天没有行情数据」时，**不得**把「查到 0 条」判成 PASS —— 那是假绿。
   // 典型场景：周末 / 法定假日 / 行情管道停摆（tdx2db 停跑）。
-  // 判定：tradeDate 当天既不在休市黑名单、也查不到任何行情 → 全部 SKIP。
-  // ⚠️ 休市日本来就没有行情，**不算**异常 —— 故此处只拦「日历上是交易日却没数据」。
-  const isHoliday = await isHolidayListedSafe(date);
+  //
+  // ⚠️ **C2 / C11 / C12 除外**：
+  //    · C2 就是「交易日历匹配」这项校验本身 —— 它的职责正是判定「该日该不该有
+  //      数据」。若一并 SKIP，它就永远没有输出，失去存在意义。C2 内部已按正确
+  //      口径实现（休市日无数据 = PASS；交易日无数据 = SKIP）。
+  //    · C11 / C12 是**跨源校验**（对 Tushare / 东财），不依赖本地 DuckDB 的行数
+  //      —— 外部源不可用时它们各自判 SKIP，不能被本地数据缺失牵连。
+  //
+  // 其余 C1/C3-C10 在无数据时一律 SKIP（数据源缺失 ≠ 校验通过）。
   const hasQuoteData = await hasQuoteDataOn(date);
-  const nonTradingDayNoData = !isHoliday && !hasQuoteData;
 
   for (const checkFn of CHECKS) {
     // 包裹 try-catch，单条 SQL 崩了不影响其他
     let summary: CheckSummary;
-    if (nonTradingDayNoData) {
-      // 该日是交易日但无任何行情数据 → 全部 SKIP（数据源缺失 ≠ 校验通过）
-      const fnName = checkFn.name;
-      const idMatch = fnName.match(/check(C\d+)/);
-      const checkId = idMatch ? idMatch[1] : fnName;
+    const fnName = checkFn.name;
+    const idMatch = fnName.match(/check(C\d+)/);
+    const checkId = idMatch ? idMatch[1] : fnName;
+
+    const exemptFromGate = checkId === 'C2' || checkId === 'C11' || checkId === 'C12';
+    if (!hasQuoteData && !exemptFromGate) {
+      // 该日无任何行情数据 → SKIP（数据源缺失 ≠ 校验通过）
       summary = {
         checkId,
         result: 'SKIP',
-        detail: `${date} 是交易日但无行情数据（行情管道可能停摆），跳过本校验`,
+        detail: `${date} 无行情数据（休市日或行情管道停摆），跳过本校验`,
         durationMs: 0,
       };
     } else {
       try {
         summary = await checkFn(date);
       } catch (err) {
-        // 从函数名反推 checkId
-        const fnName = checkFn.name;
-        const idMatch = fnName.match(/check(C\d+)/);
-        const checkId = idMatch ? idMatch[1] : fnName;
         summary = {
           checkId,
           result: 'ERROR',

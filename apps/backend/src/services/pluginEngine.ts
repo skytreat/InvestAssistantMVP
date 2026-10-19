@@ -1022,13 +1022,42 @@ export function validatePluginParams(
 // PluginContext 构建
 // ---------------------------------------------------------------------------
 
-export function buildPluginContext(): PluginContext {
+/**
+ * 预取缓存：symbol → 按日期升序的日线
+ *
+ * 🔴 T85b ①（I-19 + PR#15 交接文档 §4-C）：
+ *   插件引擎必须做到「**1 次 IN 查询 → N 插件共享**」（SDD §5.3 P8 / AGENTS.md 插件硬约束 2）。
+ *   此前 `getDailyKlines(symbol, days)` **每只标的都单独查一次 DuckDB** ——
+ *   全市场 5000 只 = 5000 次查询，实测把选股拖到 15s+（PE2 要求 ≤3s）。
+ *
+ *   修法：调用方（选股 / 信号生成）先**批量**取好日线塞进本缓存，
+ *   context 命中缓存就不再打 DuckDB；未命中才回落到单查（保证正确性）。
+ */
+export interface PluginKlinePrefetch {
+  /** symbol → 按日期升序的日线 */
+  klines: Map<string, DailyKline[]>;
+  /**
+   * 预取窗口覆盖的**日历天数**。
+   * ⚠️ 判据是「请求的天数 ≤ 窗口天数」，**不是**「取到的行数 ≥ 请求天数」——
+   * 行情停更时窗口内有 120 天但只有 85 根 K 线，按行数判会永远 miss 而退化成逐只查库。
+   */
+  windowDays: number;
+}
+
+export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContext {
+  /** 预取窗口：days 天之前的日期（与原单查口径一致） */
+  const windowStart = (days: number): string =>
+    new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+
   return {
     async getDailyKlines(symbol: string, days: number): Promise<DailyKline[]> {
+      // 命中预取 → 内存返回（窗口覆盖不足时回落查库，保证序列长度语义不变）
+      const cached = prefetch?.klines.get(symbol);
+      if (cached && prefetch && days <= prefetch.windowDays) {
+        return days > 0 ? cached.slice(-days) : cached;
+      }
       const end = new Date().toISOString().slice(0, 10);
-      const start = new Date(Date.now() - days * 86_400_000)
-        .toISOString()
-        .slice(0, 10);
+      const start = windowStart(days);
       return await getDailyRange(symbol, start, end);
     },
 
@@ -1037,9 +1066,7 @@ export function buildPluginContext(): PluginContext {
       days: number,
     ): Promise<Map<string, DailyKline[]>> {
       const end = new Date().toISOString().slice(0, 10);
-      const start = new Date(Date.now() - days * 86_400_000)
-        .toISOString()
-        .slice(0, 10);
+      const start = windowStart(days);
       return await batchGetDailyRange(symbols, start, end);
     },
 

@@ -43,7 +43,13 @@ describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
 
   it('无返回行 → SKIP（数据源缺失不得计为 PASS，ADR-004）', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
-    vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async () => []);
+    vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：数据存在性探针（见上）
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
+      return [];
+    });
     const summaries = await runAllChecks('2026-10-15');
     expect(summaries.find(s => s.checkId === 'C6')!.result).toBe('SKIP');
     mockMod.queryDuckDB.mockRestore();
@@ -52,6 +58,11 @@ describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
   it('标的数 < 3000 → WARN', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('floatmv')) {
         return [{ total_cnt: 100, with_mv: 100, result: 'WARN' as const }];
       }
@@ -65,6 +76,11 @@ describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
   it('标的数 ≥ 3000 → PASS', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('floatmv')) {
         return [{ total_cnt: 5561, with_mv: 5561, result: 'PASS' as const }];
       }
@@ -82,6 +98,11 @@ describe('validator_deep — C7 日线价格合理性（T85 重写）', () => {
   it('存在 close=0 或 open>close×2 的标的 → WARN', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('bad_cnt')) {
         return [{ bad_cnt: 12, result: 'WARN' as const }];
       }
@@ -95,6 +116,11 @@ describe('validator_deep — C7 日线价格合理性（T85 重写）', () => {
   it('无异常标的 → PASS', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('bad_cnt')) {
         return [{ bad_cnt: 0, result: 'PASS' as const }];
       }
@@ -112,6 +138,11 @@ describe('validator_deep — C8 行情更新执行时长（T85 重写）', () =>
   it('无 tdx2db_update 日志 → SKIP（不得计为 PASS）', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('tdx2db_update')) {
         return [{ started_at: null, has_row: 'SKIP' as const }];
       }
@@ -125,6 +156,11 @@ describe('validator_deep — C8 行情更新执行时长（T85 重写）', () =>
   it('时间戳格式异常 → WARN', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('tdx2db_update')) {
         return [{ started_at: 'not-a-timestamp', has_row: 'PASS' as const }];
       }
@@ -142,8 +178,13 @@ describe('validator_deep — C9 复权因子抽样', () => {
   it('mismatch_count=0 → PASS', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('latest_factors') || (sql as string).includes('sample')) {
-        return [{ mismatch_count: 0, result: 'PASS' as const }];
+        return [{ sampled: 100, math_mismatch: 0, factor_mismatch: 0, result: 'PASS' as const }];
       }
       return [];
     });
@@ -157,8 +198,13 @@ describe('validator_deep — C9 复权因子抽样', () => {
   it('mismatch_count > 5 → ERROR', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('latest_factors') || (sql as string).includes('sample')) {
-        return [{ mismatch_count: 10, result: 'ERROR' as const }];
+        return [{ sampled: 100, math_mismatch: 10, factor_mismatch: 0, result: 'ERROR' as const }];
       }
       return [];
     });
@@ -175,6 +221,11 @@ describe('validator_deep — C10 除权事件覆盖', () => {
   it('missing_count=0 → PASS', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('raw_gbbq') && (sql as string).includes('missing_count')) {
         return [{ missing_count: 0, result: 'PASS' as const }];
       }
@@ -189,6 +240,11 @@ describe('validator_deep — C10 除权事件覆盖', () => {
   it('missing_count > 0 → WARN', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
+      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      if ((sql as string).includes('quote_rows')) {
+        return [{ quote_rows: 5000 }];
+      }
       if ((sql as string).includes('raw_gbbq') && (sql as string).includes('missing_count')) {
         return [{ missing_count: 3, result: 'WARN' as const }];
       }
