@@ -28,7 +28,7 @@ function _ensureBackupDir(): void {
 
 function _date(): string {
   const d = new Date();
-  const offset = 8 * 60;  // UTC+8
+  const offset = 8 * 60; // UTC+8
   const local = new Date(d.getTime() + offset * 60 * 1000);
   return local.toISOString().slice(0, 10);
 }
@@ -46,7 +46,9 @@ export function _deleteOldBackups(): number {
         fs.unlinkSync(full);
         deleted++;
       }
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
   }
   return deleted;
 }
@@ -64,7 +66,12 @@ export async function backupSQLite(): Promise<{ success: boolean; size?: number;
     const out = path.join(BACKUP_DIR, `business.db.${_date()}`);
     await db.backup(out);
     const size = fs.statSync(out).size;
-    writeSystemLog({ logType: 'backup', level: 'INFO', message: `SQLite 备份成功`, detail: `file=${out} size=${size}` });
+    writeSystemLog({
+      logType: 'backup',
+      level: 'INFO',
+      message: `SQLite 备份成功`,
+      detail: `file=${out} size=${size}`,
+    });
     return { success: true, size };
   } catch (err: any) {
     writeSystemLog({ logType: 'backup', level: 'ERROR', message: `SQLite 备份失败`, detail: String(err) });
@@ -86,7 +93,12 @@ export async function backupDuckDB(): Promise<{ success: boolean; size?: number;
     const conn = await inst.connect();
     await conn.runAndReadAll(`COPY v_stock_qfq TO '${out}' (FORMAT PARQUET)`);
     const size = fs.statSync(out).size;
-    writeSystemLog({ logType: 'backup', level: 'INFO', message: `DuckDB 备份成功`, detail: `file=${out} size=${size}` });
+    writeSystemLog({
+      logType: 'backup',
+      level: 'INFO',
+      message: `DuckDB 备份成功`,
+      detail: `file=${out} size=${size}`,
+    });
     return { success: true, size };
   } catch (err: any) {
     writeSystemLog({ logType: 'backup', level: 'ERROR', message: `DuckDB 备份失败`, detail: String(err) });
@@ -109,7 +121,7 @@ export async function backupDuckDB(): Promise<{ success: boolean; size?: number;
  */
 function _uploadToOCI(files: string[]): { success: boolean; uploaded: number; error?: string } {
   if (process.env.ENABLE_OCI_BACKUP !== 'true') {
-    return { success: true, uploaded: 0 };  // 未开启 → 静默跳过
+    return { success: true, uploaded: 0 }; // 未开启 → 静默跳过
   }
 
   const remote = process.env.OCI_REMOTE ?? 'oci:invest-assistant-backup';
@@ -119,14 +131,22 @@ function _uploadToOCI(files: string[]): { success: boolean; uploaded: number; er
     const basename = path.basename(file);
     try {
       execSync(`rclone copyto "${file}" "${remote}/${basename}"`, {
-        encoding: 'utf-8', timeout: 120_000, stdio: 'pipe',
+        encoding: 'utf-8',
+        timeout: 120_000,
+        stdio: 'pipe',
       });
       uploaded++;
-      writeSystemLog({ logType: 'backup', level: 'INFO', message: 'OCI 上传成功', detail: `file=${basename} remote=${remote}` });
+      writeSystemLog({
+        logType: 'backup',
+        level: 'INFO',
+        message: 'OCI 上传成功',
+        detail: `file=${basename} remote=${remote}`,
+      });
     } catch (err: any) {
       const msg = String(err?.stderr ?? err?.message ?? err);
       writeSystemLog({
-        logType: 'backup', level: 'WARN',
+        logType: 'backup',
+        level: 'WARN',
         message: 'OCI 上传失败（本地备份保留）',
         detail: `file=${basename} error=${msg.slice(0, 200)}`,
       });
@@ -160,7 +180,9 @@ export async function runFullBackup(): Promise<{
     if (fs.existsSync(duckdbPath)) files.push(duckdbPath);
     const ociResult = _uploadToOCI(files);
     ociUploaded = ociResult.uploaded;
-  } catch { /* OCI 上传任何异常不影响主流程 */ }
+  } catch {
+    /* OCI 上传任何异常不影响主流程 */
+  }
 
   return {
     sqlite: { success: sqliteResult.success, size: sqliteResult.size },
@@ -221,22 +243,33 @@ export function restoreSQLiteBackup(fileName: string): RestoreResult {
     ConfigStore.resetInstance();
     fs.copyFileSync(source, dbPath);
     for (const suffix of ['-wal', '-shm']) {
-      try { fs.unlinkSync(dbPath + suffix); } catch { /* 不存在即可 */ }
+      try {
+        fs.unlinkSync(dbPath + suffix);
+      } catch {
+        /* 不存在即可 */
+      }
     }
 
     // 4. 重开并校验新库
     const db = ConfigStore.getInstance().db;
     db.prepare('SELECT 1').get();
-    const tables = (db.prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_account','user_trade_record')`
-    ).all() as { name: string }[]).map(r => r.name);
+    const tables = (
+      db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_account','user_trade_record')`,
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
     if (tables.length !== 2) {
-      throw new Error(`备份内容不完整，缺少关键表：${['user_account', 'user_trade_record'].filter(t => !tables.includes(t)).join(', ')}`);
+      throw new Error(
+        `备份内容不完整，缺少关键表：${['user_account', 'user_trade_record'].filter((t) => !tables.includes(t)).join(', ')}`,
+      );
     }
 
     const count = (db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
     writeSystemLog({
-      logType: 'backup', level: 'SUCCESS',
+      logType: 'backup',
+      level: 'SUCCESS',
       message: `SQLite 备份恢复完成：${fileName}`,
       detail: `safety_backup=${safetyName} trade_records=${count}`,
     });
@@ -244,7 +277,8 @@ export function restoreSQLiteBackup(fileName: string): RestoreResult {
     return { success: true, safetyBackup: safetyName };
   } catch (err: any) {
     writeSystemLog({
-      logType: 'backup', level: 'ERROR',
+      logType: 'backup',
+      level: 'ERROR',
       message: `SQLite 备份恢复失败：${fileName}`,
       detail: String(err),
     });

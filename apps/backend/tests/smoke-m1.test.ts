@@ -23,7 +23,11 @@ export function cleanupSmoke1(): void {
   } else {
     delete process.env.SQLITE_DB_PATH;
   }
-  try { rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -79,30 +83,32 @@ describe('M1 SQLite', () => {
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as { name: string }[];
     const names = tables.map((t) => t.name).sort();
-    expect(names).toEqual([
-      'user_account',
-      'user_asset_rel',
-      'user_asset_stat',
-      'user_plugin_config',
-      'user_strategy_signal',
-      'user_trade_record',
-      'system_log',
-    ].sort());
+    expect(names).toEqual(
+      [
+        'user_account',
+        'user_asset_rel',
+        'user_asset_stat',
+        'user_plugin_config',
+        'user_strategy_signal',
+        'user_trade_record',
+        'system_log',
+      ].sort(),
+    );
   });
 
   it('user_asset_rel UNIQUE(user_id, asset_code, rel_type) 约束存在', () => {
     // SQLite CREATE TABLE ... UNIQUE(user_id, asset_code, rel_type) 自动创建内部 UNIQUE 索引
     // sqlite_master.sql 列对自动索引是 NULL，但 index_list 能看到 unique=1
-    const indexes = db.db
-      .prepare("PRAGMA index_list('user_asset_rel')")
-      .all() as { name: string; unique: number; origin: string }[];
+    const indexes = db.db.prepare("PRAGMA index_list('user_asset_rel')").all() as {
+      name: string;
+      unique: number;
+      origin: string;
+    }[];
     // 找到 origin='u'（UNIQUE 约束创建的）且 unique=1 的索引
     const uniqueIdx = indexes.find((i) => i.unique === 1);
     expect(uniqueIdx).toBeDefined();
     // 验证索引覆盖三列
-    const cols = db.db
-      .prepare(`PRAGMA index_info('${uniqueIdx!.name}')`)
-      .all() as { name: string }[];
+    const cols = db.db.prepare(`PRAGMA index_info('${uniqueIdx!.name}')`).all() as { name: string }[];
     const colNames = cols.map((c) => c.name).sort();
     expect(colNames).toEqual(['asset_code', 'rel_type', 'user_id']);
   });
@@ -149,7 +155,7 @@ describe('M1 DuckDB（部署后启用）', () => {
     if (!DUCKDB_FILE_EXISTS) {
       console.log('  ⚠️  SKIP DuckDB: 文件不存在');
       console.log('     部署后 export DUCKDB_PATH=/opt/invol/quotes.duckdb 启用');
-      return;  // 空通过（无断言）
+      return; // 空通过（无断言）
     }
 
     // 文件存在 → 跑真实 health check（带 retry，DuckDB 打开失败就 SKIP）
@@ -157,20 +163,20 @@ describe('M1 DuckDB（部署后启用）', () => {
       await duckdbHealthCheck();
     } catch (err: any) {
       console.log(`  ⚠️  SKIP DuckDB: ${String(err).substring(0, 80)}`);
-      return;  // 空通过（health check 失败说明文件被锁或损坏）
+      return; // 空通过（health check 失败说明文件被锁或损坏）
     }
 
     // 真实 DuckDB 通 → 查询 v_stock_qfq
     try {
       const rows = await queryDuckDB<{ symbol: string; date: string; close: number }>(
-        'SELECT symbol, date, close FROM v_stock_qfq ORDER BY date DESC LIMIT 1'
+        'SELECT symbol, date, close FROM v_stock_qfq ORDER BY date DESC LIMIT 1',
       );
       expect(rows.length).toBeGreaterThan(0);
       expect(rows[0].symbol).toMatch(/^(sh|sz)\d{6}$/);
       expect(typeof rows[0].close).toBe('number');
     } catch (err: any) {
       console.log(`  ⚠️  SKIP DuckDB 查询: ${String(err).substring(0, 80)}`);
-      return;  // 表不存在或查询失败 → 优雅跳过
+      return; // 表不存在或查询失败 → 优雅跳过
     }
-  }, 60000);  // 独立 timeout，给 DuckDB 大文件查询留够时间
+  }, 60000); // 独立 timeout，给 DuckDB 大文件查询留够时间
 });

@@ -148,12 +148,19 @@ async function runPlugin(
   let ioDepth = 0;
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let settle: (r: ModelResult) => void = () => { /* 未初始化占位 */ };
+  let settle: (r: ModelResult) => void = () => {
+    /* 未初始化占位 */
+  };
 
-  const race = new Promise<ModelResult>((resolve) => { settle = resolve; });
+  const race = new Promise<ModelResult>((resolve) => {
+    settle = resolve;
+  });
 
   const disarm = (): void => {
-    if (timer !== null) { clearTimeout(timer); timer = null; }
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
   };
 
   const arm = (): void => {
@@ -268,10 +275,12 @@ function makeKlines(n: number, fn: (i: number) => number): DailyKline[] {
 const downtrend = (n: number): DailyKline[] => makeKlines(n, (i) => 100 - i * 0.8);
 const uptrend = (n: number): DailyKline[] => makeKlines(n, (i) => 10 + i * 0.2);
 
-function makeContext(opts: {
-  klines?: DailyKline[];
-  ioDelayMs?: number;
-} = {}): ModelContext {
+function makeContext(
+  opts: {
+    klines?: DailyKline[];
+    ioDelayMs?: number;
+  } = {},
+): ModelContext {
   const klines = opts.klines ?? downtrend(30);
   return {
     async getDailyKlines() {
@@ -302,9 +311,10 @@ describe('Plugin 接口契约', () => {
         { name: 'overbought', type: 'number', label: '超买阈值', default: 70, min: 50, max: 100 },
       ],
       execute(ctx, params) {
-        const rsi = 50;  // 占位
+        const rsi = 50; // 占位
         if (rsi <= (params.oversold as number)) return { direction: 'buy', label: 'RSI 超卖', strength: 0.8 };
-        if (rsi >= (params.overbought as number)) return { direction: 'sell', label: 'RSI 超买', strength: 0.8 };
+        if (rsi >= (params.overbought as number))
+          return { direction: 'sell', label: 'RSI 超买', strength: 0.8 };
         return { direction: 'hold', label: 'RSI 中性' };
       },
     };
@@ -337,15 +347,20 @@ describe('SDD §12.5 F6 — state_machine_4_paths（插件状态机 4 条路径�
     const res = await runPlugin(
       async (ctx) => {
         const klines = await ctx.getDailyKlines('sh600000', 30);
-        const values = calculateRSI(klines.map((k) => k.close), 14);
+        const values = calculateRSI(
+          klines.map((k) => k.close),
+          14,
+        );
         const latest = values[values.length - 1];
         if (latest >= 30) return [];
-        return [{
-          symbol: 'sh600000',
-          signalType: 'BUY' as const,
-          strength: (30 - latest) / 30,
-          detail: `RSI(14)=${latest.toFixed(2)} < 30`,
-        }];
+        return [
+          {
+            symbol: 'sh600000',
+            signalType: 'BUY' as const,
+            strength: (30 - latest) / 30,
+            detail: `RSI(14)=${latest.toFixed(2)} < 30`,
+          },
+        ];
       },
       makeContext({ klines: downtrend(30) }),
     );
@@ -358,13 +373,10 @@ describe('SDD §12.5 F6 — state_machine_4_paths（插件状态机 4 条路径�
   });
 
   it('WARN 路径：execute() 纯计算超时 → 降级跳过，主流程正常完成（引擎状态 TIMEOUT）', async () => {
-    const res = await runPlugin(
-      async () => {
-        await sleep(120);   // 纯计算超时（IO 不计入，这里没有任何 IO）
-        return [];
-      },
-      makeContext(),
-    );
+    const res = await runPlugin(async () => {
+      await sleep(120); // 纯计算超时（IO 不计入，这里没有任何 IO）
+      return [];
+    }, makeContext());
 
     expect(res.outcome).toBe('WARN');
     expect(res.engineStatus).toBe('TIMEOUT');
@@ -375,12 +387,9 @@ describe('SDD §12.5 F6 — state_machine_4_paths（插件状态机 4 条路径�
   });
 
   it('ERROR 路径：execute() 抛异常 → 被 catch 隔离（引擎状态 ERROR）', async () => {
-    const res = await runPlugin(
-      async () => {
-        throw new Error('boom');
-      },
-      makeContext(),
-    );
+    const res = await runPlugin(async () => {
+      throw new Error('boom');
+    }, makeContext());
 
     expect(res.outcome).toBe('ERROR');
     expect(res.engineStatus).toBe('ERROR');
@@ -392,8 +401,11 @@ describe('SDD §12.5 F6 — state_machine_4_paths（插件状态机 4 条路径�
     const res = await runPlugin(
       async (ctx) => {
         const klines = await ctx.getDailyKlines('sh600000', 30);
-        if (klines.length < 15) return [];      // period(14) + 1 不足 → 无法评估
-        const values = calculateRSI(klines.map((k) => k.close), 14);
+        if (klines.length < 15) return []; // period(14) + 1 不足 → 无法评估
+        const values = calculateRSI(
+          klines.map((k) => k.close),
+          14,
+        );
         const latest = values[values.length - 1];
         if (latest >= 30) return [];
         return [{ symbol: 'sh600000', signalType: 'BUY' as const, strength: 0.5 }];
@@ -421,7 +433,10 @@ describe('SDD §12.5 PE6 — plugin_timeout_50ms（50ms 预算只覆盖 execute(
     const res = await runPlugin(
       async (ctx) => {
         const klines = await ctx.getDailyKlines('sh600000', 30);
-        const values = calculateRSI(klines.map((k) => k.close), 14);
+        const values = calculateRSI(
+          klines.map((k) => k.close),
+          14,
+        );
         const latest = values[values.length - 1];
         if (latest >= 30) return [];
         return [{ symbol: 'sh600000', signalType: 'BUY' as const, strength: 0.5 }];
@@ -451,13 +466,10 @@ describe('SDD §12.5 PE6 — plugin_timeout_50ms（50ms 预算只覆盖 execute(
   });
 
   it('execute() 纯计算耗时 120ms（不取行情）→ 判超时降级（WARN / TIMEOUT）', async () => {
-    const res = await runPlugin(
-      async () => {
-        await sleep(120);
-        return [];
-      },
-      makeContext(),
-    );
+    const res = await runPlugin(async () => {
+      await sleep(120);
+      return [];
+    }, makeContext());
 
     expect(res.outcome).toBe('WARN');
     expect(res.engineStatus).toBe('TIMEOUT');
@@ -466,8 +478,8 @@ describe('SDD §12.5 PE6 — plugin_timeout_50ms（50ms 预算只覆盖 execute(
   it('IO 之后的计算段各自享有完整预算：120ms IO + 120ms 计算 → 仍然超时', async () => {
     const res = await runPlugin(
       async (ctx) => {
-        await ctx.getDailyKlines('sh600000', 30);   // IO 不计入
-        await sleep(120);                            // 计算段超时
+        await ctx.getDailyKlines('sh600000', 30); // IO 不计入
+        await sleep(120); // 计算段超时
         return [];
       },
       makeContext({ klines: downtrend(30), ioDelayMs: 120 }),
@@ -482,7 +494,10 @@ describe('SDD §12.5 PE6 — plugin_timeout_50ms（50ms 预算只覆盖 execute(
     const res = await runPlugin(
       async (ctx) => {
         const klines = await ctx.getDailyKlines('sh600000', 30);
-        const ma = calculateSMA(klines.map((k) => k.close), 5);
+        const ma = calculateSMA(
+          klines.map((k) => k.close),
+          5,
+        );
         if (ma[ma.length - 1] === undefined) return [];
         return [{ symbol: 'sh600000', signalType: 'BUY' as const, strength: 0.5 }];
       },
@@ -520,7 +535,11 @@ describe('契约同步守卫 — 真实引擎 pluginEngine.ts 不得与本参考
 
   it('真实引擎仍保留 T88 的 IO 排除机制（withIo 包装 + 计时起点重置）', () => {
     expect(engineSrc).toContain('const withIo = async');
-    expect(engineSrc).toContain('computeStart = performance.now();  // 取数后重置计时起点');
+    // ⚠️ 用正则而非字面量：源码文本断言对**空白敏感**。
+    //   2026-10-20 实测：引入 Prettier（T86）后，源码里的 `performance.now();  // ...`
+    //   （两个空格）被规范成 `performance.now(); // ...`（一个空格）→ 本断言整条失败。
+    //   断言的**语义**是「IO 结束后重置计时起点」，与空格数无关 → 只匹配语义。
+    expect(engineSrc).toMatch(/computeStart = performance\.now\(\);\s*\/\/ 取数后重置计时起点/);
     expect(engineSrc).toContain('getDailyKlines: (symbol, days) => withIo(');
     expect(engineSrc).toContain('batchGetDailyKlines: (symbols, days) => withIo(');
   });

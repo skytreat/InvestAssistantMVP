@@ -22,26 +22,24 @@ import { marketDataAvailable } from '../_marketData.js';
 const MARKET_DATA_AVAILABLE = await marketDataAvailable();
 
 const WATCH_USER = 'int_watch_user';
-const WATCH_PASS = 'int_watch_user123';
 
 let bundle: TestAppBundle;
 let watchToken: string;
 let watchUserId: number;
 
 // authHeaders 模式
-const adminHeaders = () => ({ authorization: `Bearer ${bundle.adminToken}` });
 const watchHeaders = () => ({ authorization: `Bearer ${watchToken}` });
 
 beforeAll(async () => {
   bundle = await createTestApp();
 
   // seed 专属测试用户（绕开 auth/seed 路由可能的 409）
-  bundle.db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`
-  ).run(WATCH_USER, 'hash_placeholder');
-  const row = bundle.db.db.prepare(
-    'SELECT id, password_hash FROM user_account WHERE username = ?'
-  ).get(WATCH_USER) as { id: number; password_hash: string };
+  bundle.db.db
+    .prepare(`INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`)
+    .run(WATCH_USER, 'hash_placeholder');
+  const row = bundle.db.db
+    .prepare('SELECT id, password_hash FROM user_account WHERE username = ?')
+    .get(WATCH_USER) as { id: number; password_hash: string };
   watchUserId = row.id;
   watchToken = makeUserToken(watchUserId, WATCH_USER);
 
@@ -75,11 +73,11 @@ describe('GET /api/signal · 分页查询', () => {
     });
 
     trades([
-      [watchUserId, '600001', 'rsi_oversold',   'monitor', '2026-10-15', 'buy',  'RSI<30', 0.85, '{}'],
-      [watchUserId, '600002', 'rsi_oversold',   'monitor', '2026-10-14', 'buy',  'RSI<25', 0.90, '{}'],
-      [watchUserId, '600003', 'macd_cross',     'monitor', '2026-10-15', 'buy',  '金叉',   0.70, '{}'],
-      [watchUserId, '600004', 'rsi_oversold',   'monitor', '2026-10-13', 'buy',  'RSI<28', 0.80, '{}'],
-      [watchUserId, '600005', 'volume_spike',   'filter',  '2026-10-15', 'hold', '放量',   0.60, '{}'],
+      [watchUserId, '600001', 'rsi_oversold', 'monitor', '2026-10-15', 'buy', 'RSI<30', 0.85, '{}'],
+      [watchUserId, '600002', 'rsi_oversold', 'monitor', '2026-10-14', 'buy', 'RSI<25', 0.9, '{}'],
+      [watchUserId, '600003', 'macd_cross', 'monitor', '2026-10-15', 'buy', '金叉', 0.7, '{}'],
+      [watchUserId, '600004', 'rsi_oversold', 'monitor', '2026-10-13', 'buy', 'RSI<28', 0.8, '{}'],
+      [watchUserId, '600005', 'volume_spike', 'filter', '2026-10-15', 'hold', '放量', 0.6, '{}'],
     ]);
   });
 
@@ -148,9 +146,9 @@ describe('GET /api/signal · 分页查询', () => {
 describe('Watch CRUD · 38-42', () => {
   // 每次 case 之间清掉，避免互相干扰
   beforeEach(() => {
-    bundle.db.db.prepare(
-      'DELETE FROM user_asset_rel WHERE user_id = ? AND rel_type = ?'
-    ).run(watchUserId, 'watch');
+    bundle.db.db
+      .prepare('DELETE FROM user_asset_rel WHERE user_id = ? AND rel_type = ?')
+      .run(watchUserId, 'watch');
   });
 
   it('POST /api/watch → 201 + id', async () => {
@@ -168,9 +166,9 @@ describe('Watch CRUD · 38-42', () => {
 
   it('相同 asset_code 再 POST 一次 → 409 DUPLICATE', async () => {
     // 先造一条
-    bundle.db.db.prepare(
-      'INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)'
-    ).run(watchUserId, '000002', 'watch');
+    bundle.db.db
+      .prepare('INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)')
+      .run(watchUserId, '000002', 'watch');
 
     const res = await bundle.app.inject({
       method: 'POST',
@@ -208,9 +206,9 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
 
   beforeAll(() => {
     // 确保 watch 表里有一条同 asset_code（独立的 rel_type）
-    bundle.db.db.prepare(
-      'INSERT OR IGNORE INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)'
-    ).run(watchUserId, CODE, 'watch');
+    bundle.db.db
+      .prepare('INSERT OR IGNORE INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)')
+      .run(watchUserId, CODE, 'watch');
   });
 
   itReal('POST /api/candidate 对同一 asset_code → 201（验证 UNIQUE 三列独立）', async () => {
@@ -226,11 +224,13 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     expect(typeof body.data.id).toBe('number');
 
     // 验证数据库里 watch + candidate 共存
-    const rows = bundle.db.db.prepare(
-      'SELECT asset_code, rel_type FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND is_deleted = 0 ORDER BY rel_type'
-    ).all(watchUserId, CODE) as { asset_code: string; rel_type: string }[];
+    const rows = bundle.db.db
+      .prepare(
+        'SELECT asset_code, rel_type FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND is_deleted = 0 ORDER BY rel_type',
+      )
+      .all(watchUserId, CODE) as { asset_code: string; rel_type: string }[];
     expect(rows.length).toBe(2);
-    const types = new Set(rows.map(r => r.rel_type));
+    const types = new Set(rows.map((r) => r.rel_type));
     expect(types.has('watch')).toBe(true);
     expect(types.has('candidate')).toBe(true);
   });

@@ -75,8 +75,8 @@ export interface AppliedScanFilters {
 export interface StockScanResponse {
   code: number;
   data: {
-    totalCandidates: number;   // 候选池（DuckDB 初筛后）
-    total: number;              // pass 插件条件的数量
+    totalCandidates: number; // 候选池（DuckDB 初筛后）
+    total: number; // pass 插件条件的数量
     results: StockScanResult[];
     tradeDate: string;
     filters?: AppliedScanFilters;
@@ -110,13 +110,15 @@ interface ParsedBody {
  *
  * 严格校验：非法值一律 400 PARAM_INVALID，不做静默兜底（与「静默回落 = 假绿」的项目铁律一致）。
  */
-export function parseScanFilters(body: ParsedBody): {
-  ok: true;
-  value: AppliedScanFilters & { maxResults: number };
-} | {
-  ok: false;
-  message: string;
-} {
+export function parseScanFilters(body: ParsedBody):
+  | {
+      ok: true;
+      value: AppliedScanFilters & { maxResults: number };
+    }
+  | {
+      ok: false;
+      message: string;
+    } {
   const assetType: ScanAssetType = body.asset_type ?? 'stock';
   if (!ASSET_TYPES.includes(assetType)) {
     return { ok: false, message: 'asset_type 只能是 stock / etf / all' };
@@ -141,9 +143,10 @@ export function parseScanFilters(body: ParsedBody): {
       ? body.industry_code.trim()
       : null;
 
-  const minAmount = Number.isFinite(body.min_amount) && (body.min_amount ?? 0) > 0
-    ? Math.floor(body.min_amount as number)
-    : 0;
+  const minAmount =
+    Number.isFinite(body.min_amount) && (body.min_amount ?? 0) > 0
+      ? Math.floor(body.min_amount as number)
+      : 0;
   const maxResults = Math.min(
     500,
     Math.max(1, Math.floor(Number.isFinite(body.max_results) ? (body.max_results as number) : 100)),
@@ -199,10 +202,7 @@ export function buildPoolQuery(
 
     const conditions: string[] = [`k.date = ${bind(tradeDate)}`, `k.amount >= ${bind(filters.minAmount)}`];
     if (filters.excludeSt) {
-      conditions.push(
-        `COALESCE(n.name, '') NOT LIKE 'ST%'`,
-        `COALESCE(n.name, '') NOT LIKE '*ST%'`,
-      );
+      conditions.push(`COALESCE(n.name, '') NOT LIKE 'ST%'`, `COALESCE(n.name, '') NOT LIKE '*ST%'`);
     }
 
     if (filters.industryCode !== null) {
@@ -336,13 +336,15 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       const nameBySymbol = new Map(stocks.map((s) => [s.symbol, s.name]));
 
       if (stocks.length === 0) {
-        return reply.send(ok({
+        return reply.send(
+          ok({
             totalCandidates: 0,
             total: 0,
             results: [],
             tradeDate,
             filters,
-          }));
+          }),
+        );
       }
 
       // ---- 4. IN 查询拿全部候选日线（SDD §5.3 硬约束） ----
@@ -357,9 +359,7 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       const daysField = (plugin.paramSchema ?? []).find((f) => f.key === 'days');
       const scanDays = Math.max(1, Number(userParams.days ?? daysField?.default ?? 120));
       const prefetchEnd = new Date().toISOString().slice(0, 10);
-      const prefetchStart = new Date(Date.now() - scanDays * 86_400_000)
-        .toISOString()
-        .slice(0, 10);
+      const prefetchStart = new Date(Date.now() - scanDays * 86_400_000).toISOString().slice(0, 10);
       const symbolsByView = new Map<string, string[]>();
       for (const row of stocks) {
         const list = symbolsByView.get(row.src_view);
@@ -389,11 +389,7 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
             symbol: stock.symbol,
           };
 
-          const execResult: PluginExecutionResult = await executePlugin(
-            plugin,
-            perSymbolParams,
-            ctx,
-          );
+          const execResult: PluginExecutionResult = await executePlugin(plugin, perSymbolParams, ctx);
 
           if (execResult.status === 'TIMEOUT') {
             timeoutCount++;
@@ -435,13 +431,15 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         detail: JSON.stringify({ tradeDate, ...filters, maxResults, timeMs: totalMs }),
       });
 
-      return reply.send(ok({
+      return reply.send(
+        ok({
           totalCandidates: scannedCount,
           total: passResults.length,
           results: limited,
           tradeDate,
           filters,
-        }));
+        }),
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       writeSystemLog({

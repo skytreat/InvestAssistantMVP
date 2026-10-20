@@ -31,7 +31,7 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
          WHERE symbol LIKE ? OR name LIKE ?
          ORDER BY symbol
          LIMIT 20`,
-        [`%${keyword}%`, `%${keyword}%`]
+        [`%${keyword}%`, `%${keyword}%`],
       );
 
       return reply.send(ok(rows));

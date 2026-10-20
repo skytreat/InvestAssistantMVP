@@ -7,7 +7,7 @@
  *   - getHoldingBeforeDate reduce 类型交易 → 负向计入持仓
  *   - importDividendEvents 无除权事件（mock DuckDB 空）→ eventsProcessed=0
  */
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterAll, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,18 +18,23 @@ const ORIGINAL_SQLITE_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import { ConfigStore } from '../../src/config/configStore.js';
-import {
-  getHoldingBeforeDate,
-  importDividendEvents,
-} from '../../src/services/exDividendSync.js';
+import { getHoldingBeforeDate, importDividendEvents } from '../../src/services/exDividendSync.js';
 
 function cleanup(): void {
   // 重置 ConfigStore 单例
   (ConfigStore as any)._instance = null;
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
   if (ORIGINAL_SQLITE_PATH !== undefined) {
     process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_PATH;
   } else {
@@ -52,12 +57,12 @@ describe('exDividendSync — getHoldingBeforeDate', () => {
     const db = ConfigStore.getInstance().db;
     const uid = 101;
     db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
     ).run(uid, 'div_user_101', 'dummy');
     db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
-       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 100, 10.0, 0, 'test', 0)`
+       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 100, 10.0, 0, 'test', 0)`,
     ).run(uid, 'sh600000');
 
     const holding = getHoldingBeforeDate(db, uid, 'sh600000', '2026-10-30');
@@ -68,17 +73,17 @@ describe('exDividendSync — getHoldingBeforeDate', () => {
     const db = ConfigStore.getInstance().db;
     const uid = 102;
     db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
     ).run(uid, 'div_user_102', 'dummy');
     db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
-       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 200, 10.0, 0, 'b', 0)`
+       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 200, 10.0, 0, 'b', 0)`,
     ).run(uid, 'sh600000');
     db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
-       VALUES (?, ?, 'reduce', '2026-10-10', '09:30:00', 50, 12.0, 0, 'r', 0)`
+       VALUES (?, ?, 'reduce', '2026-10-10', '09:30:00', 50, 12.0, 0, 'r', 0)`,
     ).run(uid, 'sh600000');
 
     // reduce 在公式里是 -quantity，所以 200 - 50 = 150

@@ -20,7 +20,7 @@ async function bootstrap() {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
-      transport: undefined,  // MVP 用默认 pino 输出到 stdout，systemd journal 自动捕获
+      transport: undefined, // MVP 用默认 pino 输出到 stdout，systemd journal 自动捕获
     },
   });
 

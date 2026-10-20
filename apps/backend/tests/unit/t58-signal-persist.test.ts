@@ -39,12 +39,16 @@ let db: ReturnType<typeof ConfigStore.getInstance>;
 
 beforeAll(async () => {
   db = ConfigStore.getInstance();
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`
-  ).run(SIGNAL_USER_ID, 't58_signal_user');
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`
-  ).run(TRADE_USER_ID, 't58_trade_user');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`,
+    )
+    .run(SIGNAL_USER_ID, 't58_signal_user');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`,
+    )
+    .run(TRADE_USER_ID, 't58_trade_user');
 
   db.db.prepare('DELETE FROM user_strategy_signal WHERE user_id = ?').run(SIGNAL_USER_ID);
 
@@ -52,8 +56,11 @@ beforeAll(async () => {
   app.decorateRequest('user', null);
   app.addHook('onRequest', async (request) => {
     (request as AuthedRequest).user = {
-      sub: TRADE_USER_ID, username: 't58_trade_user', role: 'user',
-      iat: 0, exp: Math.floor(Date.now() / 1000) + 3600,
+      sub: TRADE_USER_ID,
+      username: 't58_trade_user',
+      role: 'user',
+      iat: 0,
+      exp: Math.floor(Date.now() / 1000) + 3600,
     };
   });
   await registerTradeRoutes(app);
@@ -62,9 +69,17 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app?.close().catch(() => {});
-  try { (db.db as unknown as { close: () => void }).close(); } catch { /* ignore */ }
+  try {
+    (db.db as unknown as { close: () => void }).close();
+  } catch {
+    /* ignore */
+  }
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
@@ -90,11 +105,19 @@ describe('T58 · is_final 显式落库', () => {
   });
 
   it('persistSignals 写入的行 is_final = 1', () => {
-    const r = persistSignals([makeSignal({ symbol: 'sh600519' })], 'rsi_oversold', 'monitor', '2026-10-15', SIGNAL_USER_ID);
+    const r = persistSignals(
+      [makeSignal({ symbol: 'sh600519' })],
+      'rsi_oversold',
+      'monitor',
+      '2026-10-15',
+      SIGNAL_USER_ID,
+    );
     expect(r).toEqual({ inserted: 1, skipped: 0, errors: 0 });
 
     const row = db.db
-      .prepare('SELECT is_final FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?')
+      .prepare(
+        'SELECT is_final FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?',
+      )
       .get(SIGNAL_USER_ID, 'sh600519', '2026-10-15') as { is_final: number };
     expect(row.is_final).toBe(1);
   });
@@ -102,8 +125,16 @@ describe('T58 · is_final 显式落库', () => {
   it('persistBatchSignals 写入的行 is_final = 1（两条都验）', () => {
     const r = persistBatchSignals(
       [
-        { pluginId: 'macd_cross', pluginCategory: 'monitor', signals: [makeSignal({ symbol: 'sz000001', signalType: 'SELL' })] },
-        { pluginId: 'volume_spike', pluginCategory: 'filter', signals: [makeSignal({ symbol: 'sh601318', signalType: 'HOLD' })] },
+        {
+          pluginId: 'macd_cross',
+          pluginCategory: 'monitor',
+          signals: [makeSignal({ symbol: 'sz000001', signalType: 'SELL' })],
+        },
+        {
+          pluginId: 'volume_spike',
+          pluginCategory: 'filter',
+          signals: [makeSignal({ symbol: 'sh601318', signalType: 'HOLD' })],
+        },
       ],
       '2026-10-16',
       SIGNAL_USER_ID,
@@ -112,7 +143,9 @@ describe('T58 · is_final 显式落库', () => {
 
     for (const code of ['sz000001', 'sh601318']) {
       const row = db.db
-        .prepare('SELECT is_final FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?')
+        .prepare(
+          'SELECT is_final FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?',
+        )
         .get(SIGNAL_USER_ID, code, '2026-10-16') as { is_final: number };
       expect(row.is_final).toBe(1);
     }
@@ -125,18 +158,34 @@ describe('T58 · is_final 显式落库', () => {
 describe('T58 · metrics_json = 插件数值明细', () => {
   it('内容与 metrics 逐字段相等', () => {
     const metrics = { period: 14, oversold: 30, latestRSI: 28.5 };
-    persistSignals([makeSignal({ symbol: 'sz000002', metrics })], 'rsi_oversold', 'monitor', '2026-10-17', SIGNAL_USER_ID);
+    persistSignals(
+      [makeSignal({ symbol: 'sz000002', metrics })],
+      'rsi_oversold',
+      'monitor',
+      '2026-10-17',
+      SIGNAL_USER_ID,
+    );
 
     const row = db.db
-      .prepare('SELECT metrics_json FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?')
+      .prepare(
+        'SELECT metrics_json FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?',
+      )
       .get(SIGNAL_USER_ID, 'sz000002', '2026-10-17') as { metrics_json: string };
     expect(JSON.parse(row.metrics_json)).toEqual(metrics);
   });
 
   it('无 metrics → 落 NULL（不是字符串 "null"）', () => {
-    persistSignals([makeSignal({ symbol: 'sz000003' })], 'rsi_oversold', 'monitor', '2026-10-17', SIGNAL_USER_ID);
+    persistSignals(
+      [makeSignal({ symbol: 'sz000003' })],
+      'rsi_oversold',
+      'monitor',
+      '2026-10-17',
+      SIGNAL_USER_ID,
+    );
     const row = db.db
-      .prepare('SELECT metrics_json, typeof(metrics_json) AS t FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?')
+      .prepare(
+        'SELECT metrics_json, typeof(metrics_json) AS t FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?',
+      )
       .get(SIGNAL_USER_ID, 'sz000003', '2026-10-17') as { metrics_json: string | null; t: string };
     expect(row.metrics_json).toBeNull();
     expect(row.t).toBe('null');
@@ -146,10 +195,15 @@ describe('T58 · metrics_json = 插件数值明细', () => {
     const metrics = { rsi: 28.5 };
     persistSignals(
       [makeSignal({ symbol: 'sz000004', metrics, detail: 'token=SECRET-abc123 疑似内部凭证' })],
-      'rsi_oversold', 'monitor', '2026-10-17', SIGNAL_USER_ID,
+      'rsi_oversold',
+      'monitor',
+      '2026-10-17',
+      SIGNAL_USER_ID,
     );
     const row = db.db
-      .prepare('SELECT metrics_json FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?')
+      .prepare(
+        'SELECT metrics_json FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?',
+      )
       .get(SIGNAL_USER_ID, 'sz000004', '2026-10-17') as { metrics_json: string };
     expect(JSON.parse(row.metrics_json)).toEqual(metrics);
     expect(row.metrics_json).not.toContain('SECRET');
@@ -158,9 +212,17 @@ describe('T58 · metrics_json = 插件数值明细', () => {
   });
 
   it('metrics 值为 0 时不能被当成 falsy 丢成 NULL', () => {
-    persistSignals([makeSignal({ symbol: 'sz000005', metrics: { dif: 0 } })], 'macd_cross', 'monitor', '2026-10-17', SIGNAL_USER_ID);
+    persistSignals(
+      [makeSignal({ symbol: 'sz000005', metrics: { dif: 0 } })],
+      'macd_cross',
+      'monitor',
+      '2026-10-17',
+      SIGNAL_USER_ID,
+    );
     const row = db.db
-      .prepare('SELECT metrics_json FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?')
+      .prepare(
+        'SELECT metrics_json FROM user_strategy_signal WHERE user_id = ? AND asset_code = ? AND trade_date = ?',
+      )
       .get(SIGNAL_USER_ID, 'sz000005', '2026-10-17') as { metrics_json: string };
     expect(JSON.parse(row.metrics_json)).toEqual({ dif: 0 });
   });
@@ -171,12 +233,16 @@ describe('T58 · metrics_json = 插件数值明细', () => {
 // ────────────────────────────────────────────────────────────
 function holdRow(code: string) {
   return db.db
-    .prepare('SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?')
+    .prepare(
+      'SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?',
+    )
     .get(TRADE_USER_ID, code, 'hold') as { id: number; is_deleted: number } | undefined;
 }
 
 function cleanCode(code: string) {
-  db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(TRADE_USER_ID, code);
+  db.db
+    .prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')
+    .run(TRADE_USER_ID, code);
   db.db.prepare('DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ?').run(TRADE_USER_ID, code);
 }
 
@@ -197,7 +263,11 @@ describe('T58 · 买入后 hold 关系存在', () => {
     cleanCode(code);
 
     const res = await postTrade({
-      asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10,
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
       trade_reason: '建仓',
     });
     expect(res.statusCode).toBe(201);
@@ -210,11 +280,27 @@ describe('T58 · 买入后 hold 关系存在', () => {
   it('hold 行只建 1 条（重复买入不产生第二行）', async () => {
     const code = 'sh600037';
     cleanCode(code);
-    await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'a' });
-    await postTrade({ asset_code: code, trade_type: 'add', trade_date: '2026-10-16', quantity: 100, price: 11, trade_reason: 'b' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'a',
+    });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'add',
+      trade_date: '2026-10-16',
+      quantity: 100,
+      price: 11,
+      trade_reason: 'b',
+    });
 
     const cnt = db.db
-      .prepare(`SELECT COUNT(*) AS c FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'hold'`)
+      .prepare(
+        `SELECT COUNT(*) AS c FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'hold'`,
+      )
       .get(TRADE_USER_ID, code) as { c: number };
     expect(cnt.c).toBe(1);
     expect(holdRow(code)!.is_deleted).toBe(0);
@@ -224,13 +310,26 @@ describe('T58 · 买入后 hold 关系存在', () => {
     const code = 'sh600038';
     cleanCode(code);
     db.db.prepare('DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ?').run(TRADE_USER_ID, code);
-    db.db.prepare(`INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'watch')`).run(TRADE_USER_ID, code);
-    db.db.prepare(`INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'candidate')`).run(TRADE_USER_ID, code);
+    db.db
+      .prepare(`INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'watch')`)
+      .run(TRADE_USER_ID, code);
+    db.db
+      .prepare(`INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'candidate')`)
+      .run(TRADE_USER_ID, code);
 
-    await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'a' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'a',
+    });
 
     const rows = db.db
-      .prepare(`SELECT rel_type, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? ORDER BY rel_type`)
+      .prepare(
+        `SELECT rel_type, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? ORDER BY rel_type`,
+      )
       .all(TRADE_USER_ID, code) as Array<{ rel_type: string; is_deleted: number }>;
     expect(rows).toEqual([
       { rel_type: 'candidate', is_deleted: 0 },
@@ -245,38 +344,85 @@ describe('T58 · 清仓后软删 hold 关系', () => {
     const code = 'sh600039';
     cleanCode(code);
 
-    await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: '建仓' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: '建仓',
+    });
     const idBefore = holdRow(code)!.id;
     expect(holdRow(code)!.is_deleted).toBe(0);
 
     const res = await postTrade({
-      asset_code: code, trade_type: 'reduce', trade_date: '2026-10-16', quantity: 100, price: 12, trade_reason: '清仓',
+      asset_code: code,
+      trade_type: 'reduce',
+      trade_date: '2026-10-16',
+      quantity: 100,
+      price: 12,
+      trade_reason: '清仓',
     });
     expect(res.statusCode).toBe(201);
 
     const row = holdRow(code);
-    expect(row).toBeDefined();                 // 行还在 = 软删，不是 DELETE
-    expect(row!.id).toBe(idBefore);            // 没重建
+    expect(row).toBeDefined(); // 行还在 = 软删，不是 DELETE
+    expect(row!.id).toBe(idBefore); // 没重建
     expect(row!.is_deleted).toBe(1);
   });
 
   it('buy 100 → reduce 40（仍有持仓）→ hold 保持 is_deleted=0', async () => {
     const code = 'sh600040';
     cleanCode(code);
-    await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'a' });
-    await postTrade({ asset_code: code, trade_type: 'reduce', trade_date: '2026-10-16', quantity: 40, price: 12, trade_reason: 'b' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'a',
+    });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'reduce',
+      trade_date: '2026-10-16',
+      quantity: 40,
+      price: 12,
+      trade_reason: 'b',
+    });
     expect(holdRow(code)!.is_deleted).toBe(0);
   });
 
   it('清仓后再次买入 → 同一行被恢复（is_deleted 0），不新建行', async () => {
     const code = 'sh600041';
     cleanCode(code);
-    await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'a' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'a',
+    });
     const idBefore = holdRow(code)!.id;
-    await postTrade({ asset_code: code, trade_type: 'clear', trade_date: '2026-10-16', quantity: 100, price: 12, trade_reason: 'b' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'clear',
+      trade_date: '2026-10-16',
+      quantity: 100,
+      price: 12,
+      trade_reason: 'b',
+    });
     expect(holdRow(code)!.is_deleted).toBe(1);
 
-    await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-17', quantity: 50, price: 13, trade_reason: 'c' });
+    await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-17',
+      quantity: 50,
+      price: 13,
+      trade_reason: 'c',
+    });
     const row = holdRow(code);
     expect(row!.id).toBe(idBefore);
     expect(row!.is_deleted).toBe(0);
@@ -287,7 +433,14 @@ describe('T58 · 软删 / 恢复交易同步 hold', () => {
   /** T81：造一条「已建仓且已软删」的交易，两个用例各自调用 → 不依赖执行顺序 */
   async function seedSoftDeletedTrade(code: string): Promise<number> {
     cleanCode(code);
-    const buy = await postTrade({ asset_code: code, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'a' });
+    const buy = await postTrade({
+      asset_code: code,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'a',
+    });
     expect(buy.statusCode).toBe(201);
     const tradeId = (JSON.parse(buy.body).data as { trade_id: number }).trade_id;
     const del = await app.inject({ method: 'POST', url: `/api/trade/${tradeId}/soft-delete` });
@@ -315,17 +468,21 @@ describe('T58 · 软删 / 恢复交易同步 hold', () => {
   it('syncHoldRelation 直接调用：幂等，重复调用不新增行', () => {
     const code = 'sh600043';
     cleanCode(code);
-    db.db.prepare(
-      `INSERT INTO user_trade_record
+    db.db
+      .prepare(
+        `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, 'buy', '2026-10-15', '09:30:00', 100, 10, 0, 0)`
-    ).run(TRADE_USER_ID, code);
+       VALUES (?, ?, 'buy', '2026-10-15', '09:30:00', 100, 10, 0, 0)`,
+      )
+      .run(TRADE_USER_ID, code);
 
     expect(syncHoldRelation(TRADE_USER_ID, code)).toEqual({ action: 'created', totalQuantity: 100 });
     expect(syncHoldRelation(TRADE_USER_ID, code)).toEqual({ action: 'kept', totalQuantity: 100 });
 
     const cnt = db.db
-      .prepare(`SELECT COUNT(*) AS c FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'hold'`)
+      .prepare(
+        `SELECT COUNT(*) AS c FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'hold'`,
+      )
       .get(TRADE_USER_ID, code) as { c: number };
     expect(cnt.c).toBe(1);
   });
@@ -345,19 +502,42 @@ describe('T58 · exDividendSync 用户来源：主分支已覆盖', () => {
    * ⚠️ T81：本 describe 自带独立标的 + 自带前置（经 trade.ts 写入），
    *    不再依赖同文件其它 describe 是否跑过（打乱顺序时原写法会读到 0 条交易）。
    */
-  const HOLD_CODE = 'sh600136';    // 仍持仓 → 主分支应命中
+  const HOLD_CODE = 'sh600136'; // 仍持仓 → 主分支应命中
   const CLEARED_CODE = 'sh600139'; // buy 100 → reduce 100 → 持仓 0 → 主分支不命中
 
   beforeAll(async () => {
-    await postTrade({ asset_code: HOLD_CODE, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'exdiv-src' });
-    await postTrade({ asset_code: CLEARED_CODE, trade_type: 'buy', trade_date: '2026-10-15', quantity: 100, price: 10, trade_reason: 'exdiv-src' });
-    await postTrade({ asset_code: CLEARED_CODE, trade_type: 'reduce', trade_date: '2026-10-16', quantity: 100, price: 12, trade_reason: 'exdiv-src' });
+    await postTrade({
+      asset_code: HOLD_CODE,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'exdiv-src',
+    });
+    await postTrade({
+      asset_code: CLEARED_CODE,
+      trade_type: 'buy',
+      trade_date: '2026-10-15',
+      quantity: 100,
+      price: 10,
+      trade_reason: 'exdiv-src',
+    });
+    await postTrade({
+      asset_code: CLEARED_CODE,
+      trade_type: 'reduce',
+      trade_date: '2026-10-16',
+      quantity: 100,
+      price: 12,
+      trade_reason: 'exdiv-src',
+    });
   });
 
   it('持有中的用户全部由 user_asset_rel hold 主分支命中', () => {
     for (const code of [HOLD_CODE]) {
       const holders = db.db
-        .prepare(`SELECT DISTINCT user_id FROM user_asset_rel WHERE asset_code = ? AND rel_type = 'hold' AND is_deleted = 0`)
+        .prepare(
+          `SELECT DISTINCT user_id FROM user_asset_rel WHERE asset_code = ? AND rel_type = 'hold' AND is_deleted = 0`,
+        )
         .all(code) as Array<{ user_id: number }>;
       const tradeUsers = db.db
         .prepare(`SELECT DISTINCT user_id FROM user_trade_record WHERE asset_code = ? AND is_deleted = 0`)
@@ -370,9 +550,11 @@ describe('T58 · exDividendSync 用户来源：主分支已覆盖', () => {
   });
 
   it('已清仓用户不再出现在主分支（与 exDividendSync「持仓=0 → 跳过」一致）', () => {
-    const code = CLEARED_CODE;   // buy 100 → reduce 100，持仓 0
+    const code = CLEARED_CODE; // buy 100 → reduce 100，持仓 0
     const holders = db.db
-      .prepare(`SELECT DISTINCT user_id FROM user_asset_rel WHERE asset_code = ? AND rel_type = 'hold' AND is_deleted = 0`)
+      .prepare(
+        `SELECT DISTINCT user_id FROM user_asset_rel WHERE asset_code = ? AND rel_type = 'hold' AND is_deleted = 0`,
+      )
       .all(code) as Array<{ user_id: number }>;
     expect(holders).toEqual([]);
   });

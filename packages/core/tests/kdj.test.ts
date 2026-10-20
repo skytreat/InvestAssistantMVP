@@ -209,8 +209,6 @@ describe('KDJ · 递推结构', () => {
     expect(rsv).toBeLessThanOrEqual(RSV_PERCENT_SCALE + 1e-9);
     expect(r.d[idx]).toBe((r.k[idx] + (m2 - 1) * KDJ_INITIAL_VALUE) / m2);
     // m2=5 与默认 3 结果不同，证明参数真的透传了
-    expect(r.d[idx]).not.toBe(
-      (r.k[idx] + (KDJ_DEFAULT_M2 - 1) * KDJ_INITIAL_VALUE) / KDJ_DEFAULT_M2
-    );
+    expect(r.d[idx]).not.toBe((r.k[idx] + (KDJ_DEFAULT_M2 - 1) * KDJ_INITIAL_VALUE) / KDJ_DEFAULT_M2);
   });
 });

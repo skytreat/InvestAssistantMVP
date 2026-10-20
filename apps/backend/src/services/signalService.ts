@@ -103,14 +103,26 @@ export function persistSignals(
     for (const s of signals) {
       const dir = DIRECTION_MAP[s.signalType] ?? 'hold';
       try {
-        const info = stmt.run(userId, s.symbol, pluginId, pluginCategory, tradeDate, dir, s.label ?? s.signalType, s.strength ?? null, serializeMetrics(s.metrics));
+        const info = stmt.run(
+          userId,
+          s.symbol,
+          pluginId,
+          pluginCategory,
+          tradeDate,
+          dir,
+          s.label ?? s.signalType,
+          s.strength ?? null,
+          serializeMetrics(s.metrics),
+        );
         if (info.changes > 0) inserted++;
         else skipped++;
       } catch (err: unknown) {
         errors++;
         writeSystemLog({
-          logType: 'signal_generate', level: 'ERROR',
-          message: `信号持久化失败: ${pluginId}/${s.symbol}`, detail: String(err),
+          logType: 'signal_generate',
+          level: 'ERROR',
+          message: `信号持久化失败: ${pluginId}/${s.symbol}`,
+          detail: String(err),
         });
       }
     }
@@ -142,14 +154,26 @@ export function persistBatchSignals(
       for (const s of r.signals) {
         const dir = DIRECTION_MAP[s.signalType] ?? 'hold';
         try {
-          const info = stmt.run(userId, s.symbol, r.pluginId, r.pluginCategory, tradeDate, dir, s.label ?? s.signalType, s.strength ?? null, serializeMetrics(s.metrics));
+          const info = stmt.run(
+            userId,
+            s.symbol,
+            r.pluginId,
+            r.pluginCategory,
+            tradeDate,
+            dir,
+            s.label ?? s.signalType,
+            s.strength ?? null,
+            serializeMetrics(s.metrics),
+          );
           if (info.changes > 0) inserted++;
           else skipped++;
         } catch (err: unknown) {
           errors++;
           writeSystemLog({
-            logType: 'signal_generate', level: 'ERROR',
-            message: `信号持久化失败: ${r.pluginId}/${s.symbol}`, detail: String(err),
+            logType: 'signal_generate',
+            level: 'ERROR',
+            message: `信号持久化失败: ${r.pluginId}/${s.symbol}`,
+            detail: String(err),
           });
         }
       }
@@ -165,7 +189,7 @@ export function persistBatchSignals(
  */
 export function getTradeDate(): string {
   const now = new Date();
-  const offset = 8 * 60;  // UTC+8
+  const offset = 8 * 60; // UTC+8
   const local = new Date(now.getTime() + offset * 60 * 1000);
   return local.toISOString().slice(0, 10);
 }

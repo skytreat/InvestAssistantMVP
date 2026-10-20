@@ -50,11 +50,11 @@ export interface OversellDetail {
 }
 
 export interface PositionResult {
-  totalQuantity: number;        // 当前持仓数量
-  avgCost: number;              // 移动加权平均成本（含手续费）
-  totalCostBasis: number;       // 总持仓成本
-  realizedPnL: number;          // 已实现盈亏
-  totalFee: number;             // 累计手续费
+  totalQuantity: number; // 当前持仓数量
+  avgCost: number; // 移动加权平均成本（含手续费）
+  totalCostBasis: number; // 总持仓成本
+  realizedPnL: number; // 已实现盈亏
+  totalFee: number; // 累计手续费
   /** T84：是否检出超卖。strictOversell=false 时用于「显示但暴露」，不得静默吞掉 */
   hasOversell?: boolean;
   oversellDetail?: OversellDetail | null;
@@ -72,10 +72,7 @@ export interface CalcOptions {
   strictOversell?: boolean;
 }
 
-export function calculateMovingWeightedCost(
-  trades: TradeRecord[],
-  opts: CalcOptions = {},
-): PositionResult {
+export function calculateMovingWeightedCost(trades: TradeRecord[], opts: CalcOptions = {}): PositionResult {
   const strict = opts.strictOversell ?? true;
   let totalQuantity = 0;
   let totalCostBasis = 0;
@@ -114,12 +111,12 @@ export function calculateMovingWeightedCost(
         totalCostBasis = 0;
         continue;
       }
-      if (totalQuantity <= 0) continue;  // 卖出 0 股，no-op
+      if (totalQuantity <= 0) continue; // 卖出 0 股，no-op
       const avgCost = totalCostBasis / totalQuantity;
       const revenue = trade.quantity * trade.price - fee;
       realizedPnL += revenue - trade.quantity * avgCost;
       totalQuantity -= trade.quantity;
-      totalCostBasis = totalQuantity * avgCost;  // 卖出后成本基按剩余数量等比减少
+      totalCostBasis = totalQuantity * avgCost; // 卖出后成本基按剩余数量等比减少
     }
   }
 

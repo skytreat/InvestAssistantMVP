@@ -11,7 +11,7 @@
 //   ✅ system_log 至少有 datacheck + plugin_execute + dividend_import 三类日志
 //
 // 注意：
-  //   - runAllChecks 返回 12 项（C4/C5 已于 T85 补齐，此前只产出 10 个 checkId）
+//   - runAllChecks 返回 12 项（C4/C5 已于 T85 补齐，此前只产出 10 个 checkId）
 //   - pluginEngine 直接调用写 plugin_execute logType，signal_generate 由 scheduler cron 产生
 //   - 不要 mock DuckDB——让真实 DuckDB 不可用，验证 gracefully catch 后仍写 system_log
 
@@ -44,10 +44,12 @@ export function cleanupSmoke2(): void {
   } else {
     delete process.env.SQLITE_DB_PATH;
   }
-  try { rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
-
-const TEST_PORT = 51101;
 
 // 顶层快速检测：只看文件存不存在（避免 DuckDB Neo API 文件锁泄漏）
 const _DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
@@ -88,7 +90,7 @@ describe('M2 C1-C12 数据校验', () => {
     for (const s of summaries) {
       // checkId 不得越界或重复 —— T85 后 12 项齐全，C4/C5 各自独立
       expect(validCheckIds).toContain(s.checkId);
-      expect(seenIds.has(s.checkId)).toBe(false);  // 无重复
+      expect(seenIds.has(s.checkId)).toBe(false); // 无重复
       seenIds.add(s.checkId);
 
       // result 必须是合法值
@@ -106,7 +108,7 @@ describe('M2 C1-C12 数据校验', () => {
 
     const rows = db.db
       .prepare(
-        "SELECT check_item, level, message FROM system_log WHERE log_type='datacheck' ORDER BY id DESC LIMIT 12"
+        "SELECT check_item, level, message FROM system_log WHERE log_type='datacheck' ORDER BY id DESC LIMIT 12",
       )
       .all() as { check_item: string; level: string; message: string }[];
 
@@ -146,7 +148,7 @@ describe('M2 插件引擎', () => {
     // executeAllPlugins 内部写 plugin_execute logType（每个插件执行一条 + 批量汇总一条）
     const row = db.db
       .prepare(
-        "SELECT level, message FROM system_log WHERE log_type='plugin_execute' ORDER BY id DESC LIMIT 1"
+        "SELECT level, message FROM system_log WHERE log_type='plugin_execute' ORDER BY id DESC LIMIT 1",
       )
       .get() as { level: string; message: string } | undefined;
     expect(row).toBeDefined();
@@ -181,9 +183,7 @@ describe('M2 除权自动导入', () => {
     await new Promise((r) => setTimeout(r, 100));
 
     const row = db.db
-      .prepare(
-        "SELECT level FROM system_log WHERE log_type='dividend_import' ORDER BY id DESC LIMIT 1"
-      )
+      .prepare("SELECT level FROM system_log WHERE log_type='dividend_import' ORDER BY id DESC LIMIT 1")
       .get() as { level: string } | undefined;
     // 必须有一条日志（SKIP=无除权事件，ERROR=DuckDB 不可用，都算流程跑通）
     expect(row).toBeDefined();
@@ -223,7 +223,7 @@ describe('M2 全链路日志验证', () => {
   it('system_log 有三类记录：datacheck + plugin_execute + dividend_import', () => {
     const types = db.db
       .prepare(
-        "SELECT DISTINCT log_type FROM system_log WHERE log_type IN ('datacheck', 'plugin_execute', 'dividend_import')"
+        "SELECT DISTINCT log_type FROM system_log WHERE log_type IN ('datacheck', 'plugin_execute', 'dividend_import')",
       )
       .all() as { log_type: string }[];
     const typeList = types.map((t) => t.log_type);
@@ -241,14 +241,14 @@ describe('M2 全链路日志验证', () => {
 describe('M2 真实 DuckDB 路径', () => {
   // 每个 test 内部独立验证 DuckDB 真能用（有独立 timeout + try-catch，不泄漏文件锁）
   async function _ensureDuckdbWorks(): Promise<boolean> {
-    if (!_duckdbWorks) return false;  // fs 检测文件就不存在
+    if (!_duckdbWorks) return false; // fs 检测文件就不存在
     const MAX_RETRIES = 3;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         await duckdbHealthCheck();
         // health check 只验证 SELECT 1，还需确认关键表存在（空 DB 会通过 health check 但无实际数据）
         const tables = await queryDuckDB<{ tbl_name: string }>(
-          "SELECT tbl_name FROM sqlite_master WHERE type='table' AND tbl_name IN ('raw_holidays','raw_kline_daily')"
+          "SELECT tbl_name FROM sqlite_master WHERE type='table' AND tbl_name IN ('raw_holidays','raw_kline_daily')",
         );
         if (tables.length >= 1) return true;
       } catch {

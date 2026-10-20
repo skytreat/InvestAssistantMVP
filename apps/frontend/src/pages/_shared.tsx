@@ -1,16 +1,61 @@
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+
+/**
+ * 共享样式对象 —— **re-export 自 `src/theme/styles.ts`（T66 分层收口）**
+ *
+ * ⚠️ 为什么要 re-export 而不是让各页直接改 import 路径？
+ *    - 12+ 个页面在用这些样式对象，逐个改 import 属于**纯噪音 diff**；
+ *    - 保持 `pages/_shared` 的既有导出**全部可用**（其它页面 / 测试都依赖这个入口）。
+ *
+ * ⚠️ **定义已经下沉到 `src/theme/styles.ts`** —— 因为组件层（`components/ConfirmDialog.tsx`）
+ *    需要 `cardStyle` / `buttonStyle`，而**组件层不能反向依赖页面层**（依赖方向倒置）。
+ *    `theme/styles.ts` 只 import `theme/tokens.ts` → **不会产生循环依赖**。
+ */
+export {
+  pageContainerStyle,
+  cardStyle,
+  titleStyle,
+  cardTitleStyle,
+  tableStyle,
+  thTdStyle,
+  thStyle,
+  inputStyle,
+  buttonStyle,
+  errorStyle,
+  successStyle,
+  formRowStyle,
+  labelStyle,
+} from '../theme/styles';
 
 /** 移动端断点（与 G10a PRD §5.8 #6 底部 Tab 栏一致） */
 export const MOBILE_BREAKPOINT = 768;
 
 const linkStyle: React.CSSProperties = {
   padding: '8px 12px',
-  marginRight: 4,
-  color: '#1e40af',
+  marginRight: SPACING.gapTight,
+  color: COLORS.brandLink,
   textDecoration: 'none',
-  borderRadius: 4,
+  borderRadius: RADIUS.sm,
+};
+
+/**
+ * 导航激活态样式（T63 · ui-spec §4「语义标签 / 导航激活态」）
+ *
+ * 复用既有 token，不引入新 hex：
+ * - 底色 `COLORS.brandBg`（浅蓝）
+ * - 文字 `COLORS.brandLink`（深蓝）
+ * - 字重 600
+ *
+ * ⚠️ **react-router v6 没有 v5 的 `activeStyle` 属性** —— v6 用**函数式 `style`**
+ * （`style={({ isActive }) => ({ ...base, ...(isActive ? active : {}) })}`）。
+ */
+const activeLinkStyle: React.CSSProperties = {
+  background: COLORS.brandBg,
+  color: COLORS.brandLink,
+  fontWeight: 600,
 };
 
 /** 桌面端导航项（PRD §5.8 #7 左侧导航栏） */
@@ -42,32 +87,52 @@ export function Navbar() {
 
   return (
     <>
-      <div
+      {/*
+        T63 语义化：导航条外层由 `<div>` 改为 `<header>`（landmark）。
+        ⚠️ App.tsx **不再**额外包一层 `<header>` —— HTML 规范禁止 header 嵌套 header，
+        故「App 的 header」与「Navbar 的 header」是同一个元素（详见 App.tsx 注释）。
+      */}
+      <header
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          padding: '12px 16px',
-          borderBottom: '1px solid #e5e7eb',
-          background: '#fff',
+          padding: SPACING.navPadding,
+          borderBottom: `1px solid ${COLORS.borderLight}`,
+          background: COLORS.cardBg,
           flexWrap: 'wrap',
         }}
       >
         <span style={{ fontWeight: 'bold', fontSize: 20 }}>InvestAssistant</span>
-        <nav style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
+        <nav aria-label="主导航" style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
           {items.map((i) => (
-            <Link key={i.to} to={i.to} style={linkStyle}>{i.label}</Link>
+            <NavLink
+              key={i.to}
+              to={i.to}
+              end
+              style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
+            >
+              {i.label}
+            </NavLink>
           ))}
         </nav>
-        <span style={{ marginLeft: 'auto', color: '#666', fontSize: 13 }}>
+        <span style={{ marginLeft: 'auto', color: COLORS.textTertiary, fontSize: TYPO.smallSize }}>
           {username} ({isAdmin ? '管理员' : '普通用户'})
         </span>
-        <button onClick={() => { logout(); navigate('/login'); }}>退出登录</button>
-      </div>
-      {/* 全局合规声明 */}
-      <div style={{ background: '#fef3c7', color: '#92400e', fontSize: 12, textAlign: 'center', padding: '4px 0' }}>
-        本工具不构成投资建议，数据仅供参考
-      </div>
+        <button
+          onClick={() => {
+            logout();
+            navigate('/login');
+          }}
+        >
+          退出登录
+        </button>
+      </header>
+      {/*
+        T95：全局合规声明已从 Navbar 下方**搬到 App.tsx 的 `<footer>`**
+        （`components/ComplianceFooter.tsx`）—— PRD §5.9 要求「全站所有页面顶部或底部常驻」，
+        页脚是更规范的位置，且能同时覆盖未登录的登录页。
+      */}
       {/* G10a 移动端底部 TabBar（<768px 显示，桌面隐藏） */}
       <MobileTabBar isAdmin={isAdmin} />
     </>
@@ -86,38 +151,56 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
   if (!isMobile) return null;
 
   return (
-    <nav style={{
-      position: 'fixed',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      display: 'flex',
-      background: '#fff',
-      borderTop: '1px solid #e5e7eb',
-      zIndex: 300,
-      paddingBottom: 'env(safe-area-inset-bottom)',
-    }}>
+    <nav
+      aria-label="底部导航"
+      style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        display: 'flex',
+        background: COLORS.cardBg,
+        borderTop: `1px solid ${COLORS.borderLight}`,
+        zIndex: 300,
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+    >
       {MOBILE_TAB.map((t) => (
-        <Link key={t.to} to={t.to} style={{
-          flex: 1,
-          textAlign: 'center',
-          padding: '8px 0',
-          fontSize: 11,
-          color: '#374151',
-          textDecoration: 'none',
-        }}>
+        <NavLink
+          key={t.to}
+          to={t.to}
+          end
+          style={({ isActive }) => ({
+            flex: 1,
+            textAlign: 'center',
+            padding: '8px 0',
+            fontSize: TYPO.captionSize,
+            color: COLORS.textSecondary,
+            textDecoration: 'none',
+            ...(isActive ? activeLinkStyle : {}),
+          })}
+        >
           <div style={{ fontSize: 20, lineHeight: '24px' }}>{t.icon}</div>
           {t.label}
-        </Link>
+        </NavLink>
       ))}
       {isAdmin && (
-        <Link to="/admin" style={{
-          flex: 1, textAlign: 'center', padding: '8px 0', fontSize: 11,
-          color: '#374151', textDecoration: 'none',
-        }}>
+        <NavLink
+          to="/admin"
+          end
+          style={({ isActive }) => ({
+            flex: 1,
+            textAlign: 'center',
+            padding: '8px 0',
+            fontSize: TYPO.captionSize,
+            color: COLORS.textSecondary,
+            textDecoration: 'none',
+            ...(isActive ? activeLinkStyle : {}),
+          })}
+        >
           <div style={{ fontSize: 20, lineHeight: '24px' }}>🛠️</div>
           管理
-        </Link>
+        </NavLink>
       )}
     </nav>
   );
@@ -125,8 +208,8 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
 
 /** 视口宽度是否 < MOBILE_BREAKPOINT（SSR 安全，默认 false） */
 export function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = React.useState<boolean>(() =>
-    typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT
+  const [isMobile, setIsMobile] = React.useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT,
   );
 
   React.useEffect(() => {
@@ -140,104 +223,3 @@ export function useIsMobile(): boolean {
 
 /** 移动端底部 TabBar 高度 —— 页面内容需要留出这段 padding */
 export const MOBILE_TABBAR_HEIGHT = 62;
-
-export const pageContainerStyle: React.CSSProperties = {
-  padding: '24px',
-  maxWidth: 1200,
-  margin: '0 auto',
-  // 给移动端底部 TabBar 让位
-  paddingBottom: '86px',
-};
-
-/** 移动端紧凑容器（卡片间距收窄，表格允许横向滚动） */
-export const mobileCardStyle: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  padding: 12,
-  marginBottom: 16,
-  background: '#fff',
-};
-
-export const cardStyle: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  padding: 16,
-  marginBottom: 24,
-  background: '#fff',
-};
-
-export const titleStyle: React.CSSProperties = {
-  fontSize: 24,
-  fontWeight: 'bold',
-  marginBottom: 16,
-};
-
-export const cardTitleStyle: React.CSSProperties = {
-  fontSize: 16,
-  fontWeight: 600,
-  marginBottom: 12,
-  borderBottom: '1px solid #f3f4f6',
-  paddingBottom: 8,
-  color: '#1f2937',
-};
-
-export const tableStyle: React.CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: 14,
-};
-
-export const thTdStyle: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  padding: '8px 10px',
-  textAlign: 'left',
-};
-
-export const thStyle: React.CSSProperties = {
-  ...thTdStyle,
-  background: '#f9fafb',
-  fontWeight: 600,
-  color: '#374151',
-};
-
-export const inputStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  border: '1px solid #d1d5db',
-  borderRadius: 4,
-  fontSize: 14,
-};
-
-export const buttonStyle: React.CSSProperties = {
-  padding: '6px 16px',
-  background: '#2563eb',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 4,
-  cursor: 'pointer',
-  fontSize: 14,
-};
-
-export const errorStyle: React.CSSProperties = {
-  color: '#dc2626',
-  fontSize: 14,
-  marginTop: 8,
-};
-
-export const successStyle: React.CSSProperties = {
-  color: '#16a34a',
-  fontSize: 14,
-  marginTop: 8,
-};
-
-export const formRowStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 12,
-  marginBottom: 12,
-};
-
-export const labelStyle: React.CSSProperties = {
-  minWidth: 80,
-  color: '#374151',
-  fontSize: 14,
-};

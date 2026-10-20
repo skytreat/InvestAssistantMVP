@@ -5,12 +5,12 @@ import fs from 'node:fs';
 const FALLBACK_FILE = '/var/log/invol/err.log';
 
 export interface SystemLogEntry {
-  logType: string;   // datacheck / signal_generate / dividend_import / backup / trigger_manual / startup
-  level: string;      // INFO / WARN / ERROR / SKIP / SUCCESS
+  logType: string; // datacheck / signal_generate / dividend_import / backup / trigger_manual / startup
+  level: string; // INFO / WARN / ERROR / SKIP / SUCCESS
   message: string;
   detail?: string;
   checkItem?: string;
-  logDate?: string;   // YYYY-MM-DD，默认今天
+  logDate?: string; // YYYY-MM-DD，默认今天
 }
 
 // =====================================================================
@@ -57,7 +57,7 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   try {
     const config = ConfigStore.getInstance();
     config.writeLog(logType, level, safeMessage, safeDetail, checkItem, date);
-    return;  // 成功，直接返回
+    return; // 成功，直接返回
   } catch (sqliteErr) {
     console.error('[writeSystemLog] SQLite 不可用，降级到 console.error:', sqliteErr);
   }
@@ -65,8 +65,12 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   // 第 2 层：console.error（systemd journal 自动捕获）
   const journalMsg = JSON.stringify({
     source: 'invest-assistant',
-    logType, level, checkItem,
-    message: safeMessage, detail: safeDetail, date,
+    logType,
+    level,
+    checkItem,
+    message: safeMessage,
+    detail: safeDetail,
+    date,
   });
   console.error(journalMsg);
 

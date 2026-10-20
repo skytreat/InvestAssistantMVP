@@ -24,7 +24,7 @@ describe('T85 容差常量：与 Requirements §7 对齐', () => {
   });
 
   it('C5 总量降幅阈值 10%', () => {
-    expect(TOLERANCES.CLASS_COUNT_DROP).toBe(0.10);
+    expect(TOLERANCES.CLASS_COUNT_DROP).toBe(0.1);
   });
 
   it('C7 价格合理性：open ≤ close × 2', () => {

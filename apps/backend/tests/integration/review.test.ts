@@ -25,21 +25,53 @@ function authHeaders() {
 
 async function postTrade(payload: Record<string, unknown>) {
   return bundle.app.inject({
-    method: 'POST', url: '/api/trade', headers: authHeaders(), payload,
+    method: 'POST',
+    url: '/api/trade',
+    headers: authHeaders(),
+    payload,
   });
 }
 
 beforeAll(async () => {
   bundle = await createTestApp();
-  bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(bundle.userId, CODE);
+  bundle.db.db
+    .prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')
+    .run(bundle.userId, CODE);
 
   // 买入 100 @ 10（fee=0）→ 均价 10
   // 卖出 40 @ 12 → 盈亏 +80（盈利）
   // 卖出 60 @ 8  → 盈亏 -120（亏损）
   // 胜率 50%，平均盈利 80，平均亏损 120 → 盈亏比 0.67
-  await postTrade({ asset_code: CODE, trade_type: 'buy', trade_date: D1, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 0, trade_reason: '复盘测试买入' });
-  await postTrade({ asset_code: CODE, trade_type: 'reduce', trade_date: D2, trade_time: '09:00:02', quantity: 40, price: 12.0, fee: 0, trade_reason: '复盘测试止盈' });
-  await postTrade({ asset_code: CODE, trade_type: 'clear', trade_date: D3, trade_time: '09:00:03', quantity: 60, price: 8.0, fee: 0, trade_reason: '复盘测试止损' });
+  await postTrade({
+    asset_code: CODE,
+    trade_type: 'buy',
+    trade_date: D1,
+    trade_time: '09:00:01',
+    quantity: 100,
+    price: 10.0,
+    fee: 0,
+    trade_reason: '复盘测试买入',
+  });
+  await postTrade({
+    asset_code: CODE,
+    trade_type: 'reduce',
+    trade_date: D2,
+    trade_time: '09:00:02',
+    quantity: 40,
+    price: 12.0,
+    fee: 0,
+    trade_reason: '复盘测试止盈',
+  });
+  await postTrade({
+    asset_code: CODE,
+    trade_type: 'clear',
+    trade_date: D3,
+    trade_time: '09:00:03',
+    quantity: 60,
+    price: 8.0,
+    fee: 0,
+    trade_reason: '复盘测试止损',
+  });
 });
 
 afterAll(async () => {
@@ -49,8 +81,9 @@ afterAll(async () => {
 
 describe('Review · DDL strategy_match 列存在（G6a）', () => {
   it('user_trade_record 表含 strategy_match 列', () => {
-    const cols = (bundle.db.db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[])
-      .map(c => c.name);
+    const cols = (
+      bundle.db.db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[]
+    ).map((c) => c.name);
     expect(cols).toContain('strategy_match');
     // 复盘 4 字段齐全（Requirements §5.2）
     expect(cols).toContain('review_summary');
@@ -63,19 +96,25 @@ describe('Review · DDL strategy_match 列存在（G6a）', () => {
 describe('Review · PATCH 复盘 4 字段', () => {
   it('PATCH strategy_match=1 → 200 且可读回', async () => {
     const list = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=buy`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=buy`,
+      headers: authHeaders(),
     });
     const tradeId = JSON.parse(list.body).data[0].id;
 
     const patch = await bundle.app.inject({
-      method: 'PATCH', url: `/api/trade/${tradeId}`, headers: authHeaders(),
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
       payload: { strategy_match: 1, review_summary: '按计划加仓', is_stop_loss: 0, remark: '纪律执行到位' },
     });
     expect(patch.statusCode).toBe(200);
     expect(JSON.parse(patch.body).success).toBe(true);
 
     const after = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=buy`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=buy`,
+      headers: authHeaders(),
     });
     const row = JSON.parse(after.body).data[0];
     expect(row.strategy_match).toBe(1);
@@ -86,35 +125,47 @@ describe('Review · PATCH 复盘 4 字段', () => {
 
   it('PATCH strategy_match=0 → 0（三态"否"，非 NULL）', async () => {
     const list = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=reduce`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=reduce`,
+      headers: authHeaders(),
     });
     const tradeId = JSON.parse(list.body).data[0].id;
 
     await bundle.app.inject({
-      method: 'PATCH', url: `/api/trade/${tradeId}`, headers: authHeaders(),
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
       payload: { strategy_match: 0 },
     });
 
     const after = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=reduce`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=reduce`,
+      headers: authHeaders(),
     });
     expect(JSON.parse(after.body).data[0].strategy_match).toBe(0);
   });
 
   it('PATCH 非法字段（trade_type）→ 被忽略，不改数量/价格', async () => {
     const list = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=buy`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=buy`,
+      headers: authHeaders(),
     });
     const before = JSON.parse(list.body).data[0];
 
     const patch = await bundle.app.inject({
-      method: 'PATCH', url: `/api/trade/${before.id}`, headers: authHeaders(),
+      method: 'PATCH',
+      url: `/api/trade/${before.id}`,
+      headers: authHeaders(),
       payload: { trade_type: 'reduce', price: 999, quantity: 1, remark: '只改备注' },
     });
     expect(patch.statusCode).toBe(200);
 
     const after = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=buy`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=buy`,
+      headers: authHeaders(),
     });
     const row = JSON.parse(after.body).data[0];
     expect(row.trade_type).toBe('buy');
@@ -131,8 +182,14 @@ describe('Review · strategy_match 筛选', () => {
   //   改为每个用例**自己**准备带标记的数据，与兄弟用例解耦。
   const seedMarked = async (assetCode: string, tradeType: string, marked: 0 | 1) => {
     await postTrade({
-      asset_code: assetCode, trade_type: tradeType, trade_date: '2025-04-01',
-      trade_time: '09:00:09', quantity: 10, price: 10.0, fee: 0, trade_reason: '筛选测试',
+      asset_code: assetCode,
+      trade_type: tradeType,
+      trade_date: '2025-04-01',
+      trade_time: '09:00:09',
+      quantity: 10,
+      price: 10.0,
+      fee: 0,
+      trade_reason: '筛选测试',
     });
     const list = await bundle.app.inject({
       method: 'GET',
@@ -141,7 +198,9 @@ describe('Review · strategy_match 筛选', () => {
     });
     const tradeId = JSON.parse(list.body).data[0].id;
     await bundle.app.inject({
-      method: 'PATCH', url: `/api/trade/${tradeId}`, headers: authHeaders(),
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
       payload: { strategy_match: marked },
     });
   };
@@ -150,28 +209,34 @@ describe('Review · strategy_match 筛选', () => {
     const MARKED = 'szREVIEWM1';
     await seedMarked(MARKED, 'buy', 1);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?strategy_match=1`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?strategy_match=1`,
+      headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const rows = JSON.parse(res.body).data as any[];
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(rows.every(r => r.strategy_match === 1)).toBe(true);
+    expect(rows.every((r) => r.strategy_match === 1)).toBe(true);
   });
 
   it('GET /api/trade?strategy_match=0 → 只返回不符合策略的', async () => {
     const MARKED = 'szREVIEWM0';
     await seedMarked(MARKED, 'buy', 0);
     const res = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?strategy_match=0`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?strategy_match=0`,
+      headers: authHeaders(),
     });
     const rows = JSON.parse(res.body).data as any[];
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(rows.every(r => r.strategy_match === 0)).toBe(true);
+    expect(rows.every((r) => r.strategy_match === 0)).toBe(true);
   });
 
   it('GET /api/review/trades 返回 strategy_match 字段', async () => {
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/review/trades', headers: authHeaders(),
+      method: 'GET',
+      url: '/api/review/trades',
+      headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const rows = JSON.parse(res.body).data as any[];
@@ -199,10 +264,16 @@ describe('Review · 胜率 / 盈亏比统计（PRD §5.5）', () => {
   it('软删除一笔平仓后 closedCount 减 1，胜率重算', async () => {
     // 删掉亏损那笔（clear）→ 只剩盈利那笔 → 胜率 100%
     const list = await bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${CODE}&trade_type=clear`, headers: authHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=clear`,
+      headers: authHeaders(),
     });
     const clearId = JSON.parse(list.body).data[0].id;
-    await bundle.app.inject({ method: 'POST', url: `/api/trade/${clearId}/soft-delete`, headers: authHeaders() });
+    await bundle.app.inject({
+      method: 'POST',
+      url: `/api/trade/${clearId}/soft-delete`,
+      headers: authHeaders(),
+    });
 
     const res = await bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: authHeaders() });
     const stats = JSON.parse(res.body).data;
@@ -211,20 +282,26 @@ describe('Review · 胜率 / 盈亏比统计（PRD §5.5）', () => {
 
     // 恢复回来，保证后续断言不受影响
     await bundle.app.inject({ method: 'POST', url: `/api/trade/${clearId}/restore`, headers: authHeaders() });
-    const after = await bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: authHeaders() });
+    const after = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/review/yield',
+      headers: authHeaders(),
+    });
     expect(JSON.parse(after.body).data.closedCount).toBe(2);
   });
 
   it('空仓用户：winRate / profitLossRatio 为 null（前端显示 --）', async () => {
     const empty = await bundle.app.inject({
-      method: 'POST', url: '/api/auth/seed',
+      method: 'POST',
+      url: '/api/auth/seed',
       payload: { username: `rev_empty_${Date.now()}`, password: 'x1234567', role: 'user' },
     });
     expect(empty.statusCode).toBe(201);
     const token = JSON.parse(empty.body).data.token;
 
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/review/yield',
+      method: 'GET',
+      url: '/api/review/yield',
       headers: { authorization: `Bearer ${token}` },
     });
     const stats = JSON.parse(res.body).data;

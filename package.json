@@ -2,12 +2,30 @@
   "name": "invest-assistant",
   "version": "0.1.0",
   "private": true,
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run --config packages/core/vitest.config.ts",
-    "test:coverage": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true --coverage && vitest run --config packages/core/vitest.config.ts --coverage"
+    "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run --config packages/core/vitest.config.ts && npm run test -w @invest/frontend",
+    "test:coverage": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true --coverage && vitest run --config packages/core/vitest.config.ts --coverage && npm run test:coverage -w @invest/frontend",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "npm run typecheck -w @invest/core && npm run build -w @invest/core && npm run typecheck -w @invest/backend && npm run typecheck -w @invest/frontend",
+    "build": "npm run build -w @invest/core && npm run build -w @invest/backend && npm run build -w @invest/frontend"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^9.1.2",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
+    "prettier": "^3.9.10",
+    "typescript-eslint": "^8.72.0"
   }
 }

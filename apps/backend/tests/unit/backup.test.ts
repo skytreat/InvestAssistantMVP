@@ -55,7 +55,11 @@ const { backupSQLite, backupDuckDB, _deleteOldBackups } = backupMod;
 function cleanupTestDb(): void {
   for (const ext of ['', '-wal', '-shm', '-journal']) {
     const p = TEST_DB + ext;
-    try { fs.unlinkSync(p); } catch { /* 文件被占用或不存在，忽略 */ }
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      /* 文件被占用或不存在，忽略 */
+    }
   }
 }
 
@@ -63,7 +67,11 @@ function cleanupTestDb(): void {
 function cleanupBackupDir(): void {
   if (!fs.existsSync(TEST_BACKUP_DIR)) return;
   for (const name of fs.readdirSync(TEST_BACKUP_DIR)) {
-    try { fs.unlinkSync(path.join(TEST_BACKUP_DIR, name)); } catch { /* 忽略 */ }
+    try {
+      fs.unlinkSync(path.join(TEST_BACKUP_DIR, name));
+    } catch {
+      /* 忽略 */
+    }
   }
 }
 
@@ -93,11 +101,17 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
     try {
       const store = ConfigStore.getInstance();
       (store.db as any).close();
-    } catch { /* 忽略 */ }
+    } catch {
+      /* 忽略 */
+    }
 
     cleanupTestDb();
     cleanupBackupDir();
-    try { fs.rmdirSync(TEST_BACKUP_DIR); } catch { /* 非空或不存在，忽略 */ }
+    try {
+      fs.rmdirSync(TEST_BACKUP_DIR);
+    } catch {
+      /* 非空或不存在，忽略 */
+    }
 
     // 还原环境变量
     if (ORIGINAL_SQLITE_DB_PATH !== undefined) {
@@ -198,9 +212,7 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
       // writeSystemLog 应被调一次，level=INFO，logType=backup
       expect(logSpy).toHaveBeenCalled();
       const callArgs = logSpy.mock.calls.map((c) => c[0]);
-      const backupInfoCalls = callArgs.filter(
-        (arg) => arg?.logType === 'backup' && arg?.level === 'INFO',
-      );
+      const backupInfoCalls = callArgs.filter((arg) => arg?.logType === 'backup' && arg?.level === 'INFO');
       expect(backupInfoCalls.length).toBeGreaterThanOrEqual(1);
 
       vi.restoreAllMocks();
@@ -231,9 +243,7 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
       // writeSystemLog 应被调一次，level=ERROR，logType=backup
       expect(logSpy).toHaveBeenCalled();
       const callArgs = logSpy.mock.calls.map((c) => c[0]);
-      const backupErrorCalls = callArgs.filter(
-        (arg) => arg?.logType === 'backup' && arg?.level === 'ERROR',
-      );
+      const backupErrorCalls = callArgs.filter((arg) => arg?.logType === 'backup' && arg?.level === 'ERROR');
       expect(backupErrorCalls.length).toBeGreaterThanOrEqual(1);
       expect(backupErrorCalls[0]?.message).toContain('备份失败');
 
@@ -245,6 +255,8 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
 
       const db = ConfigStore.getInstance().db;
       vi.spyOn(db, 'backup').mockImplementation(async () => {
+        // 故意抛非 Error 的普通对象，验证备份失败时 String(err) 兜底不抛异常
+        // eslint-disable-next-line no-throw-literal
         throw { code: 'EACCES', msg: 'permission denied' };
       });
 
@@ -253,14 +265,12 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
       const result = await backupSQLite();
 
       expect(result.success).toBe(false);
-      expect(typeof result.error).toBe('string');  // String(err) 对任何类型都安全
+      expect(typeof result.error).toBe('string'); // String(err) 对任何类型都安全
       expect(result.size).toBeUndefined();
 
       // 确保 ERROR 日志也被写了
       const callArgs = logSpy.mock.calls.map((c) => c[0]);
-      const backupErrorCalls = callArgs.filter(
-        (arg) => arg?.logType === 'backup' && arg?.level === 'ERROR',
-      );
+      const backupErrorCalls = callArgs.filter((arg) => arg?.logType === 'backup' && arg?.level === 'ERROR');
       expect(backupErrorCalls.length).toBeGreaterThanOrEqual(1);
 
       vi.restoreAllMocks();
@@ -304,7 +314,7 @@ async function createTempDuckDB(file: string): Promise<number> {
     for (const r of DUCKDB_ROWS) {
       await conn.runAndReadAll(
         `INSERT INTO raw_daily VALUES ('${r.symbol}', DATE '${r.date}', ` +
-        `${r.close}, ${r.close * 1.01}, ${r.close * 0.99}, ${r.close}, 1000000, ${r.close * 1000000})`,
+          `${r.close}, ${r.close * 1.01}, ${r.close * 0.99}, ${r.close}, 1000000, ${r.close * 1000000})`,
       );
     }
     const res = await conn.runAndReadAll('SELECT COUNT(*) AS c FROM v_stock_qfq');
@@ -459,6 +469,14 @@ describe('backup_restore_duckdb — SDD §12.5 F11（DuckDB 行情层备份恢�
 //    否则先跑的 describe 会把后续 describe 的依赖（SQLite 连接 / 临时 DuckDB）删掉。
 // ---------------------------------------------------------------------------
 afterAll(() => {
-  try { (ConfigStore.getInstance().db as any).close(); } catch { /* ignore */ }
-  try { rmSync(TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    (ConfigStore.getInstance().db as any).close();
+  } catch {
+    /* ignore */
+  }
+  try {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });

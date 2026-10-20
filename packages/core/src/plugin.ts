@@ -10,7 +10,7 @@
 
 /** 日线结构（双端统一契约） */
 export interface DailyKline {
-  date: string;       // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
   open: number;
   high: number;
   low: number;

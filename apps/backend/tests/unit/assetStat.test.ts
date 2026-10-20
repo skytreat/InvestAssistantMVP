@@ -7,7 +7,7 @@
  *   - 无持仓无分红 → 全零快照
  *   - batchGetDaily 返回空 → close=0 兜底
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,10 +27,14 @@ function cleanup(): void {
   else delete process.env.SQLITE_DB_PATH;
 }
 
-afterAll(() => { cleanup(); });
+afterAll(() => {
+  cleanup();
+});
 
 describe('assetStat — insertAssetStatSnapshots', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('空用户表 → inserted=0', async () => {
     const result = await insertAssetStatSnapshots('2026-10-15');

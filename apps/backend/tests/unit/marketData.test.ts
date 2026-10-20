@@ -18,9 +18,7 @@ const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import {
-  getDailyBySymbol,
   batchGetDaily,
-  batchGetDailyRange,
   isTradingDay,
   getLatestTradingDay,
   resolveTargetTradeDate,
@@ -82,13 +80,19 @@ function installDuckDBMock(): void {
     return [] as Row[];
   });
 }
-import { ConfigStore } from '../../src/config/configStore.js';
-
 function cleanup(): void {
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 beforeAll(() => {

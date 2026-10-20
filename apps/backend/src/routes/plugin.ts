@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { getAllPlugins, builtinPlugins } from '../services/pluginEngine.js';
+import { getAllPlugins } from '../services/pluginEngine.js';
 import { writeSystemLog } from '../services/logger.js';
-import { ok, fail } from '../lib/envelope.js';
+import { ok } from '../lib/envelope.js';
 
 /**
  * 插件管理 API（T40）
@@ -19,9 +19,9 @@ export async function registerPluginRoutes(app: FastifyInstance) {
     const allPlugins = getAllPlugins();
 
     const result = allPlugins.map((p) => {
-      const cfg = db.prepare(
-        `SELECT params_json, enabled FROM user_plugin_config WHERE user_id = ? AND plugin_id = ?`
-      ).get(user.sub, p.id) as { params_json: string; enabled: number } | undefined;
+      const cfg = db
+        .prepare(`SELECT params_json, enabled FROM user_plugin_config WHERE user_id = ? AND plugin_id = ?`)
+        .get(user.sub, p.id) as { params_json: string; enabled: number } | undefined;
       return {
         id: p.id,
         name: p.name,
@@ -44,10 +44,14 @@ export async function registerPluginRoutes(app: FastifyInstance) {
     const db = ConfigStore.getInstance().db;
     db.prepare(
       `INSERT OR REPLACE INTO user_plugin_config (user_id, plugin_id, enabled, params_json)
-       VALUES (?, ?, 1, ?)`
+       VALUES (?, ?, 1, ?)`,
     ).run(user.sub, id, JSON.stringify(params));
 
-    writeSystemLog({ logType: 'signal_generate', level: 'INFO', message: `${user.username} 更新插件 ${id} 参数` });
+    writeSystemLog({
+      logType: 'signal_generate',
+      level: 'INFO',
+      message: `${user.username} 更新插件 ${id} 参数`,
+    });
     return reply.send(ok(null));
   });
 
@@ -57,19 +61,27 @@ export async function registerPluginRoutes(app: FastifyInstance) {
     const { enabled } = request.body as { enabled: number };
 
     const db = ConfigStore.getInstance().db;
-    const exists = db.prepare(
-      `SELECT id FROM user_plugin_config WHERE user_id = ? AND plugin_id = ?`
-    ).get(user.sub, id);
+    const exists = db
+      .prepare(`SELECT id FROM user_plugin_config WHERE user_id = ? AND plugin_id = ?`)
+      .get(user.sub, id);
 
     if (exists) {
-      db.prepare(`UPDATE user_plugin_config SET enabled = ? WHERE user_id = ? AND plugin_id = ?`).run(enabled, user.sub, id);
+      db.prepare(`UPDATE user_plugin_config SET enabled = ? WHERE user_id = ? AND plugin_id = ?`).run(
+        enabled,
+        user.sub,
+        id,
+      );
     } else {
       db.prepare(
-        `INSERT INTO user_plugin_config (user_id, plugin_id, enabled, params_json) VALUES (?, ?, ?, '{}')`
+        `INSERT INTO user_plugin_config (user_id, plugin_id, enabled, params_json) VALUES (?, ?, ?, '{}')`,
       ).run(user.sub, id, enabled);
     }
 
-    writeSystemLog({ logType: 'signal_generate', level: 'INFO', message: `${user.username} ${enabled ? '启用' : '禁用'}插件 ${id}` });
+    writeSystemLog({
+      logType: 'signal_generate',
+      level: 'INFO',
+      message: `${user.username} ${enabled ? '启用' : '禁用'}插件 ${id}`,
+    });
     return reply.send(ok(null));
   });
 }

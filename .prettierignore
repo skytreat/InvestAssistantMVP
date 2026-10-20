@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+*.duckdb
+*.duckdb.wal
+data/
+package-lock.json
+
+# 文档：中文长文 + 大量表格，Prettier 重排收益低、噪音大（AGENTS.md / README / docs/ / ADR）
+*.md
+docs/
+
+# 第三方技能文件（非本项目代码，不纳入格式标准）
+.claude/
+
+# 🔴 黄金数据集：**数据载体**，不是代码。
+# 里面有精确到小数位的期望值与 null 占位，任何重排都不得改动其字节。
+packages/core/tests/fixtures/
+
+# JSONC 带注释，Prettier 的 JSON 解析器会丢注释
+opencode.template.jsonc

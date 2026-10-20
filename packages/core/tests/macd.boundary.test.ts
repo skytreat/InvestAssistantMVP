@@ -11,8 +11,8 @@ describe('MACD §12.3 边界用例', () => {
       closes.push(100 + i);
     }
     const { dif, dea, macd } = calculateMACD(closes);
-    const difWarmUp = 26 - 1;      // DIF 需要 slowPeriod 根播种
-    const deaWarmUp = 25 + 9 - 1;  // DEA / 柱值还要再等 signalPeriod 根
+    const difWarmUp = 26 - 1; // DIF 需要 slowPeriod 根播种
+    const deaWarmUp = 25 + 9 - 1; // DEA / 柱值还要再等 signalPeriod 根
     for (let i = 0; i < difWarmUp; i++) {
       expect(Number.isNaN(dif[i])).toBe(true);
     }

@@ -21,11 +21,7 @@ const tmpDbPath = path.join(os.tmpdir(), `invest-signal-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
 
 import { ConfigStore } from '../../src/config/configStore.js';
-import {
-  persistSignals,
-  persistBatchSignals,
-  getTradeDate,
-} from '../../src/services/signalService.js';
+import { persistSignals, persistBatchSignals, getTradeDate } from '../../src/services/signalService.js';
 import type { PluginSignal } from '../../src/services/pluginEngine.js';
 
 const TEST_USER_ID = 1;
@@ -35,9 +31,11 @@ let db: ReturnType<typeof ConfigStore.getInstance>;
 beforeAll(() => {
   db = ConfigStore.getInstance();
   // 创建测试用户（满足 FOREIGN KEY 约束）
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-  ).run(TEST_USER_ID, 'signal_test_user', 'dummy-hash');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    )
+    .run(TEST_USER_ID, 'signal_test_user', 'dummy-hash');
 });
 
 afterAll(() => {
@@ -47,14 +45,21 @@ afterAll(() => {
     // ignore
   }
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
 });
 
 // --- 辅助：构造 PluginSignal（含 label，signalService 会访问 s.label ?? s.signalType） ---
-function makeSignal(symbol: string, signalType: PluginSignal['signalType']): PluginSignal & { label?: string } {
+function makeSignal(
+  symbol: string,
+  signalType: PluginSignal['signalType'],
+): PluginSignal & { label?: string } {
   return {
     symbol,
     signalType,
@@ -69,7 +74,13 @@ describe('signalService — persistSignals 正常持久化', () => {
   it('UNIQUE(user_id, asset_code, plugin_id, trade_date) 生效', () => {
     const signals = [makeSignal('sh600000', 'BUY')];
     const tradeDate = '2026-10-15';
-    const result = persistSignals(signals as PluginSignal[], 'test_plugin', 'monitor', tradeDate, TEST_USER_ID);
+    const result = persistSignals(
+      signals as PluginSignal[],
+      'test_plugin',
+      'monitor',
+      tradeDate,
+      TEST_USER_ID,
+    );
     expect(result.inserted).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.errors).toBe(0);
@@ -88,12 +99,24 @@ describe('signalService — persistSignals 幂等', () => {
     const signals = [makeSignal('sh600036', 'SELL')];
     const tradeDate = '2026-10-16';
 
-    const first = persistSignals(signals as PluginSignal[], 'idem_plugin', 'monitor', tradeDate, TEST_USER_ID);
+    const first = persistSignals(
+      signals as PluginSignal[],
+      'idem_plugin',
+      'monitor',
+      tradeDate,
+      TEST_USER_ID,
+    );
     expect(first.inserted).toBe(1);
     expect(first.skipped).toBe(0);
 
     // 相同 key 再插入一次 → ON CONFLICT DO NOTHING → skipped
-    const second = persistSignals(signals as PluginSignal[], 'idem_plugin', 'monitor', tradeDate, TEST_USER_ID);
+    const second = persistSignals(
+      signals as PluginSignal[],
+      'idem_plugin',
+      'monitor',
+      tradeDate,
+      TEST_USER_ID,
+    );
     expect(second.inserted).toBe(0);
     expect(second.skipped).toBe(1);
   });
@@ -111,8 +134,16 @@ describe('signalService — persistSignals 空信号', () => {
 describe('signalService — persistBatchSignals 正常', () => {
   it('批量持久化多个 plugin 的信号', () => {
     const batch = [
-      { pluginId: 'rsi_plugin', pluginCategory: 'monitor' as const, signals: [makeSignal('sz000001', 'BUY')] as PluginSignal[] },
-      { pluginId: 'macd_plugin', pluginCategory: 'monitor' as const, signals: [makeSignal('sh601318', 'SELL')] as PluginSignal[] },
+      {
+        pluginId: 'rsi_plugin',
+        pluginCategory: 'monitor' as const,
+        signals: [makeSignal('sz000001', 'BUY')] as PluginSignal[],
+      },
+      {
+        pluginId: 'macd_plugin',
+        pluginCategory: 'monitor' as const,
+        signals: [makeSignal('sh601318', 'SELL')] as PluginSignal[],
+      },
     ];
     const result = persistBatchSignals(batch, '2026-10-18', TEST_USER_ID);
     expect(result.inserted).toBe(2);

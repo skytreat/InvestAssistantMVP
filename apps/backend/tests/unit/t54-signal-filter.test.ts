@@ -37,20 +37,26 @@ let app: FastifyInstance;
 let db: ReturnType<typeof ConfigStore.getInstance>;
 
 const insert = (userId: number, code: string, pluginId: string, tradeDate: string, direction = 'buy') =>
-  db.db.prepare(
-    `INSERT INTO user_strategy_signal
+  db.db
+    .prepare(
+      `INSERT INTO user_strategy_signal
        (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json, is_final)
-     VALUES (?, ?, ?, 'monitor', ?, ?, 'L', 0.5, '{}', 1)`
-  ).run(userId, code, pluginId, tradeDate, direction);
+     VALUES (?, ?, ?, 'monitor', ?, ?, 'L', 0.5, '{}', 1)`,
+    )
+    .run(userId, code, pluginId, tradeDate, direction);
 
 beforeAll(async () => {
   db = ConfigStore.getInstance();
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`
-  ).run(TEST_USER_ID, 't54_filter_user');
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`
-  ).run(OTHER_USER_ID, 't54_other_user');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`,
+    )
+    .run(TEST_USER_ID, 't54_filter_user');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`,
+    )
+    .run(OTHER_USER_ID, 't54_other_user');
 
   db.db.prepare('DELETE FROM user_strategy_signal WHERE user_id IN (?, ?)').run(TEST_USER_ID, OTHER_USER_ID);
 
@@ -74,8 +80,11 @@ beforeAll(async () => {
   app.decorateRequest('user', null);
   app.addHook('onRequest', async (request) => {
     (request as AuthedRequest).user = {
-      sub: TEST_USER_ID, username: 't54_filter_user', role: 'user',
-      iat: 0, exp: Math.floor(Date.now() / 1000) + 3600,
+      sub: TEST_USER_ID,
+      username: 't54_filter_user',
+      role: 'user',
+      iat: 0,
+      exp: Math.floor(Date.now() / 1000) + 3600,
     };
   });
   await registerSignalRoutes(app);
@@ -84,9 +93,17 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app?.close().catch(() => {});
-  try { (db.db as unknown as { close: () => void }).close(); } catch { /* ignore */ }
+  try {
+    (db.db as unknown as { close: () => void }).close();
+  } catch {
+    /* ignore */
+  }
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
@@ -104,7 +121,9 @@ async function query(qs: string): Promise<{ rows: SignalRow[]; total: number }> 
   const res = await app.inject({ method: 'GET', url: `/api/signal?page_size=200&${qs}` });
   expect(res.statusCode).toBe(200);
   const body = JSON.parse(res.body) as {
-    success: boolean; data: SignalRow[]; pagination: { total: number };
+    success: boolean;
+    data: SignalRow[];
+    pagination: { total: number };
   };
   expect(body.success).toBe(true);
   return { rows: body.data, total: body.pagination.total };
@@ -113,7 +132,7 @@ async function query(qs: string): Promise<{ rows: SignalRow[]; total: number }> 
 describe('T54 · asset_code 单标的过滤', () => {
   it('只回该标的（3 个交易日的 6 条）', async () => {
     const { rows, total } = await query('asset_code=sh600000');
-    expect(total).toBe(8);            // 3 天 × 2 插件 + 区间外 2 条
+    expect(total).toBe(8); // 3 天 × 2 插件 + 区间外 2 条
     expect(rows.length).toBe(8);
     expect(rows.every((r) => r.asset_code === 'sh600000')).toBe(true);
   });
@@ -168,7 +187,7 @@ describe('T54 · 日期范围（闭区间）', () => {
 describe('T54 · 组合筛选（symbol + plugin + 日期范围）', () => {
   it('asset_code + plugin_id + 闭区间同时生效', async () => {
     const { rows, total } = await query(
-      'asset_code=sz000001&plugin_id=macd_cross&start_date=2026-10-14&end_date=2026-10-15'
+      'asset_code=sz000001&plugin_id=macd_cross&start_date=2026-10-14&end_date=2026-10-15',
     );
     expect(total).toBe(2);
     expect(rows.length).toBe(2);
@@ -182,7 +201,7 @@ describe('T54 · 组合筛选（symbol + plugin + 日期范围）', () => {
 
   it('组合条件互斥（无交集）→ 空数组 + 200', async () => {
     const { rows, total } = await query(
-      'asset_code=sz000001&plugin_id=volume_spike&start_date=2026-10-14&end_date=2026-10-15'
+      'asset_code=sz000001&plugin_id=volume_spike&start_date=2026-10-14&end_date=2026-10-15',
     );
     expect(total).toBe(0);
     expect(rows).toEqual([]);
@@ -206,8 +225,8 @@ describe('T54 · 排序 trade_date ASC', () => {
 });
 
 describe('T54 · 参数化绑定（注入防护）', () => {
-  it("asset_code 含引号/分号 → 按字面量匹配，不报 SQL 语法错", async () => {
-    const qs = "asset_code=" + encodeURIComponent("sh600000'; DROP TABLE user_strategy_signal;--");
+  it('asset_code 含引号/分号 → 按字面量匹配，不报 SQL 语法错', async () => {
+    const qs = 'asset_code=' + encodeURIComponent("sh600000'; DROP TABLE user_strategy_signal;--");
     const res = await app.inject({ method: 'GET', url: `/api/signal?${qs}` });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).data).toEqual([]);
@@ -216,7 +235,7 @@ describe('T54 · 参数化绑定（注入防护）', () => {
     expect(cnt.c).toBeGreaterThan(0);
   });
 
-  it("end_date 含注入片段 → 按字面量比较（0 行），不放大结果集也不报 SQL 语法错", async () => {
+  it('end_date 含注入片段 → 按字面量比较（0 行），不放大结果集也不报 SQL 语法错', async () => {
     // 若参数被拼接进 SQL，会变成 `trade_date <= 2026-01-01' OR '1'='1`
     // —— 语法错；即便侥幸可解析也会命中全部行。走参数化时它只是一个字面量，
     // 字典序小于全部 '2026-10-xx' → 0 行

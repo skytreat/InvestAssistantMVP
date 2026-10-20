@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { ok, fail } from '../lib/envelope.js';
+import { ok } from '../lib/envelope.js';
 
 /**
  * 资产快照查询 API（T37）
@@ -16,20 +16,24 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
   app.get('/api/asset-stat/latest', async (request, reply) => {
     const user = (request as any).user as { sub: number };
     const store = ConfigStore.getInstance();
-    const row = store.db.prepare(
-      `SELECT trade_date, total_assets_price_yield, total_assets_actual_yield,
+    const row = store.db
+      .prepare(
+        `SELECT trade_date, total_assets_price_yield, total_assets_actual_yield,
               total_profit_price, total_profit_actual
        FROM user_asset_stat
        WHERE user_id = ?
        ORDER BY trade_date DESC
-       LIMIT 1`
-    ).get(user.sub) as {
-      trade_date: string;
-      total_assets_price_yield: number;
-      total_assets_actual_yield: number;
-      total_profit_price: number;
-      total_profit_actual: number;
-    } | undefined;
+       LIMIT 1`,
+      )
+      .get(user.sub) as
+      | {
+          trade_date: string;
+          total_assets_price_yield: number;
+          total_assets_actual_yield: number;
+          total_profit_price: number;
+          total_profit_actual: number;
+        }
+      | undefined;
 
     return reply.send(ok(row ?? null));
   });
@@ -41,13 +45,15 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
     const n = Math.min(Math.max(Number(days) || 30, 1), 365);
 
     const store = ConfigStore.getInstance();
-    const rows = store.db.prepare(
-      `SELECT trade_date, total_assets_price_yield, total_assets_actual_yield,
+    const rows = store.db
+      .prepare(
+        `SELECT trade_date, total_assets_price_yield, total_assets_actual_yield,
               total_profit_price, total_profit_actual
        FROM user_asset_stat
        WHERE user_id = ? AND trade_date >= date('now', '-${n} days')
-       ORDER BY trade_date ASC`
-    ).all(user.sub) as Array<{
+       ORDER BY trade_date ASC`,
+      )
+      .all(user.sub) as Array<{
       trade_date: string;
       total_assets_price_yield: number;
       total_assets_actual_yield: number;
@@ -58,4 +64,3 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
     return reply.send(ok(rows));
   });
 }
-

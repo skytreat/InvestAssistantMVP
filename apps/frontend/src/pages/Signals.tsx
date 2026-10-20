@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
+import { COLORS, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -25,8 +27,9 @@ const DIRECTION_LABEL: Record<string, string> = {
   hold: '持仓',
 };
 
+/** 一行信号（列由后端动态给出，故用索引签名） */
 interface SignalRow {
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export default function Signals() {
@@ -42,7 +45,7 @@ export default function Signals() {
     setError(null);
     setLoading(true);
     try {
-      const params: Record<string, any> = { page_size: 50 };
+      const params: Record<string, unknown> = { page_size: 50 };
       if (tradeDate) params.trade_date = tradeDate;
       if (pluginId) params.plugin_id = pluginId;
       if (direction) params.direction = direction;
@@ -53,15 +56,14 @@ export default function Signals() {
       } else {
         setError(res.data.message ?? '请求失败');
       }
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setError(extractErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
-  const columns: string[] =
-    rows.length > 0 ? Object.keys(rows[0]) : [];
+  const columns: string[] = rows.length > 0 ? Object.keys(rows[0]) : [];
 
   const COLUMN_LABELS: Record<string, string> = {
     id: 'ID',
@@ -80,16 +82,22 @@ export default function Signals() {
       <h1 style={titleStyle}>策略信号</h1>
 
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 14, color: '#374151' }}>交易日期</label>
+        <label htmlFor="signals-trade-date" style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>
+          交易日期
+        </label>
         <input
+          id="signals-trade-date"
           style={inputStyle}
           type="date"
           value={tradeDate}
           onChange={(e) => setTradeDate(e.target.value)}
         />
 
-        <label style={{ fontSize: 14, color: '#374151' }}>策略名称</label>
+        <label htmlFor="signals-plugin-id" style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>
+          策略名称
+        </label>
         <input
+          id="signals-plugin-id"
           style={inputStyle}
           type="text"
           placeholder="可选"
@@ -97,8 +105,11 @@ export default function Signals() {
           onChange={(e) => setPluginId(e.target.value)}
         />
 
-        <label style={{ fontSize: 14, color: '#374151' }}>方向</label>
+        <label htmlFor="signals-direction" style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>
+          方向
+        </label>
         <select
+          id="signals-direction"
           style={inputStyle}
           value={direction}
           onChange={(e) => setDirection(e.target.value)}
@@ -109,22 +120,22 @@ export default function Signals() {
           <option value="sell">卖出</option>
         </select>
 
-        <button style={buttonStyle} onClick={handleQuery} disabled={loading}>
+        <button style={buttonStyle} onClick={handleQuery} disabled={loading} aria-busy={loading}>
           {loading ? '查询中...' : '查询'}
         </button>
       </div>
 
       <div style={cardStyle}>
-        {error && <div style={{ color: '#dc2626', marginBottom: 12 }}>{error}</div>}
+        {error && <div style={{ color: COLORS.danger, marginBottom: 12 }}>{error}</div>}
         {rows.length === 0 && !loading && !error && (
-          <div style={{ color: '#6b7280' }}>请点击查询按钮加载数据</div>
+          <div style={{ color: COLORS.neutral }}>请点击查询按钮加载数据</div>
         )}
         {rows.length > 0 && (
-          <table style={tableStyle}>
+          <table style={tableStyle} aria-label="策略信号查询结果">
             <thead>
               <tr>
                 {columns.map((col) => (
-                  <th key={col} style={thStyle}>
+                  <th key={col} scope="col" style={thStyle}>
                     {COLUMN_LABELS[col] ?? col}
                   </th>
                 ))}
@@ -136,7 +147,9 @@ export default function Signals() {
                   {columns.map((col) => {
                     const val = row[col];
                     let display = String(val ?? '');
-                    if (col === 'direction') {
+                    // 方向列做中文映射；只有字符串值参与查表
+                    // （非字符串在原实现里同样查不到 → 保留原值，此处收窄不改变行为）
+                    if (col === 'direction' && typeof val === 'string') {
                       display = DIRECTION_LABEL[val] ?? display;
                     }
                     return (

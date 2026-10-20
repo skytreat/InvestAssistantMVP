@@ -10,12 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  calculateKDJ,
-  KDJ_DEFAULT_N,
-  KDJ_DEFAULT_M1,
-  KDJ_DEFAULT_M2,
-} from '../src/indicators/kdj';
+import { calculateKDJ, KDJ_DEFAULT_N, KDJ_DEFAULT_M1, KDJ_DEFAULT_M2 } from '../src/indicators/kdj';
 import { calculateBoll } from '../src/indicators/bollinger';
 import { calculateKDJ as calculateKDJFrontend } from '../../../apps/frontend/src/indicators/kdj';
 import { calculateBoll as calculateBollFrontend } from '../../../apps/frontend/src/indicators/bollinger';
@@ -89,14 +84,8 @@ describe('KDJ golden · 221 条真实行情逐位断言', () => {
 describe('KDJ · core 与 frontend 逐位一致（零容差）', () => {
   it('两份源文件字节一致 —— 改一份必须同步另一份', () => {
     for (const name of ['kdj.ts', 'bollinger.ts']) {
-      const coreSrc = readFileSync(
-        path.join(REPO_ROOT, 'packages/core/src/indicators', name),
-        'utf8'
-      );
-      const feSrc = readFileSync(
-        path.join(REPO_ROOT, 'apps/frontend/src/indicators', name),
-        'utf8'
-      );
+      const coreSrc = readFileSync(path.join(REPO_ROOT, 'packages/core/src/indicators', name), 'utf8');
+      const feSrc = readFileSync(path.join(REPO_ROOT, 'apps/frontend/src/indicators', name), 'utf8');
       expect(feSrc, `${name} 两份实现已漂移`).toBe(coreSrc);
     }
   });

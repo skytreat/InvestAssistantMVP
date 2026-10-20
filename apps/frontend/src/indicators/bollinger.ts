@@ -51,7 +51,7 @@ function padFront(length: number, values: number[], fill: number): number[] {
 export function calculateBoll(
   closes: number[],
   period: number = BOLL_DEFAULT_PERIOD,
-  stdDev: number = BOLL_DEFAULT_STDDEV
+  stdDev: number = BOLL_DEFAULT_STDDEV,
 ): BollResult {
   const empty: BollResult = {
     upper: new Array<number>(closes.length).fill(NaN),
@@ -65,10 +65,30 @@ export function calculateBoll(
   if (rows.length === 0) return empty;
 
   return {
-    upper: padFront(closes.length, rows.map((r) => orNaN(r.upper)), NaN),
-    middle: padFront(closes.length, rows.map((r) => orNaN(r.middle)), NaN),
-    lower: padFront(closes.length, rows.map((r) => orNaN(r.lower)), NaN),
-    pb: padFront(closes.length, rows.map((r) => orNaN(r.pb)), NaN),
-    width: padFront(closes.length, rows.map((r) => orNaN(r.width)), NaN),
+    upper: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.upper)),
+      NaN,
+    ),
+    middle: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.middle)),
+      NaN,
+    ),
+    lower: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.lower)),
+      NaN,
+    ),
+    pb: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.pb)),
+      NaN,
+    ),
+    width: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.width)),
+      NaN,
+    ),
   };
 }

@@ -37,8 +37,12 @@ function authHeaders() {
 
 beforeAll(async () => {
   bundle = await createTestApp();
-  bundle.db.db.prepare('DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ?').run(bundle.userId, CODE);
-  bundle.db.db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(bundle.userId, CODE);
+  bundle.db.db
+    .prepare('DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ?')
+    .run(bundle.userId, CODE);
+  bundle.db.db
+    .prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')
+    .run(bundle.userId, CODE);
 });
 
 afterAll(async () => {
@@ -51,8 +55,10 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
   const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
   const promote = (asset: string, body: Record<string, unknown> = { price_mode: 'base' }) =>
     bundle.app.inject({
-      method: 'POST', url: `/api/candidate/${asset}/migrate`,
-      headers: authHeaders(), payload: body,
+      method: 'POST',
+      url: `/api/candidate/${asset}/migrate`,
+      headers: authHeaders(),
+      payload: body,
     });
 
   /**
@@ -61,7 +67,9 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
    */
   const seedCandidate = async (asset: string) => {
     const cand = await bundle.app.inject({
-      method: 'POST', url: '/api/candidate', headers: authHeaders(),
+      method: 'POST',
+      url: '/api/candidate',
+      headers: authHeaders(),
       payload: { asset_code: asset },
     });
     expect(cand.statusCode).toBe(201);
@@ -130,7 +138,9 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
 
   itReal('非法 symbol → 400 PARAM_INVALID', async () => {
     const bad = await bundle.app.inject({
-      method: 'POST', url: '/api/candidate/BADCODE/migrate', headers: authHeaders(),
+      method: 'POST',
+      url: '/api/candidate/BADCODE/migrate',
+      headers: authHeaders(),
       payload: { price_mode: 'base' },
     });
     expect(bad.statusCode).toBe(400);
@@ -142,26 +152,30 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     await seedCandidate(OWN);
     await promote(OWN);
 
-    const rows = bundle.db.db.prepare(
-      `SELECT * FROM system_log WHERE log_type='candidate_migrate' AND message LIKE ? ORDER BY id DESC LIMIT 1`
-    ).all(`%${OWN}%`) as any[];
+    const rows = bundle.db.db
+      .prepare(
+        `SELECT * FROM system_log WHERE log_type='candidate_migrate' AND message LIKE ? ORDER BY id DESC LIMIT 1`,
+      )
+      .all(`%${OWN}%`) as any[];
     expect(rows.length).toBe(1);
     expect(rows[0].message).toContain('迁移到 watch');
     // 旧实现误用 log_type='trade'（这不是交易）—— 断言不再落到 trade 上
-    const tradeRows = bundle.db.db.prepare(
-      `SELECT count(*) AS c FROM system_log WHERE log_type='trade' AND message LIKE ?`
-    ).get(`%${OWN}%`) as { c: number };
+    const tradeRows = bundle.db.db
+      .prepare(`SELECT count(*) AS c FROM system_log WHERE log_type='trade' AND message LIKE ?`)
+      .get(`%${OWN}%`) as { c: number };
     expect(Number(tradeRows.c), '候选迁移不应记为 trade').toBe(0);
   });
 });
 
 describe('Positions · 现价 / 市值 enrich（T33）', () => {
   it('GET /api/holding 返回 totalQuantity + summary', async () => {
-    bundle.db.db.prepare(
-      `INSERT OR IGNORE INTO user_trade_record
+    bundle.db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, 'buy', '2025-08-01', '09:30:00', 200, 1500, 5, 0)`
-    ).run(bundle.userId, CODE);
+       VALUES (?, ?, 'buy', '2025-08-01', '09:30:00', 200, 1500, 5, 0)`,
+      )
+      .run(bundle.userId, CODE);
 
     const res = await bundle.app.inject({ method: 'GET', url: '/api/holding', headers: authHeaders() });
     expect(res.statusCode).toBe(200);
@@ -191,14 +205,17 @@ describe('Positions · 现价 / 市值 enrich（T33）', () => {
 
   it('无持仓用户 → data=[] 空数组不报错', async () => {
     const seed = await bundle.app.inject({
-      method: 'POST', url: '/api/auth/seed',
+      method: 'POST',
+      url: '/api/auth/seed',
       payload: { username: `pos_empty_${Date.now()}`, password: 'x1234567', role: 'user' },
     });
     expect(seed.statusCode).toBe(201);
     const token = JSON.parse(seed.body).data.token;
 
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/holding', headers: { authorization: `Bearer ${token}` },
+      method: 'GET',
+      url: '/api/holding',
+      headers: { authorization: `Bearer ${token}` },
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).data).toEqual([]);

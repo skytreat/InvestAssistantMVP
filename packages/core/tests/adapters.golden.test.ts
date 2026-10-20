@@ -14,7 +14,6 @@ import {
   calculateMACD,
   calculateSMA,
   RSI_DEFAULT_PERIOD,
-  MACD_DEFAULT_FAST_PERIOD,
   MACD_DEFAULT_SLOW_PERIOD,
   MACD_DEFAULT_SIGNAL_PERIOD,
   A_SHARE_HISTOGRAM_SCALE,
@@ -24,11 +23,6 @@ import { calculateMovingWeightedCost, type TradeRecord } from '../src/movingWeig
 import rsiGolden from './fixtures/golden/rsi.json';
 import macdGolden from './fixtures/golden/macd.json';
 import mwcGolden from './fixtures/golden/movingWeightedCost.json';
-
-/** golden 里 null 表示 NaN / ±Infinity（JSON 无 NaN 字面量） */
-function decode(encoded: Array<number | null>): number[] {
-  return encoded.map((v) => (v === null ? NaN : v));
-}
 
 function assertBitwiseEqual(actual: number[], expected: Array<number | null>): void {
   expect(actual.length).toBe(expected.length);
@@ -74,12 +68,15 @@ describe('golden · RSI', () => {
 describe('golden · MACD', () => {
   const closes = macdGolden.closes as number[];
 
-  it.each(macdGolden.cases)('fast=$params.fastPeriod slow=$params.slowPeriod signal=$params.signalPeriod 逐位一致', (c) => {
-    const r = calculateMACD(closes, c.params.fastPeriod, c.params.slowPeriod, c.params.signalPeriod);
-    assertBitwiseEqual(r.dif, c.dif);
-    assertBitwiseEqual(r.dea, c.dea);
-    assertBitwiseEqual(r.macd, c.macd);
-  });
+  it.each(macdGolden.cases)(
+    'fast=$params.fastPeriod slow=$params.slowPeriod signal=$params.signalPeriod 逐位一致',
+    (c) => {
+      const r = calculateMACD(closes, c.params.fastPeriod, c.params.slowPeriod, c.params.signalPeriod);
+      assertBitwiseEqual(r.dif, c.dif);
+      assertBitwiseEqual(r.dea, c.dea);
+      assertBitwiseEqual(r.macd, c.macd);
+    },
+  );
 
   it('SMA(5/10/20/60) 逐位一致', () => {
     for (const c of macdGolden.sma.values) {

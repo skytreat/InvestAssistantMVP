@@ -148,10 +148,7 @@ export function isValidBasePrice(value: unknown): value is number {
 }
 
 /** 相对收益，缺任一端返回 null（**不返回 0** —— 0 会被误读成「持平」） */
-export function computeRelativeReturn(
-  basePrice: number | null,
-  currentClose: number | null,
-): number | null {
+export function computeRelativeReturn(basePrice: number | null, currentClose: number | null): number | null {
   if (basePrice === null || currentClose === null) return null;
   if (!Number.isFinite(basePrice) || basePrice === 0) return null;
   if (!Number.isFinite(currentClose)) return null;
@@ -232,7 +229,10 @@ export async function listCandidatesWithReturn(userId: number): Promise<Candidat
   let closes = new Map<string, { date: string; close: number }>();
   if (rows.length > 0) {
     try {
-      closes = await batchGetLatestClose(rows.map((r) => r.asset_code), 'qfq');
+      closes = await batchGetLatestClose(
+        rows.map((r) => r.asset_code),
+        'qfq',
+      );
     } catch {
       // 行情降级：列表可读，相对收益为 null
       closes = new Map();
@@ -303,11 +303,7 @@ export function batchInsertCandidates(
  *
  * 整个读-改-写在同一个 `db.transaction()` 内，失败时标记不会落库。
  */
-export function markCandidateMigrated(
-  userId: number,
-  assetCode: string,
-  priceMode: PriceMode,
-): CandidateRow {
+export function markCandidateMigrated(userId: number, assetCode: string, priceMode: PriceMode): CandidateRow {
   const db = ConfigStore.getInstance().db;
 
   const runTx = db.transaction((): CandidateRow => {

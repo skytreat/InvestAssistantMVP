@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
+import { SPACING } from '../theme/tokens';
 import { useUserStore } from '../store/user';
+import { safeInternalPath } from '../utils/path';
 import {
   pageContainerStyle,
   cardStyle,
@@ -13,6 +16,15 @@ import {
   labelStyle,
 } from './_shared';
 
+/** 后端 `POST /api/auth/login` 返回的会话体（`ok(session)` 的 `data` 字段） */
+interface SessionPayload {
+  token?: string;
+  /** ⚠️ 下划线（不是 camelCase）—— 后端契约 */
+  refresh_token?: string;
+  refresh_token_expires_at?: number;
+  user?: { id?: number; username?: string; role?: 'user' | 'admin' };
+}
+
 export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -20,13 +32,24 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
 
   const navigate = useNavigate();
+  const location = useLocation();
   const { token, login } = useUserStore();
 
+  /**
+   * 登录成功后要去的页面（T64 · PRD §5.9「保留当前页面路径」）
+   *
+   * `location.state.from` 由「会话过期跳转」写入（`App.tsx` 的 `<Navigate state={{ from }}>`）。
+   * ⚠️ `state` 可被同源脚本改写 → 必须经 `safeInternalPath` 过滤（开放重定向防护），
+   *    非法值一律回落 `/`。
+   */
+  const target = safeInternalPath((location.state as { from?: unknown } | null)?.from) ?? '/';
+
   useEffect(() => {
+    // 已登录又跑到 /login → 直接回目标页（与登录成功后的落点一致，避免两条跳转打架）
     if (token) {
-      navigate('/');
+      navigate(target, { replace: true });
     }
-  }, [token, navigate]);
+  }, [token, navigate, target]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,16 +57,22 @@ export default function Login() {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { username, password });
-      if (res.data.success) {
-        const newToken: string = res.data.data.token;
-        const user = res.data.data.user;
-        login(newToken, user.username, user.role);
-        navigate('/');
+      // 兼容两种 envelope 判定：当前后端的 `success` 与 T89b 之后的 `code === 0`
+      const succeeded = res.data?.success === true || res.data?.code === 0;
+      const session = (res.data?.data ?? null) as SessionPayload | null;
+      if (succeeded && session?.token) {
+        login(
+          session.token,
+          session.user?.username ?? username,
+          session.user?.role ?? 'user',
+          session.refresh_token ?? null,
+        );
+        navigate(target, { replace: true });
       } else {
-        setError(res.data.message ?? '登录失败');
+        setError(res.data?.message ?? '登录失败');
       }
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setError(extractErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -55,8 +84,11 @@ export default function Login() {
       <div style={{ ...cardStyle, maxWidth: 400 }}>
         <form onSubmit={handleSubmit}>
           <div style={formRowStyle}>
-            <label style={labelStyle}>用户名</label>
+            <label htmlFor="login-input-username" style={labelStyle}>
+              用户名
+            </label>
             <input
+              id="login-input-username"
               style={{ ...inputStyle, flex: 1 }}
               type="text"
               value={username}
@@ -66,8 +98,11 @@ export default function Login() {
             />
           </div>
           <div style={formRowStyle}>
-            <label style={labelStyle}>密码</label>
+            <label htmlFor="login-input-password" style={labelStyle}>
+              密码
+            </label>
             <input
+              id="login-input-password"
               style={{ ...inputStyle, flex: 1 }}
               type="password"
               value={password}
@@ -75,7 +110,7 @@ export default function Login() {
               required
             />
           </div>
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 12, marginTop: SPACING.gapRelaxed }}>
             <button type="submit" style={buttonStyle} disabled={loading}>
               {loading ? '登录中...' : '登录'}
             </button>

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -54,9 +56,12 @@ interface SymbolOption {
 function SymbolAutocomplete({
   value,
   onChange,
+  id,
 }: {
   value: string;
   onChange: (val: string) => void;
+  /** 控件 id —— 供外层 `<label htmlFor>` 建立程序化关联（T63） */
+  id: string;
 }) {
   const [options, setOptions] = useState<SymbolOption[]>([]);
   const [open, setOpen] = useState(false);
@@ -109,20 +114,19 @@ function SymbolAutocomplete({
     }
   };
 
-  // 判断当前输入是否已有合法前缀
-  const hasPrefix = /^[a-z]{2}/.test(value);
-  const displayName = hasPrefix ? value : value;
-
   return (
     <div style={{ position: 'relative', flex: 1 }}>
       <input
+        id={id}
         style={{ ...inputStyle, flex: 1, width: '100%' }}
         type="text"
         placeholder="输入代码或名称，如 600000 或 浦发"
-        value={displayName}
+        value={value}
         onChange={(e) => handleChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        onFocus={() => { if (options.length > 0) setOpen(true); }}
+        onFocus={() => {
+          if (options.length > 0) setOpen(true);
+        }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         required
       />
@@ -136,11 +140,11 @@ function SymbolAutocomplete({
             margin: 0,
             padding: 0,
             listStyle: 'none',
-            border: '1px solid #d1d5db',
-            borderRadius: 4,
+            border: `1px solid ${COLORS.borderMedium}`,
+            borderRadius: RADIUS.sm,
             marginTop: 2,
-            background: '#fff',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            background: COLORS.cardBg,
+            boxShadow: `0 4px 12px ${COLORS.shadowSoft}`,
             zIndex: 100,
             maxHeight: 240,
             overflowY: 'auto',
@@ -154,14 +158,14 @@ function SymbolAutocomplete({
               style={{
                 padding: '6px 10px',
                 cursor: 'pointer',
-                fontSize: 14,
-                background: idx === highlightIdx ? '#eff6ff' : '#fff',
+                fontSize: TYPO.bodySize,
+                background: idx === highlightIdx ? COLORS.brandBg : COLORS.cardBg,
                 display: 'flex',
                 justifyContent: 'space-between',
               }}
             >
-              <span style={{ fontFamily: 'monospace', color: '#1e40af' }}>{opt.symbol}</span>
-              <span style={{ color: '#6b7280' }}>{opt.name}</span>
+              <span style={{ fontFamily: TYPO.monoFamily, color: COLORS.brandLink }}>{opt.symbol}</span>
+              <span style={{ color: COLORS.neutral }}>{opt.name}</span>
             </li>
           ))}
         </ul>
@@ -174,11 +178,11 @@ function SymbolAutocomplete({
             left: 0,
             right: 0,
             padding: '8px 10px',
-            fontSize: 13,
-            color: '#6b7280',
-            background: '#fff',
-            border: '1px solid #d1d5db',
-            borderRadius: 4,
+            fontSize: TYPO.smallSize,
+            color: COLORS.neutral,
+            background: COLORS.cardBg,
+            border: `1px solid ${COLORS.borderMedium}`,
+            borderRadius: RADIUS.sm,
             marginTop: 2,
             zIndex: 100,
           }}
@@ -214,7 +218,7 @@ export default function TradeInput() {
       asset_code: assetCode,
       trade_type: tradeType,
       trade_date: tradeDate,
-    trade_time: tradeTime,
+      trade_time: tradeTime,
       quantity: Number(quantity),
       price: Number(price),
       fee: Number(fee) || 0,
@@ -233,8 +237,8 @@ export default function TradeInput() {
           setError(errMsg);
         }
       }
-    } catch (err: any) {
-      const errMsg = err?.response?.data?.message ?? '网络错误';
+    } catch (err) {
+      const errMsg = extractErrorMessage(err);
       if (errMsg === 'HOLDING_INSUFFICIENT') {
         setError('持仓不足');
       } else {
@@ -251,13 +255,18 @@ export default function TradeInput() {
       <div style={{ ...cardStyle, maxWidth: 600 }}>
         <form onSubmit={handleSubmit}>
           <div style={formRowStyle}>
-            <label style={labelStyle}>股票代码</label>
-            <SymbolAutocomplete value={assetCode} onChange={setAssetCode} />
+            <label htmlFor="trade-input-symbol" style={labelStyle}>
+              股票代码
+            </label>
+            <SymbolAutocomplete id="trade-input-symbol" value={assetCode} onChange={setAssetCode} />
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>交易类型</label>
+            <label htmlFor="trade-input-type" style={labelStyle}>
+              交易类型
+            </label>
             <select
+              id="trade-input-type"
               style={{ ...inputStyle, flex: 1 }}
               value={tradeType}
               onChange={(e) => setTradeType(e.target.value)}
@@ -270,33 +279,42 @@ export default function TradeInput() {
             </select>
           </div>
 
-<div style={formRowStyle}>
-              <label style={labelStyle}>交易日期</label>
-              <input
-                style={{ ...inputStyle, flex: 1 }}
-                type="date"
-                value={tradeDate}
-                onChange={(e) => setTradeDate(e.target.value)}
-                required
-              />
-            </div>
-
-            <div style={formRowStyle}>
-              <label style={labelStyle}>成交时间</label>
-              <input
-                style={{ ...inputStyle, flex: 1 }}
-                type="time"
-                step="1"
-                value={tradeTime}
-                onChange={(e) => setTradeTime(e.target.value)}
-                required
-              />
-            </div>
-            {/* T87：同日同标的同类型可分笔录入，唯一键含成交时间；提交前请确认成交时间无误 */}
+          <div style={formRowStyle}>
+            <label htmlFor="trade-input-date" style={labelStyle}>
+              交易日期
+            </label>
+            <input
+              id="trade-input-date"
+              style={{ ...inputStyle, flex: 1 }}
+              type="date"
+              value={tradeDate}
+              onChange={(e) => setTradeDate(e.target.value)}
+              required
+            />
+          </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>数量</label>
+            <label htmlFor="trade-input-time" style={labelStyle}>
+              成交时间
+            </label>
             <input
+              id="trade-input-time"
+              style={{ ...inputStyle, flex: 1 }}
+              type="time"
+              step="1"
+              value={tradeTime}
+              onChange={(e) => setTradeTime(e.target.value)}
+              required
+            />
+          </div>
+          {/* T87：同日同标的同类型可分笔录入，唯一键含成交时间；提交前请确认成交时间无误 */}
+
+          <div style={formRowStyle}>
+            <label htmlFor="trade-input-quantity" style={labelStyle}>
+              数量
+            </label>
+            <input
+              id="trade-input-quantity"
               style={{ ...inputStyle, flex: 1 }}
               type="number"
               min={1}
@@ -307,8 +325,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>价格</label>
+            <label htmlFor="trade-input-price" style={labelStyle}>
+              价格
+            </label>
             <input
+              id="trade-input-price"
               style={{ ...inputStyle, flex: 1 }}
               type="number"
               step="0.0001"
@@ -320,8 +341,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>手续费</label>
+            <label htmlFor="trade-input-fee" style={labelStyle}>
+              手续费
+            </label>
             <input
+              id="trade-input-fee"
               style={{ ...inputStyle, flex: 1 }}
               type="number"
               step="0.0001"
@@ -332,8 +356,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>trade_reason</label>
+            <label htmlFor="trade-input-reason" style={labelStyle}>
+              trade_reason
+            </label>
             <input
+              id="trade-input-reason"
               style={{ ...inputStyle, flex: 1 }}
               type="text"
               placeholder="如 MACD 金叉买入 / 止损卖出"
@@ -342,7 +369,7 @@ export default function TradeInput() {
             />
           </div>
 
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 12, marginTop: SPACING.gapRelaxed }}>
             <button type="submit" style={buttonStyle} disabled={loading}>
               {loading ? '提交中...' : '提交交易'}
             </button>
@@ -351,7 +378,8 @@ export default function TradeInput() {
           {error && <div style={errorStyle}>{error}</div>}
           {result && (
             <div style={successStyle}>
-              提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价={result.position.avgCost.toFixed(4)}
+              提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价=
+              {result.position.avgCost.toFixed(4)}
             </div>
           )}
         </form>

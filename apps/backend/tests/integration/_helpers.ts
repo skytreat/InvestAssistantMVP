@@ -27,7 +27,11 @@ export function cleanupIntegrationTest(): void {
   } else {
     delete process.env.SQLITE_DB_PATH;
   }
-  try { rmSync(_TEST_TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(_TEST_TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 export interface TestAppBundle {
@@ -55,13 +59,14 @@ export async function createTestApp(): Promise<TestAppBundle> {
   const db = ConfigStore.getInstance();
 
   // seed admin（幂等）
-  db.db.prepare(
-    'INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)'
-  ).run(ADMIN_USER, hashPassword(ADMIN_PASS), 'admin');
+  db.db
+    .prepare('INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)')
+    .run(ADMIN_USER, hashPassword(ADMIN_PASS), 'admin');
 
   // login 拿 JWT（比直接 signToken 更接近真实链路）
   const loginRes = await app.inject({
-    method: 'POST', url: '/api/auth/login',
+    method: 'POST',
+    url: '/api/auth/login',
     payload: { username: ADMIN_USER, password: ADMIN_PASS },
   });
   const body = JSON.parse(loginRes.body);

@@ -67,7 +67,7 @@ export function calculateKDJ(
   closes: number[],
   n: number = KDJ_DEFAULT_N,
   m1: number = KDJ_DEFAULT_M1,
-  m2: number = KDJ_DEFAULT_M2
+  m2: number = KDJ_DEFAULT_M2,
 ): KDJResult {
   const len = closes.length;
   const k = new Array<number>(len).fill(NaN);
@@ -77,7 +77,7 @@ export function calculateKDJ(
   if (len === 0) return { k, d, j };
   if (highs.length !== len || lows.length !== len) {
     throw new RangeError(
-      `calculateKDJ: highs/lows/closes 长度必须一致，实际 ${highs.length}/${lows.length}/${len}`
+      `calculateKDJ: highs/lows/closes 长度必须一致，实际 ${highs.length}/${lows.length}/${len}`,
     );
   }
 
@@ -94,10 +94,7 @@ export function calculateKDJ(
     const range = high - low;
 
     // 横盘（分母为 0）→ RSV 沿用前值，避免 Infinity/NaN 污染整条线
-    const rsv =
-      range === 0
-        ? prevRsv
-        : (RSV_PERCENT_SCALE * (closes[i + windowOffset] - low)) / range;
+    const rsv = range === 0 ? prevRsv : (RSV_PERCENT_SCALE * (closes[i + windowOffset] - low)) / range;
     prevRsv = rsv;
 
     const idx = i + windowOffset;

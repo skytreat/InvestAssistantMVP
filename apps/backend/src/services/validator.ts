@@ -13,7 +13,7 @@ async function hasQuoteDataOn(date: string): Promise<boolean> {
   try {
     const rows = await queryDuckDB<{ quote_rows: number }>(
       'SELECT COUNT(*) AS quote_rows FROM v_stock_qfq WHERE date = ?',
-      [date]
+      [date],
     );
     return rows.length > 0 && Number(rows[0].quote_rows) > 0;
   } catch {
@@ -30,19 +30,19 @@ async function hasQuoteDataOn(date: string): Promise<boolean> {
  */
 export const TOLERANCES = {
   // ── C1-C8 新鲜度类（Requirements §7.1）──
-  MIN_SYMBOL_COUNT: 3000,          // C1/C6 当日标的数下限（Requirements 明写 ≥3000）
-  EX_DIVIDEND_FRESH_DAYS: 7,       // C4 最新除权日 ≥ 当日 - 7 天
-  CLASS_COUNT_DROP: 0.10,          // C5 分类总数降幅 < 10%
-  MAX_OPEN_CLOSE_RATIO: 2,         // C7 开盘价 ≤ 收盘价 × 2
-  MAX_UPDATE_SECONDS: 120,         // C8 行情更新执行时长 ≤ 120s
+  MIN_SYMBOL_COUNT: 3000, // C1/C6 当日标的数下限（Requirements 明写 ≥3000）
+  EX_DIVIDEND_FRESH_DAYS: 7, // C4 最新除权日 ≥ 当日 - 7 天
+  CLASS_COUNT_DROP: 0.1, // C5 分类总数降幅 < 10%
+  MAX_OPEN_CLOSE_RATIO: 2, // C7 开盘价 ≤ 收盘价 × 2
+  MAX_UPDATE_SECONDS: 120, // C8 行情更新执行时长 ≤ 120s
 
   // ── C9/C10 内容类（Requirements §7.2）──
-  QFQ_PRICE_DIFF: 0.01,            // C9 前复权价差容差 < 0.01 元
-  GBBQ_DROP_DIFF: 0.005,           // C10 除权跳变率差 < 0.5%
+  QFQ_PRICE_DIFF: 0.01, // C9 前复权价差容差 < 0.01 元
+  GBBQ_DROP_DIFF: 0.005, // C10 除权跳变率差 < 0.5%
 
   // ── C11/C12 跨源类（Requirements §7.3）──
-  TUSHARE_PRICE_DIFF: 0.01,        // C11 Tushare 价格容差
-  EASTMONEY_PRICE_DIFF: 0.02,      // C12 东财价格容差
+  TUSHARE_PRICE_DIFF: 0.01, // C11 Tushare 价格容差
+  EASTMONEY_PRICE_DIFF: 0.02, // C12 东财价格容差
 } as const;
 
 /**
@@ -76,10 +76,10 @@ export const EXEC_PARAMS = {
   MAX_TOTAL_MS: 30_000,
 
   // ── 告警分级阈值（Requirements §7.3 唯一权威；匹配率目标见 PRD §6.2）──
-  C11_WARN_AT: 3,      // C11 mismatch > 3 只 → WARN（PRD §6.2 目标 ≤3/30 容差内）
-  C11_ERROR_AT: 5,     // C11 mismatch > 5 只 → ERROR
-  C12_WARN_AT: 5,      // C12 mismatch > 5 只有差异 → WARN（PRD §6.2 目标 ≤5/20 容差内）
-  C12_ERROR_GT: 0.1,   // C12 单只价差 > 0.1 元 → 计入「大幅差异只数」
+  C11_WARN_AT: 3, // C11 mismatch > 3 只 → WARN（PRD §6.2 目标 ≤3/30 容差内）
+  C11_ERROR_AT: 5, // C11 mismatch > 5 只 → ERROR
+  C12_WARN_AT: 5, // C12 mismatch > 5 只有差异 → WARN（PRD §6.2 目标 ≤5/20 容差内）
+  C12_ERROR_GT: 0.1, // C12 单只价差 > 0.1 元 → 计入「大幅差异只数」
   C12_ERROR_COUNT_GT: 1, // C12  大幅差异只数 > 1 → ERROR（**幅度条件，不是计数条件**）
 
   // ── 外部源整体不可用的降级判定（连续失败 → 整项 SKIP，不阻塞后续校验）──
@@ -94,9 +94,9 @@ export const EXEC_PARAMS = {
 } as const;
 
 export interface CheckSummary {
-  checkId: string;        // 'C1' / 'C2' / ...
+  checkId: string; // 'C1' / 'C2' / ...
   result: CheckResult;
-  detail?: string;        // 额外说明
+  detail?: string; // 额外说明
   durationMs: number;
 }
 
@@ -183,7 +183,12 @@ async function checkC1(tradeDate: string): Promise<CheckSummary> {
     const detail = `当日标的数=${row.actual_count}（阈值 >=${TOLERANCES.MIN_SYMBOL_COUNT}）`;
     return { checkId: 'C1', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C1', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C1',
+      result: 'ERROR',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -241,7 +246,12 @@ async function checkC2(tradeDate: string): Promise<CheckSummary> {
       durationMs: Date.now() - start,
     };
   } catch (err) {
-    return { checkId: 'C2', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C2',
+      result: 'ERROR',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -282,7 +292,12 @@ async function checkC3(tradeDate: string): Promise<CheckSummary> {
     const detail = `复权因子最新日=${row.latest ?? '无'}（应为 ${tradeDate}）`;
     return { checkId: 'C3', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C3', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C3',
+      result: 'WARN',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -312,7 +327,12 @@ async function checkC4(tradeDate: string): Promise<CheckSummary> {
     const detail = `最新除权日=${row.latest_ex ?? '无'}（阈值 ≥ ${tradeDate} - ${TOLERANCES.EX_DIVIDEND_FRESH_DAYS} 天）`;
     return { checkId: 'C4', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C4', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C4',
+      result: 'WARN',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -393,7 +413,12 @@ async function checkC5(tradeDate: string): Promise<CheckSummary> {
         : '');
     return { checkId: 'C5', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C5', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C5',
+      result: 'WARN',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 // ─────────────────────────────────────────────────────────────────
@@ -436,7 +461,12 @@ async function checkC6(tradeDate: string): Promise<CheckSummary> {
     const detail = `当日标的数=${row.total_cnt}，其中有市值数据=${row.with_mv}（阈值 >=${TOLERANCES.MIN_SYMBOL_COUNT}）`;
     return { checkId: 'C6', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C6', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C6',
+      result: 'WARN',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -475,12 +505,18 @@ async function checkC7(tradeDate: string): Promise<CheckSummary> {
     if (!row) {
       return { checkId: 'C7', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
-    const detail = row.bad_cnt === 0
-      ? '当日无价格异常标的'
-      : `异常标的=${row.bad_cnt}（收盘价=0 或 开盘价 > 收盘价×${TOLERANCES.MAX_OPEN_CLOSE_RATIO}）`;
+    const detail =
+      row.bad_cnt === 0
+        ? '当日无价格异常标的'
+        : `异常标的=${row.bad_cnt}（收盘价=0 或 开盘价 > 收盘价×${TOLERANCES.MAX_OPEN_CLOSE_RATIO}）`;
     return { checkId: 'C7', result: row.result, detail, durationMs: Date.now() - start };
   } catch (err) {
-    return { checkId: 'C7', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C7',
+      result: 'WARN',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -532,7 +568,8 @@ async function checkC8(tradeDate: string): Promise<CheckSummary> {
     const started = parseLocalTs(row.started_at);
     if (!started) {
       return {
-        checkId: 'C8', result: 'WARN',
+        checkId: 'C8',
+        result: 'WARN',
         detail: `tdx2db_update 时间戳格式异常：${row.started_at}`,
         durationMs: Date.now() - start,
       };
@@ -541,12 +578,18 @@ async function checkC8(tradeDate: string): Promise<CheckSummary> {
     const elapsedSec = Math.round((Date.now() - started.getTime()) / 1000);
     const result: CheckResult = elapsedSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
     return {
-      checkId: 'C8', result,
+      checkId: 'C8',
+      result,
       detail: `行情更新开始于 ${row.started_at}，至校验时已过 ${elapsedSec}s（上限 ${TOLERANCES.MAX_UPDATE_SECONDS}s）`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
-    return { checkId: 'C8', result: 'WARN', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C8',
+      result: 'WARN',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -604,10 +647,21 @@ async function checkC9(tradeDate: string): Promise<CheckSummary> {
   try {
     const tol = TOLERANCES.QFQ_PRICE_DIFF;
     const sampleSize = EXEC_PARAMS.C9_SAMPLE_SIZE;
-    const row = firstRow(await queryDuckDB<C9Row>(
-      C9_SQL,
-      [tradeDate, sampleSize, tradeDate, tradeDate, tradeDate, tol, tol, tol, tol, tol, tol],
-    ));
+    const row = firstRow(
+      await queryDuckDB<C9Row>(C9_SQL, [
+        tradeDate,
+        sampleSize,
+        tradeDate,
+        tradeDate,
+        tradeDate,
+        tol,
+        tol,
+        tol,
+        tol,
+        tol,
+        tol,
+      ]),
+    );
 
     if (!row) {
       return { checkId: 'C9', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
@@ -624,7 +678,12 @@ async function checkC9(tradeDate: string): Promise<CheckSummary> {
       durationMs: Date.now() - start,
     };
   } catch (err) {
-    return { checkId: 'C9', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C9',
+      result: 'ERROR',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -663,7 +722,12 @@ async function checkC10(tradeDate: string): Promise<CheckSummary> {
       durationMs: Date.now() - start,
     };
   } catch (err) {
-    return { checkId: 'C10', result: 'ERROR', detail: `SQL 异常: ${String(err)}`, durationMs: Date.now() - start };
+    return {
+      checkId: 'C10',
+      result: 'ERROR',
+      detail: `SQL 异常: ${String(err)}`,
+      durationMs: Date.now() - start,
+    };
   }
 }
 
@@ -716,10 +780,7 @@ function convertToTsCode(symbol: string): string {
 }
 
 /** 从 Tushare daily 接口原始响应中按 fields 位置映射一行数据 */
-function parseTushareRow(
-  fields: string[],
-  item: (string | number | null)[],
-): TushareDailyRow {
+function parseTushareRow(fields: string[], item: (string | number | null)[]): TushareDailyRow {
   const idx = (name: string) => fields.indexOf(name);
   const num = (v: unknown): number => Number(v) || 0;
   return {
@@ -734,10 +795,7 @@ function parseTushareRow(
 }
 
 /** 调用 Tushare 免费 daily 接口，超时取 EXEC_PARAMS.C11_TIMEOUT_MS */
-async function fetchTushareDaily(
-  tsCode: string,
-  tradeDate: string,
-): Promise<TushareDailyRow | null> {
+async function fetchTushareDaily(tsCode: string, tradeDate: string): Promise<TushareDailyRow | null> {
   const token = process.env.TUSHARE_TOKEN;
   if (!token) return null;
 
@@ -827,9 +885,7 @@ async function checkC11(tradeDate: string): Promise<CheckSummary> {
   }
 
   // 随机抽样 30 只（Tushare Free 每日 500 次限额，一次跑完不累积）
-  const sampled = [...localRows]
-    .sort(() => Math.random() - 0.5)
-    .slice(0, EXEC_PARAMS.C11_SAMPLE_SIZE);
+  const sampled = [...localRows].sort(() => Math.random() - 0.5).slice(0, EXEC_PARAMS.C11_SAMPLE_SIZE);
 
   let match = 0;
   let mismatch = 0;
@@ -935,10 +991,7 @@ type EmFetchOutcome =
  * @param symbol  sh600000 / sz000001 / bj8xxxxx（北交所跳过）
  * @param tradeDate  YYYY-MM-DD
  */
-async function fetchEastMoneyQfqOnce(
-  symbol: string,
-  tradeDate: string,
-): Promise<EmFetchOutcome> {
+async function fetchEastMoneyQfqOnce(symbol: string, tradeDate: string): Promise<EmFetchOutcome> {
   const prefix = symbol.slice(0, 2).toLowerCase();
   const code = symbol.slice(2);
   const market = prefix === 'sh' ? '1' : prefix === 'sz' ? '0' : null;
@@ -954,8 +1007,7 @@ async function fetchEastMoneyQfqOnce(
   try {
     const res = await fetch(url, {
       headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         Referer: 'https://quote.eastmoney.com/',
       },
       signal: AbortSignal.timeout(EXEC_PARAMS.C12_TIMEOUT_MS), // 单只 10s 超时
@@ -1011,9 +1063,7 @@ async function checkC12(tradeDate: string): Promise<CheckSummary> {
     }
 
     // 随机抽 20 只（Requirements §7.3）
-    const sampled = [...localRows]
-      .sort(() => Math.random() - 0.5)
-      .slice(0, EXEC_PARAMS.C12_SAMPLE_SIZE);
+    const sampled = [...localRows].sort(() => Math.random() - 0.5).slice(0, EXEC_PARAMS.C12_SAMPLE_SIZE);
 
     let match = 0;
     let mismatch = 0;
@@ -1043,9 +1093,7 @@ async function checkC12(tradeDate: string): Promise<CheckSummary> {
         } else {
           mismatch++;
           if (diff > EXEC_PARAMS.C12_ERROR_GT) bigDiff++;
-          details.push(
-            `${row.symbol}: local=${row.local_qfq_close} em=${emClose} diff=${diff.toFixed(4)}`,
-          );
+          details.push(`${row.symbol}: local=${row.local_qfq_close} em=${emClose} diff=${diff.toFixed(4)}`);
         }
       }
 

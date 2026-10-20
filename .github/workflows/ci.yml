@@ -7,6 +7,59 @@ on:
     branches: [main, develop]
 
 jobs:
+  # ============================================================================
+  # Stage 2 —— Lint + TypeScript Check（T86）
+  #
+  # 与 build-and-test **并行**跑，不是它的后继步骤 —— 「lint 不过就别跑测试」是浪费 CI 时间。
+  # 独立成 job 的另一个原因：G2.5 要求「CI Stage 2 步骤存在**且失败会阻断**」，
+  # 独立 job 的红/绿在 PR 页面上一眼可见。
+  #
+  # ⚠️ 必须先 build core —— `apps/backend/tsconfig.json` 没有 paths 映射，
+  #    后端 tsc 走 `packages/core/dist`（gitignored）。不先构建 → core 的类型改动
+  #    不会传导到后端 → **tsc 红而 CI 绿**（这就是 AGENTS.md 记的 T86 盲区）。
+  # ============================================================================
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    name: Stage 2 — Lint + TypeScript Check
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      # ESLint（含 @typescript-eslint/no-explicit-any：前端与 core 生效）
+      - name: ESLint
+        run: npx eslint .
+
+      # Prettier 格式检查（与 eslint 串联，任一失败即 job 红）
+      - name: Prettier format check
+        run: npx prettier --check .
+
+      # 顺序依赖：core 类型 → core 产物 → backend → frontend
+      - name: Type check (core -> build core -> backend -> frontend)
+        run: npm run typecheck
+
+      # 🔴 反向验证（可选，手动触发）：在故意破坏的分支上跑，应失败
+      - name: Reverse check — lint must fail on injected violations
+        if: github.event_name == 'workflow_dispatch' || contains(github.head_ref, 'lint-reverse-check')
+        run: |
+          set -e
+          echo "const bad: any = 1;" >> apps/frontend/src/_lint_reverse_probe.ts
+          echo "const  x   =    1" >> apps/frontend/src/_lint_reverse_probe.ts
+          if npx eslint . ; then
+            echo "REVERSE CHECK FAILED: lint did not fail on injected violations"
+            exit 1
+          fi
+          echo "reverse check OK: lint failed as expected"
+
   build-and-test:
     runs-on: ubuntu-latest
 
@@ -22,6 +75,10 @@ jobs:
 
       - name: npm ci
         run: npm ci
+
+      # ⚠️ 必须先 build core —— backend 的 tsc 走 packages/core/dist（无 paths 映射）
+      - name: Build core
+        run: npm run build -w @invest/core
 
       - name: Build backend
         run: npm run build -w @invest/backend
@@ -86,13 +143,22 @@ jobs:
       - name: Run smoke tests (m1 only)
         run: npx vitest run apps/backend/tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
 
+      # Frontend tests (T61) — jsdom 环境，不依赖后端与行情库
+      - name: Run frontend tests
+        run: npm run test -w @invest/frontend
+
+      # Frontend coverage — 与 G2.4（前端 coverage ≥60%）对齐
+      - name: Run frontend tests with coverage
+        run: npm run test:coverage -w @invest/frontend
+
       # 合并 coverage 报告到根目录 coverage/ 下，方便上传和统一查看
-      # 两个 workspace 各自生成，不会互相覆盖
+      # 各 workspace 各自生成，不会互相覆盖
       - name: Consolidate coverage
         run: |
-          mkdir -p coverage/core coverage/backend
+          mkdir -p coverage/core coverage/backend coverage/frontend
           cp -r packages/core/coverage/* coverage/core/ 2>/dev/null || true
           cp -r apps/backend/coverage/* coverage/backend/ 2>/dev/null || true
+          cp -r apps/frontend/coverage/* coverage/frontend/ 2>/dev/null || true
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4

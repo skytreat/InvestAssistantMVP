@@ -25,7 +25,11 @@ describe('T84 超卖防护：不再静默吞掉', () => {
       { date: '2026-08-06', direction: 'sell', quantity: 150, price: 11, fee: 0 },
     ];
     let caught: unknown;
-    try { calculateMovingWeightedCost(trades); } catch (e) { caught = e; }
+    try {
+      calculateMovingWeightedCost(trades);
+    } catch (e) {
+      caught = e;
+    }
     expect(caught).toBeInstanceOf(PositionOversellError);
     const err = caught as PositionOversellError;
     expect(err.date).toBe('2026-08-06');
@@ -72,7 +76,11 @@ describe('T84 超卖防护：不再静默吞掉', () => {
       { date: '2026-08-07', direction: 'sell', quantity: 50, price: 11, fee: 0 },
     ];
     let caught: unknown;
-    try { calculateMovingWeightedCost(trades); } catch (e) { caught = e; }
+    try {
+      calculateMovingWeightedCost(trades);
+    } catch (e) {
+      caught = e;
+    }
     expect(caught).toBeInstanceOf(PositionOversellError);
     expect((caught as PositionOversellError).available).toBe(40);
     expect((caught as PositionOversellError).shortfall).toBe(10);

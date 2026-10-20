@@ -20,11 +20,13 @@ import { batchGetDaily } from './marketData.js';
  */
 function getTotalDividends(userId: number): number {
   const db = ConfigStore.getInstance().db;
-  const row = db.prepare(
-    `SELECT COALESCE(SUM(price * quantity), 0) AS total
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(price * quantity), 0) AS total
      FROM user_trade_record
-     WHERE user_id = ? AND trade_type IN ('dividend','bonus','transfer') AND is_deleted = 0`
-  ).get(userId) as { total: number };
+     WHERE user_id = ? AND trade_type IN ('dividend','bonus','transfer') AND is_deleted = 0`,
+    )
+    .get(userId) as { total: number };
   return row.total;
 }
 
@@ -69,7 +71,7 @@ export async function insertAssetStatSnapshots(tradeDate: string): Promise<{ ins
     let totalCostBasis = 0;
 
     if (positions.length > 0) {
-      const symbols = positions.map(p => p.asset_code);
+      const symbols = positions.map((p) => p.asset_code);
       const priceMap = await batchGetDaily(symbols, tradeDate);
       for (const pos of positions) {
         const kline = priceMap.get(pos.asset_code);
@@ -80,15 +82,18 @@ export async function insertAssetStatSnapshots(tradeDate: string): Promise<{ ins
     }
 
     // 5. 双口径利润 + 收益率
-    const priceProfit = totalMarketValue - totalCostBasis;          // 纯价格利润
-    const actualProfit = priceProfit + totalDividends;               // 含分红福利
+    const priceProfit = totalMarketValue - totalCostBasis; // 纯价格利润
+    const actualProfit = priceProfit + totalDividends; // 含分红福利
     const priceYield = totalCostBasis > 0 ? priceProfit / totalCostBasis : 0;
     const actualYield = totalCostBasis > 0 ? actualProfit / totalCostBasis : 0;
 
     stmt.run(
-      user.id, tradeDate,
-      priceYield, actualYield,     // total_assets_price_yield, total_assets_actual_yield
-      priceProfit, actualProfit,   // total_profit_price, total_profit_actual
+      user.id,
+      tradeDate,
+      priceYield,
+      actualYield, // total_assets_price_yield, total_assets_actual_yield
+      priceProfit,
+      actualProfit, // total_profit_price, total_profit_actual
     );
     inserted++;
   }

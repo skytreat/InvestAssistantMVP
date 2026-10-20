@@ -9,7 +9,7 @@
  *   - checkC10: missing_count=0 → PASS; >0 → WARN
  *   - runAllChecks: 所有结果写 system_log（验证 logResult 路径）
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,26 +20,40 @@ const ORIGINAL_SQLITE_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import { ConfigStore } from '../../src/config/configStore.js';
-import { runAllChecks, TOLERANCES } from '../../src/services/validator.js';
+import { runAllChecks } from '../../src/services/validator.js';
 
 function cleanup(): void {
   try {
     const store = (ConfigStore as any)._instance;
     if (store) (store.db as any).close();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   (ConfigStore as any)._instance = null;
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
   if (ORIGINAL_SQLITE_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_PATH;
   else delete process.env.SQLITE_DB_PATH;
 }
 
-afterAll(() => { cleanup(); });
+afterAll(() => {
+  cleanup();
+});
 
 describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('无返回行 → SKIP（数据源缺失不得计为 PASS，ADR-004）', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
@@ -51,7 +65,7 @@ describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C6')!.result).toBe('SKIP');
+    expect(summaries.find((s) => s.checkId === 'C6')!.result).toBe('SKIP');
     mockMod.queryDuckDB.mockRestore();
   });
 
@@ -69,7 +83,7 @@ describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C6')!.result).toBe('WARN');
+    expect(summaries.find((s) => s.checkId === 'C6')!.result).toBe('WARN');
     mockMod.queryDuckDB.mockRestore();
   });
 
@@ -87,13 +101,15 @@ describe('validator_deep — C6 市值数据存在性（T85 重写）', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C6')!.result).toBe('PASS');
+    expect(summaries.find((s) => s.checkId === 'C6')!.result).toBe('PASS');
     mockMod.queryDuckDB.mockRestore();
   });
 });
 
 describe('validator_deep — C7 日线价格合理性（T85 重写）', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('存在 close=0 或 open>close×2 的标的 → WARN', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
@@ -109,7 +125,7 @@ describe('validator_deep — C7 日线价格合理性（T85 重写）', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C7')!.result).toBe('WARN');
+    expect(summaries.find((s) => s.checkId === 'C7')!.result).toBe('WARN');
     mockMod.queryDuckDB.mockRestore();
   });
 
@@ -127,13 +143,15 @@ describe('validator_deep — C7 日线价格合理性（T85 重写）', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C7')!.result).toBe('PASS');
+    expect(summaries.find((s) => s.checkId === 'C7')!.result).toBe('PASS');
     mockMod.queryDuckDB.mockRestore();
   });
 });
 
 describe('validator_deep — C8 行情更新执行时长（T85 重写）', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('无 tdx2db_update 日志 → SKIP（不得计为 PASS）', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
@@ -149,7 +167,7 @@ describe('validator_deep — C8 行情更新执行时长（T85 重写）', () =>
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C8')!.result).toBe('SKIP');
+    expect(summaries.find((s) => s.checkId === 'C8')!.result).toBe('SKIP');
     mockMod.queryDuckDB.mockRestore();
   });
 
@@ -167,13 +185,15 @@ describe('validator_deep — C8 行情更新执行时长（T85 重写）', () =>
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find(s => s.checkId === 'C8')!.result).toBe('WARN');
+    expect(summaries.find((s) => s.checkId === 'C8')!.result).toBe('WARN');
     mockMod.queryDuckDB.mockRestore();
   });
 });
 
 describe('validator_deep — C9 复权因子抽样', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('mismatch_count=0 → PASS', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
@@ -189,7 +209,7 @@ describe('validator_deep — C9 复权因子抽样', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    const c9 = summaries.find(s => s.checkId === 'C9');
+    const c9 = summaries.find((s) => s.checkId === 'C9');
     expect(c9!.result).toBe('PASS');
     expect(c9!.detail).toContain('mismatch');
     mockMod.queryDuckDB.mockRestore();
@@ -209,14 +229,16 @@ describe('validator_deep — C9 复权因子抽样', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    const c9 = summaries.find(s => s.checkId === 'C9');
+    const c9 = summaries.find((s) => s.checkId === 'C9');
     expect(c9!.result).toBe('ERROR');
     mockMod.queryDuckDB.mockRestore();
   });
 });
 
 describe('validator_deep — C10 除权事件覆盖', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('missing_count=0 → PASS', async () => {
     const mockMod = await import('../../src/db/duckdb.js');
@@ -232,7 +254,7 @@ describe('validator_deep — C10 除权事件覆盖', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    const c10 = summaries.find(s => s.checkId === 'C10');
+    const c10 = summaries.find((s) => s.checkId === 'C10');
     expect(c10!.result).toBe('PASS');
     mockMod.queryDuckDB.mockRestore();
   });
@@ -251,7 +273,7 @@ describe('validator_deep — C10 除权事件覆盖', () => {
       return [];
     });
     const summaries = await runAllChecks('2026-10-15');
-    const c10 = summaries.find(s => s.checkId === 'C10');
+    const c10 = summaries.find((s) => s.checkId === 'C10');
     expect(c10!.result).toBe('WARN');
     mockMod.queryDuckDB.mockRestore();
   });
@@ -268,9 +290,7 @@ describe('validator_deep — runAllChecks 日志写入', () => {
    * 既隔离外部依赖，又顺带覆盖了降级路径。
    */
   it('runAllChecks 不抛错（内部 try-catch 兜底）', async () => {
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockRejectedValue(new Error('validator_deep: 网络已隔离'));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('validator_deep: 网络已隔离'));
     try {
       await expect(runAllChecks('2026-10-15')).resolves.toBeDefined();
     } finally {

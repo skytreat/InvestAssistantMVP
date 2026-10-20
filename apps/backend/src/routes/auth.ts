@@ -65,8 +65,9 @@ function currentUser(request: FastifyRequest): AuthenticatedUser | null {
  */
 export function ensureRefreshTokenColumns(db: ConfigStore['db']): void {
   try {
-    const cols = (db.prepare('PRAGMA table_info(user_account)').all() as { name: string }[])
-      .map((c) => c.name);
+    const cols = (db.prepare('PRAGMA table_info(user_account)').all() as { name: string }[]).map(
+      (c) => c.name,
+    );
     const missing = Object.keys(REFRESH_COLUMNS).filter((c) => !cols.includes(c));
     if (missing.length === 0) return;
 
@@ -173,9 +174,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', '用户名和密码不能为空'));
       }
       const db = ConfigStore.getInstance().db;
-      const row = db.prepare(
-        'SELECT id, username, password_hash, role FROM user_account WHERE username = ?'
-      ).get(body.username) as AccountRow | undefined;
+      const row = db
+        .prepare('SELECT id, username, password_hash, role FROM user_account WHERE username = ?')
+        .get(body.username) as AccountRow | undefined;
 
       if (!row || !verifyPassword(body.password, row.password_hash)) {
         return reply.code(401).send(fail(401, 'UNAUTHORIZED', '用户名或密码错误'));
@@ -202,7 +203,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       const requestedRole = body.role ?? 'user';
 
       if (username.length < USERNAME_MIN_LEN || username.length > USERNAME_MAX_LEN) {
-        return reply.code(400).send(fail(400, 'PARAM_INVALID', `username 长度需在 ${USERNAME_MIN_LEN}~${USERNAME_MAX_LEN} 之间`));
+        return reply
+          .code(400)
+          .send(fail(400, 'PARAM_INVALID', `username 长度需在 ${USERNAME_MIN_LEN}~${USERNAME_MAX_LEN} 之间`));
       }
       if (password.length === 0) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', '密码不能为空'));
@@ -231,9 +234,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           // 借 throw 把裁决结果带出事务（better-sqlite3 事务体会自动 ROLLBACK）
           throw new RegisterRejected(outcome);
         }
-        const info = db.prepare(
-          'INSERT INTO user_account (username, password_hash, role) VALUES (?, ?, ?)'
-        ).run(username, hashPassword(password), outcome.role);
+        const info = db
+          .prepare('INSERT INTO user_account (username, password_hash, role) VALUES (?, ?, ?)')
+          .run(username, hashPassword(password), outcome.role);
         return { id: Number(info.lastInsertRowid), role: outcome.role };
       });
 
@@ -242,11 +245,14 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         created = createUser();
       } catch (err) {
         if (err instanceof RegisterRejected) {
-          return reply.code(err.outcome.status).send({
-            success: false,
-            error: err.outcome.error,
-            message: err.outcome.message,
-          });
+          // 🔴 必须走 `fail()` —— 不能手写信封。
+          //   原实现手写 `{ success, error, message }`：**缺 `code` / `data` / `timestamp`**，
+          //   与 SDD §4.2 的统一 envelope 不符（前端 `resolveErrorMessage` 读 `code`，
+          //   缺了就得回落到 `error` 字段 —— 能显示，但不是契约形状）。
+          //   T64 新增的 `tests/unit/t64-public-routes.test.ts` 断言 `code` / `data === null` / `success === false`。
+          return reply
+            .code(err.outcome.status)
+            .send(fail(err.outcome.status, err.outcome.error, err.outcome.message));
         }
         throw err;
       }
@@ -282,27 +288,36 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const db = ConfigStore.getInstance().db;
       const presentedHash = hashRefreshToken(presented);
-      const row = db.prepare(
-        `SELECT id, username, role, refresh_token_hash, refresh_token_expires_at
+      const row = db
+        .prepare(
+          `SELECT id, username, role, refresh_token_hash, refresh_token_expires_at
            FROM user_account WHERE refresh_token_hash = ?`,
-      ).get(presentedHash) as
-        | { id: number; username: string; role: 'user' | 'admin'; refresh_token_hash: string | null; refresh_token_expires_at: number | null }
+        )
+        .get(presentedHash) as
+        | {
+            id: number;
+            username: string;
+            role: 'user' | 'admin';
+            refresh_token_hash: string | null;
+            refresh_token_expires_at: number | null;
+          }
         | undefined;
 
-      const invalid = () =>
-        reply.code(401).send(fail(401, 'UNAUTHORIZED', 'refresh token 无效或已过期'));
+      const invalid = () => reply.code(401).send(fail(401, 'UNAUTHORIZED', 'refresh token 无效或已过期'));
 
       if (!row) return invalid();
       if (!row.refresh_token_hash || !equalHex(row.refresh_token_hash, presentedHash)) return invalid();
-      if (typeof row.refresh_token_expires_at !== 'number' || row.refresh_token_expires_at < Math.floor(Date.now() / 1000)) {
+      if (
+        typeof row.refresh_token_expires_at !== 'number' ||
+        row.refresh_token_expires_at < Math.floor(Date.now() / 1000)
+      ) {
         return invalid();
       }
 
       // 轮换：单条 UPDATE 覆盖 → 旧 token 立即失效
       const session = issueSession(db, { id: row.id, username: row.username, role: row.role });
       const stillSame = db.prepare('SELECT refresh_token_hash FROM user_account WHERE id = ?').get(row.id) as
-        | { refresh_token_hash: string | null }
-        | undefined;
+        { refresh_token_hash: string | null } | undefined;
       if (!stillSame?.refresh_token_hash || equalHex(stillSame.refresh_token_hash, presentedHash)) {
         return reply.code(500).send(fail(500, 'INTERNAL_ERROR', 'refresh token 轮换失败'));
       }
@@ -327,9 +342,11 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       if (body.password?.trim()) {
         password = body.password.trim();
       } else if (isProd) {
-        return reply.code(400).send(fail(400, 'SEED_PASSWORD_REQUIRED', '生产环境必须显式提供初始密码，禁止硬编码默认值'));
+        return reply
+          .code(400)
+          .send(fail(400, 'SEED_PASSWORD_REQUIRED', '生产环境必须显式提供初始密码，禁止硬编码默认值'));
       } else {
-        password = 'admin123';  // 仅开发环境兜底
+        password = 'admin123'; // 仅开发环境兜底
       }
 
       if (requestedRole !== 'user' && requestedRole !== 'admin') {
@@ -344,7 +361,15 @@ export async function registerAuthRoutes(app: FastifyInstance) {
           // 安全硬约束：本路由是公开路由（bootstrap 用），一旦库里有用户，
           // 任何能访问 8080 的人都能自建 admin 账号 = 权限全面失守。
           // 因此 admin 只允许"系统里的第一个用户"拿到。
-          return reply.code(403).send(fail(403, 'ADMIN_ALREADY_EXISTS', `系统已有 ${userCount} 个用户，不允许再创建 admin。已有 admin 请用 PATCH /api/admin/users/:id/role 转让。`));
+          return reply
+            .code(403)
+            .send(
+              fail(
+                403,
+                'ADMIN_ALREADY_EXISTS',
+                `系统已有 ${userCount} 个用户，不允许再创建 admin。已有 admin 请用 PATCH /api/admin/users/:id/role 转让。`,
+              ),
+            );
         }
       }
 
@@ -354,11 +379,12 @@ export async function registerAuthRoutes(app: FastifyInstance) {
       }
       const role = requestedRole;
       const hash = hashPassword(password);
-      const info = db.prepare(
-        'INSERT INTO user_account (username, password_hash, role) VALUES (?, ?, ?)'
-      ).run(username, hash, role);
+      const info = db
+        .prepare('INSERT INTO user_account (username, password_hash, role) VALUES (?, ?, ?)')
+        .run(username, hash, role);
       writeSystemLog({
-        logType: 'startup', level: 'INFO',
+        logType: 'startup',
+        level: 'INFO',
         message: `创建用户 ${username}`,
         detail: `role=${role}`,
       });

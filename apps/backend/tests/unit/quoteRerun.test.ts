@@ -27,8 +27,7 @@ vi.mock('node:child_process', async () => {
   const util = await import('node:util');
   // Node 的 execFile 带 util.promisify.custom，resolve 的是 { stdout, stderr }
   // mock 必须复刻这个行为，否则调用方的解构拿不到值
-  const execFile: any = (file: string, args: string[], _opts: any, cb: any) =>
-    h.execImpl(file, args, cb);
+  const execFile: any = (file: string, args: string[], _opts: any, cb: any) => h.execImpl(file, args, cb);
   execFile[util.promisify.custom] = (file: string, args: string[], opts: any) =>
     new Promise((resolve, reject) => {
       execFile(file, args, opts, (err: any, stdout: string, stderr: string) => {
@@ -137,8 +136,11 @@ describe('scheduler.runDatacheckWithRerun — 补跑触发判定', () => {
   it('C1-C10 全 PASS + C11/C12 SKIP → 不触发补跑', async () => {
     const rerunSpy = vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate');
     vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([
-      summary('C1', 'PASS'), summary('C2', 'PASS'), summary('C10', 'PASS'),
-      summary('C11', 'SKIP'), summary('C12', 'SKIP'),
+      summary('C1', 'PASS'),
+      summary('C2', 'PASS'),
+      summary('C10', 'PASS'),
+      summary('C11', 'SKIP'),
+      summary('C12', 'SKIP'),
     ] as any);
 
     const out = await runDatacheckWithRerun('2026-10-16');
@@ -151,7 +153,8 @@ describe('scheduler.runDatacheckWithRerun — 补跑触发判定', () => {
   it('只有 C11 WARN（外部源）→ 不触发补跑', async () => {
     const rerunSpy = vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate');
     vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([
-      summary('C1', 'PASS'), summary('C11', 'WARN'),
+      summary('C1', 'PASS'),
+      summary('C11', 'WARN'),
     ] as any);
 
     const out = await runDatacheckWithRerun('2026-10-16');
@@ -160,10 +163,12 @@ describe('scheduler.runDatacheckWithRerun — 补跑触发判定', () => {
   });
 
   it('C1 WARN → 触发补跑；补跑成功后二次校验，以二次结果为准', async () => {
-    const rerunSpy = vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate')
+    const rerunSpy = vi
+      .spyOn(quoteRerunNs, 'rerunQuoteUpdate')
       .mockResolvedValue({ status: 'SUCCESS', method: 'exec', exitCode: 0, message: 'ok' });
 
-    const runSpy = vi.spyOn(validatorNs, 'runAllChecks')
+    const runSpy = vi
+      .spyOn(validatorNs, 'runAllChecks')
       .mockResolvedValueOnce([summary('C1', 'WARN')] as any)
       .mockResolvedValueOnce([summary('C1', 'PASS')] as any);
 
@@ -177,7 +182,8 @@ describe('scheduler.runDatacheckWithRerun — 补跑触发判定', () => {
   });
 
   it('C1 ERROR → 触发补跑，reason 标为 ERROR', async () => {
-    const rerunSpy = vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate')
+    const rerunSpy = vi
+      .spyOn(quoteRerunNs, 'rerunQuoteUpdate')
       .mockResolvedValue({ status: 'SUCCESS', method: 'systemd-run', exitCode: 0, message: 'ok' });
     vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([summary('C2', 'ERROR')] as any);
 
@@ -187,10 +193,12 @@ describe('scheduler.runDatacheckWithRerun — 补跑触发判定', () => {
   });
 
   it('补跑返回 SKIP → 不二次校验，保留首轮结果且 rerunOk=false', async () => {
-    vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate')
-      .mockResolvedValue({ status: 'SKIP', method: 'none', message: '不可用' });
-    const runSpy = vi.spyOn(validatorNs, 'runAllChecks')
-      .mockResolvedValue([summary('C1', 'WARN')] as any);
+    vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate').mockResolvedValue({
+      status: 'SKIP',
+      method: 'none',
+      message: '不可用',
+    });
+    const runSpy = vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([summary('C1', 'WARN')] as any);
 
     const out = await runDatacheckWithRerun('2026-10-16');
     expect(runSpy).toHaveBeenCalledTimes(1);
@@ -200,8 +208,12 @@ describe('scheduler.runDatacheckWithRerun — 补跑触发判定', () => {
   });
 
   it('补跑成功但二次仍 WARN → 终态保持 WARN 并写 WARN 明细', async () => {
-    vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate')
-      .mockResolvedValue({ status: 'SUCCESS', method: 'exec', exitCode: 0, message: 'ok' });
+    vi.spyOn(quoteRerunNs, 'rerunQuoteUpdate').mockResolvedValue({
+      status: 'SUCCESS',
+      method: 'exec',
+      exitCode: 0,
+      message: 'ok',
+    });
     vi.spyOn(validatorNs, 'runAllChecks')
       .mockResolvedValueOnce([summary('C1', 'WARN')] as any)
       .mockResolvedValueOnce([summary('C1', 'WARN')] as any);
