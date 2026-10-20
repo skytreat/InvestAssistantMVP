@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import Spinner from '../components/Spinner';
 import {
   pageContainerStyle,
   cardStyle,
@@ -72,6 +73,18 @@ const PERIOD_MONTHS: Record<CurvePeriod, number> = { monthly: 1, quarterly: 3, y
 /** 三态标记：'' = 未标记，'1' = 是，'0' = 否 */
 type TriState = '' | '0' | '1';
 
+/**
+ * 空值统一渲染 `--`（T65）
+ *
+ * ⚠️ **0 是有效值，必须原样显示** —— 只有 `null` / `undefined` 才走占位符。
+ *    典型场景：统计接口还没回来（`stats === null`）时，
+ *    早先用 `stats?.totalTrades ?? 0` 会渲染成「0 笔交易」，
+ *    让用户误以为账户是空的 —— 现在统一渲染 `--`。
+ */
+function dash(value: number | null | undefined): string {
+  return value === null || value === undefined ? '--' : String(value);
+}
+
 /** 历史快照（/api/asset-stat/history） */
 interface HistoryPoint {
   trade_date: string;
@@ -125,7 +138,12 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
   const path = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
   const zeroY = y(0);
   const last = values[values.length - 1];
-  const color = last >= 0 ? COLORS.success : COLORS.danger;
+  /**
+   * T65：数值异常（NaN / Infinity）时统一渲染 `--`，不渲染「NaN%」。
+   * 正常口径下后端 `user_asset_stat` 的收益率列是 NOT NULL 的有限值，
+   * 这里只是兜底 —— 避免脏数据把整张图变成 NaN 坐标。
+   */
+  const color = Number.isFinite(last) ? (last >= 0 ? COLORS.success : COLORS.danger) : COLORS.neutral;
 
   return (
     <div>
@@ -153,13 +171,13 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
         <circle cx={x(values.length - 1)} cy={y(last)} r={3.5} fill={color} />
         {/* y 轴刻度 */}
         <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill={COLORS.neutral}>
-          {max.toFixed(1)}%
+          {Number.isFinite(max) ? `${max.toFixed(1)}%` : '--'}
         </text>
         <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill={COLORS.neutral}>
           0%
         </text>
         <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill={COLORS.neutral}>
-          {min.toFixed(1)}%
+          {Number.isFinite(min) ? `${min.toFixed(1)}%` : '--'}
         </text>
         {/* x 轴首尾日期 */}
         <text x={PAD.left} y={H - 6} fontSize={10} fill={COLORS.neutral}>
@@ -170,7 +188,7 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
         </text>
       </svg>
       <div style={{ fontSize: TYPO.smallSize, marginTop: SPACING.gapTight, color }}>
-        期末收益率 {last.toFixed(2)}%（{CALIBER_LABEL[caliber]}）
+        期末收益率 {Number.isFinite(last) ? `${last.toFixed(2)}%` : '--'}（{CALIBER_LABEL[caliber]}）
       </div>
     </div>
   );
@@ -374,11 +392,7 @@ export default function Review() {
             ))}
           </div>
         </div>
-        {historyLoading ? (
-          <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>加载中...</div>
-        ) : (
-          <YieldCurve points={curvePoints} caliber={caliber} />
-        )}
+        {historyLoading ? <Spinner size={16} /> : <YieldCurve points={curvePoints} caliber={caliber} />}
       </div>
 
       {/* 统计卡片 */}
@@ -391,8 +405,8 @@ export default function Review() {
         }}
       >
         {[
-          { label: '总交易数', value: String(stats?.totalTrades ?? 0), color: COLORS.brandLink },
-          { label: '已复盘', value: String(stats?.reviewedCount ?? 0), color: COLORS.success },
+          { label: '总交易数', value: dash(stats?.totalTrades), color: COLORS.brandLink },
+          { label: '已复盘', value: dash(stats?.reviewedCount), color: COLORS.success },
           {
             label: '胜率',
             value: stats?.winRate != null ? `${stats.winRate}%` : '--',
@@ -405,9 +419,10 @@ export default function Review() {
           },
           {
             label: '已实现盈亏',
-            value: stats
-              ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
-              : '--',
+            value:
+              stats?.totalRealizedPnl != null
+                ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
+                : '--',
             color: (stats?.totalRealizedPnl ?? 0) >= 0 ? COLORS.success : COLORS.danger,
           },
         ].map((card) => (
@@ -419,7 +434,7 @@ export default function Review() {
       </div>
       {stats && (
         <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: -12, marginBottom: 20 }}>
-          平仓 {stats.closedCount} 笔（盈利 {stats.winCount} / 亏损 {stats.lossCount}）
+          平仓 {dash(stats.closedCount)} 笔（盈利 {dash(stats.winCount)} / 亏损 {dash(stats.lossCount)}）
           {stats.avgWin != null && ` · 平均盈利 ${stats.avgWin.toFixed(2)}`}
           {stats.avgLoss != null && ` · 平均亏损 ${stats.avgLoss.toFixed(2)}`}
         </div>
@@ -492,7 +507,7 @@ export default function Review() {
       {/* 交易列表 */}
       <div style={cardStyle}>
         {loading ? (
-          <div>加载中...</div>
+          <Spinner />
         ) : trades.length === 0 ? (
           <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无交易记录</div>
         ) : (

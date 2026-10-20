@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage, extractErrorMessageOrString } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import Spinner from '../components/Spinner';
 import {
   pageContainerStyle,
   cardStyle,
@@ -338,7 +339,7 @@ export default function Admin() {
       {/* system_log 分页 */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>系统日志</div>
-        {logLoading && <div>加载中...</div>}
+        {logLoading && <Spinner />}
         {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
         {!logLoading && !logError && (
           <>

@@ -120,7 +120,7 @@ export default function Signals() {
           <option value="sell">卖出</option>
         </select>
 
-        <button style={buttonStyle} onClick={handleQuery} disabled={loading}>
+        <button style={buttonStyle} onClick={handleQuery} disabled={loading} aria-busy={loading}>
           {loading ? '查询中...' : '查询'}
         </button>
       </div>

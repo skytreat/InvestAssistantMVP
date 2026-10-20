@@ -5,9 +5,10 @@
  * 「允许引一个轻量 CSS 文件（global.css）定义 :focus-visible、body 背景、
  *   html/body margin 重置 —— 这些 inline style 表达不了」。
  *
- * ⚠️ 本文件**只放全局 reset + 焦点环**，不含任何页面级样式。
+ * ⚠️ 本文件**只放全局 reset + 焦点环 + Spinner 动画关键帧**，不含任何页面级样式。
  *    语义化改造（header/main/footer、label htmlFor、th scope、aria-current、
  *    导航激活态等）归 **T63**，不要在这里做，避免两个任务互相覆盖。
+ *    `@keyframes spin` 归 **T65** —— inline style 表达不了动画，只能落在 CSS 文件里。
  *
  * 数值来源：`docs/client/ui-spec.md` §1（对应 `src/theme/tokens.ts` 的
  * `COLORS.pageBg` / `COLORS.brand` / `COLORS.borderFocus` / `TYPO.fontFamily`）。
@@ -39,4 +40,35 @@ body {
 /* 鼠标点击等「非键盘」焦点不显示焦点环 */
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/**
+ * Spinner 旋转动画（T65）
+ *
+ * ⚠️ `@keyframes` 只能写在 CSS 文件里 —— inline style 表达不了。
+ *    动画名 `spin` 与 `src/components/Spinner.tsx` 里的
+ *    `animation: 'spin 0.8s linear infinite'` 一一对应。
+ *
+ * 实现方式：纯 CSS `border` + `border-top-color` 异色 → 转一圈即成一格「加载中」圆环，
+ * 不引第三方动画库（ui-spec §5 决策 3 的同款约束）。
+ */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/**
+ * 尊重「减少动态效果」偏好（prefers-reduced-motion）
+ *
+ * ⚠️ 必须用 `!important` —— inline style 的 `animation` 优先级高于 class 选择器，
+ *    不加 `!important` 这条覆盖规则不生效。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .spinner-ring {
+    animation: none !important;
+  }
 }

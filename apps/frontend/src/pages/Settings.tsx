@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import Spinner from '../components/Spinner';
 import {
   pageContainerStyle,
   cardStyle,
@@ -258,7 +259,7 @@ export default function Settings() {
 
       <div style={cardStyle}>
         <div style={cardTitleStyle}>策略插件</div>
-        {loading && <div>加载中...</div>}
+        {loading && <Spinner />}
         {!loading && plugins.length === 0 && (
           <div style={{ color: COLORS.neutral, padding: 16 }}>暂无可用插件</div>
         )}

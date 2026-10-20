@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import Spinner from '../components/Spinner';
 import {
   pageContainerStyle,
   cardStyle,
@@ -282,7 +283,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {statLoading && <div>加载中...</div>}
+        {statLoading && <Spinner />}
         {statError && <div style={{ color: COLORS.danger }}>{statError}</div>}
         {!statLoading &&
           !statError &&
@@ -364,7 +365,7 @@ export default function Dashboard() {
       {/* 持仓卡片列表（T33 规格） */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>持仓明细（{activePositions.length} 只）</div>
-        {posLoading && <div>加载中...</div>}
+        {posLoading && <Spinner />}
         {posError && <div style={{ color: COLORS.danger }}>{posError}</div>}
         {!posLoading &&
           !posError &&
@@ -451,7 +452,7 @@ export default function Dashboard() {
 
       <div style={cardStyle}>
         <div style={cardTitleStyle}>最新信号</div>
-        {sigLoading && <div>加载中...</div>}
+        {sigLoading && <Spinner />}
         {sigError && <div style={{ color: COLORS.danger }}>{sigError}</div>}
         {!sigLoading && !sigError && (
           <table style={tableStyle} aria-label="最新信号">
@@ -514,7 +515,7 @@ export default function Dashboard() {
       {role === 'admin' && (
         <div style={cardStyle}>
           <div style={cardTitleStyle}>最近日志</div>
-          {logLoading && <div>加载中...</div>}
+          {logLoading && <Spinner />}
           {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
           {!logLoading && !logError && (
             <table style={tableStyle} aria-label="最近日志">

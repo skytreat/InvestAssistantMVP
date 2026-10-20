@@ -501,6 +501,7 @@ export default function Kline() {
         <button
           onClick={load}
           disabled={loading}
+          aria-busy={loading}
           style={{
             padding: '6px 20px',
             background: loading ? COLORS.textMuted : COLORS.brand,
