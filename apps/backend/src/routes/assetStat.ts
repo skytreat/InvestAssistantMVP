@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { ok, fail } from '../lib/envelope.js';
+import { ok } from '../lib/envelope.js';
 
 /**
  * 资产快照查询 API（T37）

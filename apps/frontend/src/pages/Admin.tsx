@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage, extractErrorMessageOrString } from '../api/errors';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -12,8 +13,36 @@ import {
   thTdStyle,
 } from './_shared';
 
+/** system_log 的一行（列由后端动态给出，故用索引签名） */
 interface LogRow {
-  [key: string]: any;
+  [key: string]: unknown;
+}
+
+/** 手动触发数据校验的返回体（/admin/datacheck/trigger） */
+interface DatacheckResult {
+  /** 各校验项摘要（页面只展示其长度） */
+  summaries?: unknown[];
+}
+
+/** 手动触发信号生成的统计（/admin/run-signal） */
+interface SignalRunStats {
+  total?: number;
+  success?: number;
+  timeout?: number;
+  error?: number;
+}
+
+/** 手动触发信号生成的返回体（/admin/run-signal） */
+interface SignalRunResult {
+  stats?: SignalRunStats;
+  inserted?: number;
+}
+
+/** 行情补跑的返回体（/admin/rerun-quotes） */
+interface RerunResult {
+  status?: string;
+  method?: string;
+  message?: string;
 }
 
 const RESULT_COLOR: Record<string, string> = {
@@ -40,11 +69,11 @@ export default function Admin() {
   const { role } = useUserStore();
 
   const [datacheckLoading, setDatacheckLoading] = useState(false);
-  const [datacheckResult, setDatacheckResult] = useState<any>(null);
+  const [datacheckResult, setDatacheckResult] = useState<DatacheckResult | null>(null);
   const [datacheckError, setDatacheckError] = useState<string | null>(null);
 
   const [signalLoading, setSignalLoading] = useState(false);
-  const [signalResult, setSignalResult] = useState<any>(null);
+  const [signalResult, setSignalResult] = useState<SignalRunResult | null>(null);
   const [signalError, setSignalError] = useState<string | null>(null);
 
   const [logs, setLogs] = useState<LogRow[]>([]);
@@ -88,8 +117,8 @@ export default function Admin() {
       } else {
         setLogError(res.data.message ?? '请求失败');
       }
-    } catch (err: any) {
-      setLogError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setLogError(extractErrorMessage(err));
     } finally {
       setLogLoading(false);
     }
@@ -104,6 +133,12 @@ export default function Admin() {
     }
   };
 
+  // ⚠️ 说明：非 admin 角色在上面的 `if (role !== 'admin')` 已提前 return，导致本 useEffect
+  // 成为**条件调用**（role 在运行期由 admin 变为 user 时会触发 React 的 hook 数量错误）。
+  // 正解是把面板主体拆成子组件（`role !== 'admin'` 时不渲染子组件 → hook 数量恒定），
+  // 但那会改变组件结构与状态挂载点，**不属于本次「只改类型、不改运行时行为」的清理范围**，
+  // 故此处显式豁免并登记为待办（见本次交付说明「发现但未修的问题」）。
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     fetchLogs(page);
     fetchCheckSummary();
@@ -122,8 +157,8 @@ export default function Admin() {
       } else {
         setDatacheckError(res.data.message ?? '请求失败');
       }
-    } catch (err: any) {
-      setDatacheckError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setDatacheckError(extractErrorMessage(err));
     } finally {
       setDatacheckLoading(false);
     }
@@ -140,8 +175,8 @@ export default function Admin() {
       } else {
         setSignalError(res.data.message ?? '请求失败');
       }
-    } catch (err: any) {
-      setSignalError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setSignalError(extractErrorMessage(err));
     } finally {
       setSignalLoading(false);
     }
@@ -153,8 +188,8 @@ export default function Admin() {
       if (res.data.success) {
         alert('备份已触发，请稍候查看日志');
       }
-    } catch (err: any) {
-      alert('备份失败: ' + (err?.response?.data?.message ?? String(err)));
+    } catch (err) {
+      alert('备份失败: ' + extractErrorMessageOrString(err));
     }
   };
 
@@ -165,7 +200,7 @@ export default function Admin() {
     try {
       const res = await api.post('/admin/rerun-quotes', { reason: '管理员手动触发' });
       if (res.data.success) {
-        const r = res.data.data;
+        const r: RerunResult = res.data.data;
         setRerunMsg(
           r.status === 'SUCCESS'
             ? `补跑成功（通道：${r.method}）`
@@ -177,8 +212,8 @@ export default function Admin() {
       } else {
         setRerunErr(res.data.message ?? '请求失败');
       }
-    } catch (err: any) {
-      setRerunErr(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setRerunErr(extractErrorMessage(err));
     } finally {
       setRerunLoading(false);
     }
@@ -294,7 +329,7 @@ export default function Admin() {
         {signalError && <div style={{ color: '#dc2626', marginTop: 8 }}>{signalError}</div>}
         {signalResult &&
           (() => {
-            const stats = signalResult.stats ?? {};
+            const stats: SignalRunStats = signalResult.stats ?? {};
             return (
               <div style={{ marginTop: 8, color: '#16a34a' }}>
                 生成完成：total={stats.total ?? '-'} success={stats.success ?? '-'} timeout=

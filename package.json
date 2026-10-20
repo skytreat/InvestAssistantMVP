@@ -8,7 +8,13 @@
   ],
   "scripts": {
     "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run --config packages/core/vitest.config.ts && npm run test -w @invest/frontend",
-    "test:coverage": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true --coverage && vitest run --config packages/core/vitest.config.ts --coverage && npm run test:coverage -w @invest/frontend"
+    "test:coverage": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true --coverage && vitest run --config packages/core/vitest.config.ts --coverage && npm run test:coverage -w @invest/frontend",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "npm run typecheck -w @invest/core && npm run build -w @invest/core && npm run typecheck -w @invest/backend && npm run typecheck -w @invest/frontend",
+    "build": "npm run build -w @invest/core && npm run build -w @invest/backend && npm run build -w @invest/frontend"
   },
   "engines": {
     "node": ">=22"

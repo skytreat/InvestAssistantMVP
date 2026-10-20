@@ -9,7 +9,7 @@
  *   - checkC10: missing_count=0 → PASS; >0 → WARN
  *   - runAllChecks: 所有结果写 system_log（验证 logResult 路径）
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +20,7 @@ const ORIGINAL_SQLITE_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import { ConfigStore } from '../../src/config/configStore.js';
-import { runAllChecks, TOLERANCES } from '../../src/services/validator.js';
+import { runAllChecks } from '../../src/services/validator.js';
 
 function cleanup(): void {
   try {

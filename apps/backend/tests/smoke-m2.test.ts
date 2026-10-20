@@ -51,8 +51,6 @@ export function cleanupSmoke2(): void {
   }
 }
 
-const TEST_PORT = 51101;
-
 // 顶层快速检测：只看文件存不存在（避免 DuckDB Neo API 文件锁泄漏）
 const _DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
 const DUCKDB_FILE_EXISTS = fs.existsSync(_DUCKDB_PATH);

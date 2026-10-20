@@ -254,7 +254,6 @@ describe('T88 — 内置插件 execute 自身耗时逐个实测 < 50ms', () => {
       const res = await executePlugin(plugin, params, ctx);
       expect(res.status).not.toBe('TIMEOUT');
       expect(res.durationMs).toBeLessThan(PLUGIN_TIMEOUT_MS);
-      // eslint-disable-next-line no-console
       console.log(
         `[T88 实测] ${plugin.id}: compute=${res.durationMs}ms io=${res.ioMs ?? 0}ms status=${res.status}`,
       );

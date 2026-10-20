@@ -34,7 +34,10 @@ const problems = [];
 console.log(`[data-health] 目标库：${dbPath}`);
 
 // ── schema 自适应：trade_time 是 T87 才加的列，旧库没有 ──
-const cols = db.prepare('PRAGMA table_info(user_trade_record)').all().map((c) => c.name);
+const cols = db
+  .prepare('PRAGMA table_info(user_trade_record)')
+  .all()
+  .map((c) => c.name);
 const HAS_TRADE_TIME = cols.includes('trade_time');
 if (!HAS_TRADE_TIME) {
   console.log(

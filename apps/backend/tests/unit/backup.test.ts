@@ -255,6 +255,8 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
 
       const db = ConfigStore.getInstance().db;
       vi.spyOn(db, 'backup').mockImplementation(async () => {
+        // 故意抛非 Error 的普通对象，验证备份失败时 String(err) 兜底不抛异常
+        // eslint-disable-next-line no-throw-literal
         throw { code: 'EACCES', msg: 'permission denied' };
       });
 

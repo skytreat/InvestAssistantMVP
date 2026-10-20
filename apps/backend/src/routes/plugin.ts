@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { getAllPlugins, builtinPlugins } from '../services/pluginEngine.js';
+import { getAllPlugins } from '../services/pluginEngine.js';
 import { writeSystemLog } from '../services/logger.js';
-import { ok, fail } from '../lib/envelope.js';
+import { ok } from '../lib/envelope.js';
 
 /**
  * 插件管理 API（T40）

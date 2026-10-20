@@ -5,6 +5,7 @@
  *   hashPassword / verifyPassword / signToken / verifyToken / extractToken
  */
 import { describe, it, expect } from 'vitest';
+import crypto from 'node:crypto';
 import {
   hashPassword,
   verifyPassword,
@@ -59,7 +60,6 @@ describe('auth — signToken + verifyToken', () => {
     // 更简单：截掉原 payload 段，手动改 exp 后重新签名
     const b64url = (buf: Buffer) =>
       buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
-    const crypto = require('node:crypto');
     const secret = Buffer.from(
       process.env.JWT_SECRET ?? 'investassistant-mvp-dev-secret-change-me-in-prod-2026',
       'utf-8',

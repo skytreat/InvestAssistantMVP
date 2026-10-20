@@ -42,6 +42,9 @@ afterAll(() => {
   else delete process.env.SQLITE_DB_PATH;
 });
 
+// `code` 是调用方统一传入的标的代码，但 seed 内部只用 uid 拼用户名（`user_${uid}`），
+// 形参未被使用；保留签名以免改动全部 12 处调用点
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function seed(uid: number, code: string) {
   db.db
     .prepare(

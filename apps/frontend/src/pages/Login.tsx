@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -42,8 +43,8 @@ export default function Login() {
       } else {
         setError(res.data.message ?? '登录失败');
       }
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setError(extractErrorMessage(err));
     } finally {
       setLoading(false);
     }

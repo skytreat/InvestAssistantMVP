@@ -535,7 +535,11 @@ describe('契约同步守卫 — 真实引擎 pluginEngine.ts 不得与本参考
 
   it('真实引擎仍保留 T88 的 IO 排除机制（withIo 包装 + 计时起点重置）', () => {
     expect(engineSrc).toContain('const withIo = async');
-    expect(engineSrc).toContain('computeStart = performance.now();  // 取数后重置计时起点');
+    // ⚠️ 用正则而非字面量：源码文本断言对**空白敏感**。
+    //   2026-10-20 实测：引入 Prettier（T86）后，源码里的 `performance.now();  // ...`
+    //   （两个空格）被规范成 `performance.now(); // ...`（一个空格）→ 本断言整条失败。
+    //   断言的**语义**是「IO 结束后重置计时起点」，与空格数无关 → 只匹配语义。
+    expect(engineSrc).toMatch(/computeStart = performance\.now\(\);\s*\/\/ 取数后重置计时起点/);
     expect(engineSrc).toContain('getDailyKlines: (symbol, days) => withIo(');
     expect(engineSrc).toContain('batchGetDailyKlines: (symbols, days) => withIo(');
   });

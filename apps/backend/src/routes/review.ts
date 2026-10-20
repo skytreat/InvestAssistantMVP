@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcClosedTradePnLs } from '../services/positionCalculator.js';
-import { ok, fail } from '../lib/envelope.js';
+import { ok } from '../lib/envelope.js';
 
 /**
  * 复盘统计 API（T38）

@@ -7,10 +7,11 @@
  *   - _ensureSystemLogCheckConstraint 表已有预期约束时跳过
  *   - writeLog 写入 system_log 表
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import Database from 'better-sqlite3';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invest-cs-'));
 const TEST_DB = path.join(tmpDir, 'cs-test.db');
@@ -142,7 +143,7 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
 
     try {
       // 1. 手工造"旧 schema"库：有数据、缺 strategy_match 列
-      const Legacy = new (require('better-sqlite3'))(legacyDb);
+      const Legacy = new Database(legacyDb);
       Legacy.exec(`
         CREATE TABLE user_trade_record (
           id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
 import {
   pageContainerStyle,
   cardStyle,
@@ -65,13 +66,10 @@ const CALIBER_LABEL: Record<Caliber, string> = {
 /** 收益曲线周期（PRD R2 月度/季度/年度） */
 type CurvePeriod = 'monthly' | 'quarterly' | 'yearly';
 
-const PERIOD_LABEL: Record<CurvePeriod, string> = {
-  monthly: '月度',
-  quarterly: '季度',
-  yearly: '年度',
-};
-
 const PERIOD_MONTHS: Record<CurvePeriod, number> = { monthly: 1, quarterly: 3, yearly: 12 };
+
+/** 三态标记：'' = 未标记，'1' = 是，'0' = 否 */
+type TriState = '' | '0' | '1';
 
 /** 历史快照（/api/asset-stat/history） */
 interface HistoryPoint {
@@ -178,7 +176,8 @@ export default function Review() {
   const [stats, setStats] = useState<ReviewStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
+  // 分页页码（翻页走 fetchTrades(page ± 1)，页码本身不再单独维护）
+  const [page] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
@@ -192,8 +191,8 @@ export default function Review() {
   const [editingTrade, setEditingTrade] = useState<TradeRow | null>(null);
   const [editForm, setEditForm] = useState({
     review_summary: '',
-    strategy_match: '' as '' | '0' | '1',
-    is_stop_loss: '' as '' | '0' | '1',
+    strategy_match: '' as TriState,
+    is_stop_loss: '' as TriState,
     remark: '',
   });
 
@@ -230,7 +229,7 @@ export default function Review() {
     setLoading(true);
     setError(null);
     try {
-      const params: Record<string, any> = { page: p, limit: 20 };
+      const params: Record<string, unknown> = { page: p, limit: 20 };
       if (tradeType) params.trade_type = tradeType;
       if (systemFollowed !== '') params.system_followed = systemFollowed;
       if (strategyMatch !== '') params.strategy_match = strategyMatch;
@@ -241,17 +240,19 @@ export default function Review() {
         setTotalPages(res.data.pagination?.totalPages ?? 1);
         setTotal(res.data.pagination?.total ?? 0);
       }
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '加载失败');
+    } catch (err) {
+      setError(extractErrorMessage(err, '加载失败'));
     } finally {
       setLoading(false);
     }
   };
 
+  // 挂载时拉一次统计 / 交易 / 历史快照；筛选与翻页由各自的事件处理函数触发
   useEffect(() => {
     fetchStats();
     fetchTrades(1);
     fetchHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleFilter = () => {
@@ -271,7 +272,7 @@ export default function Review() {
   const saveEdit = async () => {
     if (!editingTrade) return;
     try {
-      const payload: Record<string, any> = {};
+      const payload: Record<string, unknown> = {};
       if (editForm.review_summary !== editingTrade.review_summary)
         payload.review_summary = editForm.review_summary || null;
       if (
@@ -292,8 +293,8 @@ export default function Review() {
       setEditingTrade(null);
       fetchTrades(page);
       fetchStats();
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '保存失败');
+    } catch (err) {
+      setError(extractErrorMessage(err, '保存失败'));
     }
   };
 
@@ -303,8 +304,8 @@ export default function Review() {
       await api.post(`/trade/${id}/soft-delete`);
       fetchTrades(page);
       fetchStats();
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '删除失败');
+    } catch (err) {
+      setError(extractErrorMessage(err, '删除失败'));
     }
   };
 
@@ -594,7 +595,7 @@ export default function Review() {
                           background: editForm.strategy_match === v ? '#dbeafe' : '#fff',
                           border: '1px solid #93c5fd',
                         }}
-                        onClick={() => setEditForm((f: any) => ({ ...f, strategy_match: v as any }))}
+                        onClick={() => setEditForm((f) => ({ ...f, strategy_match: v as TriState }))}
                       >
                         {l}
                       </button>
@@ -618,7 +619,7 @@ export default function Review() {
                           background: editForm.is_stop_loss === v ? '#fee2e2' : '#fff',
                           border: '1px solid #fca5a5',
                         }}
-                        onClick={() => setEditForm((f: any) => ({ ...f, is_stop_loss: v as any }))}
+                        onClick={() => setEditForm((f) => ({ ...f, is_stop_loss: v as TriState }))}
                       >
                         {l}
                       </button>

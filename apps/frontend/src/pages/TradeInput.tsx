@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
 import {
   pageContainerStyle,
   cardStyle,
@@ -229,8 +230,8 @@ export default function TradeInput() {
           setError(errMsg);
         }
       }
-    } catch (err: any) {
-      const errMsg = err?.response?.data?.message ?? '网络错误';
+    } catch (err) {
+      const errMsg = extractErrorMessage(err);
       if (errMsg === 'HOLDING_INSUFFICIENT') {
         setError('持仓不足');
       } else {

@@ -11,11 +11,10 @@
  * 所有测试绕过 buildPluginContext()（避免 DuckDB 依赖），手动传入 mock context。
  * Logger 的 SQLite 依赖由 logger.test.ts 处理，这里不传 context 也可但会碰 marketData → DuckDB。
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   executePlugin,
   createPluginSandbox,
-  buildPluginContext,
   PLUGIN_TIMEOUT_MS,
   type Plugin,
   type PluginContext,
@@ -117,6 +116,8 @@ describe('pluginEngine — P4 抛异常', () => {
     const plugin = makePlugin({
       id: 'string-throw',
       execute: async () => {
+        // 故意抛非 Error 的字面量，验证插件引擎对「非 Error 异常」的兜底（String(err) 路径）
+        // eslint-disable-next-line no-throw-literal
         throw 'just a string';
       },
     });

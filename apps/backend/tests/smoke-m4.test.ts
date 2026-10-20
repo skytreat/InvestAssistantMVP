@@ -23,7 +23,6 @@ const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-smoke4-'));
 const DB_PATH = path.join(TMP_DIR, 'smoke4.db');
 const BACKUP_TMP_DIR = path.join(TMP_DIR, 'backups');
 
-const ORIG_SQLITE = process.env.SQLITE_DB_PATH;
 const ORIG_BACKUP_DIR = process.env.BACKUP_DIR;
 process.env.SQLITE_DB_PATH = DB_PATH;
 process.env.BACKUP_DIR = BACKUP_TMP_DIR;

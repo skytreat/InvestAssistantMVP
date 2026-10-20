@@ -9,7 +9,6 @@ import os from 'node:os';
 import { ConfigStore } from '../src/config/configStore.js';
 import { registerRoutes } from '../src/routes/index.js';
 import { registerCronJobs } from '../src/services/scheduler.js';
-import { duckdbHealthCheck } from '../src/db/duckdb.js';
 import { hashPassword } from '../src/services/auth.js';
 
 // ── 测试用临时 SQLite DB（覆盖 .env.local 中指向不可写路径的 SQLITE_DB_PATH）──

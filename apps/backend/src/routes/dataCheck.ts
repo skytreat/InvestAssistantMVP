@@ -1,11 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { writeSystemLog } from '../services/logger.js';
-import { runAllChecks } from '../services/validator.js';
 import { queryDuckDB } from '../db/duckdb.js';
 import { resolveTargetTradeDate } from '../services/marketData.js';
 import { ok, fail } from '../lib/envelope.js';
-import { defaultMessage } from '../lib/errorMessages.js';
 
 /**
  * 数据校验 API（T29 补充）

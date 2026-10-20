@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { useIsMobile, MOBILE_BREAKPOINT } from './_shared';
 
 interface KlineBar {
@@ -384,8 +385,8 @@ export default function Kline() {
         setKlines([]);
         setIndicators(null);
       }
-    } catch (e: any) {
-      setErr('请求失败: ' + (e?.response?.data?.message ?? e?.message ?? String(e)));
+    } catch (e) {
+      setErr('请求失败: ' + extractErrorMessageOrErrorMessage(e));
       setKlines([]);
       setIndicators(null);
     } finally {

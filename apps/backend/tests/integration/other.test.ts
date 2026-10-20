@@ -22,14 +22,12 @@ import { marketDataAvailable } from '../_marketData.js';
 const MARKET_DATA_AVAILABLE = await marketDataAvailable();
 
 const WATCH_USER = 'int_watch_user';
-const WATCH_PASS = 'int_watch_user123';
 
 let bundle: TestAppBundle;
 let watchToken: string;
 let watchUserId: number;
 
 // authHeaders 模式
-const adminHeaders = () => ({ authorization: `Bearer ${bundle.adminToken}` });
 const watchHeaders = () => ({ authorization: `Bearer ${watchToken}` });
 
 beforeAll(async () => {

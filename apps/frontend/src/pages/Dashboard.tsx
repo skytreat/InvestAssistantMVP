@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -159,8 +160,8 @@ export default function Dashboard() {
           setPositions(res.data.data ?? []);
           setPosSummary(res.data.summary ?? null);
         } else setPosError(res.data.message ?? '请求失败');
-      } catch (err: any) {
-        setPosError(err?.response?.data?.message ?? '网络错误');
+      } catch (err) {
+        setPosError(extractErrorMessage(err));
       } finally {
         setPosLoading(false);
       }
@@ -172,8 +173,8 @@ export default function Dashboard() {
         const res = await api.get('/asset-stat/latest');
         if (res.data.success) setStat(res.data.data ?? null);
         else setStatError(res.data.message ?? '请求失败');
-      } catch (err: any) {
-        setStatError(err?.response?.data?.message ?? '网络错误');
+      } catch (err) {
+        setStatError(extractErrorMessage(err));
       } finally {
         setStatLoading(false);
       }
@@ -185,8 +186,8 @@ export default function Dashboard() {
         const res = await api.get('/signal', { params: { page_size: 5 } });
         if (res.data.success) setSignals(res.data.data ?? []);
         else setSigError(res.data.message ?? '请求失败');
-      } catch (err: any) {
-        setSigError(err?.response?.data?.message ?? '网络错误');
+      } catch (err) {
+        setSigError(extractErrorMessage(err));
       } finally {
         setSigLoading(false);
       }
@@ -199,8 +200,8 @@ export default function Dashboard() {
           const res = await api.get('/admin/system-log', { params: { page_size: 5 } });
           if (res.data.success) setLogs(res.data.data ?? []);
           else setLogError(res.data.message ?? '请求失败');
-        } catch (err: any) {
-          setLogError(err?.response?.data?.message ?? '网络错误');
+        } catch (err) {
+          setLogError(extractErrorMessage(err));
         } finally {
           setLogLoading(false);
         }

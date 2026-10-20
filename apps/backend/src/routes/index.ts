@@ -16,7 +16,7 @@ import { registerReviewRoutes } from './review.js';
 import { registerPluginRoutes } from './plugin.js';
 import { registerStrategyRoutes } from './strategy.js';
 import { extractToken, verifyToken } from '../services/auth.js';
-import { ok, fail } from '../lib/envelope.js';
+import { fail } from '../lib/envelope.js';
 
 /**
  * 路由注册入口

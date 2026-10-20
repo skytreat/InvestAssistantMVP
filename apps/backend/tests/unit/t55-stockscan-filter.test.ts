@@ -239,7 +239,9 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
   itReal(
     'exclude_st=true：结果里没有 ST / *ST 名称（实测 5561 → 5363）',
     async () => {
-      const base = await runPool(NO_FILTER);
+      // 保留基线查询（下方注释里的「两次查询」指的就是它与 filtered），但断言只用 filtered，
+      // 故不取返回值 —— 否则触发 no-unused-vars
+      await runPool(NO_FILTER);
       const filtered = await runPool(withFilter({ excludeSt: true }));
 
       expect(filtered.length).toBeGreaterThan(0);
@@ -327,7 +329,6 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
       const pool = await runPool(withFilter({ excludeSt: true }));
       const daily = await loadCandidateDaily(pool, TRADE_DATE);
       const elapsed = Date.now() - t0;
-      // eslint-disable-next-line no-console
       console.log(`[T55] 候选池 ${pool.length} 只 + 日线加载耗时 ${elapsed}ms`);
       expect(daily.size).toBe(pool.length);
       // ⚠️ 预算说明（本机实测基线 2026-10-19，data/quotes.duckdb = 1.2GB）：

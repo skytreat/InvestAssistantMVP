@@ -77,7 +77,7 @@
 > - 同一天内前三次同类错误：C4/C5 字段名假设、资产快照表结构假设、C11/C12 阈值照抄 plan 而非 Requirements。
 
 ## 🔒 锁定技术栈，禁止擅自修改
-1. Node版本 **≥22**（当前实测 v25.8.1）；使用 systemd 管理普通 Node 进程；**禁止使用 Bun**。
+1. Node版本 **≥22**（2026-10-20 实测 **v26.12.0**；⚠️ Node ≥22 自带**实验性内置 `localStorage`**，不带 `--localstorage-file` 时 `globalThis.localStorage` 是 `undefined` 且**遮蔽 jsdom 的实现** —— 前端测试必须自备内存版 Storage，见 `apps/frontend/tests/setup.ts`）；使用 systemd 管理普通 Node 进程；**禁止使用 Bun**。
 2. 桌面SQLite：**推荐 better-sqlite3**（同步 API，成熟稳定，原生预编译二进制覆盖 linux-x64 / linux-arm64 / win32-x64）；
    - 有 `db.transaction(fn)` 事务闭包，也可手动 `BEGIN / COMMIT / ROLLBACK`；
    - 有 `db.backup(path)` 热备份 API，也可手动 `PRAGMA wal_checkpoint(TRUNCATE)` + `VACUUM INTO`；
@@ -88,11 +88,22 @@
      "workspaces": ["packages/*", "apps/*"],
      // ⚠️ 实际脚本是分段带各自 config 的形式，不是裸 `vitest run`（改动时照抄实际，别照抄本注释）
      "scripts": {
-       "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run --config packages/core/vitest.config.ts"
+       "test": "vitest run apps/backend --config apps/backend/vitest.config.ts --pool=forks --poolOptions.forks.singleFork=true && vitest run --config packages/core/vitest.config.ts && npm run test -w @invest/frontend",
+       "test:coverage": "…同上，每段加 --coverage…",
+       // T86 新增：lint / format / typecheck / build 四条基座脚本
+       "lint": "eslint . && prettier --check .",
+       "lint:fix": "eslint . --fix && prettier --write .",
+       "format": "prettier --write .",
+       "format:check": "prettier --check .",
+       "typecheck": "npm run typecheck -w @invest/core && npm run build -w @invest/core && npm run typecheck -w @invest/backend && npm run typecheck -w @invest/frontend",
+       "build": "npm run build -w @invest/core && npm run build -w @invest/backend && npm run build -w @invest/frontend"
      }
    }
    ```
    > ⚠️ `singleFork=true` 是**故意的**：Fastify 多实例并行 listen 会 `EADDRINUSE`。改动前先读 §「测试分层与端口依赖」。
+   > 🔒 **`typecheck` 里 core 的 build 不能删** —— `apps/backend/tsconfig.json` **没有 `paths`**，
+   > 后端 `tsc` 走 gitignored 的 `packages/core/dist`。不先构建 → core 的类型改动不传导到后端 →
+   > **tsc 红而 CI 绿**（这正是 T86 修的那个盲区）。
    **固定目录结构（禁止擅自新增/删除 workspace）**：
    - `packages/core` —— 核心复用层（ESM + CJS 双格式 + d.ts），**零业务依赖**，存放移动加权成本、RSI/MACD、插件接口契约等纯算法代码
    - `apps/backend` —— Fastify 后端（systemd 管理普通进程），**依赖 core**；包含 C1-C12 校验、插件引擎、API handler、备份 cron（@fastify/schedule，17:01-17:05）
@@ -340,7 +351,8 @@ Wave 1-8 合计 52 个任务 / ~64 人天，**人工逐任务 review 不现实**
 4. 错误处理：业务异常使用结构化错误对象；原始异常必须捕获，不允许顶层裸throw泄露内部细节。
 5. 测试：
    - 核心逻辑必须编写单元测试，使用 **Vitest（版本与仓库实际对齐，当前 `^2.1.0`）**，前后端统一框架，复用 Vite config；coverage via @vitest/coverage-v8。
-     > ⚠️ **不要按旧文档升级到 Vitest 5.x** —— 实施计划 DEC-3 已裁决「暂不升级」，升版会导致 core/backend/frontend 三处配置分裂。`apps/frontend` 的测试基建由 T61 建立，届时三处必须同版本。；
+     > ⚠️ **不要按旧文档升级到 Vitest 5.x** —— 实施计划 DEC-3 已裁决「暂不升级」，升版会导致 core/backend/frontend 三处配置分裂。
+     > ✅ **T61 已落地**：前端测试基建在 `apps/frontend/vitest.config.ts`（jsdom 环境，`root` 显式指向 `apps/frontend`），三处现均为 **2.1.x**。前端测试入口 `npm run test -w @invest/frontend`；组件渲染用 `apps/frontend/tests/helpers.tsx` 的 `renderWithRouter`（自动包 MemoryRouter）。；
    - 核心算法必须跑 golden 黄金数据集；
    - 数据库相关测试优先使用 `:memory:`内存数据库；
 6. 格式化：遵循项目 .eslintrc / .prettierrc，不要私自修改格式化规则。

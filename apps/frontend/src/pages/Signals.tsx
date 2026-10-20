@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessage } from '../api/errors';
 import {
   pageContainerStyle,
   cardStyle,
@@ -25,8 +26,9 @@ const DIRECTION_LABEL: Record<string, string> = {
   hold: '持仓',
 };
 
+/** 一行信号（列由后端动态给出，故用索引签名） */
 interface SignalRow {
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export default function Signals() {
@@ -42,7 +44,7 @@ export default function Signals() {
     setError(null);
     setLoading(true);
     try {
-      const params: Record<string, any> = { page_size: 50 };
+      const params: Record<string, unknown> = { page_size: 50 };
       if (tradeDate) params.trade_date = tradeDate;
       if (pluginId) params.plugin_id = pluginId;
       if (direction) params.direction = direction;
@@ -53,8 +55,8 @@ export default function Signals() {
       } else {
         setError(res.data.message ?? '请求失败');
       }
-    } catch (err: any) {
-      setError(err?.response?.data?.message ?? '网络错误');
+    } catch (err) {
+      setError(extractErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -131,7 +133,9 @@ export default function Signals() {
                   {columns.map((col) => {
                     const val = row[col];
                     let display = String(val ?? '');
-                    if (col === 'direction') {
+                    // 方向列做中文映射；只有字符串值参与查表
+                    // （非字符串在原实现里同样查不到 → 保留原值，此处收窄不改变行为）
+                    if (col === 'direction' && typeof val === 'string') {
                       display = DIRECTION_LABEL[val] ?? display;
                     }
                     return (

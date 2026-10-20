@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
+import { extractErrorMessageOrString } from '../api/errors';
 import {
   cardStyle,
   cardTitleStyle,
@@ -83,9 +84,9 @@ export default function StockScan() {
         markRow(symbol, 'error');
         setErrorMsg(res.data?.message ?? '加入候选失败');
       }
-    } catch (err: any) {
+    } catch (err) {
       markRow(symbol, 'error');
-      setErrorMsg('加入候选失败：' + (err?.response?.data?.message ?? String(err)));
+      setErrorMsg('加入候选失败：' + extractErrorMessageOrString(err));
     }
   };
 
@@ -101,9 +102,9 @@ export default function StockScan() {
         markRow(symbol, 'error');
         setErrorMsg(res.data?.message ?? '加入自选失败');
       }
-    } catch (err: any) {
+    } catch (err) {
       markRow(symbol, 'error');
-      setErrorMsg('加入自选失败：' + (err?.response?.data?.message ?? String(err)));
+      setErrorMsg('加入自选失败：' + extractErrorMessageOrString(err));
     }
   };
 
@@ -187,8 +188,8 @@ export default function StockScan() {
       } else {
         setErrorMsg(res.data?.message ?? '选股失败');
       }
-    } catch (err: any) {
-      setErrorMsg('选股请求失败：' + (err?.response?.data?.message ?? String(err)));
+    } catch (err) {
+      setErrorMsg('选股请求失败：' + extractErrorMessageOrString(err));
     } finally {
       setLoading(false);
     }
