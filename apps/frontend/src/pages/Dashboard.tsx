@@ -5,6 +5,18 @@ import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { ghostButtonStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
+import PositionCard from '../components/PositionCard';
+import PositionToolbar from '../components/PositionToolbar';
+import {
+  DIRECTION_LABEL,
+  fmt,
+  fmtPct,
+  isEtf,
+  type Position,
+  type SortDirection,
+  type SortKey,
+  type TypeFilter,
+} from '../components/positionDomain';
 import {
   pageContainerStyle,
   cardStyle,
@@ -16,6 +28,15 @@ import {
   buttonStyle,
 } from './_shared';
 
+/**
+ * 既有导出继续可用（卡 4 / 卡 6 / 卡 7 与既有单测都从这里取）
+ *
+ * ⚠️ 定义已下沉到 `components/positionDomain.ts`（组件层不能反向依赖页面层），
+ *    这里只做 **re-export**，对外的 import 路径与语义完全不变。
+ */
+export { DIRECTION_LABEL, isEtf };
+export type { Position, TypeFilter };
+
 /** 双口径口径说明（Requirements §5.4） */
 type Caliber = 'price' | 'actual';
 
@@ -25,20 +46,6 @@ interface AssetStat {
   total_assets_actual_yield: number;
   total_profit_price: number;
   total_profit_actual: number;
-}
-
-interface Position {
-  asset_code: string;
-  totalQuantity: number;
-  totalCostBasis: number;
-  avgCost: number;
-  realizedPnL: number;
-  currentPrice: number | null;
-  priceDate: string | null;
-  marketValue: number | null;
-  unrealizedPnl: number | null;
-  unrealizedYield: number | null;
-  weight: number | null;
 }
 
 interface PositionSummary {
@@ -65,12 +72,6 @@ interface SystemLog {
   message: string;
 }
 
-const DIRECTION_LABEL: Record<string, string> = {
-  buy: '买入',
-  sell: '卖出',
-  hold: '持仓',
-};
-
 const LEVEL_COLOR: Record<string, string> = {
   ERROR: COLORS.danger,
   WARN: COLORS.warning,
@@ -79,34 +80,20 @@ const LEVEL_COLOR: Record<string, string> = {
   INFO: COLORS.brand,
 };
 
-/** A 股 ETF 判定：sh51xxxx / sh56xxxx / sh58xxxx / sz15xxxx / sz16xxxx */
-export function isEtf(code: string): boolean {
-  return /^(sh5[168]|sz1[56])/.test(code);
-}
-
 /**
- * 持仓类型过滤（PRD §5.3 行 229「支持点击下钻到持仓列表过滤」）
+ * 持仓类型过滤的**单一真相源**
  *
- * ⚠️ **单一真相源**：饼图下钻（卡 2）与「标的类型筛选」（卡 3）必须共用这同一个 state，
+ * ⚠️ 饼图下钻（卡 2）与「标的类型筛选」（卡 3）共用这同一个 state，
  *    否则两套过滤会互相覆盖 —— 卡 3 的类型筛选控件直接写 `typeFilter` 即可。
+ *
+ * （`TypeFilter` 类型定义已下沉到 `components/positionDomain.ts`，本文件顶部做了 re-export。）
  */
-export type TypeFilter = 'all' | 'stock' | 'etf';
 
 /** 类型 → 中文标签（过滤状态提示文案用）*/
 const TYPE_LABEL: Record<Exclude<TypeFilter, 'all'>, string> = {
   stock: '股票',
   etf: 'ETF',
 };
-
-function fmt(n: number | null | undefined, digits = 2): string {
-  if (n === null || n === undefined || Number.isNaN(n)) return '--';
-  return n.toFixed(digits);
-}
-
-function fmtPct(n: number | null | undefined): string {
-  if (n === null || n === undefined || Number.isNaN(n)) return '--';
-  return `${(n * 100).toFixed(2)}%`;
-}
 
 /**
  * 纯 CSS 环形图（G7c 资产组成饼图）
@@ -276,6 +263,11 @@ export default function Dashboard() {
   /** 持仓类型过滤（饼图下钻；卡 3 的「标的类型筛选」复用同一个 state）*/
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
 
+  /** 排序依据（卡 3 · F-D5；PRD §5.3 行 232）*/
+  const [sortKey, setSortKey] = useState<SortKey>('pnl');
+  /** 排序方向（默认按盈亏金额**降序**）*/
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+
   const [signals, setSignals] = useState<Signal[]>([]);
   const [sigLoading, setSigLoading] = useState(false);
   const [sigError, setSigError] = useState<string | null>(null);
@@ -369,6 +361,40 @@ export default function Dashboard() {
   const handleTypeSelect = (type: Exclude<TypeFilter, 'all'>) => {
     setTypeFilter((cur) => (cur === type ? 'all' : type));
   };
+
+  /**
+   * 排序后的持仓列表（卡 3 · F-D5）
+   *
+   * ⚠️ **缺失值（`null`）恒排最后**（无论升降序）——
+   *    「无行情的标的」不该因为排序而冒到最前面抢占视线；
+   *    同值时按代码字典序兜底，保证顺序**确定**（可复现、可断言）。
+   */
+  const sortedPositions = useMemo(() => {
+    const valueOf = (p: Position): number | null => {
+      if (sortKey === 'pnl') return p.unrealizedPnl;
+      if (sortKey === 'yield') return p.unrealizedYield;
+      return p.weight;
+    };
+    const dir = sortDirection === 'desc' ? -1 : 1;
+    return [...filteredPositions].sort((a, b) => {
+      const va = valueOf(a);
+      const vb = valueOf(b);
+      if (va === null && vb === null) return a.asset_code.localeCompare(b.asset_code);
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      if (va === vb) return a.asset_code.localeCompare(b.asset_code);
+      return (va - vb) * dir;
+    });
+  }, [filteredPositions, sortKey, sortDirection]);
+
+  /**
+   * 行业过滤是否可用
+   *
+   * ⚠️ 当前**恒为 false** —— `raw_tdx_blocks_member` 实测 0 行 ⇒ `industry` 恒 `null`
+   *    （裁决 D-4）。控件据此禁用并显示「行业数据源暂不可用」，
+   *    **不许静默失效**。数据源恢复后会自动启用。
+   */
+  const industryAvailable = positions.some((p) => p.industry !== null && p.industry !== undefined);
 
   return (
     <div style={pageContainerStyle}>
@@ -545,83 +571,57 @@ export default function Dashboard() {
           !posError &&
           (activePositions.length === 0 ? (
             <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无持仓</div>
-          ) : filteredPositions.length === 0 ? (
-            <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>当前筛选下无持仓</div>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={tableStyle} aria-label="持仓明细">
-                <thead>
-                  <tr>
-                    <th scope="col" style={thStyle}>
-                      代码
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      现价
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      持仓
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      均价
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      市值
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      浮动盈亏
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      收益率
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      仓位占比
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      已实现
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPositions.map((p) => (
-                    <tr key={p.asset_code}>
-                      <td style={thTdStyle}>
-                        <code>{p.asset_code}</code>
-                        {isEtf(p.asset_code) && (
-                          <span style={{ color: COLORS.success, fontSize: TYPO.captionSize, marginLeft: 4 }}>
-                            ETF
-                          </span>
-                        )}
-                      </td>
-                      <td style={thTdStyle}>{fmt(p.currentPrice)}</td>
-                      <td style={thTdStyle}>{p.totalQuantity}</td>
-                      <td style={thTdStyle}>{fmt(p.avgCost, 4)}</td>
-                      <td style={thTdStyle}>{fmt(p.marketValue)}</td>
-                      <td
-                        style={{
-                          ...thTdStyle,
-                          color: (p.unrealizedPnl ?? 0) >= 0 ? COLORS.success : COLORS.danger,
-                        }}
-                      >
-                        {fmt(p.unrealizedPnl)}
-                      </td>
-                      <td
-                        style={{
-                          ...thTdStyle,
-                          color: (p.unrealizedYield ?? 0) >= 0 ? COLORS.success : COLORS.danger,
-                        }}
-                      >
-                        {fmtPct(p.unrealizedYield)}
-                      </td>
-                      <td style={thTdStyle}>{fmtPct(p.weight)}</td>
-                      <td
-                        style={{ ...thTdStyle, color: p.realizedPnL >= 0 ? COLORS.success : COLORS.danger }}
-                      >
-                        {fmt(p.realizedPnL)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div>
+              {/* 排序 / 过滤工具条（卡 3 · F-D5）—— 过滤后为空时也要留着（否则改不回来）*/}
+              <PositionToolbar
+                sortKey={sortKey}
+                sortDirection={sortDirection}
+                onSortKeyChange={setSortKey}
+                onSortDirectionToggle={() => setSortDirection((cur) => (cur === 'desc' ? 'asc' : 'desc'))}
+                typeFilter={typeFilter}
+                onTypeFilterChange={setTypeFilter}
+                industryAvailable={industryAvailable}
+              />
+              {filteredPositions.length === 0 ? (
+                <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>
+                  当前筛选下无持仓
+                </div>
+              ) : (
+                <>
+                  {/*
+                    持仓卡片网格（卡 3 · F-D2）
+                    ⚠️ **纯 CSS Grid 流体列数**，不用 JS 断点、不用 media query：
+                      `repeat(auto-fill, minmax(min(320px, 100%), 1fr))`
+                    - `min(320px, 100%)` 是关键：`100%` 把轨道宽度**封顶在容器宽度**，
+                      375px 窄屏下轨道不会撑到 320px → **不产生横向溢出**（G3.5）；
+                    - 320px 的下限配合容器实际宽度，天然得到「桌面 3 列 / 平板 2 列 / 手机 1 列」
+                      （页面容器最大 1200px - 内边距 48 - 卡片内边距 32 = 1120px 可用宽
+                      → 1120/320 = 3.5 → 3 列；768px 时 688/320 = 2.15 → 2 列；
+                      375px 时 295/320 < 1 → 1 列）；
+                    - 卡片根节点另带 `min-width: 0`（Grid 子项默认 `min-width: auto`，
+                      内容过宽会撑破轨道）。
+                  */}
+                  <div
+                    data-testid="position-grid"
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))',
+                      gap: SPACING.gapRelaxed,
+                      alignItems: 'start',
+                    }}
+                  >
+                    {sortedPositions.map((p) => (
+                      <PositionCard
+                        key={p.asset_code}
+                        position={p}
+                        assetType={isEtf(p.asset_code) ? 'etf' : 'stock'}
+                        priceDate={posSummary?.priceDate ?? null}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           ))}
       </div>

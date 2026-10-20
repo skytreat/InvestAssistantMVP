@@ -212,14 +212,21 @@ function donutNode(container: HTMLElement): HTMLElement {
   return node;
 }
 
-/** 持仓明细表 */
+/**
+ * 持仓明细区
+ *
+ * ⚠️ **卡 3（F-D2）起持仓区已从 `<table>` 改为卡片网格** ——
+ *    本 helper 只改「定位哪个 DOM 节点」，**断言强度与语义完全不变**
+ *    （仍是「当前渲染出来的标的代码，按渲染顺序」）。
+ *    `<table aria-label="持仓明细">` 已按 F-D2 移除（卡 3 A1 断言页面内 table 数 3 → 2）。
+ */
 function holdingsTable(): HTMLElement {
-  const table = document.querySelector<HTMLElement>('table[aria-label="持仓明细"]');
-  if (!table) throw new Error('未找到持仓明细表');
+  const table = document.querySelector<HTMLElement>('[data-testid="position-grid"]');
+  if (!table) throw new Error('未找到持仓卡片区');
   return table;
 }
 
-/** 持仓明细表里当前渲染出来的标的代码*/
+/** 持仓明细区里当前渲染出来的标的代码*/
 function holdingCodes(): string[] {
   return Array.from(holdingsTable().querySelectorAll('code')).map((el) => el.textContent ?? '');
 }
