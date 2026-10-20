@@ -217,7 +217,18 @@ node scripts/probe-overflow.mjs --api-base-url http://127.0.0.1:8081 --username 
 
 ---
 
-## 9. 验证汇总
+## 9. CI 实跑记录
+
+**PR**：#21 `feat(Wave 3): Dashboard 重写 —— T67 + G3.4/G3.5 门禁基建（G3 PASS）`
+
+| Run | run id | Stage 2 | build-and-test | 结论 |
+|---|---|---|---|---|
+| #1 | `39442686955` | pass (1m2s) | pass (3m39s) | ✅ success |
+| #2 | 见 commit | | | |
+
+---
+
+## 10. 验证汇总
 
 | 检查 | 结果 |
 |---|---|
