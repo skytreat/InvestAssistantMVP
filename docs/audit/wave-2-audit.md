@@ -270,10 +270,12 @@ run 状态: completed / success
 
 ### G2.6 —— CI 连续 2 次全绿
 
-| Run | run id | Stage 2 | build-and-test | 结论 |
-|---|---|---|---|---|
-| #1 | `39387094403` | pass (1m4s) | pass (3m9s) | ✅ success |
-| #2 | 见下 | | | |
+| Run | run id | head commit | Stage 2 | build-and-test | 结论 |
+|---|---|---|---|---|---|
+| #1 | `39387094403` | `2105462` | pass (1m4s) | pass (3m9s) | ✅ success |
+| #2 | `39388116510` | `ff6d6a3` | pass | pass | ✅ success |
+
+**G2.6 PASS** —— 两次独立 run 全部 `success`。
 
 > G2.6 的「连续 2 次」用**同一 PR 的两次独立 run** 达成（第二次由本波新增的 plan 状态标记 commit 触发）——
 > 这也顺带验证了 CI 的**可重复性**（同一代码在不同 run 上结果一致）。
