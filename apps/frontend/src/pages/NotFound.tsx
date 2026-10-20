@@ -1,5 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { COLORS, RADIUS, TYPO } from '../theme/tokens';
 
 /**
  * 404 页面（未知路由）
@@ -26,9 +27,9 @@ export default function NotFound() {
   const location = useLocation();
 
   const cardStyle: React.CSSProperties = {
-    border: '1px solid #e5e7eb',
-    borderRadius: 8,
-    background: '#fff',
+    border: `1px solid ${COLORS.borderLight}`,
+    borderRadius: RADIUS.md,
+    background: COLORS.cardBg,
     padding: '32px 24px',
     maxWidth: 560,
     margin: '48px auto',
@@ -39,20 +40,20 @@ export default function NotFound() {
     display: 'inline-block',
     padding: '8px 16px',
     margin: '4px',
-    color: '#1e40af',
+    color: COLORS.brandLink,
     textDecoration: 'none',
-    border: '1px solid #e5e7eb',
-    borderRadius: 4,
+    border: `1px solid ${COLORS.borderLight}`,
+    borderRadius: RADIUS.sm,
   };
 
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div style={{ fontFamily: TYPO.fontFamily }}>
       <h1 style={{ margin: '0 0 16px 0' }}>页面不存在</h1>
       <div style={cardStyle}>
-        <p style={{ margin: '0 0 8px 0', fontSize: 14, color: '#666' }}>
-          找不到路径 <code style={{ color: '#dc2626' }}>{location.pathname}</code>
+        <p style={{ margin: '0 0 8px 0', fontSize: TYPO.bodySize, color: COLORS.textTertiary }}>
+          找不到路径 <code style={{ color: COLORS.danger }}>{location.pathname}</code>
         </p>
-        <p style={{ margin: '0 0 20px 0', fontSize: 13, color: '#888' }}>
+        <p style={{ margin: '0 0 20px 0', fontSize: TYPO.smallSize, color: COLORS.textFaint }}>
           该地址不存在，或对应功能尚未上线。可以从下面的入口继续：
         </p>
         <div>

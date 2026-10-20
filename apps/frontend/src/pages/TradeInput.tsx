@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -133,11 +134,11 @@ function SymbolAutocomplete({ value, onChange }: { value: string; onChange: (val
             margin: 0,
             padding: 0,
             listStyle: 'none',
-            border: '1px solid #d1d5db',
-            borderRadius: 4,
+            border: `1px solid ${COLORS.borderMedium}`,
+            borderRadius: RADIUS.sm,
             marginTop: 2,
-            background: '#fff',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+            background: COLORS.cardBg,
+            boxShadow: `0 4px 12px ${COLORS.shadowSoft}`,
             zIndex: 100,
             maxHeight: 240,
             overflowY: 'auto',
@@ -151,14 +152,14 @@ function SymbolAutocomplete({ value, onChange }: { value: string; onChange: (val
               style={{
                 padding: '6px 10px',
                 cursor: 'pointer',
-                fontSize: 14,
-                background: idx === highlightIdx ? '#eff6ff' : '#fff',
+                fontSize: TYPO.bodySize,
+                background: idx === highlightIdx ? COLORS.brandBg : COLORS.cardBg,
                 display: 'flex',
                 justifyContent: 'space-between',
               }}
             >
-              <span style={{ fontFamily: 'monospace', color: '#1e40af' }}>{opt.symbol}</span>
-              <span style={{ color: '#6b7280' }}>{opt.name}</span>
+              <span style={{ fontFamily: TYPO.monoFamily, color: COLORS.brandLink }}>{opt.symbol}</span>
+              <span style={{ color: COLORS.neutral }}>{opt.name}</span>
             </li>
           ))}
         </ul>
@@ -171,11 +172,11 @@ function SymbolAutocomplete({ value, onChange }: { value: string; onChange: (val
             left: 0,
             right: 0,
             padding: '8px 10px',
-            fontSize: 13,
-            color: '#6b7280',
-            background: '#fff',
-            border: '1px solid #d1d5db',
-            borderRadius: 4,
+            fontSize: TYPO.smallSize,
+            color: COLORS.neutral,
+            background: COLORS.cardBg,
+            border: `1px solid ${COLORS.borderMedium}`,
+            borderRadius: RADIUS.sm,
             marginTop: 2,
             zIndex: 100,
           }}
@@ -339,7 +340,7 @@ export default function TradeInput() {
             />
           </div>
 
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 12, marginTop: SPACING.gapRelaxed }}>
             <button type="submit" style={buttonStyle} disabled={loading}>
               {loading ? '提交中...' : '提交交易'}
             </button>

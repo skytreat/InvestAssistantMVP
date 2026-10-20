@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
+import { SPACING } from '../theme/tokens';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -76,7 +77,7 @@ export default function Login() {
               required
             />
           </div>
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 12, marginTop: SPACING.gapRelaxed }}>
             <button type="submit" style={buttonStyle} disabled={loading}>
               {loading ? '登录中...' : '登录'}
             </button>

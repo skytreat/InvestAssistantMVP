@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -154,11 +155,11 @@ export default function Settings() {
       <div key={f.key} style={{ marginBottom: 12 }}>
         <label style={{ ...labelStyle, display: 'block', minWidth: 0, marginBottom: 4 }}>
           {f.label}
-          {f.required && <span style={{ color: '#dc2626' }}> *</span>}
-          {f.unit && <span style={{ color: '#6b7280', fontSize: 12 }}>（{f.unit}）</span>}
+          {f.required && <span style={{ color: COLORS.danger }}> *</span>}
+          {f.unit && <span style={{ color: COLORS.neutral, fontSize: 12 }}>（{f.unit}）</span>}
         </label>
         {f.type === 'boolean' && (
-          <label style={{ fontSize: 14 }}>
+          <label style={{ fontSize: TYPO.bodySize }}>
             <input type="checkbox" checked={Boolean(value)} onChange={(e) => set(e.target.checked)} />{' '}
             启用该选项
           </label>
@@ -195,11 +196,13 @@ export default function Settings() {
           />
         )}
         {(f.min !== undefined || f.max !== undefined) && (
-          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: 2 }}>
             允许范围：{f.min ?? '-∞'} ~ {f.max ?? '+∞'}
           </div>
         )}
-        {f.description && <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{f.description}</div>}
+        {f.description && (
+          <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: 2 }}>{f.description}</div>
+        )}
       </div>
     );
   };
@@ -215,22 +218,22 @@ export default function Settings() {
         <div style={cardTitleStyle}>策略插件</div>
         {loading && <div>加载中...</div>}
         {!loading && plugins.length === 0 && (
-          <div style={{ color: '#6b7280', padding: 16 }}>暂无可用插件</div>
+          <div style={{ color: COLORS.neutral, padding: 16 }}>暂无可用插件</div>
         )}
         {!loading &&
           plugins.map((p) => (
             <div
               key={p.id}
               style={{
-                border: '1px solid #e5e7eb',
-                borderRadius: 6,
+                border: `1px solid ${COLORS.borderLight}`,
+                borderRadius: RADIUS.base,
                 padding: 12,
                 marginBottom: 12,
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                 <div style={{ flex: 1, minWidth: 180 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>
+                  <div style={{ fontWeight: TYPO.cardTitleWeight, fontSize: 15 }}>
                     {p.name}
                     <span
                       style={{
@@ -238,17 +241,20 @@ export default function Settings() {
                         fontSize: 12,
                         padding: '1px 6px',
                         borderRadius: 10,
-                        background: p.category === 'monitor' ? '#dbeafe' : '#ede9fe',
-                        color: p.category === 'monitor' ? '#1e40af' : '#5b21b6',
+                        background:
+                          p.category === 'monitor' ? COLORS.bgSelectedPrimary : COLORS.bgSelectedPurple,
+                        color: p.category === 'monitor' ? COLORS.brandLink : COLORS.textSelectedPurple,
                       }}
                     >
                       {CATEGORY_LABEL[p.category] ?? p.category}
                     </span>
                   </div>
                   {p.description && (
-                    <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>{p.description}</div>
+                    <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: 2 }}>
+                      {p.description}
+                    </div>
                   )}
-                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>
                     <code>{p.id}</code>
                   </div>
                 </div>
@@ -266,16 +272,22 @@ export default function Settings() {
               </div>
 
               {expanded === p.id && (
-                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
+                <div
+                  style={{
+                    marginTop: 12,
+                    paddingTop: 12,
+                    borderTop: `1px solid ${COLORS.borderSubtle}`,
+                  }}
+                >
                   {/* T85b ①：runtimeInjected 的参数（如 symbol）由后端运行时注入，
                     不该作为用户可配置项出现在表单里 */}
                   {(p.paramSchema ?? []).filter((f) => !f.runtimeInjected).map((f) => renderField(p, f))}
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: SPACING.gapBase }}>
                     <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
                       {saving === p.id ? '保存中...' : '保存'}
                     </button>
                     <button
-                      style={{ ...buttonStyle, background: '#6b7280' }}
+                      style={{ ...buttonStyle, background: COLORS.neutral }}
                       onClick={() => setExpanded(null)}
                     >
                       取消
@@ -289,11 +301,13 @@ export default function Settings() {
 
       <div style={cardStyle}>
         <div style={cardTitleStyle}>关于</div>
-        <div style={{ fontSize: 14, lineHeight: 1.9, color: '#374151' }}>
+        <div style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}>
           <div>InvestAssistant MVP — 个人股票管理 + 策略信号系统</div>
           <div>行情数据：通达信本地日线（DuckDB 行情层，只读）</div>
           <div>数据校验：每日 C1-C12 三层防线，WARN 自动补跑</div>
-          <div style={{ color: '#92400e', marginTop: 8 }}>本工具不构成投资建议，所有数据仅供参考</div>
+          <div style={{ color: COLORS.textDisclaimer, marginTop: 8 }}>
+            本工具不构成投资建议，所有数据仅供参考
+          </div>
         </div>
       </div>
     </div>

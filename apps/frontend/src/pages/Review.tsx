@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -99,7 +100,11 @@ export function bucketByPeriod(rows: HistoryPoint[], period: CurvePeriod): Histo
 /** 纯 SVG 收益曲线（不引第三方图表库） */
 function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Caliber }) {
   if (points.length === 0) {
-    return <div style={{ color: '#9ca3af', fontSize: 13 }}>暂无历史快照（每天 17:02 自动写入）</div>;
+    return (
+      <div style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize }}>
+        暂无历史快照（每天 17:02 自动写入）
+      </div>
+    );
   }
   const W = 640;
   const H = 180;
@@ -120,19 +125,19 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
   const path = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
   const zeroY = y(0);
   const last = values[values.length - 1];
-  const color = last >= 0 ? '#16a34a' : '#dc2626';
+  const color = last >= 0 ? COLORS.success : COLORS.danger;
 
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, height: 'auto' }}>
-        <rect x={0} y={0} width={W} height={H} fill="#f9fafb" rx={4} />
+        <rect x={0} y={0} width={W} height={H} fill={COLORS.headerBg} rx={4} />
         {/* 零轴 */}
         <line
           x1={PAD.left}
           y1={zeroY}
           x2={W - PAD.right}
           y2={zeroY}
-          stroke="#9ca3af"
+          stroke={COLORS.textMuted}
           strokeWidth={1}
           strokeDasharray="4 4"
         />
@@ -147,24 +152,24 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
         {/* 端点 */}
         <circle cx={x(values.length - 1)} cy={y(last)} r={3.5} fill={color} />
         {/* y 轴刻度 */}
-        <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill="#6b7280">
+        <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill={COLORS.neutral}>
           {max.toFixed(1)}%
         </text>
-        <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill="#6b7280">
+        <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill={COLORS.neutral}>
           0%
         </text>
-        <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill="#6b7280">
+        <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill={COLORS.neutral}>
           {min.toFixed(1)}%
         </text>
         {/* x 轴首尾日期 */}
-        <text x={PAD.left} y={H - 6} fontSize={10} fill="#6b7280">
+        <text x={PAD.left} y={H - 6} fontSize={10} fill={COLORS.neutral}>
           {points[0].trade_date}
         </text>
-        <text x={W - PAD.right} y={H - 6} fontSize={10} fill="#6b7280" textAnchor="end">
+        <text x={W - PAD.right} y={H - 6} fontSize={10} fill={COLORS.neutral} textAnchor="end">
           {points[points.length - 1].trade_date}
         </text>
       </svg>
-      <div style={{ fontSize: 13, marginTop: 4, color }}>
+      <div style={{ fontSize: TYPO.smallSize, marginTop: SPACING.gapTight, color }}>
         期末收益率 {last.toFixed(2)}%（{CALIBER_LABEL[caliber]}）
       </div>
     </div>
@@ -314,7 +319,7 @@ export default function Review() {
       <h1 style={titleStyle}>交易复盘</h1>
 
       {/* T38 ① 顶部双口径 Tab（PRD §5.5 / Requirements §5.4） */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: SPACING.gapBase, marginBottom: 20, flexWrap: 'wrap' }}>
         {(
           [
             ['price', '价格口径'],
@@ -326,15 +331,17 @@ export default function Review() {
             onClick={() => setCaliber(k)}
             style={{
               ...buttonStyle,
-              background: caliber === k ? '#2563eb' : '#fff',
-              color: caliber === k ? '#fff' : '#374151',
-              border: '1px solid #d1d5db',
+              background: caliber === k ? COLORS.brand : COLORS.cardBg,
+              color: caliber === k ? COLORS.cardBg : COLORS.textSecondary,
+              border: `1px solid ${COLORS.borderMedium}`,
             }}
           >
             {label}
           </button>
         ))}
-        <span style={{ fontSize: 13, color: '#6b7280', alignSelf: 'center' }}>{CALIBER_LABEL[caliber]}</span>
+        <span style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, alignSelf: 'center' }}>
+          {CALIBER_LABEL[caliber]}
+        </span>
       </div>
 
       {/* R2/R4 收益曲线（月度/季度/年度） */}
@@ -354,12 +361,12 @@ export default function Review() {
                 onClick={() => setCurvePeriod(k)}
                 style={{
                   padding: '3px 12px',
-                  fontSize: 13,
+                  fontSize: TYPO.smallSize,
                   cursor: 'pointer',
-                  border: `1px solid ${curvePeriod === k ? '#2563eb' : '#d1d5db'}`,
-                  borderRadius: 4,
-                  background: curvePeriod === k ? '#2563eb' : '#fff',
-                  color: curvePeriod === k ? '#fff' : '#374151',
+                  border: `1px solid ${curvePeriod === k ? COLORS.brand : COLORS.borderMedium}`,
+                  borderRadius: RADIUS.sm,
+                  background: curvePeriod === k ? COLORS.brand : COLORS.cardBg,
+                  color: curvePeriod === k ? COLORS.cardBg : COLORS.textSecondary,
                 }}
               >
                 {label}
@@ -368,39 +375,50 @@ export default function Review() {
           </div>
         </div>
         {historyLoading ? (
-          <div style={{ fontSize: 13, color: '#6b7280' }}>加载中...</div>
+          <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>加载中...</div>
         ) : (
           <YieldCurve points={curvePoints} caliber={caliber} />
         )}
       </div>
 
       {/* 统计卡片 */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24 }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: SPACING.gapRelaxed,
+          flexWrap: 'wrap',
+          marginBottom: SPACING.gapLoose,
+        }}
+      >
         {[
-          { label: '总交易数', value: String(stats?.totalTrades ?? 0), color: '#1e40af' },
-          { label: '已复盘', value: String(stats?.reviewedCount ?? 0), color: '#16a34a' },
-          { label: '胜率', value: stats?.winRate != null ? `${stats.winRate}%` : '--', color: '#7c3aed' },
+          { label: '总交易数', value: String(stats?.totalTrades ?? 0), color: COLORS.brandLink },
+          { label: '已复盘', value: String(stats?.reviewedCount ?? 0), color: COLORS.success },
+          {
+            label: '胜率',
+            value: stats?.winRate != null ? `${stats.winRate}%` : '--',
+            color: COLORS.accentPurple,
+          },
           {
             label: '盈亏比',
             value: stats?.profitLossRatio != null ? `${stats.profitLossRatio}` : '--',
-            color: '#dc2626',
+            color: COLORS.danger,
           },
           {
             label: '已实现盈亏',
             value: stats
               ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
               : '--',
-            color: (stats?.totalRealizedPnl ?? 0) >= 0 ? '#16a34a' : '#dc2626',
+            color: (stats?.totalRealizedPnl ?? 0) >= 0 ? COLORS.success : COLORS.danger,
           },
         ].map((card) => (
           <div key={card.label} style={{ ...cardStyle, flex: '1 1 140px', textAlign: 'center' }}>
             <div style={{ fontSize: 28, fontWeight: 'bold', color: card.color }}>{card.value}</div>
-            <div style={{ fontSize: 13, color: '#6b7280' }}>{card.label}</div>
+            <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>{card.label}</div>
           </div>
         ))}
       </div>
       {stats && (
-        <div style={{ fontSize: 13, color: '#6b7280', marginTop: -12, marginBottom: 20 }}>
+        <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: -12, marginBottom: 20 }}>
           平仓 {stats.closedCount} 笔（盈利 {stats.winCount} / 亏损 {stats.lossCount}）
           {stats.avgWin != null && ` · 平均盈利 ${stats.avgWin.toFixed(2)}`}
           {stats.avgLoss != null && ` · 平均亏损 ${stats.avgLoss.toFixed(2)}`}
@@ -409,7 +427,7 @@ export default function Review() {
 
       {/* 筛选栏 */}
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 14 }}>交易类型：</label>
+        <label style={{ fontSize: TYPO.bodySize }}>交易类型：</label>
         <select style={inputStyle} value={tradeType} onChange={(e) => setTradeType(e.target.value)}>
           <option value="">全部</option>
           {['buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].map((t) => (
@@ -418,19 +436,19 @@ export default function Review() {
             </option>
           ))}
         </select>
-        <label style={{ fontSize: 14 }}>系统信号：</label>
+        <label style={{ fontSize: TYPO.bodySize }}>系统信号：</label>
         <select style={inputStyle} value={systemFollowed} onChange={(e) => setSystemFollowed(e.target.value)}>
           <option value="">全部</option>
           <option value="1">是</option>
           <option value="0">否</option>
         </select>
-        <label style={{ fontSize: 14 }}>符合策略：</label>
+        <label style={{ fontSize: TYPO.bodySize }}>符合策略：</label>
         <select style={inputStyle} value={strategyMatch} onChange={(e) => setStrategyMatch(e.target.value)}>
           <option value="">全部</option>
           <option value="1">是</option>
           <option value="0">否</option>
         </select>
-        <label style={{ fontSize: 14 }}>止损：</label>
+        <label style={{ fontSize: TYPO.bodySize }}>止损：</label>
         <select style={inputStyle} value={isStopLoss} onChange={(e) => setIsStopLoss(e.target.value)}>
           <option value="">全部</option>
           <option value="1">是</option>
@@ -448,7 +466,7 @@ export default function Review() {
         {loading ? (
           <div>加载中...</div>
         ) : trades.length === 0 ? (
-          <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>暂无交易记录</div>
+          <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无交易记录</div>
         ) : (
           <table style={tableStyle}>
             <thead>
@@ -474,7 +492,12 @@ export default function Review() {
                     <code>{t.asset_code}</code>
                   </td>
                   <td style={thTdStyle}>
-                    <span style={{ color: t.trade_type === 'buy' ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                    <span
+                      style={{
+                        color: t.trade_type === 'buy' ? COLORS.success : COLORS.danger,
+                        fontWeight: TYPO.cardTitleWeight,
+                      }}
+                    >
                       {TRADE_TYPE_LABEL[t.trade_type] ?? t.trade_type}
                     </span>
                   </td>
@@ -483,36 +506,36 @@ export default function Review() {
                   <td style={thTdStyle}>{t.trade_reason ?? '-'}</td>
                   <td style={thTdStyle}>
                     {t.review_summary ? (
-                      <span style={{ color: '#16a34a' }}>✓</span>
+                      <span style={{ color: COLORS.success }}>✓</span>
                     ) : (
-                      <span style={{ color: '#9ca3af' }}>—</span>
+                      <span style={{ color: COLORS.textMuted }}>—</span>
                     )}
                   </td>
                   <td style={thTdStyle}>
                     {t.strategy_match === 1 ? (
-                      <span style={{ color: '#16a34a' }}>是</span>
+                      <span style={{ color: COLORS.success }}>是</span>
                     ) : t.strategy_match === 0 ? (
-                      <span style={{ color: '#dc2626' }}>否</span>
+                      <span style={{ color: COLORS.danger }}>否</span>
                     ) : (
-                      <span style={{ color: '#9ca3af' }}>未标记</span>
+                      <span style={{ color: COLORS.textMuted }}>未标记</span>
                     )}
                   </td>
                   <td style={thTdStyle}>
                     {t.is_stop_loss === 1 ? (
-                      <span style={{ color: '#dc2626' }}>是</span>
+                      <span style={{ color: COLORS.danger }}>是</span>
                     ) : t.is_stop_loss === 0 ? (
-                      <span style={{ color: '#16a34a' }}>否</span>
+                      <span style={{ color: COLORS.success }}>否</span>
                     ) : (
-                      <span style={{ color: '#9ca3af' }}>未标记</span>
+                      <span style={{ color: COLORS.textMuted }}>未标记</span>
                     )}
                   </td>
                   <td style={thTdStyle}>
                     {t.is_auto_import === 1 ? (
-                      <span style={{ color: '#16a34a' }}>系统导入</span>
+                      <span style={{ color: COLORS.success }}>系统导入</span>
                     ) : t.system_followed === 1 ? (
-                      <span style={{ color: '#3b82f6' }}>系统信号</span>
+                      <span style={{ color: COLORS.info }}>系统信号</span>
                     ) : (
-                      <span style={{ color: '#6b7280' }}>手动</span>
+                      <span style={{ color: COLORS.neutral }}>手动</span>
                     )}
                   </td>
                   <td style={thTdStyle}>
@@ -523,7 +546,12 @@ export default function Review() {
                       编辑复盘
                     </button>
                     <button
-                      style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', background: '#dc2626' }}
+                      style={{
+                        ...buttonStyle,
+                        fontSize: 12,
+                        padding: '2px 8px',
+                        background: COLORS.danger,
+                      }}
                       onClick={() => handleDelete(t.id)}
                     >
                       删除
@@ -541,7 +569,7 @@ export default function Review() {
             <button style={buttonStyle} disabled={page <= 1} onClick={() => fetchTrades(page - 1)}>
               上一页
             </button>
-            <span style={{ fontSize: 14 }}>
+            <span style={{ fontSize: TYPO.bodySize }}>
               第 {page} / {totalPages} 页，共 {total} 条
             </span>
             <button style={buttonStyle} disabled={page >= totalPages} onClick={() => fetchTrades(page + 1)}>
@@ -557,7 +585,7 @@ export default function Review() {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: COLORS.maskOverlay,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -570,17 +598,19 @@ export default function Review() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
-                <label style={{ fontSize: 13, color: '#374151' }}>复盘总结</label>
+                <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>复盘总结</label>
                 <textarea
                   style={{ ...inputStyle, width: '100%', marginTop: 4, minHeight: 60, resize: 'vertical' }}
                   value={editForm.review_summary}
                   onChange={(e) => setEditForm((f) => ({ ...f, review_summary: e.target.value }))}
                 />
               </div>
-              <div style={{ display: 'flex', gap: 16 }}>
+              <div style={{ display: 'flex', gap: SPACING.gapRelaxed }}>
                 <div>
-                  <label style={{ fontSize: 13, color: '#374151' }}>是否符合策略</label>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                  <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+                    是否符合策略
+                  </label>
+                  <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}>
                     {(
                       [
                         ['', '未标记'],
@@ -592,8 +622,9 @@ export default function Review() {
                         key={v}
                         style={{
                           ...inputStyle,
-                          background: editForm.strategy_match === v ? '#dbeafe' : '#fff',
-                          border: '1px solid #93c5fd',
+                          background:
+                            editForm.strategy_match === v ? COLORS.bgSelectedPrimary : COLORS.cardBg,
+                          border: `1px solid ${COLORS.borderSelectedPrimary}`,
                         }}
                         onClick={() => setEditForm((f) => ({ ...f, strategy_match: v as TriState }))}
                       >
@@ -603,8 +634,8 @@ export default function Review() {
                   </div>
                 </div>
                 <div>
-                  <label style={{ fontSize: 13, color: '#374151' }}>是否止损</label>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                  <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>是否止损</label>
+                  <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}>
                     {(
                       [
                         ['', '未标记'],
@@ -616,8 +647,8 @@ export default function Review() {
                         key={v}
                         style={{
                           ...inputStyle,
-                          background: editForm.is_stop_loss === v ? '#fee2e2' : '#fff',
-                          border: '1px solid #fca5a5',
+                          background: editForm.is_stop_loss === v ? COLORS.bgSelectedDanger : COLORS.cardBg,
+                          border: `1px solid ${COLORS.borderSelectedDanger}`,
                         }}
                         onClick={() => setEditForm((f) => ({ ...f, is_stop_loss: v as TriState }))}
                       >
@@ -628,7 +659,7 @@ export default function Review() {
                 </div>
               </div>
               <div>
-                <label style={{ fontSize: 13, color: '#374151' }}>备注</label>
+                <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>备注</label>
                 <input
                   style={{ ...inputStyle, width: '100%', marginTop: 4 }}
                   value={editForm.remark}
@@ -636,11 +667,14 @@ export default function Review() {
                 />
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 16 }}>
               <button style={buttonStyle} onClick={saveEdit}>
                 保存
               </button>
-              <button style={{ ...buttonStyle, background: '#6b7280' }} onClick={() => setEditingTrade(null)}>
+              <button
+                style={{ ...buttonStyle, background: COLORS.neutral }}
+                onClick={() => setEditingTrade(null)}
+              >
                 取消
               </button>
             </div>

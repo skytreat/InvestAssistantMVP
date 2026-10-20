@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
+import { COLORS, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -81,7 +82,7 @@ export default function Signals() {
       <h1 style={titleStyle}>策略信号</h1>
 
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 14, color: '#374151' }}>交易日期</label>
+        <label style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>交易日期</label>
         <input
           style={inputStyle}
           type="date"
@@ -89,7 +90,7 @@ export default function Signals() {
           onChange={(e) => setTradeDate(e.target.value)}
         />
 
-        <label style={{ fontSize: 14, color: '#374151' }}>策略名称</label>
+        <label style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>策略名称</label>
         <input
           style={inputStyle}
           type="text"
@@ -98,7 +99,7 @@ export default function Signals() {
           onChange={(e) => setPluginId(e.target.value)}
         />
 
-        <label style={{ fontSize: 14, color: '#374151' }}>方向</label>
+        <label style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>方向</label>
         <select style={inputStyle} value={direction} onChange={(e) => setDirection(e.target.value)}>
           <option value="">全部</option>
           <option value="hold">持仓</option>
@@ -112,9 +113,9 @@ export default function Signals() {
       </div>
 
       <div style={cardStyle}>
-        {error && <div style={{ color: '#dc2626', marginBottom: 12 }}>{error}</div>}
+        {error && <div style={{ color: COLORS.danger, marginBottom: 12 }}>{error}</div>}
         {rows.length === 0 && !loading && !error && (
-          <div style={{ color: '#6b7280' }}>请点击查询按钮加载数据</div>
+          <div style={{ color: COLORS.neutral }}>请点击查询按钮加载数据</div>
         )}
         {rows.length > 0 && (
           <table style={tableStyle}>

@@ -1,0 +1,42 @@
+/**
+ * 全局样式（T62）
+ *
+ * 依据 `docs/client/ui-spec.md` §5 架构决策第 2 条：
+ * 「允许引一个轻量 CSS 文件（global.css）定义 :focus-visible、body 背景、
+ *   html/body margin 重置 —— 这些 inline style 表达不了」。
+ *
+ * ⚠️ 本文件**只放全局 reset + 焦点环**，不含任何页面级样式。
+ *    语义化改造（header/main/footer、label htmlFor、th scope、aria-current、
+ *    导航激活态等）归 **T63**，不要在这里做，避免两个任务互相覆盖。
+ *
+ * 数值来源：`docs/client/ui-spec.md` §1（对应 `src/theme/tokens.ts` 的
+ * `COLORS.pageBg` / `COLORS.brand` / `COLORS.borderFocus` / `TYPO.fontFamily`）。
+ * CSS 文件里不能用 TS 常量，故此处照抄同值字面量。
+ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #f8fafc; /* COLORS.pageBg */
+  font-family:
+    'Noto Sans SC',
+    'PingFang SC',
+    system-ui,
+    -apple-system,
+    sans-serif; /* TYPO.fontFamily */
+}
+
+/* 全局焦点环（ui-spec §4：Focus 样式完全缺失 → 全局 :focus-visible） */
+:focus-visible {
+  outline: 2px solid #2563eb; /* COLORS.brand / COLORS.borderFocus */
+  outline-offset: 2px;
+}
+
+/* 鼠标点击等「非键盘」焦点不显示焦点环 */
+:focus:not(:focus-visible) {
+  outline: none;
+}

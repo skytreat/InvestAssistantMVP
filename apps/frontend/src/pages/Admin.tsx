@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage, extractErrorMessageOrString } from '../api/errors';
 import { useUserStore } from '../store/user';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
   cardStyle,
@@ -46,11 +47,11 @@ interface RerunResult {
 }
 
 const RESULT_COLOR: Record<string, string> = {
-  SUCCESS: '#16a34a',
-  WARN: '#d97706',
-  ERROR: '#dc2626',
-  SKIP: '#9ca3af',
-  INFO: '#3b82f6',
+  SUCCESS: COLORS.success,
+  WARN: COLORS.warning,
+  ERROR: COLORS.danger,
+  SKIP: COLORS.textMuted,
+  INFO: COLORS.info,
 };
 
 const LOG_TYPE_LABEL: Record<string, string> = {
@@ -98,7 +99,7 @@ export default function Admin() {
     return (
       <div style={pageContainerStyle}>
         <h1 style={titleStyle}>管理员面板</h1>
-        <div style={{ ...cardStyle, color: '#dc2626' }}>无权限</div>
+        <div style={{ ...cardStyle, color: COLORS.danger }}>无权限</div>
       </div>
     );
   }
@@ -230,30 +231,30 @@ export default function Admin() {
       <div style={cardStyle}>
         <div style={cardTitleStyle}>数据校验结果（C1-C12）— 点击卡片查看详情</div>
         {checkSummaries.length === 0 ? (
-          <div style={{ color: '#6b7280', padding: 12 }}>暂无校验记录</div>
+          <div style={{ color: COLORS.neutral, padding: 12 }}>暂无校验记录</div>
         ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: SPACING.gapBase }}>
             {checkSummaries.map((s) => (
               <div key={s.checkId} style={{ minWidth: 90 }}>
                 <div
                   onClick={() => setExpandedCheck(expandedCheck === s.checkId ? null : s.checkId)}
                   style={{
                     padding: '6px 12px',
-                    borderRadius: 6,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    background: RESULT_COLOR[s.result] ?? '#e5e7eb',
-                    color: '#fff',
+                    borderRadius: RADIUS.base,
+                    fontSize: TYPO.smallSize,
+                    fontWeight: TYPO.cardTitleWeight,
+                    background: RESULT_COLOR[s.result] ?? COLORS.borderLight,
+                    color: COLORS.cardBg,
                     minWidth: 80,
                     textAlign: 'center',
                     cursor: 'pointer',
-                    outline: expandedCheck === s.checkId ? '2px solid #1e40af' : 'none',
+                    outline: expandedCheck === s.checkId ? `2px solid ${COLORS.brandLink}` : 'none',
                   }}
                   title={s.message}
                 >
                   {s.checkId}
                   <br />
-                  <span style={{ fontSize: 11 }}>{s.result}</span>
+                  <span style={{ fontSize: TYPO.captionSize }}>{s.result}</span>
                 </div>
                 {expandedCheck === s.checkId && (
                   <div
@@ -262,10 +263,10 @@ export default function Admin() {
                       padding: 8,
                       fontSize: 12,
                       lineHeight: 1.6,
-                      background: '#f9fafb',
-                      border: '1px solid #e5e7eb',
-                      borderRadius: 4,
-                      color: '#374151',
+                      background: COLORS.headerBg,
+                      border: `1px solid ${COLORS.borderLight}`,
+                      borderRadius: RADIUS.sm,
+                      color: COLORS.textSecondary,
                       maxWidth: 320,
                       wordBreak: 'break-all',
                     }}
@@ -279,8 +280,8 @@ export default function Admin() {
                         style={{
                           margin: 0,
                           whiteSpace: 'pre-wrap',
-                          fontSize: 11,
-                          color: '#4b5563',
+                          fontSize: TYPO.captionSize,
+                          color: COLORS.textSecondary,
                           maxHeight: 180,
                           overflow: 'auto',
                         }}
@@ -298,14 +299,14 @@ export default function Admin() {
 
       <div style={cardStyle}>
         <div style={cardTitleStyle}>行情更新补跑（Requirements §5.1 管理员手动补跑）</div>
-        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 8 }}>
+        <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginBottom: 8 }}>
           WARN / ERROR 会在 17:01 校验后自动补跑；此处为手动通道。
         </div>
         <button style={buttonStyle} onClick={handleRerun} disabled={rerunLoading}>
           {rerunLoading ? '补跑中...' : '立即补跑行情更新'}
         </button>
-        {rerunMsg && <div style={{ color: '#16a34a', marginTop: 8 }}>{rerunMsg}</div>}
-        {rerunErr && <div style={{ color: '#dc2626', marginTop: 8 }}>{rerunErr}</div>}
+        {rerunMsg && <div style={{ color: COLORS.success, marginTop: SPACING.gapBase }}>{rerunMsg}</div>}
+        {rerunErr && <div style={{ color: COLORS.danger, marginTop: SPACING.gapBase }}>{rerunErr}</div>}
       </div>
 
       <div style={cardStyle}>
@@ -313,9 +314,11 @@ export default function Admin() {
         <button style={buttonStyle} onClick={handleRunDatacheck} disabled={datacheckLoading}>
           {datacheckLoading ? '执行中...' : '执行数据校验'}
         </button>
-        {datacheckError && <div style={{ color: '#dc2626', marginTop: 8 }}>{datacheckError}</div>}
+        {datacheckError && (
+          <div style={{ color: COLORS.danger, marginTop: SPACING.gapBase }}>{datacheckError}</div>
+        )}
         {datacheckResult && (
-          <div style={{ marginTop: 8, color: '#16a34a' }}>
+          <div style={{ marginTop: SPACING.gapBase, color: COLORS.success }}>
             校验完成：summaries 数量 = {datacheckResult.summaries?.length ?? '-'}
           </div>
         )}
@@ -326,12 +329,12 @@ export default function Admin() {
         <button style={buttonStyle} onClick={handleRunSignal} disabled={signalLoading}>
           {signalLoading ? '执行中...' : '执行信号生成'}
         </button>
-        {signalError && <div style={{ color: '#dc2626', marginTop: 8 }}>{signalError}</div>}
+        {signalError && <div style={{ color: COLORS.danger, marginTop: SPACING.gapBase }}>{signalError}</div>}
         {signalResult &&
           (() => {
             const stats: SignalRunStats = signalResult.stats ?? {};
             return (
-              <div style={{ marginTop: 8, color: '#16a34a' }}>
+              <div style={{ marginTop: SPACING.gapBase, color: COLORS.success }}>
                 生成完成：total={stats.total ?? '-'} success={stats.success ?? '-'} timeout=
                 {stats.timeout ?? '-'} error={stats.error ?? '-'} inserted={signalResult.inserted ?? '-'}
               </div>
@@ -350,7 +353,7 @@ export default function Admin() {
       <div style={cardStyle}>
         <div style={cardTitleStyle}>系统日志</div>
         {logLoading && <div>加载中...</div>}
-        {logError && <div style={{ color: '#dc2626' }}>{logError}</div>}
+        {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
         {!logLoading && !logError && (
           <>
             <table style={tableStyle}>
@@ -377,7 +380,7 @@ export default function Admin() {
                         let val = String(row[col] ?? '');
                         if (col === 'log_type') val = LOG_TYPE_LABEL[val] ?? val;
                         if (col === 'level') {
-                          const c = RESULT_COLOR[val] ?? '#374151';
+                          const c = RESULT_COLOR[val] ?? COLORS.textSecondary;
                           return (
                             <td key={col} style={{ ...thTdStyle, color: c, fontWeight: 600 }}>
                               {val}
@@ -403,7 +406,7 @@ export default function Admin() {
               >
                 上一页
               </button>
-              <span style={{ fontSize: 14 }}>
+              <span style={{ fontSize: TYPO.bodySize }}>
                 第 {page} / {totalPages} 页，共 {total} 条
               </span>
               <button style={buttonStyle} disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>

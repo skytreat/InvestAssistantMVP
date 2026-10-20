@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessageOrString } from '../api/errors';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   cardStyle,
   cardTitleStyle,
@@ -219,7 +220,7 @@ export default function StockScan() {
           {(() => {
             const cur = plugins.find((x) => x.id === selectedPluginId);
             return cur?.description ? (
-              <span style={{ color: '#6b7280', fontSize: 13 }}>{cur.description}</span>
+              <span style={{ color: COLORS.neutral, fontSize: TYPO.smallSize }}>{cur.description}</span>
             ) : null;
           })()}
         </div>
@@ -234,7 +235,7 @@ export default function StockScan() {
             value={minAmount}
             onChange={(e) => setMinAmount(Math.max(0, Number(e.target.value)))}
           />
-          <span style={{ color: '#6b7280', fontSize: 13 }}>
+          <span style={{ color: COLORS.neutral, fontSize: TYPO.smallSize }}>
             用于过滤流动性过差的标的，单位：万元，默认0不过滤
           </span>
         </div>
@@ -254,7 +255,7 @@ export default function StockScan() {
         <div style={{ ...formRowStyle, alignItems: 'flex-start' }}>
           <span style={{ ...labelStyle, paddingTop: 6 }}>参数 JSON：</span>
           <textarea
-            style={{ ...inputStyle, flex: 1, fontFamily: 'monospace' }}
+            style={{ ...inputStyle, flex: 1, fontFamily: TYPO.monoFamily }}
             rows={3}
             value={paramsJson}
             onChange={(e) => setParamsJson(e.target.value)}
@@ -268,12 +269,25 @@ export default function StockScan() {
             const schema = cur?.paramSchema?.filter((f) => f.key !== 'symbol') ?? [];
             if (schema.length === 0) return null;
             return (
-              <div style={{ ...formRowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+              <div
+                style={{
+                  ...formRowStyle,
+                  flexDirection: 'column',
+                  alignItems: 'flex-start',
+                  gap: SPACING.gapTight,
+                }}
+              >
                 <span style={labelStyle}>可用参数：</span>
-                <div style={{ fontSize: 13, color: '#374151', marginLeft: 90 }}>
+                <div style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary, marginLeft: 90 }}>
                   {schema.map((f) => (
                     <span key={f.key} style={{ marginRight: 12 }}>
-                      <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>
+                      <code
+                        style={{
+                          background: COLORS.borderSubtle,
+                          padding: '2px 6px',
+                          borderRadius: RADIUS.sm,
+                        }}
+                      >
                         {f.key}
                       </code>
                       : {f.label}（{f.type}
@@ -289,11 +303,20 @@ export default function StockScan() {
 
         {errorMsg && <div style={errorStyle}>{errorMsg}</div>}
 
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div
+          style={{
+            marginTop: SPACING.gapRelaxed,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
           <button style={buttonStyle} onClick={runScan} disabled={loading || !selectedPluginId}>
             {loading ? '运行中...' : '开始选股'}
           </button>
-          {timeMs > 0 && !loading && <span style={{ color: '#6b7280', fontSize: 13 }}>耗时 {timeMs}ms</span>}
+          {timeMs > 0 && !loading && (
+            <span style={{ color: COLORS.neutral, fontSize: TYPO.smallSize }}>耗时 {timeMs}ms</span>
+          )}
         </div>
       </div>
 
@@ -301,16 +324,16 @@ export default function StockScan() {
         <div style={cardTitleStyle}>
           选股结果
           {totalCandidates > 0 && (
-            <span style={{ color: '#6b7280', fontWeight: 400, marginLeft: 12 }}>
+            <span style={{ color: COLORS.neutral, fontWeight: 400, marginLeft: 12 }}>
               交易日 {tradeDate} · 候选池 {totalCandidates} · 命中 {totalPass} · 返回 {results.length}
             </span>
           )}
         </div>
 
         {loading ? (
-          <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>选股进行中...</div>
+          <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>选股进行中...</div>
         ) : results.length === 0 ? (
-          <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>暂无结果</div>
+          <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无结果</div>
         ) : (
           <table style={tableStyle}>
             <thead>
@@ -337,18 +360,18 @@ export default function StockScan() {
                         style={{
                           color:
                             r.signalType === 'BUY'
-                              ? '#16a34a'
+                              ? COLORS.success
                               : r.signalType === 'SELL'
-                                ? '#dc2626'
-                                : '#374151',
-                          fontWeight: 600,
+                                ? COLORS.danger
+                                : COLORS.textSecondary,
+                          fontWeight: TYPO.cardTitleWeight,
                         }}
                       >
                         {SIGNAL_LABEL[r.signalType] ?? r.signalType}
                       </span>
                     </td>
                     <td style={thTdStyle}>{(r.score * 100).toFixed(1)}%</td>
-                    <td style={{ ...thTdStyle, color: '#6b7280' }}>{r.details ?? '-'}</td>
+                    <td style={{ ...thTdStyle, color: COLORS.neutral }}>{r.details ?? '-'}</td>
                     <td style={{ ...thTdStyle, whiteSpace: 'nowrap' }}>
                       <button
                         style={{ ...buttonStyle, fontSize: 12, padding: '3px 10px', marginRight: 6 }}
@@ -358,7 +381,12 @@ export default function StockScan() {
                         {st === 'candidate' ? '已候选' : '加候选'}
                       </button>
                       <button
-                        style={{ ...buttonStyle, fontSize: 12, padding: '3px 10px', background: '#16a34a' }}
+                        style={{
+                          ...buttonStyle,
+                          fontSize: 12,
+                          padding: '3px 10px',
+                          background: COLORS.success,
+                        }}
                         disabled={st === 'loading' || st === 'watch'}
                         onClick={() => promoteToWatch(r.symbol)}
                       >
@@ -371,7 +399,9 @@ export default function StockScan() {
             </tbody>
           </table>
         )}
-        {rowMsg && <div style={{ color: '#16a34a', marginTop: 8, fontSize: 13 }}>{rowMsg}</div>}
+        {rowMsg && (
+          <div style={{ color: COLORS.success, marginTop: 8, fontSize: TYPO.smallSize }}>{rowMsg}</div>
+        )}
       </div>
     </div>
   );

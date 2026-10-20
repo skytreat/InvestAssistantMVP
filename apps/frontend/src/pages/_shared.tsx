@@ -1,16 +1,17 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
+import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 
 /** 移动端断点（与 G10a PRD §5.8 #6 底部 Tab 栏一致） */
 export const MOBILE_BREAKPOINT = 768;
 
 const linkStyle: React.CSSProperties = {
   padding: '8px 12px',
-  marginRight: 4,
-  color: '#1e40af',
+  marginRight: SPACING.gapTight,
+  color: COLORS.brandLink,
   textDecoration: 'none',
-  borderRadius: 4,
+  borderRadius: RADIUS.sm,
 };
 
 /** 桌面端导航项（PRD §5.8 #7 左侧导航栏） */
@@ -47,9 +48,9 @@ export function Navbar() {
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          padding: '12px 16px',
-          borderBottom: '1px solid #e5e7eb',
-          background: '#fff',
+          padding: SPACING.navPadding,
+          borderBottom: `1px solid ${COLORS.borderLight}`,
+          background: COLORS.cardBg,
           flexWrap: 'wrap',
         }}
       >
@@ -61,7 +62,7 @@ export function Navbar() {
             </Link>
           ))}
         </nav>
-        <span style={{ marginLeft: 'auto', color: '#666', fontSize: 13 }}>
+        <span style={{ marginLeft: 'auto', color: COLORS.textTertiary, fontSize: TYPO.smallSize }}>
           {username} ({isAdmin ? '管理员' : '普通用户'})
         </span>
         <button
@@ -76,8 +77,8 @@ export function Navbar() {
       {/* 全局合规声明 */}
       <div
         style={{
-          background: '#fef3c7',
-          color: '#92400e',
+          background: COLORS.bgDisclaimer,
+          color: COLORS.textDisclaimer,
           fontSize: 12,
           textAlign: 'center',
           padding: '4px 0',
@@ -110,8 +111,8 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
         left: 0,
         right: 0,
         display: 'flex',
-        background: '#fff',
-        borderTop: '1px solid #e5e7eb',
+        background: COLORS.cardBg,
+        borderTop: `1px solid ${COLORS.borderLight}`,
         zIndex: 300,
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
@@ -124,8 +125,8 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
             flex: 1,
             textAlign: 'center',
             padding: '8px 0',
-            fontSize: 11,
-            color: '#374151',
+            fontSize: TYPO.captionSize,
+            color: COLORS.textSecondary,
             textDecoration: 'none',
           }}
         >
@@ -140,8 +141,8 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
             flex: 1,
             textAlign: 'center',
             padding: '8px 0',
-            fontSize: 11,
-            color: '#374151',
+            fontSize: TYPO.captionSize,
+            color: COLORS.textSecondary,
             textDecoration: 'none',
           }}
         >
@@ -172,7 +173,7 @@ export function useIsMobile(): boolean {
 export const MOBILE_TABBAR_HEIGHT = 62;
 
 export const pageContainerStyle: React.CSSProperties = {
-  padding: '24px',
+  padding: SPACING.pagePadding,
   maxWidth: 1200,
   margin: '0 auto',
   // 给移动端底部 TabBar 让位
@@ -181,93 +182,93 @@ export const pageContainerStyle: React.CSSProperties = {
 
 /** 移动端紧凑容器（卡片间距收窄，表格允许横向滚动） */
 export const mobileCardStyle: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
+  border: `1px solid ${COLORS.borderLight}`,
+  borderRadius: RADIUS.md,
   padding: 12,
   marginBottom: 16,
-  background: '#fff',
+  background: COLORS.cardBg,
 };
 
 export const cardStyle: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  padding: 16,
-  marginBottom: 24,
-  background: '#fff',
+  border: `1px solid ${COLORS.borderLight}`,
+  borderRadius: RADIUS.md,
+  padding: SPACING.cardPadding,
+  marginBottom: SPACING.cardMarginBottom,
+  background: COLORS.cardBg,
 };
 
 export const titleStyle: React.CSSProperties = {
-  fontSize: 24,
-  fontWeight: 'bold',
-  marginBottom: 16,
+  fontSize: TYPO.h1Size,
+  fontWeight: TYPO.h1Weight,
+  marginBottom: SPACING.gapRelaxed,
 };
 
 export const cardTitleStyle: React.CSSProperties = {
-  fontSize: 16,
-  fontWeight: 600,
+  fontSize: TYPO.cardTitleSize,
+  fontWeight: TYPO.cardTitleWeight,
   marginBottom: 12,
-  borderBottom: '1px solid #f3f4f6',
-  paddingBottom: 8,
-  color: '#1f2937',
+  borderBottom: `1px solid ${COLORS.borderSubtle}`,
+  paddingBottom: SPACING.gapBase,
+  color: COLORS.textPrimary,
 };
 
 export const tableStyle: React.CSSProperties = {
   width: '100%',
   borderCollapse: 'collapse',
-  fontSize: 14,
+  fontSize: TYPO.bodySize,
 };
 
 export const thTdStyle: React.CSSProperties = {
-  border: '1px solid #e5e7eb',
+  border: `1px solid ${COLORS.borderLight}`,
   padding: '8px 10px',
   textAlign: 'left',
 };
 
 export const thStyle: React.CSSProperties = {
   ...thTdStyle,
-  background: '#f9fafb',
-  fontWeight: 600,
-  color: '#374151',
+  background: COLORS.headerBg,
+  fontWeight: TYPO.cardTitleWeight,
+  color: COLORS.textSecondary,
 };
 
 export const inputStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  border: '1px solid #d1d5db',
-  borderRadius: 4,
-  fontSize: 14,
+  padding: SPACING.inputPadding,
+  border: `1px solid ${COLORS.borderMedium}`,
+  borderRadius: RADIUS.sm,
+  fontSize: TYPO.bodySize,
 };
 
 export const buttonStyle: React.CSSProperties = {
-  padding: '6px 16px',
-  background: '#2563eb',
-  color: '#fff',
+  padding: SPACING.btnPadding,
+  background: COLORS.brand,
+  color: COLORS.cardBg,
   border: 'none',
-  borderRadius: 4,
+  borderRadius: RADIUS.sm,
   cursor: 'pointer',
-  fontSize: 14,
+  fontSize: TYPO.bodySize,
 };
 
 export const errorStyle: React.CSSProperties = {
-  color: '#dc2626',
-  fontSize: 14,
-  marginTop: 8,
+  color: COLORS.danger,
+  fontSize: TYPO.bodySize,
+  marginTop: SPACING.gapBase,
 };
 
 export const successStyle: React.CSSProperties = {
-  color: '#16a34a',
-  fontSize: 14,
-  marginTop: 8,
+  color: COLORS.success,
+  fontSize: TYPO.bodySize,
+  marginTop: SPACING.gapBase,
 };
 
 export const formRowStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 12,
-  marginBottom: 12,
+  gap: SPACING.formRowGap,
+  marginBottom: SPACING.formRowMarginBottom,
 };
 
 export const labelStyle: React.CSSProperties = {
-  minWidth: 80,
-  color: '#374151',
-  fontSize: 14,
+  minWidth: SPACING.labelMinWidth,
+  color: COLORS.textSecondary,
+  fontSize: TYPO.bodySize,
 };

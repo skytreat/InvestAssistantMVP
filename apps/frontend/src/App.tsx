@@ -11,13 +11,14 @@ import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import { useUserStore } from './store/user';
 import { Navbar } from './pages/_shared';
+import { MAX_WIDTH, TYPO } from './theme/tokens';
 
 export default function App() {
   const token = useUserStore((s) => s.token);
   if (!token) return <Login />;
 
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+    <div style={{ fontFamily: TYPO.fontFamily, maxWidth: MAX_WIDTH, margin: '0 auto', padding: 20 }}>
       <Navbar />
       <hr style={{ margin: '16px 0' }} />
       <Routes>
