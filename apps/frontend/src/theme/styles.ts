@@ -89,6 +89,65 @@ export const thStyle: CSSProperties = {
   color: COLORS.textSecondary,
 };
 
+/**
+ * 表格横向滚动容器（G3.5 · dashboard 375px 文档级横向溢出修复）
+ *
+ * ## 为什么需要它
+ *
+ * `tableStyle` 的 `width: '100%'` 对 `<table>` 只是**最小宽度**：
+ * 单元格里的长不可断字符串（日志消息里的文件路径、插件说明…）会把表格的
+ * **最小内容宽度**顶到容器宽度之外 → 表格溢出卡片 → 溢出继续向上冒泡 →
+ * `document.documentElement.scrollWidth` 变大 → **文档级横向溢出**。
+ *
+ * G3.5 的判据是**文档级**的（`scrollWidth − clientWidth ≤ 2`），
+ * 所以只要给表格套一层 `overflow-x: auto` 的容器，
+ * 表格就在**自己内部**横向滚动，不再把文档撑宽 —— 这是标准解法。
+ *
+ * ## `minWidth: 0` 为什么必须显式写
+ *
+ * Grid / Flex 子项的 `min-width` 默认是 `auto`（≈ min-content），
+ * 意味着「子项内容有多宽，父容器就被撑到多宽」——
+ * **滚动容器自己反而会撑破父级**，加不加 `overflow-x` 都一样。
+ * 显式写 `minWidth: 0` 才能让子项真正收缩到父容器宽度内。
+ *
+ * ⚠️ **刻意不设 `table-layout: fixed`** —— 那会重算所有列宽，
+ *    破坏既有视觉与既有用例断言（列宽是既有页面的既定观感）。
+ *
+ * ⚠️ 本对象是**新增的可选样式**，全站共享的 `tableStyle` 本身**一个字都没改**
+ *    （避免与其它波次的并行改动冲突）。
+ */
+export const scrollableTableContainerStyle: CSSProperties = {
+  overflowX: 'auto',
+  // Grid/Flex 子项默认 min-width:auto → 内容过宽会撑破容器（G3.5 第二个根因）
+  minWidth: 0,
+  maxWidth: '100%',
+};
+
+/**
+ * 单元格内长文本截断（G3.5）
+ *
+ * ⚠️ **必须作用在单元格内部的子元素上，不能直接写在 `<td>` 上** ——
+ *    CSS 2.1 明确「`max-width` 不适用于自动表格布局下的单元格」，
+ *    写在 `<td>` 上会被忽略，长文本照样把整列撑宽。
+ *
+ * - `whiteSpace: 'nowrap'`：`text-overflow: ellipsis` **只在不换行时**才生效；
+ * - `overflow: 'hidden'` + `textOverflow: 'ellipsis'`：视觉上截断成「…」；
+ * - 完整内容由调用方通过 `title` 属性暴露（悬停可见全文），
+ *   DOM 里的文本**不被裁剪** → 读屏用户仍能读到完整日志内容。
+ *
+ * ⚠️ **220px 不是 ui-spec §1 的 token**（ui-spec 未规定截断宽度）——
+ *    它是**实测反推**的产物：dashboard「消息」列实测最宽 217px
+ *    （探针 `scripts/probe-overflow.mjs` 实测），加单元格 10px 内边距取整 → 220px。
+ *    取这个值的目的是「把列宽钉死，不再由路径文本长度决定」；
+ *    ⚠️ 若将来日志文案变长，**上限不变**（宁可是横向滚动，也不撑破文档）。
+ */
+export const truncatedTextStyle: CSSProperties = {
+  maxWidth: 220,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
 /** 输入框 */
 export const inputStyle: CSSProperties = {
   padding: SPACING.inputPadding,

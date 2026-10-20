@@ -3,10 +3,11 @@ import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
-import { ghostButtonStyle } from '../theme/styles';
+import { ghostButtonStyle, truncatedTextStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
 import PositionCard from '../components/PositionCard';
 import PositionToolbar from '../components/PositionToolbar';
+import ScrollableTable from '../components/ScrollableTable';
 import {
   DIRECTION_LABEL,
   fmt,
@@ -631,60 +632,69 @@ export default function Dashboard() {
         {sigLoading && <Spinner />}
         {sigError && <div style={{ color: COLORS.danger }}>{sigError}</div>}
         {!sigLoading && !sigError && (
-          <table style={tableStyle} aria-label="最新信号">
-            <thead>
-              <tr>
-                <th scope="col" style={thStyle}>
-                  代码
-                </th>
-                <th scope="col" style={thStyle}>
-                  策略
-                </th>
-                <th scope="col" style={thStyle}>
-                  方向
-                </th>
-                <th scope="col" style={thStyle}>
-                  标签
-                </th>
-                <th scope="col" style={thStyle}>
-                  日期
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {signals.length === 0 ? (
+          /*
+           * ⚠️ **表格必须套在可横向滚动的容器里**（G3.5）：
+           *    `table` 的 `width:100%` 只是最小宽度，5 列（代码/策略/方向/标签/日期）
+           *    在 375px 窄屏下最小内容宽度超过卡片宽度 → 表格溢出卡片 →
+           *    溢出向上冒泡 → **文档级**横向溢出。
+           *    套上 `overflow-x:auto` 的容器后，表格在自己内部横向滚动，文档不再被撑宽。
+           */
+          <ScrollableTable label="最新信号表">
+            <table style={tableStyle} aria-label="最新信号">
+              <thead>
                 <tr>
-                  <td style={thTdStyle} colSpan={5}>
-                    暂无信号
-                  </td>
+                  <th scope="col" style={thStyle}>
+                    代码
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    策略
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    方向
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标签
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    日期
+                  </th>
                 </tr>
-              ) : (
-                signals.map((s, i) => (
-                  <tr key={i}>
-                    <td style={thTdStyle}>{s.asset_code}</td>
-                    <td style={thTdStyle}>{s.plugin_id}</td>
-                    <td style={thTdStyle}>
-                      <span
-                        style={{
-                          color:
-                            s.direction === 'buy'
-                              ? COLORS.success
-                              : s.direction === 'sell'
-                                ? COLORS.danger
-                                : COLORS.textSecondary,
-                          fontWeight: TYPO.cardTitleWeight,
-                        }}
-                      >
-                        {DIRECTION_LABEL[s.direction] ?? s.direction}
-                      </span>
+              </thead>
+              <tbody>
+                {signals.length === 0 ? (
+                  <tr>
+                    <td style={thTdStyle} colSpan={5}>
+                      暂无信号
                     </td>
-                    <td style={thTdStyle}>{s.label}</td>
-                    <td style={thTdStyle}>{s.trade_date}</td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  signals.map((s, i) => (
+                    <tr key={i}>
+                      <td style={thTdStyle}>{s.asset_code}</td>
+                      <td style={thTdStyle}>{s.plugin_id}</td>
+                      <td style={thTdStyle}>
+                        <span
+                          style={{
+                            color:
+                              s.direction === 'buy'
+                                ? COLORS.success
+                                : s.direction === 'sell'
+                                  ? COLORS.danger
+                                  : COLORS.textSecondary,
+                            fontWeight: TYPO.cardTitleWeight,
+                          }}
+                        >
+                          {DIRECTION_LABEL[s.direction] ?? s.direction}
+                        </span>
+                      </td>
+                      <td style={thTdStyle}>{s.label}</td>
+                      <td style={thTdStyle}>{s.trade_date}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </ScrollableTable>
         )}
       </div>
 
@@ -694,44 +704,63 @@ export default function Dashboard() {
           {logLoading && <Spinner />}
           {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
           {!logLoading && !logError && (
-            <table style={tableStyle} aria-label="最近日志">
-              <thead>
-                <tr>
-                  <th scope="col" style={thStyle}>
-                    时间
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    类型
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    级别
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    消息
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.length === 0 ? (
+            /*
+             * ⚠️ **「最近日志」表是 dashboard@375 溢出的元凶**（G3.5，实测 +169px）：
+             *    「消息」列的内容是后端系统日志（运维噪声路径，如
+             *    「插件目录不可读，跳过磁盘加载: /opt/invol/plugins/strategies」），
+             *    属于**不可断的长字符串** → 把这一列顶到 217px → 整表 483px
+             *    → 超出卡片宽度 → 文档级横向溢出。
+             *
+             *    两道防线：
+             *    1. **容器化**（`overflow-x:auto`）—— 表格在自己内部滚动，文档不被撑宽；
+             *    2. **长文本截断**（`truncatedTextStyle`）—— 把「消息」列的宽度钉住，
+             *       完整内容通过 `title` 属性悬停可见（DOM 文本不裁剪 → 读屏仍可读全文）。
+             */
+            <ScrollableTable label="最近日志表">
+              <table style={tableStyle} aria-label="最近日志">
+                <thead>
                   <tr>
-                    <td style={thTdStyle} colSpan={4}>
-                      暂无日志
-                    </td>
+                    <th scope="col" style={thStyle}>
+                      时间
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      类型
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      级别
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      消息
+                    </th>
                   </tr>
-                ) : (
-                  logs.map((l, i) => (
-                    <tr key={i}>
-                      <td style={thTdStyle}>{l.created_at}</td>
-                      <td style={thTdStyle}>{l.log_type}</td>
-                      <td style={{ ...thTdStyle, color: LEVEL_COLOR[l.level] ?? COLORS.textSecondary }}>
-                        {l.level}
+                </thead>
+                <tbody>
+                  {logs.length === 0 ? (
+                    <tr>
+                      <td style={thTdStyle} colSpan={4}>
+                        暂无日志
                       </td>
-                      <td style={thTdStyle}>{l.message}</td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    logs.map((l, i) => (
+                      <tr key={i}>
+                        <td style={thTdStyle}>{l.created_at}</td>
+                        <td style={thTdStyle}>{l.log_type}</td>
+                        <td style={{ ...thTdStyle, color: LEVEL_COLOR[l.level] ?? COLORS.textSecondary }}>
+                          {l.level}
+                        </td>
+                        <td style={thTdStyle}>
+                          {/* 截断只作用于**视觉**；DOM 里的文本仍是全文 */}
+                          <div style={truncatedTextStyle} title={l.message}>
+                            {l.message}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </ScrollableTable>
           )}
         </div>
       )}
