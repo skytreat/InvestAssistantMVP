@@ -224,7 +224,7 @@ node scripts/probe-overflow.mjs --api-base-url http://127.0.0.1:8081 --username 
 | Run | run id | Stage 2 | build-and-test | 结论 |
 |---|---|---|---|---|
 | #1 | `39442686955` | pass (1m2s) | pass (3m39s) | ✅ success |
-| #2 | 见 commit | | | |
+| #2 | `39443374196` | pass | pass | ✅ success |
 
 ---
 
