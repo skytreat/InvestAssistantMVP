@@ -3,9 +3,7 @@ import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import TradeInput from './pages/TradeInput';
 import Signals from './pages/Signals';
-import Admin from './pages/Admin';
 import Login from './pages/Login';
-import Kline from './pages/Kline';
 import StockScan from './pages/StockScan';
 import Review from './pages/Review';
 import Settings from './pages/Settings';
@@ -15,9 +13,28 @@ import { Navbar } from './pages/_shared';
 import ComplianceFooter from './components/ComplianceFooter';
 import AdminGuard from './components/AdminGuard';
 import SessionExpiredBanner from './components/SessionExpiredBanner';
+import Spinner from './components/Spinner';
 import TokenExpiryNotice from './components/TokenExpiryNotice';
 import { onSessionExpired } from './api/client';
 import { MAX_WIDTH, TYPO } from './theme/tokens';
+
+/**
+ * T66 · 路由级代码分割（SDD §2.12.5「Bundle 优化策略」）
+ *
+ * `Kline`（464+ 行，含 Canvas 手绘 K 线 + MACD/RSI 副图）与 `Admin`（324+ 行）
+ * 体积都不小，且**都不是首屏必需** → 改为 `React.lazy` 动态 import，
+ * 由 Vite 打成**独立 chunk**，只在真正访问该路由时才下载。
+ *
+ * ⚠️ **其它页面保持静态 import** —— 本任务只拆 Kline / Admin。
+ *    Dashboard / TradeInput / Signals / StockScan / Review / Settings / Login
+ *    仍是首屏可能立刻用到的，整包引入反而多一次请求。
+ */
+const Kline = React.lazy(() => import('./pages/Kline'));
+
+/**
+ * `Admin` 的 lazy import —— 🔴 **非 admin 不得触发 chunk 下载**（见 `AdminRoute` 注释）
+ */
+const Admin = React.lazy(() => import('./pages/Admin'));
 
 /**
  * 登录页路由（T64）
@@ -38,6 +55,27 @@ function LoginRoute() {
       */}
       <ComplianceFooter />
     </>
+  );
+}
+
+/**
+ * 管理员路由（T66 · lazy 版）
+ *
+ * 🔴 **非 admin 不得触发 Admin chunk 下载**（信息泄露面）：
+ * `React.lazy` 的动态 import 是在 **lazy 组件被 reconcile（渲染）** 时才触发的，
+ * 而**不是**在 `<Admin />` 这个 JSX 元素被创建时触发。
+ * `AdminGuard` 在角色不是 admin 时返回 `<Navigate to="/" replace />`，
+ * **根本不渲染 children** → React 永远不会去 reconcile `<Admin />` → `import()` 永不执行 → chunk 不下载。
+ *
+ * ⚠️ 这条不变量**只靠「不渲染 children」成立**，所以 `AdminGuard` 内部**不能**改成
+ *    「先渲染再判断」或「在 Admin 内部判断角色」——那样 chunk 就会先被下载。
+ *    回归用例见 `tests/unit/lazyLoading.test.tsx`（「非 admin 不加载 Admin chunk」）。
+ */
+function AdminRoute() {
+  return (
+    <AdminGuard>
+      <Admin />
+    </AdminGuard>
   );
 }
 
@@ -75,8 +113,20 @@ function ProtectedShell({ expiredFrom }: { expiredFrom: string | null }) {
       <TokenExpiryNotice />
       <hr style={{ margin: '16px 0' }} />
       <main>
-        <Outlet />
+        {/*
+          T66 · `<Suspense>` 边界放在**路由出口处**（`<Outlet />` 外层），而不是 `<Routes>` 外层。
+          - **为什么放这里**：`<Outlet />` 正是「会渲染 lazy 组件的那一层」。
+            边界包住它 → 懒加载时**只替换主内容区**，导航栏 / 页脚保持在场（不整页闪烁）；
+            若放在 `<Routes>` 外层，则整个路由树（含 Navbar / 页脚）都会被 fallback 顶掉 → 整页闪一下。
+          - **为什么不会误伤普通页面**：`<Suspense>` **只有子组件真的 suspend 时才显示 fallback**。
+            除 Kline / Admin 外全是静态 import，**永远不会 suspend** → 普通页面零影响、零闪烁。
+          - **fallback 用 `<Spinner />`**（T65）：`role="status"` + `aria-live="polite"`，读屏可播报加载态。
+        */}
+        <React.Suspense fallback={<Spinner />}>
+          <Outlet />
+        </React.Suspense>
       </main>
+
       {/*
         T95：全局合规声明常驻（PRD §5.9，逐字文案见 `components/ComplianceFooter.tsx`）。
         ⚠️ 「隐私声明（设置页）」与「插件安全承诺（设置页插件区）」属 T76 ⑥，尚未落地。
@@ -132,14 +182,7 @@ export default function App() {
           <Route path="/review" element={<Review />} />
           <Route path="/settings" element={<Settings />} />
           {/* T98：管理员路由受 AdminGuard 保护 —— 非 admin 不挂载 <Admin />，故不发 admin 请求 */}
-          <Route
-            path="/admin"
-            element={
-              <AdminGuard>
-                <Admin />
-              </AdminGuard>
-            }
-          />
+          <Route path="/admin" element={<AdminRoute />} />
           {/* 未知路由显示 404 页，不再静默跳回仪表盘（拼错的路径本该显式报错） */}
           <Route path="*" element={<NotFound />} />
         </Route>

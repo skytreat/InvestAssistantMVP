@@ -16,7 +16,24 @@ import { FakeAxiosInstance, httpError, okResponse, failResponse } from '../fakeA
  * ⚠️ **模块级状态必须重置**：`client.ts` 有模块级的「刷新进行中」promise，
  *   故每个用例前 `vi.resetModules()` + 动态 `import()`；
  *   `useUserStore` 也必须动态 import（否则拿到的是 resetModules 之前的旧实例）。
+ *
+ * 🔴 **T66：K 线页必须 mock 掉 —— 否则本文件会随机变红**
+ *
+ * 背景：`/kline` 自 T66 起是 **lazy 路由**（`React.lazy(() => import('./pages/Kline'))`）。
+ * 访问它会**启动一个 in-flight 的动态 import**；若该 import 在**下一个**用例的
+ * `vi.resetModules()` **之后**才 resolve，它会把**旧模块实例回填进已被清空的模块缓存**
+ * （vitest 的 `resetModules` 不清除 in-flight import 的回填）——
+ * 于是下一个用例的 `import('../../src/api/client')` 拿到的是**上一个用例的旧实例**，
+ * `axios.create()` 不再被调用 → `loadApp()` 拿不到 axios 替身 → 用例红。
+ * （实测：微复现确认 `create` 只被调用 1 次而非 2 次。）
+ *
+ * 本用例只关心「登录后回原路径」，**不关心 K 线页内容** → mock 掉即可：
+ * mock 模块没有依赖链 → 不会回填模块缓存 → 隔离彻底。
+ * K 线页自身的 lazy 加载行为由 `tests/unit/lazyLoading.test.tsx` 专项覆盖。
  */
+vi.doMock('../../src/pages/Kline', () => ({
+  default: () => <div>K线页（测试替身）</div>,
+}));
 
 /** 本次 `axios.create()` 造出来的实例 */
 let instances: FakeAxiosInstance[] = [];

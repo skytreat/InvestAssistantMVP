@@ -3,6 +3,33 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 
+/**
+ * 共享样式对象 —— **re-export 自 `src/theme/styles.ts`（T66 分层收口）**
+ *
+ * ⚠️ 为什么要 re-export 而不是让各页直接改 import 路径？
+ *    - 12+ 个页面在用这些样式对象，逐个改 import 属于**纯噪音 diff**；
+ *    - 保持 `pages/_shared` 的既有导出**全部可用**（其它页面 / 测试都依赖这个入口）。
+ *
+ * ⚠️ **定义已经下沉到 `src/theme/styles.ts`** —— 因为组件层（`components/ConfirmDialog.tsx`）
+ *    需要 `cardStyle` / `buttonStyle`，而**组件层不能反向依赖页面层**（依赖方向倒置）。
+ *    `theme/styles.ts` 只 import `theme/tokens.ts` → **不会产生循环依赖**。
+ */
+export {
+  pageContainerStyle,
+  cardStyle,
+  titleStyle,
+  cardTitleStyle,
+  tableStyle,
+  thTdStyle,
+  thStyle,
+  inputStyle,
+  buttonStyle,
+  errorStyle,
+  successStyle,
+  formRowStyle,
+  labelStyle,
+} from '../theme/styles';
+
 /** 移动端断点（与 G10a PRD §5.8 #6 底部 Tab 栏一致） */
 export const MOBILE_BREAKPOINT = 768;
 
@@ -196,104 +223,3 @@ export function useIsMobile(): boolean {
 
 /** 移动端底部 TabBar 高度 —— 页面内容需要留出这段 padding */
 export const MOBILE_TABBAR_HEIGHT = 62;
-
-export const pageContainerStyle: React.CSSProperties = {
-  padding: SPACING.pagePadding,
-  maxWidth: 1200,
-  margin: '0 auto',
-  // 给移动端底部 TabBar 让位
-  paddingBottom: '86px',
-};
-
-/** 移动端紧凑容器（卡片间距收窄，表格允许横向滚动） */
-export const mobileCardStyle: React.CSSProperties = {
-  border: `1px solid ${COLORS.borderLight}`,
-  borderRadius: RADIUS.md,
-  padding: 12,
-  marginBottom: 16,
-  background: COLORS.cardBg,
-};
-
-export const cardStyle: React.CSSProperties = {
-  border: `1px solid ${COLORS.borderLight}`,
-  borderRadius: RADIUS.md,
-  padding: SPACING.cardPadding,
-  marginBottom: SPACING.cardMarginBottom,
-  background: COLORS.cardBg,
-};
-
-export const titleStyle: React.CSSProperties = {
-  fontSize: TYPO.h1Size,
-  fontWeight: TYPO.h1Weight,
-  marginBottom: SPACING.gapRelaxed,
-};
-
-export const cardTitleStyle: React.CSSProperties = {
-  fontSize: TYPO.cardTitleSize,
-  fontWeight: TYPO.cardTitleWeight,
-  marginBottom: 12,
-  borderBottom: `1px solid ${COLORS.borderSubtle}`,
-  paddingBottom: SPACING.gapBase,
-  color: COLORS.textPrimary,
-};
-
-export const tableStyle: React.CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: TYPO.bodySize,
-};
-
-export const thTdStyle: React.CSSProperties = {
-  border: `1px solid ${COLORS.borderLight}`,
-  padding: '8px 10px',
-  textAlign: 'left',
-};
-
-export const thStyle: React.CSSProperties = {
-  ...thTdStyle,
-  background: COLORS.headerBg,
-  fontWeight: TYPO.cardTitleWeight,
-  color: COLORS.textSecondary,
-};
-
-export const inputStyle: React.CSSProperties = {
-  padding: SPACING.inputPadding,
-  border: `1px solid ${COLORS.borderMedium}`,
-  borderRadius: RADIUS.sm,
-  fontSize: TYPO.bodySize,
-};
-
-export const buttonStyle: React.CSSProperties = {
-  padding: SPACING.btnPadding,
-  background: COLORS.brand,
-  color: COLORS.cardBg,
-  border: 'none',
-  borderRadius: RADIUS.sm,
-  cursor: 'pointer',
-  fontSize: TYPO.bodySize,
-};
-
-export const errorStyle: React.CSSProperties = {
-  color: COLORS.danger,
-  fontSize: TYPO.bodySize,
-  marginTop: SPACING.gapBase,
-};
-
-export const successStyle: React.CSSProperties = {
-  color: COLORS.success,
-  fontSize: TYPO.bodySize,
-  marginTop: SPACING.gapBase,
-};
-
-export const formRowStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: SPACING.formRowGap,
-  marginBottom: SPACING.formRowMarginBottom,
-};
-
-export const labelStyle: React.CSSProperties = {
-  minWidth: SPACING.labelMinWidth,
-  color: COLORS.textSecondary,
-  fontSize: TYPO.bodySize,
-};

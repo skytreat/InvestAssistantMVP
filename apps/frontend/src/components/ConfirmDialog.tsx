@@ -1,6 +1,8 @@
 import React, { useEffect, useId } from 'react';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
-import { buttonStyle, cardStyle } from '../pages/_shared';
+// ⚠️ T66 分层收口：样式对象来自 `theme/`（纯常量层），**不再从 `pages/_shared` 取** ——
+//    组件层反向依赖页面层属于依赖倒置。
+import { buttonStyle, cardStyle } from '../theme/styles';
 
 /**
  * 确认对话框（T65 · ui-spec §4「焦点锁定」项的前置件）

@@ -114,10 +114,6 @@ function SymbolAutocomplete({
     }
   };
 
-  // 判断当前输入是否已有合法前缀
-  const hasPrefix = /^[a-z]{2}/.test(value);
-  const displayName = hasPrefix ? value : value;
-
   return (
     <div style={{ position: 'relative', flex: 1 }}>
       <input
@@ -125,7 +121,7 @@ function SymbolAutocomplete({
         style={{ ...inputStyle, flex: 1, width: '100%' }}
         type="text"
         placeholder="输入代码或名称，如 600000 或 浦发"
-        value={displayName}
+        value={value}
         onChange={(e) => handleChange(e.target.value)}
         onKeyDown={handleKeyDown}
         onFocus={() => {

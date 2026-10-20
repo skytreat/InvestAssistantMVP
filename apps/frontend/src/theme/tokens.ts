@@ -13,6 +13,10 @@
  *    → 本文件补 `bgSelectedDanger` / `bgSelectedPrimary`（含各自边框色）。
  * 3. 标注「T62 补充」的 token 是**现网已在用、但 §1 建议表未覆盖**的颜色：
  *    数值与现网**完全一致**（不改变任何视觉），只做命名收敛，避免在页面里继续写裸 hex。
+ * 4. **T66 删除了 4 个 0 引用的键**（`textOnDark` / `tableStripe` / `tableHover` / `RADIUS.lg`）——
+ *    它们虽在 ui-spec §1 的建议表里，但**全仓无任何引用**，属于死导出。
+ *    ⚠️ `pageBg` / `borderFocus` **保留** —— `src/styles/global.css` 里的
+ *    `body` 背景与 `:focus-visible` 焦点环是**硬编码字面量**，其注释指向这两个 token。
  *
  * 用法约定：
  * - 样式对象里**直接引用常量**，不要引入 CSS 变量 `var(--x)`
@@ -38,19 +42,16 @@ export const COLORS = {
   textPrimary: '#1f2937', // 主标题 / cardTitle 文字
   textSecondary: '#4b5563', // 正文次级文字（表头文字、label）
   textMuted: '#9ca3af', // 弱化文字（未标记、占位文案）
-  textOnDark: '#e5e7eb', // 深色背景上的文字
 
   // Backgrounds
-  pageBg: '#f8fafc', // 页面底色
+  pageBg: '#f8fafc', // 页面底色（`global.css` 的 `body` 背景硬编码同值，注释指向本 token）
   cardBg: '#ffffff', // 卡片 / 面板底色（白）
   headerBg: '#f9fafb', // 表头底色
-  tableStripe: '#fafbfc', // 表格斑马纹
-  tableHover: '#f1f5f9', // 表格 hover 底色
 
   // Borders
   borderLight: '#e5e7eb', // 卡片边框 / 表格分隔线
   borderMedium: '#d1d5db', // 输入框边框
-  borderFocus: '#2563eb', // 焦点环
+  borderFocus: '#2563eb', // 焦点环（`global.css` 的 `:focus-visible` 硬编码同值，见该文件注释）
 
   // Chart palette（Kline.tsx 专用）
   chartBg: '#1a1a2e', // 画布底色
@@ -126,7 +127,7 @@ export const SPACING = {
 } as const;
 
 /** 圆角 token（px） */
-export const RADIUS = { sm: '4px', base: '6px', md: '8px', lg: '12px' } as const;
+export const RADIUS = { sm: '4px', base: '6px', md: '8px' } as const;
 
 /** 字体 token */
 export const TYPO = {
