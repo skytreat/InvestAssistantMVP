@@ -56,6 +56,16 @@ import {
   BOLL_DEFAULT_STDDEV,
   type BollResult,
 } from '../../src/indicators/bollinger';
+import {
+  calculateMACD,
+  calculateRSI,
+  calculateSMA,
+  A_SHARE_HISTOGRAM_SCALE,
+  RSI_DEFAULT_PERIOD,
+  MACD_DEFAULT_FAST_PERIOD,
+  MACD_DEFAULT_SLOW_PERIOD,
+  MACD_DEFAULT_SIGNAL_PERIOD,
+} from '../../src/indicators/technical';
 
 /* ------------------------------------------------------------------ *
  * golden 数据集（只读）
@@ -399,5 +409,141 @@ describe('kline_render · 布林带 BOLL 对 golden 逐位相等', () => {
     expect(b.lower).toEqual([]);
     expect(b.pb).toEqual([]);
     expect(b.width).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * MA / MACD / RSI 对 golden 逐位相等（G5.3 · 双端误差 = 0）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 🔴 **零容差**（与 KDJ 同款要求）
+ *
+ * MA / MACD / RSI 全部由 `fast-technical-indicators@1.1.6` 计算 ——
+ * 库对 RSI 做了 2 位小数取整、对 MACD 给了美式柱值，
+ * **任何「四舍五入到几位」的比较都会掩盖口径漂移** ⇒ 一律 `toBe` 严格相等。
+ *
+ * 📌 **前端副本与 core 的关系**：`src/indicators/technical.ts` 是
+ *    `packages/core/src/indicators/adapters.ts` 的**逐位等价副本**
+ *    （前端禁止 import `@invest/core`）—— 两端同库同版本 ⇒ 必然逐位相同。
+ */
+
+const MACD_GOLDEN_PATH = path.join(REPO_ROOT, 'packages/core/tests/fixtures/golden/macd.json');
+const RSI_GOLDEN_PATH = path.join(REPO_ROOT, 'packages/core/tests/fixtures/golden/rsi.json');
+
+interface GoldenMacd {
+  meta: { library: string; barCount: number; source: string; encoding: string };
+  note: string;
+  closes: number[];
+  cases: Array<{
+    params: { fastPeriod: number; slowPeriod: number; signalPeriod: number };
+    dif: Array<number | null>;
+    dea: Array<number | null>;
+    macd: Array<number | null>;
+  }>;
+  sma: {
+    params: { periods: number[] };
+    values: Array<{ period: number; values: Array<number | null> }>;
+  };
+}
+
+interface GoldenRsi {
+  meta: { library: string; barCount: number; source: string; encoding: string };
+  note: string;
+  closes: number[];
+  cases: Array<{ params: { period: number }; expected: Array<number | null> }>;
+}
+
+const macdGolden = JSON.parse(readFileSync(MACD_GOLDEN_PATH, 'utf8')) as GoldenMacd;
+const rsiGolden = JSON.parse(readFileSync(RSI_GOLDEN_PATH, 'utf8')) as GoldenRsi;
+
+describe('kline_render · MA / MACD / RSI 对 golden 逐位相等（零容差）', () => {
+  it('kline_render: MA/MACD/RSI 的 golden 来自同一份真实行情（221 根 · 同一库版本）', () => {
+    expect(macdGolden.meta.barCount).toBe(221);
+    expect(rsiGolden.meta.barCount).toBe(221);
+    expect(macdGolden.meta.library).toBe('fast-technical-indicators@1.1.6');
+    expect(rsiGolden.meta.library).toBe('fast-technical-indicators@1.1.6');
+    expect(macdGolden.closes.length).toBe(221);
+    expect(rsiGolden.closes.length).toBe(221);
+    // 🔒 两份 golden 的 closes 必须**逐位相同**（否则「同库同版本」的结论不成立）
+    expect(macdGolden.closes).toEqual(rsiGolden.closes);
+  });
+
+  it('kline_render: MA(5/10/20/60) 对 golden 的 sma 逐位相等', () => {
+    const closes = macdGolden.closes;
+    for (const entry of macdGolden.sma.values) {
+      const actual = calculateSMA(closes, entry.period);
+      expect(actual.length, `MA${entry.period} 长度`).toBe(entry.values.length);
+      expectBitwise(actual, entry.values, `MA${entry.period}`);
+    }
+    // golden 覆盖的正是 PRD §5.2 要求的四条均线（含 F-K2 缺失的 MA60）
+    expect(macdGolden.sma.params.periods).toEqual([5, 10, 20, 60]);
+  });
+
+  it('kline_render: MA 数据不足期恰好前 period-1 个为 NaN', () => {
+    const closes = macdGolden.closes;
+    for (const entry of macdGolden.sma.values) {
+      const actual = calculateSMA(closes, entry.period);
+      const warmup = entry.period - 1;
+      for (let i = 0; i < warmup; i++) {
+        expect(actual[i], `MA${entry.period}[${i}] 应为 NaN`).toBe(NaN);
+      }
+      expect(actual[warmup], `MA${entry.period}[${warmup}] 应为有限值`).not.toBeNaN();
+    }
+  });
+
+  it('kline_render: MACD(12,26,9) 与 MACD(5,20,4) 的 DIF/DEA/柱值全部逐位相等', () => {
+    const closes = macdGolden.closes;
+    for (const c of macdGolden.cases) {
+      const actual = calculateMACD(closes, c.params.fastPeriod, c.params.slowPeriod, c.params.signalPeriod);
+      expectBitwise(
+        actual.dif,
+        c.dif,
+        `DIF(${c.params.fastPeriod},${c.params.slowPeriod},${c.params.signalPeriod})`,
+      );
+      expectBitwise(
+        actual.dea,
+        c.dea,
+        `DEA(${c.params.fastPeriod},${c.params.slowPeriod},${c.params.signalPeriod})`,
+      );
+      expectBitwise(
+        actual.macd,
+        c.macd,
+        `MACD(${c.params.fastPeriod},${c.params.slowPeriod},${c.params.signalPeriod})`,
+      );
+    }
+  });
+
+  it('kline_render: MACD 柱值 = 2 × (DIF - DEA)（A 股通达信约定）逐点成立', () => {
+    const closes = macdGolden.closes;
+    const actual = calculateMACD(closes);
+    expect(A_SHARE_HISTOGRAM_SCALE).toBe(2);
+    let checked = 0;
+    for (let i = 0; i < actual.dif.length; i++) {
+      if (Number.isNaN(actual.dif[i]) || Number.isNaN(actual.dea[i]) || Number.isNaN(actual.macd[i]))
+        continue;
+      expect(actual.macd[i]).toBe(A_SHARE_HISTOGRAM_SCALE * (actual.dif[i] - actual.dea[i]));
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThanOrEqual(150);
+  });
+
+  it('kline_render: RSI(14) 与 RSI(6) 逐位相等（库内已 2 位小数取整 → 不容差）', () => {
+    const closes = rsiGolden.closes;
+    for (const c of rsiGolden.cases) {
+      const actual = calculateRSI(closes, c.params.period);
+      expect(actual.length, `RSI(${c.params.period}) 长度`).toBe(c.expected.length);
+      expectBitwise(actual, c.expected, `RSI(${c.params.period})`);
+    }
+  });
+
+  it('kline_render: 前端默认参数与后端一致（RSI 14 / MACD 12-26-9）', () => {
+    expect(RSI_DEFAULT_PERIOD).toBe(14);
+    expect(MACD_DEFAULT_FAST_PERIOD).toBe(12);
+    expect(MACD_DEFAULT_SLOW_PERIOD).toBe(26);
+    expect(MACD_DEFAULT_SIGNAL_PERIOD).toBe(9);
+    const closes = rsiGolden.closes;
+    // 默认参数的结果必须与 golden 的第一个 case 完全一致
+    expectBitwise(calculateRSI(closes), rsiGolden.cases[0].expected, 'RSI(默认)');
   });
 });
