@@ -282,6 +282,43 @@ export async function batchGetLatestAndPrevClose(
 }
 
 /**
+ * 批量取标的**中文名称**（**1 次 IN 查询**，T67 Dashboard 持仓卡用）
+ *
+ * ── 数据源实测（2026-10-20，`/opt/invol/quotes.duckdb`）──
+ *   `DESCRIBE raw_symbol_name` → `(symbol VARCHAR, name VARCHAR, class VARCHAR)`
+ *   8726 行；`symbol` **无重复**（`GROUP BY symbol HAVING COUNT(*)>1` → 0 行）
+ *   → 单值键，IN 查询不会扇出成多行。
+ *   `name` 列**无 NULL / 空串**（实测 0 行）。
+ *
+ * ⚠️ **覆盖约 70%，缺失是常态**：全市场 12449 只（`raw_symbol_class` 行数），
+ *   `raw_symbol_name` 只有 8726 只 → **约 3700 只标的名查不到**。
+ *   ⇒ 调用方必须容忍「查不到」（`Map` 里没有该 key），前端回退显示代码。
+ *
+ * ⚠️ **symbol 格式与业务层 asset_code 完全一致**（`sh600000` / `sz000001` / `bj920000`）
+ *   —— 与 `raw_symbol_name.symbol` 精确匹配，无需转换。
+ */
+export async function batchGetSymbolNames(symbols: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const unique = Array.from(new Set(symbols.filter((s) => typeof s === 'string' && s.length > 0)));
+  if (unique.length === 0) return result;
+
+  // ⚠️ 只拼占位符（个数由数组长度决定），真实值一律走绑定参数 —— 禁止把代码拼进 SQL 文本
+  const placeholders = unique.map(() => '?').join(', ');
+  const rows = await queryDuckDB<{ symbol: string; name: string }>(
+    `SELECT symbol, name FROM raw_symbol_name WHERE symbol IN (${placeholders})`,
+    [...unique],
+  );
+
+  for (const row of rows) {
+    // 空名等同「没查到」→ 不进 Map（调用方取不到即为 null）
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    if (name.length > 0) result.set(row.symbol, name);
+  }
+
+  return result;
+}
+
+/**
  * DuckDB 的 DATE 列在不同驱动下可能是 string / number(epoch days) / {days: number}
  * 统一转成 YYYY-MM-DD 字符串
  */

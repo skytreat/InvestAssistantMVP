@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import { ghostButtonStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
 import {
   pageContainerStyle,
@@ -83,6 +84,20 @@ export function isEtf(code: string): boolean {
   return /^(sh5[168]|sz1[56])/.test(code);
 }
 
+/**
+ * 持仓类型过滤（PRD §5.3 行 229「支持点击下钻到持仓列表过滤」）
+ *
+ * ⚠️ **单一真相源**：饼图下钻（卡 2）与「标的类型筛选」（卡 3）必须共用这同一个 state，
+ *    否则两套过滤会互相覆盖 —— 卡 3 的类型筛选控件直接写 `typeFilter` 即可。
+ */
+export type TypeFilter = 'all' | 'stock' | 'etf';
+
+/** 类型 → 中文标签（过滤状态提示文案用）*/
+const TYPE_LABEL: Record<Exclude<TypeFilter, 'all'>, string> = {
+  stock: '股票',
+  etf: 'ETF',
+};
+
 function fmt(n: number | null | undefined, digits = 2): string {
   if (n === null || n === undefined || Number.isNaN(n)) return '--';
   return n.toFixed(digits);
@@ -97,21 +112,104 @@ function fmtPct(n: number | null | undefined): string {
  * 纯 CSS 环形图（G7c 资产组成饼图）
  *
  * MVP 不引第三方图表库：conic-gradient 直接画，股票 / ETF 两段配色。
+ *
+ * ⚠️ **可点击下钻**（PRD §5.3 行 229「股票 + ETF 按市值分布，支持点击下钻到持仓列表过滤」）：
+ *   - 图例是真正的 `<button>`（带 `aria-pressed`）→ 键盘可达、读屏有可访问名；
+ *   - 饼图本体也可点 → 按点击位置落在哪一段决定下钻哪一类；
+ *   - 两个入口共用同一个 `onSelect`，行为完全一致。
+ *
+ * ⚠️ **conic-gradient 的计算口径不许动** —— 现有用例逐字断言背景的
+ *    「品牌色 0% → 原始 stockPct% → 成功色 stockPct% → 100%」分段
+ *    （背景用原始 `stockPct`，图例才 toFixed）。
  */
-export function DonutChart({ stock, etf }: { stock: number; etf: number }) {
+export interface DonutChartProps {
+  /** 股票市值 */
+  stock: number;
+  /** ETF 市值 */
+  etf: number;
+  /** 当前选中的类型（'all' = 未下钻）*/
+  selected?: TypeFilter;
+  /** 点击某一段时的回调（不传则图例不可交互）*/
+  onSelect?: (type: Exclude<TypeFilter, 'all'>) => void;
+}
+
+/**
+ * 按点击位置判断落在哪一段
+ *
+ * conic-gradient 从 12 点方向开始、顺时针展开 → 角度 ≤ 股票占比即落在股票段。
+ *
+ * ⚠️ jsdom 没有布局引擎 → `getBoundingClientRect()` 恒为 0×0 → 无法按坐标判段，
+ *    此时退化为「市值占比大的一段」，保证测试与降级路径都有确定行为。
+ */
+function segmentAtPoint(
+  el: HTMLElement,
+  clientX: number,
+  clientY: number,
+  stockPct: number,
+): Exclude<TypeFilter, 'all'> {
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return stockPct >= 50 ? 'stock' : 'etf';
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let deg = (Math.atan2(clientX - cx, -(clientY - cy)) * 180) / Math.PI;
+  if (deg < 0) deg += 360;
+  return deg <= stockPct ? 'stock' : 'etf';
+}
+
+/**
+ * 图例按钮样式
+ *
+ * 选中态用「底色 + 边框 + 字重」三重差异 —— 人眼能分辨，测试也能断言。
+ * 颜色全部走 token（`bgSelectedPrimary` / `borderSelectedPrimary`），不引入裸 hex。
+ */
+function legendButtonStyle(active: boolean): React.CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    background: active ? COLORS.bgSelectedPrimary : 'transparent',
+    border: `1px solid ${active ? COLORS.borderSelectedPrimary : 'transparent'}`,
+    borderRadius: RADIUS.sm,
+    padding: '2px 6px',
+    cursor: 'pointer',
+    fontFamily: TYPO.fontFamily,
+    fontSize: TYPO.bodySize,
+    fontWeight: active ? 700 : 400,
+    color: COLORS.textPrimary,
+    textAlign: 'left',
+    // 窄屏（375px）下不让按钮撑破卡片 —— 文字允许换行
+    maxWidth: '100%',
+  };
+}
+
+export function DonutChart({ stock, etf, selected = 'all', onSelect }: DonutChartProps) {
   const total = stock + etf;
   if (total <= 0) {
     return <div style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}>暂无持仓资产</div>;
   }
   const stockPct = (stock / total) * 100;
+
+  const select = (type: Exclude<TypeFilter, 'all'>) => onSelect?.(type);
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: SPACING.gapLoose, flexWrap: 'wrap' }}>
       <div
+        role="button"
+        tabIndex={0}
+        aria-label="资产组成饼图（点击扇区可按类型下钻持仓列表）"
+        onClick={(e) => select(segmentAtPoint(e.currentTarget, e.clientX, e.clientY, stockPct))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            select(stockPct >= 50 ? 'stock' : 'etf');
+          }
+        }}
         style={{
           width: 120,
           height: 120,
           borderRadius: '50%',
           background: `conic-gradient(${COLORS.brand} 0% ${stockPct}%, ${COLORS.success} ${stockPct}% 100%)`,
+          cursor: 'pointer',
+          flexShrink: 0,
         }}
       />
       <div
@@ -120,9 +218,15 @@ export function DonutChart({ stock, etf }: { stock: number; etf: number }) {
           flexDirection: 'column',
           gap: SPACING.gapBase,
           fontSize: TYPO.bodySize,
+          alignItems: 'flex-start',
         }}
       >
-        <div>
+        <button
+          type="button"
+          aria-pressed={selected === 'stock'}
+          onClick={() => select('stock')}
+          style={legendButtonStyle(selected === 'stock')}
+        >
           <span
             style={{
               display: 'inline-block',
@@ -133,8 +237,13 @@ export function DonutChart({ stock, etf }: { stock: number; etf: number }) {
             }}
           />
           股票 {fmt(stock)}（{stockPct.toFixed(1)}%）
-        </div>
-        <div>
+        </button>
+        <button
+          type="button"
+          aria-pressed={selected === 'etf'}
+          onClick={() => select('etf')}
+          style={legendButtonStyle(selected === 'etf')}
+        >
           <span
             style={{
               display: 'inline-block',
@@ -145,7 +254,7 @@ export function DonutChart({ stock, etf }: { stock: number; etf: number }) {
             }}
           />
           ETF {fmt(etf)}（{(100 - stockPct).toFixed(1)}%）
-        </div>
+        </button>
       </div>
     </div>
   );
@@ -163,6 +272,9 @@ export default function Dashboard() {
   const [stat, setStat] = useState<AssetStat | null>(null);
   const [statLoading, setStatLoading] = useState(false);
   const [statError, setStatError] = useState<string | null>(null);
+
+  /** 持仓类型过滤（饼图下钻；卡 3 的「标的类型筛选」复用同一个 state）*/
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
 
   const [signals, setSignals] = useState<Signal[]>([]);
   const [sigLoading, setSigLoading] = useState(false);
@@ -244,6 +356,20 @@ export default function Dashboard() {
 
   const activePositions = positions.filter((p) => p.totalQuantity > 0);
 
+  /**
+   * 下钻后的持仓列表
+   *
+   * ⚠️ **下钻过滤的是持仓列表本身**（PRD §5.3 行 229），不是切页 —— 页面结构不变。
+   */
+  const filteredPositions = activePositions.filter((p) =>
+    typeFilter === 'all' ? true : (typeFilter === 'etf') === isEtf(p.asset_code),
+  );
+
+  /** 点击饼图某一段：选中该类型；再点同一段 → 取消过滤（回到全部）*/
+  const handleTypeSelect = (type: Exclude<TypeFilter, 'all'>) => {
+    setTypeFilter((cur) => (cur === type ? 'all' : type));
+  };
+
   return (
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>仪表盘</h1>
@@ -292,7 +418,7 @@ export default function Dashboard() {
               <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginTop: SPACING.gapBase }}>
                 <div>
                   <div style={{ fontSize: 30, fontWeight: 'bold', color: COLORS.brandLink }}>
-                    {fmt(posSummary?.totalCostBasis)}
+                    {fmt(posSummary?.totalMarketValue)}
                   </div>
                   <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总资产</div>
                 </div>
@@ -340,6 +466,14 @@ export default function Dashboard() {
                   <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>已实现盈亏</div>
                 </div>
               </div>
+              {/*
+                成本口径单列一行 —— **不能**与「总资产」共用同一个「值 div + 标签 div」父级：
+                现有用例的 `metricText(label)` 取「标签父元素的首个子元素」，
+                两个口径挤在同一个父级里会取错节点。
+              */}
+              <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: SPACING.gapTight }}>
+                持仓总成本 {fmt(posSummary?.totalCostBasis)}
+              </div>
               <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: SPACING.gapBase }}>
                 快照日期 {stat.trade_date}
                 {posSummary?.priceDate && ` · 现价取自 ${posSummary.priceDate}`}
@@ -359,18 +493,60 @@ export default function Dashboard() {
       {/* G7c 资产组成饼图 */}
       <div style={cardStyle}>
         <div style={cardTitleStyle}>资产组成</div>
-        <DonutChart stock={allocation.stock} etf={allocation.etf} />
+        <DonutChart
+          stock={allocation.stock}
+          etf={allocation.etf}
+          selected={typeFilter}
+          onSelect={handleTypeSelect}
+        />
+        <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: SPACING.gapBase }}>
+          点击图例或饼图可下钻到持仓列表
+        </div>
+        {typeFilter !== 'all' && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: SPACING.gapBase,
+              flexWrap: 'wrap',
+              marginTop: SPACING.gapBase,
+              fontSize: TYPO.smallSize,
+              color: COLORS.textSecondary,
+            }}
+          >
+            <span>
+              已按「{TYPE_LABEL[typeFilter]}」筛选持仓（{filteredPositions.length} / {activePositions.length}{' '}
+              只）
+            </span>
+            <button
+              type="button"
+              onClick={() => setTypeFilter('all')}
+              style={{
+                ...ghostButtonStyle,
+                borderRadius: RADIUS.sm,
+                padding: '2px 8px',
+                cursor: 'pointer',
+                fontFamily: TYPO.fontFamily,
+                fontSize: TYPO.smallSize,
+              }}
+            >
+              清除筛选
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 持仓卡片列表（T33 规格） */}
       <div style={cardStyle}>
-        <div style={cardTitleStyle}>持仓明细（{activePositions.length} 只）</div>
+        <div style={cardTitleStyle}>持仓明细（{filteredPositions.length} 只）</div>
         {posLoading && <Spinner />}
         {posError && <div style={{ color: COLORS.danger }}>{posError}</div>}
         {!posLoading &&
           !posError &&
           (activePositions.length === 0 ? (
             <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无持仓</div>
+          ) : filteredPositions.length === 0 ? (
+            <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>当前筛选下无持仓</div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={tableStyle} aria-label="持仓明细">
@@ -406,7 +582,7 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {activePositions.map((p) => (
+                  {filteredPositions.map((p) => (
                     <tr key={p.asset_code}>
                       <td style={thTdStyle}>
                         <code>{p.asset_code}</code>

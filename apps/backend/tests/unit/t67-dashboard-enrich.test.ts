@@ -68,8 +68,24 @@ const H = vi.hoisted(() => {
     sh600003: [{ date: '2026-10-12', close: 33.3 }],
     // sh600004 故意**没有**日线 → 无行情
   };
+  /**
+   * 假名称表（`raw_symbol_name` 的替身）
+   *
+   * ⚠️ **只覆盖 2 只** —— 刻意复刻真实库的「覆盖率约 70%，查不到是常态」
+   *   （真库实测：`raw_symbol_name` 8726 行 vs `raw_symbol_class` 12449 行）。
+   *   未命中的标的 → `name = null`（接口仍 200）。
+   *
+   * ⚠️ `sh600000 → 浦发银行` 是**真库实测值**（2026-10-20），
+   *   与卡 1 的 A2 断言字面一致；`sh600002` 的名字是**纯假数据**
+   *   （真库上 sh600002 反而查不到名 —— 缺失是常态）。
+   */
+  const names: Record<string, string> = {
+    sh600000: '浦发银行',
+    sh600002: '示例银行',
+  };
   return {
     bars,
+    names,
     /** 切到真实 DuckDB（真实行情交叉验证用例用） */
     useReal: { value: false },
     /** 让 queryDuckDB 直接抛错（DuckDB 不可用的降级用例） */
@@ -83,14 +99,26 @@ const H = vi.hoisted(() => {
  * mock `src/db/duckdb.js`
  *
  * 只拦 `queryDuckDB`（唯一出口），其余导出透传真实实现。
- * 假实现复刻 `batchGetLatestAndPrevClose` 的窗口函数语义：
- *   按 symbol 分区、按 date 倒序编号 rn，取 rn <= 2。
+ * 假实现复刻两类查询的语义：
+ *   ① `batchGetLatestAndPrevClose` 的窗口函数：按 symbol 分区、按 date 倒序编号 rn，取 rn <= 2；
+ *   ② `batchGetSymbolNames` 的 IN 查询：`FROM raw_symbol_name WHERE symbol IN (...)`。
  */
 vi.mock('../../src/db/duckdb.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db/duckdb.js')>();
 
   /** 假 queryDuckDB：只认「按 symbol 分区取最近 N 根日线」的窗口查询 */
   function fakeQuery(sql: string, params?: unknown[]): Array<Record<string, unknown>> {
+    // ② 名称批量查询（1 次 IN）
+    if (sql.includes('FROM raw_symbol_name')) {
+      const symbols = (params ?? []).map((p) => String(p));
+      const rows: Array<Record<string, unknown>> = [];
+      for (const symbol of symbols) {
+        const name = H.names[symbol];
+        // 查不到 → 不返回该行（调用方 Map 里没有 → name = null）
+        if (name !== undefined) rows.push({ symbol, name });
+      }
+      return rows;
+    }
     if (!sql.includes('PARTITION BY symbol ORDER BY date DESC')) {
       throw new Error(`t67 测试：未预期的 DuckDB 查询 → ${sql.slice(0, 120)}`);
     }
@@ -176,8 +204,9 @@ const BATCH_CODES = Array.from({ length: 20 }, (_, i) => `sh6001${String(i).padS
  *
  * ⚠️ `sh600005` 也在列：它是「手工补录的分红」（`is_auto_import = 0`），
  *    而 `user_trade_record` 里有记录就会进 `calcAllPositions` → 也是一条 position。
+ * ⚠️ `sh600000` 也在列：卡 1 的 A2 用它断言「命中 raw_symbol_name → 浦发银行」。
  */
-const ALL_CODES = ['sh600001', 'sh600002', 'sh600003', 'sh600004', 'sh600005', ...BATCH_CODES];
+const ALL_CODES = ['sh600000', 'sh600001', 'sh600002', 'sh600003', 'sh600004', 'sh600005', ...BATCH_CODES];
 
 /** 插入一笔买入（造持仓用） */
 function insertBuy(userId: number, assetCode: string, quantity = 100, price = 10, date = '2026-10-01'): void {
@@ -493,14 +522,18 @@ describe('T67-③ signal —— 最新一条信号', () => {
 // ══════════════════════════════════════════════════════════
 
 describe('T67-④ 批量取数 —— 禁止 N+1', () => {
-  it('20 只持仓 → DuckDB 只查 1 次（不随标的数线性增长）', async () => {
+  it('20 只持仓 → DuckDB 只查 2 次（行情 1 + 名称 1），不随标的数线性增长', async () => {
     const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
     spy.mockClear();
     await getHolding();
-    expect(spy.mock.calls.length).toBe(1);
-    // 且这一次查询里带了全部 20+ 个标的（IN 批量，不是逐个）
-    const params = spy.mock.calls[0][1] as unknown[];
-    expect(params.length).toBeGreaterThanOrEqual(ALL_CODES.length);
+    // ⚠️ T67 卡 1 起 DuckDB 往返 = **2 次**（行情 1 + 名称 1），仍是**常数**
+    //   —— 与持仓数无关（25 只 → 2 次；若退化成 N+1 则是 25 次）
+    expect(spy.mock.calls.length).toBe(2);
+    // 且这两次查询都带了全部 20+ 个标的（IN 批量，不是逐个）
+    for (const call of spy.mock.calls) {
+      const params = call[1] as unknown[];
+      expect(params.length).toBeGreaterThanOrEqual(ALL_CODES.length);
+    }
   });
 
   it('20 只持仓 → 信号只查 1 次（SQLite 侧同样是 IN 批量）', async () => {
@@ -727,7 +760,163 @@ describe('T67-⑨ 真实行情库交叉验证', () => {
     expect(typeof p!.currentPrice).toBe('number');
     expect(typeof p!.prevClose).toBe('number');
     expect(p!.prevClose).not.toBe(p!.currentPrice);
-    // 仍是 1 次批量查询
-    expect(spy.mock.calls.length).toBe(1);
+    // 仍是常数次的批量查询（行情 1 + 名称 1）
+    expect(spy.mock.calls.length).toBe(2);
   });
+});
+
+// ══════════════════════════════════════════════════════════
+// ⑩ T67 卡 1 —— `/api/holding` 补 `name`（中文名）+ `industry`（契约预留）
+// ══════════════════════════════════════════════════════════
+//
+// ── 取数口径（实测，2026-10-20 `/opt/invol/quotes.duckdb`）──
+//   `DESCRIBE raw_symbol_name` → `(symbol VARCHAR, name VARCHAR, class VARCHAR)`
+//   8726 行；`symbol` 无重复；`name` 无 NULL/空串。
+//   全市场 12449 只（`raw_symbol_class`）→ **覆盖率约 70%，查不到是常态**。
+//   `raw_tdx_blocks_member` / `raw_tdx_blocks_info` 均 **0 行** → 行业恒 null。
+
+describe('T67-⑩ /api/holding enrich —— name（中文名）+ industry（契约预留）', () => {
+  it('GET /api/holding enrich: 每个持仓带 name（raw_symbol_name 命中时）', async () => {
+    const items = await getHolding();
+    // A2 的字面例子：命中 raw_symbol_name → 中文名
+    const p = items.find((i) => i.asset_code === 'sh600000');
+    expect(p).toBeDefined();
+    expect(p!.name).toBe('浦发银行');
+    // 字段**必须在**（查不到时是 null，而不是「没有这个字段」）
+    for (const item of items) {
+      expect(Object.prototype.hasOwnProperty.call(item, 'name')).toBe(true);
+      expect(item.name === null || typeof item.name === 'string').toBe(true);
+    }
+  });
+
+  it('GET /api/holding enrich: name 未命中时为 null 且不报错', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/holding' });
+    expect(res.statusCode).toBe(200);
+    const items = res.json().data as Array<Record<string, any>>;
+    const p = items.find((i) => i.asset_code === 'sh600003');
+    expect(p).toBeDefined();
+    expect(p.name).toBeNull();
+    // 没有名字**不影响**其他字段（现价 / 市值照常）
+    expect(p.currentPrice).toBe(33.3);
+    // ⚠️ 用 toBeCloseTo：33.3 * 100 在 IEEE754 下是 3330.0000000000005
+    expect(p.marketValue).toBeCloseTo(3330, 10);
+  });
+
+  it('GET /api/holding enrich: DuckDB 不可用时 name/industry 为 null 且仍返回 200', async () => {
+    H.failDuckDb.value = true;
+    const res = await app.inject({ method: 'GET', url: '/api/holding' });
+    H.failDuckDb.value = false;
+    expect(res.statusCode).toBe(200);
+    const items = res.json().data as Array<Record<string, any>>;
+    expect(items.length).toBe(ALL_CODES.length);
+    for (const p of items) {
+      expect(p.name).toBeNull();
+      expect(p.industry).toBeNull();
+    }
+  });
+
+  it('GET /api/holding enrich: 批量查名只发 1 次 IN 查询（无 N+1）', async () => {
+    const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
+    spy.mockClear();
+    await getHolding();
+    const nameCalls = spy.mock.calls.filter((c) => String(c[0]).includes('FROM raw_symbol_name'));
+    // 25 只持仓 → 查名**只发 1 次**（退化成 N+1 则是 25 次）
+    expect(nameCalls.length).toBe(1);
+    expect(String(nameCalls[0][0])).toMatch(/WHERE symbol IN \(/);
+    // 且这一次查询带了全部标的（IN 批量，不是逐个）
+    const params = nameCalls[0][1] as unknown[];
+    expect(params.length).toBe(ALL_CODES.length);
+  });
+
+  it('GET /api/holding enrich: 只加不改 —— prevClose/signal/weight/summary 回归', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/holding' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const items = body.data as Array<Record<string, any>>;
+    const p = items.find((i) => i.asset_code === 'sh600001')!;
+    // 既有字段的值与「加 name 之前」完全一致
+    expect(p.asset_code).toBe('sh600001');
+    expect(p.totalQuantity).toBe(100);
+    expect(p.totalCostBasis).toBe(1000);
+    expect(p.avgCost).toBe(10);
+    expect(p.currentPrice).toBe(12);
+    expect(p.prevClose).toBe(11);
+    expect(p.marketValue).toBe(1200);
+    expect(p.unrealizedPnl).toBe(200);
+    expect(p.unrealizedYield).toBeCloseTo(0.2, 10);
+    expect(p.signal).toEqual({
+      plugin_id: 'macd_cross',
+      direction: 'sell',
+      label: '死叉',
+      trade_date: '2026-10-12',
+    });
+    // weight = marketValue / totalMarketValue（1200 / (1200+2250+3330)）
+    expect(p.weight).toBeCloseTo(1200 / 6780, 10);
+    // summary 仍在**顶层**（T89a 契约），数值不受 name 影响
+    expect(body.summary.totalMarketValue).toBe(6780);
+    expect(body.summary.positionCount).toBe(ALL_CODES.length);
+  });
+
+  it('summary 的键集合仍为 6 个（不多不少）', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/holding' });
+    expect(res.statusCode).toBe(200);
+    // ⚠️ summary 的键是 **`realizedPnl`**（小写 l），与 position 的 `realizedPnL`（大写 L）
+    //    **不同** —— 实测 `routes/trade.ts:500` 用的是 `realizedPnl`，
+    //    前端 `Dashboard.tsx:461` 读的也是 `realizedPnl`。
+    //    （卡 1 的 A7 把 summary 键写成 `realizedPnL` 是笔误，此处按实测口径断言。）
+    expect(Object.keys(res.json().summary).sort()).toEqual([
+      'positionCount',
+      'priceDate',
+      'realizedPnl',
+      'totalCostBasis',
+      'totalMarketValue',
+      'unrealizedPnl',
+    ]);
+  });
+
+  it('industry 恒为 null（板块数据源实测 0 行）→ 前端据此显式降级行业筛选', async () => {
+    const items = await getHolding();
+    for (const p of items) {
+      expect(Object.prototype.hasOwnProperty.call(p, 'industry')).toBe(true);
+      expect(p.industry).toBeNull();
+    }
+  });
+});
+
+// ══════════════════════════════════════════════════════════
+// ⑪ 卡 1 · 真实行情库交叉验证（本地有真库时才跑；CI 无行情库 → 跳过）
+// ══════════════════════════════════════════════════════════
+
+describe('T67-⑪ 真实行情库 —— name 的命中与缺失', () => {
+  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
+
+  // ⚠️ 真实库上 `/api/holding` 会触发 `v_stock_qfq` 的全量扫描（实测约 3s/次）
+  //   → 合并成**一次**调用，避免多开 DuckDB 实例（文件锁 + page cache 驱逐）
+  itReal(
+    '真库上 sh600000 = 浦发银行、sh600001 无名（缺失是常态，不报错），且查名仍只 1 次 IN 查询',
+    async () => {
+      H.useReal.value = true;
+      const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
+      spy.mockClear();
+      const res = await app.inject({ method: 'GET', url: '/api/holding' });
+      H.useReal.value = false;
+      expect(res.statusCode).toBe(200);
+      const items = res.json().data as Array<Record<string, any>>;
+
+      // 真库实测：`raw_symbol_name` 有 sh600000（浦发银行），**没有** sh600001
+      const named = items.find((i) => i.asset_code === 'sh600000');
+      expect(named).toBeDefined();
+      expect(named!.name).toBe('浦发银行');
+
+      const unnamed = items.find((i) => i.asset_code === 'sh600001');
+      expect(unnamed).toBeDefined();
+      expect(unnamed!.name).toBeNull();
+
+      // 查名仍是 1 次 IN 查询（无 N+1）
+      const nameCalls = spy.mock.calls.filter((c) => String(c[0]).includes('FROM raw_symbol_name'));
+      expect(nameCalls.length).toBe(1);
+      const params = nameCalls[0][1] as unknown[];
+      expect(params.length).toBe(ALL_CODES.length);
+    },
+  );
 });

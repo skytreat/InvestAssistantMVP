@@ -1,7 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
-import { batchGetLatestAndPrevClose, type LatestAndPrevClose } from '../services/marketData.js';
+import {
+  batchGetLatestAndPrevClose,
+  batchGetSymbolNames,
+  type LatestAndPrevClose,
+} from '../services/marketData.js';
 import { getLatestSignalsByAssets, type SignalRow } from '../services/todaySignals.js';
 import { writeSystemLog } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
@@ -396,11 +400,14 @@ export async function registerTradeRoutes(app: FastifyInstance) {
   // 查询全部持仓（T33：带现价 / 市值 / 盈亏 / 仓位占比，供仪表盘持仓卡使用）
   //
   // ── T67 enrich（**只加不改**，既有字段的路径 / 方法 / 响应形状全部不变）──
-  //   每个 position 新增 2 个字段：
+  //   每个 position 新增 3 个字段：
   //   - `prevClose: number | null` —— **昨收**（该标的上一根日线的收盘价），
   //     供「总资产变化（对比昨日）」用；无行情 / 无上一根 → null。
   //   - `signal: { plugin_id, direction, label, trade_date } | null` —— 该标的的
   //     **最新一条**信号（建议 A）；无信号 → null。
+  //   - `name: string | null` —— **中文名**（`raw_symbol_name.name`）；
+  //     查不到 → null（实测覆盖率约 70%，缺失是常态）。
+  //   - `industry: string | null` —— **契约预留字段**，当前恒为 null（见下）。
   //   ⚠️ 降级：DuckDB 不可用 → prevClose 全为 null；信号查询失败 → signal 全为 null。
   //     **任何一种降级都不得让整条接口 500**。
   app.get('/api/holding', async (request, reply) => {
@@ -421,6 +428,15 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       } catch (err: any) {
         // DuckDB 不可用不阻塞持仓展示，前端降级为"无现价"
         app.log.warn({ err }, '持仓现价/昨收查询失败，降级为无现价');
+      }
+
+      // 1 次 IN 查询拿全部持仓标的的**中文名**（T67 卡 1；同样禁止逐标的循环查）
+      let names: Map<string, string> = new Map();
+      try {
+        names = await batchGetSymbolNames(positions.map((p) => p.asset_code));
+      } catch (err: any) {
+        // 名称查不到不阻塞持仓展示，前端降级为"只显示代码"
+        app.log.warn({ err }, '持仓标的名称查询失败，降级为无名称');
       }
 
       // 1 次 IN 查询拿全部持仓标的的最新信号（T67 建议 A；同样禁止逐标的循环查）
@@ -455,6 +471,20 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           prevClose: quote?.prevClose ?? null,
           /** 该标的的最新一条信号；无信号 → null */
           signal: signals.get(p.asset_code) ?? null,
+          /** 中文名（`raw_symbol_name.name`）；查不到 → null（覆盖率约 70%，缺失是常态） */
+          name: names.get(p.asset_code) ?? null,
+          /**
+           * 行业（**契约预留字段，当前恒为 null**）
+           *
+           * 实测（2026-10-20）：`raw_tdx_blocks_member` 与 `raw_tdx_blocks_info` **均为 0 行**，
+           *   且 `raw_tdx_blocks_member` 实际列名是 `(stock_symbol, block_code)`
+           *   —— 与 SDD §3.3 行 1299 登记的 `symbol` **不一致**（AGENTS.md：放行 ≠ 已知列名）。
+           * ⇒ 行业在当前数据源下**可证明恒为 null**。
+           * ⚠️ 接入真实查询前必须先甄别 `block_type`（行业 / 概念 / 地区）——
+           *   空表上无法实测该取值集合，故本卡**不写猜测口径**，只把字段预留进契约，
+           *   前端据此把「行业筛选」显式降级（禁用 + 说明文案），不许静默失效。
+           */
+          industry: null,
         };
       });
 
