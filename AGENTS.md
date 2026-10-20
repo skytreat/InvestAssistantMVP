@@ -176,6 +176,39 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 每次漏做这步 → 下次 `npm run dev` 端口冲突 → ConfigStore 持久化漂移 → 排查 30 分钟以上。
 
+### 🔴 CI 与本地不一致的三个陷阱（2026-10-19 实测，PR #17 修复）
+
+**本地全绿 ≠ CI 全绿**。下列三点会让「本地过、CI 红」，写测试/改配置前必读：
+
+1. **CI 没有真实行情库** —— 仓库里的 `data/quotes.duckdb` 只是 **12KB 空壳**（无 `v_stock_qfq` 等表），
+   本地指向 `/opt/invol/quotes.duckdb`（**1.24GB** 真数据）。
+   → **依赖真实行情的测试在 CI 必红**。判定「行情库可用」**不能用 `fs.existsSync`**（空壳文件是存在的），
+   必须探测**表是否存在**（见 `apps/backend/tests/_marketData.ts`）。
+   → 无库时**跳过**（`it.skipIf`），与 `smoke-m1` 的既有做法一致。
+
+2. **`--coverage` 会提前加载源文件** —— v8 provider 为收集未覆盖文件的覆盖率，
+   会在 `setupFiles` **之前**求值 `src/` 下的模块。
+   → **不要在模块顶层读 `process.env`**（`auth.ts` 已改为惰性读取）。
+   → 也意味着 `process.env` 在测试文件之间**不保证共享**，`setup.ts` 里的
+   `globalThis` 守卫会让「只跑一次」的兜底在后续文件失效 → **兜底必须每文件执行**。
+
+3. **`vitest.config.ts` 的 `test.env` 不可靠** —— 它作用于 vitest 的模块上下文代理，
+   业务模块读**裸** `process.env` 时可能拿不到（实测：探针测试里有值，
+   另一个测试文件的上下文里没有）。
+   → **兜底必须放在业务代码自己身上**，不要依赖任何注入时序。
+
+> 📌 **改完测试必须在 CI 条件下自验**，两种环境各跑一遍：
+> ```bash
+> # CI 模拟（空行情库 + 无 .env.local + 无 JWT_SECRET + --coverage）
+> mv .env.local .env.local.hidden && unset JWT_SECRET \
+>   DUCKDB_PATH=/tmp/nonexistent.duckdb \
+>   npx vitest run apps/backend/tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
+> mv .env.local.hidden .env.local
+> ```
+> ⚠️ **改 `packages/core` 后必须 `npm run build -w @invest/core`** —— `apps/backend/tsconfig.json`
+> **没有 `paths`**，故 `tsc` 走 gitignored 的 `packages/core/dist`；不重建则 `tsc` 红而 CI 绿
+> （CI 无 typecheck 步骤 → 契约漂移抓不到）。**这是 T86 要修的盲区。**
+
 **端口分配固定段**（避免与用户其他项目冲突，也避免我们自己测试冲突）：
 
 | 用途 | 端口 | 说明 |
