@@ -372,18 +372,36 @@ export default function Dashboard() {
             <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无持仓</div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
-              <table style={tableStyle}>
+              <table style={tableStyle} aria-label="持仓明细">
                 <thead>
                   <tr>
-                    <th style={thStyle}>代码</th>
-                    <th style={thStyle}>现价</th>
-                    <th style={thStyle}>持仓</th>
-                    <th style={thStyle}>均价</th>
-                    <th style={thStyle}>市值</th>
-                    <th style={thStyle}>浮动盈亏</th>
-                    <th style={thStyle}>收益率</th>
-                    <th style={thStyle}>仓位占比</th>
-                    <th style={thStyle}>已实现</th>
+                    <th scope="col" style={thStyle}>
+                      代码
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      现价
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      持仓
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      均价
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      市值
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      浮动盈亏
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      收益率
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      仓位占比
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      已实现
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -436,14 +454,24 @@ export default function Dashboard() {
         {sigLoading && <div>加载中...</div>}
         {sigError && <div style={{ color: COLORS.danger }}>{sigError}</div>}
         {!sigLoading && !sigError && (
-          <table style={tableStyle}>
+          <table style={tableStyle} aria-label="最新信号">
             <thead>
               <tr>
-                <th style={thStyle}>代码</th>
-                <th style={thStyle}>策略</th>
-                <th style={thStyle}>方向</th>
-                <th style={thStyle}>标签</th>
-                <th style={thStyle}>日期</th>
+                <th scope="col" style={thStyle}>
+                  代码
+                </th>
+                <th scope="col" style={thStyle}>
+                  策略
+                </th>
+                <th scope="col" style={thStyle}>
+                  方向
+                </th>
+                <th scope="col" style={thStyle}>
+                  标签
+                </th>
+                <th scope="col" style={thStyle}>
+                  日期
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -489,13 +517,21 @@ export default function Dashboard() {
           {logLoading && <div>加载中...</div>}
           {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
           {!logLoading && !logError && (
-            <table style={tableStyle}>
+            <table style={tableStyle} aria-label="最近日志">
               <thead>
                 <tr>
-                  <th style={thStyle}>时间</th>
-                  <th style={thStyle}>类型</th>
-                  <th style={thStyle}>级别</th>
-                  <th style={thStyle}>消息</th>
+                  <th scope="col" style={thStyle}>
+                    时间
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    类型
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    级别
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    消息
+                  </th>
                 </tr>
               </thead>
               <tbody>

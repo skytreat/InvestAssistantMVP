@@ -82,16 +82,22 @@ export default function Signals() {
       <h1 style={titleStyle}>策略信号</h1>
 
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>交易日期</label>
+        <label htmlFor="signals-trade-date" style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>
+          交易日期
+        </label>
         <input
+          id="signals-trade-date"
           style={inputStyle}
           type="date"
           value={tradeDate}
           onChange={(e) => setTradeDate(e.target.value)}
         />
 
-        <label style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>策略名称</label>
+        <label htmlFor="signals-plugin-id" style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>
+          策略名称
+        </label>
         <input
+          id="signals-plugin-id"
           style={inputStyle}
           type="text"
           placeholder="可选"
@@ -99,8 +105,15 @@ export default function Signals() {
           onChange={(e) => setPluginId(e.target.value)}
         />
 
-        <label style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>方向</label>
-        <select style={inputStyle} value={direction} onChange={(e) => setDirection(e.target.value)}>
+        <label htmlFor="signals-direction" style={{ fontSize: TYPO.bodySize, color: COLORS.textSecondary }}>
+          方向
+        </label>
+        <select
+          id="signals-direction"
+          style={inputStyle}
+          value={direction}
+          onChange={(e) => setDirection(e.target.value)}
+        >
           <option value="">全部</option>
           <option value="hold">持仓</option>
           <option value="buy">买入</option>
@@ -118,11 +131,11 @@ export default function Signals() {
           <div style={{ color: COLORS.neutral }}>请点击查询按钮加载数据</div>
         )}
         {rows.length > 0 && (
-          <table style={tableStyle}>
+          <table style={tableStyle} aria-label="策略信号查询结果">
             <thead>
               <tr>
                 {columns.map((col) => (
-                  <th key={col} style={thStyle}>
+                  <th key={col} scope="col" style={thStyle}>
                     {COLUMN_LABELS[col] ?? col}
                   </th>
                 ))}

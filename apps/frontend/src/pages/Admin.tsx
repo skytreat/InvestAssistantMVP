@@ -356,11 +356,11 @@ export default function Admin() {
         {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
         {!logLoading && !logError && (
           <>
-            <table style={tableStyle}>
+            <table style={tableStyle} aria-label="系统日志">
               <thead>
                 <tr>
                   {logColumns.map((col) => (
-                    <th key={col} style={thStyle}>
+                    <th key={col} scope="col" style={thStyle}>
                       {col === 'log_type' ? '类型' : col === 'level' ? '级别' : col}
                     </th>
                   ))}

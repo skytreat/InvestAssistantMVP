@@ -55,6 +55,36 @@ function paramDefault(field: ParamField): unknown {
   return '';
 }
 
+/**
+ * 生成控件 id（T63）
+ *
+ * 命名规则：`<页面>-<插件id>-<字段key>`，全部小写 kebab-case。
+ * ⚠️ id 必须**页内唯一**：同一插件的多个参数各自一个字段 key，故天然不冲突；
+ * 不同插件用 pluginId 隔离。
+ */
+function fieldId(pluginId: string, fieldKey: string): string {
+  const sanitize = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+  return `settings-${sanitize(pluginId)}-${sanitize(fieldKey)}`;
+}
+
+/**
+ * 插件「启用 / 禁用」开关的 checkbox id（T63）
+ *
+ * 与参数字段 id 命名空间隔离（用 `plugin-` 前缀），避免与同名参数 key 撞 id。
+ */
+function pluginToggleId(pluginId: string): string {
+  const sanitize = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+  return `settings-${sanitize(pluginId)}-plugin-enabled`;
+}
+
 export default function Settings() {
   const [plugins, setPlugins] = useState<PluginItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -150,22 +180,32 @@ export default function Settings() {
   const renderField = (p: PluginItem, f: ParamField) => {
     const value = draft[p.id]?.[f.key] ?? '';
     const set = (v: unknown) => setDraft((d) => ({ ...d, [p.id]: { ...d[p.id], [f.key]: v } }));
+    // T63：控件 id 与字段 label 的 htmlFor 一一对应（插件 id + 字段 key 保证唯一）
+    const controlId = fieldId(p.id, f.key);
 
     return (
       <div key={f.key} style={{ marginBottom: 12 }}>
-        <label style={{ ...labelStyle, display: 'block', minWidth: 0, marginBottom: 4 }}>
+        <label htmlFor={controlId} style={{ ...labelStyle, display: 'block', minWidth: 0, marginBottom: 4 }}>
           {f.label}
           {f.required && <span style={{ color: COLORS.danger }}> *</span>}
           {f.unit && <span style={{ color: COLORS.neutral, fontSize: 12 }}>（{f.unit}）</span>}
         </label>
         {f.type === 'boolean' && (
+          // 包住式 label（label 内含唯一的 checkbox）→ 天然关联，
+          // 故无需 htmlFor；此处保留包住式是为了不改「复选框在前、文字在后」的视觉顺序
           <label style={{ fontSize: TYPO.bodySize }}>
-            <input type="checkbox" checked={Boolean(value)} onChange={(e) => set(e.target.checked)} />{' '}
+            <input
+              id={controlId}
+              type="checkbox"
+              checked={Boolean(value)}
+              onChange={(e) => set(e.target.checked)}
+            />{' '}
             启用该选项
           </label>
         )}
         {f.type === 'select' && (
           <select
+            id={controlId}
             style={{ ...inputStyle, width: '100%' }}
             value={String(value)}
             onChange={(e) => set(e.target.value)}
@@ -179,6 +219,7 @@ export default function Settings() {
         )}
         {(f.type === 'number' || f.type === 'integer') && (
           <input
+            id={controlId}
             type="number"
             style={{ ...inputStyle, width: '100%' }}
             value={value === '' || value === undefined ? '' : String(value)}
@@ -190,6 +231,7 @@ export default function Settings() {
         )}
         {f.type === 'string' && (
           <input
+            id={controlId}
             style={{ ...inputStyle, width: '100%' }}
             value={String(value)}
             onChange={(e) => set(e.target.value)}
@@ -261,7 +303,13 @@ export default function Settings() {
                 <label
                   style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
                 >
-                  <input type="checkbox" checked={p.enabled === 1} onChange={() => toggle(p)} />
+                  {/* 包住式 label（label 内含唯一的 checkbox）→ 天然关联，无需 htmlFor */}
+                  <input
+                    id={pluginToggleId(p.id)}
+                    type="checkbox"
+                    checked={p.enabled === 1}
+                    onChange={() => toggle(p)}
+                  />
                   {p.enabled === 1 ? '已启用' : '已禁用'}
                 </label>
                 {(p.paramSchema?.length ?? 0) > 0 && (

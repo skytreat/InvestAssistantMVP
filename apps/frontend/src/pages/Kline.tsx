@@ -433,9 +433,19 @@ export default function Kline() {
           flexWrap: 'wrap',
         }}
       >
-        <label style={{ fontSize: TYPO.bodySize }}>
-          代码：
+        {/*
+          T63：原先 `<label>` 是**包住式**（label 内嵌 input/select）。
+          此处统一改为「兄弟」结构 —— `<label htmlFor>` + 控件 `id`，
+          便于读屏软件与自动化测试按「标签文本」定位控件。
+          ⚠️ 每一对「标签 + 控件」仍包在一个 `<div>` 里 → 与改前一样各自是一个 flex item，
+          故 **flex gap 造成的间距变化为零**，视觉与改前完全一致。
+        */}
+        <div>
+          <label htmlFor="kline-input-symbol" style={{ fontSize: TYPO.bodySize }}>
+            代码：
+          </label>
           <input
+            id="kline-input-symbol"
             value={symbol}
             onChange={(e) => setSymbol(e.target.value)}
             placeholder="如 sh600000"
@@ -447,10 +457,13 @@ export default function Kline() {
               borderRadius: RADIUS.sm,
             }}
           />
-        </label>
-        <label style={{ fontSize: TYPO.bodySize }}>
-          复权方式：
+        </div>
+        <div>
+          <label htmlFor="kline-select-fq" style={{ fontSize: TYPO.bodySize }}>
+            复权方式：
+          </label>
           <select
+            id="kline-select-fq"
             value={fq}
             onChange={(e) => setFq(e.target.value as 'qfq' | 'raw')}
             style={{
@@ -463,10 +476,13 @@ export default function Kline() {
             <option value="qfq">前复权</option>
             <option value="raw">不复权</option>
           </select>
-        </label>
-        <label style={{ fontSize: TYPO.bodySize }}>
-          周期：
+        </div>
+        <div>
+          <label htmlFor="kline-select-period" style={{ fontSize: TYPO.bodySize }}>
+            周期：
+          </label>
           <select
+            id="kline-select-period"
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
             style={{
@@ -481,7 +497,7 @@ export default function Kline() {
             <option value={250}>近1年</option>
             <option value={500}>近500日</option>
           </select>
-        </label>
+        </div>
         <button
           onClick={load}
           disabled={loading}

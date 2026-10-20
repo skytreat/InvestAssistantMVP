@@ -204,8 +204,15 @@ export default function StockScan() {
         <div style={cardTitleStyle}>选股配置</div>
 
         <div style={formRowStyle}>
-          <span style={labelStyle}>策略插件：</span>
+          {/*
+            T63：原先这些是 `<span>`（纯文本），读屏无法与控件关联
+            → 改为 `<label htmlFor>` + 控件 `id`（文本内容不变）。
+          */}
+          <label htmlFor="stockscan-plugin" style={labelStyle}>
+            策略插件：
+          </label>
           <select
+            id="stockscan-plugin"
             style={inputStyle}
             value={selectedPluginId}
             onChange={(e) => handlePluginChange(e.target.value)}
@@ -226,8 +233,11 @@ export default function StockScan() {
         </div>
 
         <div style={formRowStyle}>
-          <span style={labelStyle}>最低成交额（万）：</span>
+          <label htmlFor="stockscan-min-amount" style={labelStyle}>
+            最低成交额（万）：
+          </label>
           <input
+            id="stockscan-min-amount"
             style={inputStyle}
             type="number"
             min={0}
@@ -241,8 +251,11 @@ export default function StockScan() {
         </div>
 
         <div style={formRowStyle}>
-          <span style={labelStyle}>返回上限：</span>
+          <label htmlFor="stockscan-max-results" style={labelStyle}>
+            返回上限：
+          </label>
           <input
+            id="stockscan-max-results"
             style={inputStyle}
             type="number"
             min={1}
@@ -253,8 +266,11 @@ export default function StockScan() {
         </div>
 
         <div style={{ ...formRowStyle, alignItems: 'flex-start' }}>
-          <span style={{ ...labelStyle, paddingTop: 6 }}>参数 JSON：</span>
+          <label htmlFor="stockscan-params-json" style={{ ...labelStyle, paddingTop: 6 }}>
+            参数 JSON：
+          </label>
           <textarea
+            id="stockscan-params-json"
             style={{ ...inputStyle, flex: 1, fontFamily: TYPO.monoFamily }}
             rows={3}
             value={paramsJson}
@@ -335,15 +351,27 @@ export default function StockScan() {
         ) : results.length === 0 ? (
           <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无结果</div>
         ) : (
-          <table style={tableStyle}>
+          <table style={tableStyle} aria-label="选股结果">
             <thead>
               <tr>
-                <th style={thStyle}>序号</th>
-                <th style={thStyle}>股票代码</th>
-                <th style={thStyle}>方向</th>
-                <th style={thStyle}>强度</th>
-                <th style={thStyle}>详情</th>
-                <th style={thStyle}>操作</th>
+                <th scope="col" style={thStyle}>
+                  序号
+                </th>
+                <th scope="col" style={thStyle}>
+                  股票代码
+                </th>
+                <th scope="col" style={thStyle}>
+                  方向
+                </th>
+                <th scope="col" style={thStyle}>
+                  强度
+                </th>
+                <th scope="col" style={thStyle}>
+                  详情
+                </th>
+                <th scope="col" style={thStyle}>
+                  操作
+                </th>
               </tr>
             </thead>
             <tbody>

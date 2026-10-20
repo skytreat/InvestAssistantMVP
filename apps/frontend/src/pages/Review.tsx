@@ -427,8 +427,15 @@ export default function Review() {
 
       {/* 筛选栏 */}
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: TYPO.bodySize }}>交易类型：</label>
-        <select style={inputStyle} value={tradeType} onChange={(e) => setTradeType(e.target.value)}>
+        <label htmlFor="review-filter-trade-type" style={{ fontSize: TYPO.bodySize }}>
+          交易类型：
+        </label>
+        <select
+          id="review-filter-trade-type"
+          style={inputStyle}
+          value={tradeType}
+          onChange={(e) => setTradeType(e.target.value)}
+        >
           <option value="">全部</option>
           {['buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].map((t) => (
             <option key={t} value={t}>
@@ -436,20 +443,41 @@ export default function Review() {
             </option>
           ))}
         </select>
-        <label style={{ fontSize: TYPO.bodySize }}>系统信号：</label>
-        <select style={inputStyle} value={systemFollowed} onChange={(e) => setSystemFollowed(e.target.value)}>
+        <label htmlFor="review-filter-system-followed" style={{ fontSize: TYPO.bodySize }}>
+          系统信号：
+        </label>
+        <select
+          id="review-filter-system-followed"
+          style={inputStyle}
+          value={systemFollowed}
+          onChange={(e) => setSystemFollowed(e.target.value)}
+        >
           <option value="">全部</option>
           <option value="1">是</option>
           <option value="0">否</option>
         </select>
-        <label style={{ fontSize: TYPO.bodySize }}>符合策略：</label>
-        <select style={inputStyle} value={strategyMatch} onChange={(e) => setStrategyMatch(e.target.value)}>
+        <label htmlFor="review-filter-strategy-match" style={{ fontSize: TYPO.bodySize }}>
+          符合策略：
+        </label>
+        <select
+          id="review-filter-strategy-match"
+          style={inputStyle}
+          value={strategyMatch}
+          onChange={(e) => setStrategyMatch(e.target.value)}
+        >
           <option value="">全部</option>
           <option value="1">是</option>
           <option value="0">否</option>
         </select>
-        <label style={{ fontSize: TYPO.bodySize }}>止损：</label>
-        <select style={inputStyle} value={isStopLoss} onChange={(e) => setIsStopLoss(e.target.value)}>
+        <label htmlFor="review-filter-stop-loss" style={{ fontSize: TYPO.bodySize }}>
+          止损：
+        </label>
+        <select
+          id="review-filter-stop-loss"
+          style={inputStyle}
+          value={isStopLoss}
+          onChange={(e) => setIsStopLoss(e.target.value)}
+        >
           <option value="">全部</option>
           <option value="1">是</option>
           <option value="0">否</option>
@@ -468,20 +496,42 @@ export default function Review() {
         ) : trades.length === 0 ? (
           <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无交易记录</div>
         ) : (
-          <table style={tableStyle}>
+          <table style={tableStyle} aria-label="交易复盘列表">
             <thead>
               <tr>
-                <th style={thStyle}>日期</th>
-                <th style={thStyle}>标的</th>
-                <th style={thStyle}>类型</th>
-                <th style={thStyle}>数量</th>
-                <th style={thStyle}>价格</th>
-                <th style={thStyle}>操作理由</th>
-                <th style={thStyle}>复盘</th>
-                <th style={thStyle}>符合策略</th>
-                <th style={thStyle}>止损</th>
-                <th style={thStyle}>来源</th>
-                <th style={thStyle}>操作</th>
+                <th scope="col" style={thStyle}>
+                  日期
+                </th>
+                <th scope="col" style={thStyle}>
+                  标的
+                </th>
+                <th scope="col" style={thStyle}>
+                  类型
+                </th>
+                <th scope="col" style={thStyle}>
+                  数量
+                </th>
+                <th scope="col" style={thStyle}>
+                  价格
+                </th>
+                <th scope="col" style={thStyle}>
+                  操作理由
+                </th>
+                <th scope="col" style={thStyle}>
+                  复盘
+                </th>
+                <th scope="col" style={thStyle}>
+                  符合策略
+                </th>
+                <th scope="col" style={thStyle}>
+                  止损
+                </th>
+                <th scope="col" style={thStyle}>
+                  来源
+                </th>
+                <th scope="col" style={thStyle}>
+                  操作
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -598,19 +648,38 @@ export default function Review() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
-                <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>复盘总结</label>
+                <label
+                  htmlFor="review-edit-summary"
+                  style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                >
+                  复盘总结
+                </label>
                 <textarea
+                  id="review-edit-summary"
                   style={{ ...inputStyle, width: '100%', marginTop: 4, minHeight: 60, resize: 'vertical' }}
                   value={editForm.review_summary}
                   onChange={(e) => setEditForm((f) => ({ ...f, review_summary: e.target.value }))}
                 />
               </div>
+              {/*
+                T63：三态按钮组**不是** form label（它标的是一组按钮，不是单个控件）
+                → 标题由 `<label>` 改为 `<span id=...>`，按钮组用
+                  `role="group"` + `aria-labelledby` 指向该 span；
+                  每个按钮加 `aria-pressed` 暴露选中态（否则选中态仅靠颜色传达）。
+              */}
               <div style={{ display: 'flex', gap: SPACING.gapRelaxed }}>
                 <div>
-                  <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+                  <span
+                    id="review-edit-strategy-match-label"
+                    style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                  >
                     是否符合策略
-                  </label>
-                  <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}>
+                  </span>
+                  <div
+                    role="group"
+                    aria-labelledby="review-edit-strategy-match-label"
+                    style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}
+                  >
                     {(
                       [
                         ['', '未标记'],
@@ -620,6 +689,7 @@ export default function Review() {
                     ).map(([v, l]) => (
                       <button
                         key={v}
+                        aria-pressed={editForm.strategy_match === v}
                         style={{
                           ...inputStyle,
                           background:
@@ -634,8 +704,17 @@ export default function Review() {
                   </div>
                 </div>
                 <div>
-                  <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>是否止损</label>
-                  <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}>
+                  <span
+                    id="review-edit-stop-loss-label"
+                    style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                  >
+                    是否止损
+                  </span>
+                  <div
+                    role="group"
+                    aria-labelledby="review-edit-stop-loss-label"
+                    style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}
+                  >
                     {(
                       [
                         ['', '未标记'],
@@ -645,6 +724,7 @@ export default function Review() {
                     ).map(([v, l]) => (
                       <button
                         key={v}
+                        aria-pressed={editForm.is_stop_loss === v}
                         style={{
                           ...inputStyle,
                           background: editForm.is_stop_loss === v ? COLORS.bgSelectedDanger : COLORS.cardBg,
@@ -659,8 +739,14 @@ export default function Review() {
                 </div>
               </div>
               <div>
-                <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>备注</label>
+                <label
+                  htmlFor="review-edit-remark"
+                  style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                >
+                  备注
+                </label>
                 <input
+                  id="review-edit-remark"
                   style={{ ...inputStyle, width: '100%', marginTop: 4 }}
                   value={editForm.remark}
                   onChange={(e) => setEditForm((f) => ({ ...f, remark: e.target.value }))}

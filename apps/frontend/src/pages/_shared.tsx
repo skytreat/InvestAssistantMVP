@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 
@@ -12,6 +12,23 @@ const linkStyle: React.CSSProperties = {
   color: COLORS.brandLink,
   textDecoration: 'none',
   borderRadius: RADIUS.sm,
+};
+
+/**
+ * 导航激活态样式（T63 · ui-spec §4「语义标签 / 导航激活态」）
+ *
+ * 复用既有 token，不引入新 hex：
+ * - 底色 `COLORS.brandBg`（浅蓝）
+ * - 文字 `COLORS.brandLink`（深蓝）
+ * - 字重 600
+ *
+ * ⚠️ **react-router v6 没有 v5 的 `activeStyle` 属性** —— v6 用**函数式 `style`**
+ * （`style={({ isActive }) => ({ ...base, ...(isActive ? active : {}) })}`）。
+ */
+const activeLinkStyle: React.CSSProperties = {
+  background: COLORS.brandBg,
+  color: COLORS.brandLink,
+  fontWeight: 600,
 };
 
 /** 桌面端导航项（PRD §5.8 #7 左侧导航栏） */
@@ -43,7 +60,12 @@ export function Navbar() {
 
   return (
     <>
-      <div
+      {/*
+        T63 语义化：导航条外层由 `<div>` 改为 `<header>`（landmark）。
+        ⚠️ App.tsx **不再**额外包一层 `<header>` —— HTML 规范禁止 header 嵌套 header，
+        故「App 的 header」与「Navbar 的 header」是同一个元素（详见 App.tsx 注释）。
+      */}
+      <header
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -55,11 +77,16 @@ export function Navbar() {
         }}
       >
         <span style={{ fontWeight: 'bold', fontSize: 20 }}>InvestAssistant</span>
-        <nav style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
+        <nav aria-label="主导航" style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
           {items.map((i) => (
-            <Link key={i.to} to={i.to} style={linkStyle}>
+            <NavLink
+              key={i.to}
+              to={i.to}
+              end
+              style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
+            >
               {i.label}
-            </Link>
+            </NavLink>
           ))}
         </nav>
         <span style={{ marginLeft: 'auto', color: COLORS.textTertiary, fontSize: TYPO.smallSize }}>
@@ -73,7 +100,7 @@ export function Navbar() {
         >
           退出登录
         </button>
-      </div>
+      </header>
       {/* 全局合规声明 */}
       <div
         style={{
@@ -105,6 +132,7 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <nav
+      aria-label="底部导航"
       style={{
         position: 'fixed',
         bottom: 0,
@@ -118,37 +146,41 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
       }}
     >
       {MOBILE_TAB.map((t) => (
-        <Link
+        <NavLink
           key={t.to}
           to={t.to}
-          style={{
+          end
+          style={({ isActive }) => ({
             flex: 1,
             textAlign: 'center',
             padding: '8px 0',
             fontSize: TYPO.captionSize,
             color: COLORS.textSecondary,
             textDecoration: 'none',
-          }}
+            ...(isActive ? activeLinkStyle : {}),
+          })}
         >
           <div style={{ fontSize: 20, lineHeight: '24px' }}>{t.icon}</div>
           {t.label}
-        </Link>
+        </NavLink>
       ))}
       {isAdmin && (
-        <Link
+        <NavLink
           to="/admin"
-          style={{
+          end
+          style={({ isActive }) => ({
             flex: 1,
             textAlign: 'center',
             padding: '8px 0',
             fontSize: TYPO.captionSize,
             color: COLORS.textSecondary,
             textDecoration: 'none',
-          }}
+            ...(isActive ? activeLinkStyle : {}),
+          })}
         >
           <div style={{ fontSize: 20, lineHeight: '24px' }}>🛠️</div>
           管理
-        </Link>
+        </NavLink>
       )}
     </nav>
   );

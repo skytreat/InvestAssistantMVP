@@ -57,8 +57,11 @@ export default function Login() {
       <div style={{ ...cardStyle, maxWidth: 400 }}>
         <form onSubmit={handleSubmit}>
           <div style={formRowStyle}>
-            <label style={labelStyle}>用户名</label>
+            <label htmlFor="login-input-username" style={labelStyle}>
+              用户名
+            </label>
             <input
+              id="login-input-username"
               style={{ ...inputStyle, flex: 1 }}
               type="text"
               value={username}
@@ -68,8 +71,11 @@ export default function Login() {
             />
           </div>
           <div style={formRowStyle}>
-            <label style={labelStyle}>密码</label>
+            <label htmlFor="login-input-password" style={labelStyle}>
+              密码
+            </label>
             <input
+              id="login-input-password"
               style={{ ...inputStyle, flex: 1 }}
               type="password"
               value={password}

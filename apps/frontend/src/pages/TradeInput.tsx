@@ -53,7 +53,16 @@ interface SymbolOption {
 }
 
 /** 自动补全输入框：输入代码/名称后弹出匹配列表，点击选择后自动补全前缀 */
-function SymbolAutocomplete({ value, onChange }: { value: string; onChange: (val: string) => void }) {
+function SymbolAutocomplete({
+  value,
+  onChange,
+  id,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  /** 控件 id —— 供外层 `<label htmlFor>` 建立程序化关联（T63） */
+  id: string;
+}) {
   const [options, setOptions] = useState<SymbolOption[]>([]);
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
@@ -112,6 +121,7 @@ function SymbolAutocomplete({ value, onChange }: { value: string; onChange: (val
   return (
     <div style={{ position: 'relative', flex: 1 }}>
       <input
+        id={id}
         style={{ ...inputStyle, flex: 1, width: '100%' }}
         type="text"
         placeholder="输入代码或名称，如 600000 或 浦发"
@@ -249,13 +259,18 @@ export default function TradeInput() {
       <div style={{ ...cardStyle, maxWidth: 600 }}>
         <form onSubmit={handleSubmit}>
           <div style={formRowStyle}>
-            <label style={labelStyle}>股票代码</label>
-            <SymbolAutocomplete value={assetCode} onChange={setAssetCode} />
+            <label htmlFor="trade-input-symbol" style={labelStyle}>
+              股票代码
+            </label>
+            <SymbolAutocomplete id="trade-input-symbol" value={assetCode} onChange={setAssetCode} />
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>交易类型</label>
+            <label htmlFor="trade-input-type" style={labelStyle}>
+              交易类型
+            </label>
             <select
+              id="trade-input-type"
               style={{ ...inputStyle, flex: 1 }}
               value={tradeType}
               onChange={(e) => setTradeType(e.target.value)}
@@ -269,8 +284,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>交易日期</label>
+            <label htmlFor="trade-input-date" style={labelStyle}>
+              交易日期
+            </label>
             <input
+              id="trade-input-date"
               style={{ ...inputStyle, flex: 1 }}
               type="date"
               value={tradeDate}
@@ -280,8 +298,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>成交时间</label>
+            <label htmlFor="trade-input-time" style={labelStyle}>
+              成交时间
+            </label>
             <input
+              id="trade-input-time"
               style={{ ...inputStyle, flex: 1 }}
               type="time"
               step="1"
@@ -293,8 +314,11 @@ export default function TradeInput() {
           {/* T87：同日同标的同类型可分笔录入，唯一键含成交时间；提交前请确认成交时间无误 */}
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>数量</label>
+            <label htmlFor="trade-input-quantity" style={labelStyle}>
+              数量
+            </label>
             <input
+              id="trade-input-quantity"
               style={{ ...inputStyle, flex: 1 }}
               type="number"
               min={1}
@@ -305,8 +329,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>价格</label>
+            <label htmlFor="trade-input-price" style={labelStyle}>
+              价格
+            </label>
             <input
+              id="trade-input-price"
               style={{ ...inputStyle, flex: 1 }}
               type="number"
               step="0.0001"
@@ -318,8 +345,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>手续费</label>
+            <label htmlFor="trade-input-fee" style={labelStyle}>
+              手续费
+            </label>
             <input
+              id="trade-input-fee"
               style={{ ...inputStyle, flex: 1 }}
               type="number"
               step="0.0001"
@@ -330,8 +360,11 @@ export default function TradeInput() {
           </div>
 
           <div style={formRowStyle}>
-            <label style={labelStyle}>trade_reason</label>
+            <label htmlFor="trade-input-reason" style={labelStyle}>
+              trade_reason
+            </label>
             <input
+              id="trade-input-reason"
               style={{ ...inputStyle, flex: 1 }}
               type="text"
               placeholder="如 MACD 金叉买入 / 止损卖出"
