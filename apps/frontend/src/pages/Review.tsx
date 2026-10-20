@@ -45,8 +45,13 @@ interface ReviewStats {
 }
 
 const TRADE_TYPE_LABEL: Record<string, string> = {
-  buy: '买入', add: '加仓', reduce: '减仓', clear: '清仓',
-  dividend: '分红', bonus: '送股', transfer: '转增',
+  buy: '买入',
+  add: '加仓',
+  reduce: '减仓',
+  clear: '清仓',
+  dividend: '分红',
+  bonus: '送股',
+  transfer: '转增',
 };
 
 /** 双口径（Requirements §5.4） */
@@ -61,7 +66,9 @@ const CALIBER_LABEL: Record<Caliber, string> = {
 type CurvePeriod = 'monthly' | 'quarterly' | 'yearly';
 
 const PERIOD_LABEL: Record<CurvePeriod, string> = {
-  monthly: '月度', quarterly: '季度', yearly: '年度',
+  monthly: '月度',
+  quarterly: '季度',
+  yearly: '年度',
 };
 
 const PERIOD_MONTHS: Record<CurvePeriod, number> = { monthly: 1, quarterly: 3, yearly: 12 };
@@ -100,11 +107,12 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
   const H = 180;
   const PAD = { top: 12, right: 44, bottom: 24, left: 8 };
 
-  const values = points.map((p) =>
-    (caliber === 'price' ? p.total_assets_price_yield : p.total_assets_actual_yield) * 100);
+  const values = points.map(
+    (p) => (caliber === 'price' ? p.total_assets_price_yield : p.total_assets_actual_yield) * 100,
+  );
   const max = Math.max(...values, 0);
   const min = Math.min(...values, 0);
-  const range = (max - min) || 1;
+  const range = max - min || 1;
   const chartW = W - PAD.left - PAD.right;
   const chartH = H - PAD.top - PAD.bottom;
 
@@ -121,21 +129,39 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, height: 'auto' }}>
         <rect x={0} y={0} width={W} height={H} fill="#f9fafb" rx={4} />
         {/* 零轴 */}
-        <line x1={PAD.left} y1={zeroY} x2={W - PAD.right} y2={zeroY}
-              stroke="#9ca3af" strokeWidth={1} strokeDasharray="4 4" />
+        <line
+          x1={PAD.left}
+          y1={zeroY}
+          x2={W - PAD.right}
+          y2={zeroY}
+          stroke="#9ca3af"
+          strokeWidth={1}
+          strokeDasharray="4 4"
+        />
         {/* 面积 */}
-        <path d={`${path} L${x(values.length - 1)},${zeroY} L${x(0)},${zeroY} Z`}
-              fill={color} fillOpacity={0.12} />
+        <path
+          d={`${path} L${x(values.length - 1)},${zeroY} L${x(0)},${zeroY} Z`}
+          fill={color}
+          fillOpacity={0.12}
+        />
         {/* 折线 */}
         <path d={path} fill="none" stroke={color} strokeWidth={2} />
         {/* 端点 */}
         <circle cx={x(values.length - 1)} cy={y(last)} r={3.5} fill={color} />
         {/* y 轴刻度 */}
-        <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill="#6b7280">{max.toFixed(1)}%</text>
-        <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill="#6b7280">0%</text>
-        <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill="#6b7280">{min.toFixed(1)}%</text>
+        <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill="#6b7280">
+          {max.toFixed(1)}%
+        </text>
+        <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill="#6b7280">
+          0%
+        </text>
+        <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill="#6b7280">
+          {min.toFixed(1)}%
+        </text>
         {/* x 轴首尾日期 */}
-        <text x={PAD.left} y={H - 6} fontSize={10} fill="#6b7280">{points[0].trade_date}</text>
+        <text x={PAD.left} y={H - 6} fontSize={10} fill="#6b7280">
+          {points[0].trade_date}
+        </text>
         <text x={W - PAD.right} y={H - 6} fontSize={10} fill="#6b7280" textAnchor="end">
           {points[points.length - 1].trade_date}
         </text>
@@ -164,7 +190,12 @@ export default function Review() {
 
   // 编辑中的交易
   const [editingTrade, setEditingTrade] = useState<TradeRow | null>(null);
-  const [editForm, setEditForm] = useState({ review_summary: '', strategy_match: '' as '' | '0' | '1', is_stop_loss: '' as '' | '0' | '1', remark: '' });
+  const [editForm, setEditForm] = useState({
+    review_summary: '',
+    strategy_match: '' as '' | '0' | '1',
+    is_stop_loss: '' as '' | '0' | '1',
+    remark: '',
+  });
 
   // T38 ① 双口径切换 + R2/R4 收益曲线
   const [caliber, setCaliber] = useState<Caliber>('price');
@@ -176,7 +207,9 @@ export default function Review() {
     try {
       const res = await api.get('/review/yield');
       if (res.data.success) setStats(res.data.data);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   const fetchHistory = async () => {
@@ -184,8 +217,11 @@ export default function Review() {
     try {
       const res = await api.get('/asset-stat/history', { params: { days: 365 } });
       if (res.data.success) setHistory(res.data.data ?? []);
-    } catch { /* ignore */ }
-    finally { setHistoryLoading(false); }
+    } catch {
+      /* ignore */
+    } finally {
+      setHistoryLoading(false);
+    }
   };
 
   const curvePoints = useMemo(() => bucketByPeriod(history, curvePeriod), [history, curvePeriod]);
@@ -212,9 +248,15 @@ export default function Review() {
     }
   };
 
-  useEffect(() => { fetchStats(); fetchTrades(1); fetchHistory(); }, []);
+  useEffect(() => {
+    fetchStats();
+    fetchTrades(1);
+    fetchHistory();
+  }, []);
 
-  const handleFilter = () => { fetchTrades(1); };
+  const handleFilter = () => {
+    fetchTrades(1);
+  };
 
   const openEdit = (trade: TradeRow) => {
     setEditingTrade(trade);
@@ -230,15 +272,22 @@ export default function Review() {
     if (!editingTrade) return;
     try {
       const payload: Record<string, any> = {};
-      if (editForm.review_summary !== editingTrade.review_summary) payload.review_summary = editForm.review_summary || null;
-      if (editForm.strategy_match !== '' && editForm.strategy_match !== String(editingTrade.strategy_match ?? '')) {
+      if (editForm.review_summary !== editingTrade.review_summary)
+        payload.review_summary = editForm.review_summary || null;
+      if (
+        editForm.strategy_match !== '' &&
+        editForm.strategy_match !== String(editingTrade.strategy_match ?? '')
+      ) {
         payload.strategy_match = editForm.strategy_match === '1' ? 1 : 0;
       }
       if (editForm.is_stop_loss !== '' && editForm.is_stop_loss !== String(editingTrade.is_stop_loss ?? '')) {
         payload.is_stop_loss = editForm.is_stop_loss === '1' ? 1 : 0;
       }
       if (editForm.remark !== editingTrade.remark) payload.remark = editForm.remark || null;
-      if (Object.keys(payload).length === 0) { setEditingTrade(null); return; }
+      if (Object.keys(payload).length === 0) {
+        setEditingTrade(null);
+        return;
+      }
       await api.patch(`/trade/${editingTrade.id}`, payload);
       setEditingTrade(null);
       fetchTrades(page);
@@ -265,13 +314,22 @@ export default function Review() {
 
       {/* T38 ① 顶部双口径 Tab（PRD §5.5 / Requirements §5.4） */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
-        {([['price', '价格口径'], ['actual', '实际口径']] as [Caliber, string][]).map(([k, label]) => (
-          <button key={k} onClick={() => setCaliber(k)} style={{
-            ...buttonStyle,
-            background: caliber === k ? '#2563eb' : '#fff',
-            color: caliber === k ? '#fff' : '#374151',
-            border: '1px solid #d1d5db',
-          }}>
+        {(
+          [
+            ['price', '价格口径'],
+            ['actual', '实际口径'],
+          ] as [Caliber, string][]
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setCaliber(k)}
+            style={{
+              ...buttonStyle,
+              background: caliber === k ? '#2563eb' : '#fff',
+              color: caliber === k ? '#fff' : '#374151',
+              border: '1px solid #d1d5db',
+            }}
+          >
             {label}
           </button>
         ))}
@@ -283,18 +341,34 @@ export default function Review() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>收益曲线</div>
           <div style={{ display: 'flex', gap: 6 }}>
-            {([['monthly', '月度'], ['quarterly', '季度'], ['yearly', '年度']] as [CurvePeriod, string][]).map(([k, label]) => (
-              <button key={k} onClick={() => setCurvePeriod(k)} style={{
-                padding: '3px 12px', fontSize: 13, cursor: 'pointer',
-                border: `1px solid ${curvePeriod === k ? '#2563eb' : '#d1d5db'}`,
-                borderRadius: 4,
-                background: curvePeriod === k ? '#2563eb' : '#fff',
-                color: curvePeriod === k ? '#fff' : '#374151',
-              }}>{label}</button>
+            {(
+              [
+                ['monthly', '月度'],
+                ['quarterly', '季度'],
+                ['yearly', '年度'],
+              ] as [CurvePeriod, string][]
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setCurvePeriod(k)}
+                style={{
+                  padding: '3px 12px',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  border: `1px solid ${curvePeriod === k ? '#2563eb' : '#d1d5db'}`,
+                  borderRadius: 4,
+                  background: curvePeriod === k ? '#2563eb' : '#fff',
+                  color: curvePeriod === k ? '#fff' : '#374151',
+                }}
+              >
+                {label}
+              </button>
             ))}
           </div>
         </div>
-        {historyLoading ? <div style={{ fontSize: 13, color: '#6b7280' }}>加载中...</div> : (
+        {historyLoading ? (
+          <div style={{ fontSize: 13, color: '#6b7280' }}>加载中...</div>
+        ) : (
           <YieldCurve points={curvePoints} caliber={caliber} />
         )}
       </div>
@@ -305,10 +379,16 @@ export default function Review() {
           { label: '总交易数', value: String(stats?.totalTrades ?? 0), color: '#1e40af' },
           { label: '已复盘', value: String(stats?.reviewedCount ?? 0), color: '#16a34a' },
           { label: '胜率', value: stats?.winRate != null ? `${stats.winRate}%` : '--', color: '#7c3aed' },
-          { label: '盈亏比', value: stats?.profitLossRatio != null ? `${stats.profitLossRatio}` : '--', color: '#dc2626' },
+          {
+            label: '盈亏比',
+            value: stats?.profitLossRatio != null ? `${stats.profitLossRatio}` : '--',
+            color: '#dc2626',
+          },
           {
             label: '已实现盈亏',
-            value: stats ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}` : '--',
+            value: stats
+              ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
+              : '--',
             color: (stats?.totalRealizedPnl ?? 0) >= 0 ? '#16a34a' : '#dc2626',
           },
         ].map((card) => (
@@ -331,8 +411,10 @@ export default function Review() {
         <label style={{ fontSize: 14 }}>交易类型：</label>
         <select style={inputStyle} value={tradeType} onChange={(e) => setTradeType(e.target.value)}>
           <option value="">全部</option>
-          {['buy','add','reduce','clear','dividend','bonus','transfer'].map((t) => (
-            <option key={t} value={t}>{TRADE_TYPE_LABEL[t]}</option>
+          {['buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].map((t) => (
+            <option key={t} value={t}>
+              {TRADE_TYPE_LABEL[t]}
+            </option>
           ))}
         </select>
         <label style={{ fontSize: 14 }}>系统信号：</label>
@@ -353,7 +435,9 @@ export default function Review() {
           <option value="1">是</option>
           <option value="0">否</option>
         </select>
-        <button style={buttonStyle} onClick={handleFilter}>筛选</button>
+        <button style={buttonStyle} onClick={handleFilter}>
+          筛选
+        </button>
       </div>
 
       {error && <div style={errorStyle}>{error}</div>}
@@ -385,7 +469,9 @@ export default function Review() {
               {trades.map((t) => (
                 <tr key={t.id}>
                   <td style={thTdStyle}>{t.trade_date}</td>
-                  <td style={thTdStyle}><code>{t.asset_code}</code></td>
+                  <td style={thTdStyle}>
+                    <code>{t.asset_code}</code>
+                  </td>
                   <td style={thTdStyle}>
                     <span style={{ color: t.trade_type === 'buy' ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
                       {TRADE_TYPE_LABEL[t.trade_type] ?? t.trade_type}
@@ -395,26 +481,52 @@ export default function Review() {
                   <td style={thTdStyle}>{t.price.toFixed(2)}</td>
                   <td style={thTdStyle}>{t.trade_reason ?? '-'}</td>
                   <td style={thTdStyle}>
-                    {t.review_summary ? <span style={{ color: '#16a34a' }}>✓</span> : <span style={{ color: '#9ca3af' }}>—</span>}
+                    {t.review_summary ? (
+                      <span style={{ color: '#16a34a' }}>✓</span>
+                    ) : (
+                      <span style={{ color: '#9ca3af' }}>—</span>
+                    )}
                   </td>
                   <td style={thTdStyle}>
-                    {t.strategy_match === 1 ? <span style={{ color: '#16a34a' }}>是</span> :
-                     t.strategy_match === 0 ? <span style={{ color: '#dc2626' }}>否</span> :
-                     <span style={{ color: '#9ca3af' }}>未标记</span>}
+                    {t.strategy_match === 1 ? (
+                      <span style={{ color: '#16a34a' }}>是</span>
+                    ) : t.strategy_match === 0 ? (
+                      <span style={{ color: '#dc2626' }}>否</span>
+                    ) : (
+                      <span style={{ color: '#9ca3af' }}>未标记</span>
+                    )}
                   </td>
                   <td style={thTdStyle}>
-                    {t.is_stop_loss === 1 ? <span style={{ color: '#dc2626' }}>是</span> :
-                     t.is_stop_loss === 0 ? <span style={{ color: '#16a34a' }}>否</span> :
-                     <span style={{ color: '#9ca3af' }}>未标记</span>}
+                    {t.is_stop_loss === 1 ? (
+                      <span style={{ color: '#dc2626' }}>是</span>
+                    ) : t.is_stop_loss === 0 ? (
+                      <span style={{ color: '#16a34a' }}>否</span>
+                    ) : (
+                      <span style={{ color: '#9ca3af' }}>未标记</span>
+                    )}
                   </td>
                   <td style={thTdStyle}>
-                    {t.is_auto_import === 1 ? <span style={{ color: '#16a34a' }}>系统导入</span> :
-                     t.system_followed === 1 ? <span style={{ color: '#3b82f6' }}>系统信号</span> :
-                     <span style={{ color: '#6b7280' }}>手动</span>}
+                    {t.is_auto_import === 1 ? (
+                      <span style={{ color: '#16a34a' }}>系统导入</span>
+                    ) : t.system_followed === 1 ? (
+                      <span style={{ color: '#3b82f6' }}>系统信号</span>
+                    ) : (
+                      <span style={{ color: '#6b7280' }}>手动</span>
+                    )}
                   </td>
                   <td style={thTdStyle}>
-                    <button style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', marginRight: 4 }} onClick={() => openEdit(t)}>编辑复盘</button>
-                    <button style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', background: '#dc2626' }} onClick={() => handleDelete(t.id)}>删除</button>
+                    <button
+                      style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', marginRight: 4 }}
+                      onClick={() => openEdit(t)}
+                    >
+                      编辑复盘
+                    </button>
+                    <button
+                      style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', background: '#dc2626' }}
+                      onClick={() => handleDelete(t.id)}
+                    >
+                      删除
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -425,53 +537,111 @@ export default function Review() {
         {/* 分页 */}
         {totalPages > 1 && (
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button style={buttonStyle} disabled={page <= 1} onClick={() => fetchTrades(page - 1)}>上一页</button>
-            <span style={{ fontSize: 14 }}>第 {page} / {totalPages} 页，共 {total} 条</span>
-            <button style={buttonStyle} disabled={page >= totalPages} onClick={() => fetchTrades(page + 1)}>下一页</button>
+            <button style={buttonStyle} disabled={page <= 1} onClick={() => fetchTrades(page - 1)}>
+              上一页
+            </button>
+            <span style={{ fontSize: 14 }}>
+              第 {page} / {totalPages} 页，共 {total} 条
+            </span>
+            <button style={buttonStyle} disabled={page >= totalPages} onClick={() => fetchTrades(page + 1)}>
+              下一页
+            </button>
           </div>
         )}
       </div>
 
       {/* 编辑弹窗 */}
       {editingTrade && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 200,
+          }}
+        >
           <div style={{ ...cardStyle, maxWidth: 480, width: '90%' }}>
-            <div style={cardTitleStyle}>编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})</div>
+            <div style={cardTitleStyle}>
+              编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
                 <label style={{ fontSize: 13, color: '#374151' }}>复盘总结</label>
-                <textarea style={{ ...inputStyle, width: '100%', marginTop: 4, minHeight: 60, resize: 'vertical' }}
-                  value={editForm.review_summary} onChange={(e) => setEditForm(f => ({ ...f, review_summary: e.target.value }))} />
+                <textarea
+                  style={{ ...inputStyle, width: '100%', marginTop: 4, minHeight: 60, resize: 'vertical' }}
+                  value={editForm.review_summary}
+                  onChange={(e) => setEditForm((f) => ({ ...f, review_summary: e.target.value }))}
+                />
               </div>
               <div style={{ display: 'flex', gap: 16 }}>
                 <div>
                   <label style={{ fontSize: 13, color: '#374151' }}>是否符合策略</label>
                   <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                    {([['', '未标记'], ['1', '是'], ['0', '否']] as [string, string][]).map(([v, l]) => (
-                      <button key={v} style={{ ...inputStyle, background: editForm.strategy_match === v ? '#dbeafe' : '#fff', border: '1px solid #93c5fd' }}
-                        onClick={() => setEditForm((f: any) => ({ ...f, strategy_match: v as any }))}>{l}</button>
+                    {(
+                      [
+                        ['', '未标记'],
+                        ['1', '是'],
+                        ['0', '否'],
+                      ] as [string, string][]
+                    ).map(([v, l]) => (
+                      <button
+                        key={v}
+                        style={{
+                          ...inputStyle,
+                          background: editForm.strategy_match === v ? '#dbeafe' : '#fff',
+                          border: '1px solid #93c5fd',
+                        }}
+                        onClick={() => setEditForm((f: any) => ({ ...f, strategy_match: v as any }))}
+                      >
+                        {l}
+                      </button>
                     ))}
                   </div>
                 </div>
                 <div>
                   <label style={{ fontSize: 13, color: '#374151' }}>是否止损</label>
                   <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                    {([['', '未标记'], ['1', '是'], ['0', '否']] as [string, string][]).map(([v, l]) => (
-                      <button key={v} style={{ ...inputStyle, background: editForm.is_stop_loss === v ? '#fee2e2' : '#fff', border: '1px solid #fca5a5' }}
-                        onClick={() => setEditForm((f: any) => ({ ...f, is_stop_loss: v as any }))}>{l}</button>
+                    {(
+                      [
+                        ['', '未标记'],
+                        ['1', '是'],
+                        ['0', '否'],
+                      ] as [string, string][]
+                    ).map(([v, l]) => (
+                      <button
+                        key={v}
+                        style={{
+                          ...inputStyle,
+                          background: editForm.is_stop_loss === v ? '#fee2e2' : '#fff',
+                          border: '1px solid #fca5a5',
+                        }}
+                        onClick={() => setEditForm((f: any) => ({ ...f, is_stop_loss: v as any }))}
+                      >
+                        {l}
+                      </button>
                     ))}
                   </div>
                 </div>
               </div>
               <div>
                 <label style={{ fontSize: 13, color: '#374151' }}>备注</label>
-                <input style={{ ...inputStyle, width: '100%', marginTop: 4 }}
-                  value={editForm.remark} onChange={(e) => setEditForm(f => ({ ...f, remark: e.target.value }))} />
+                <input
+                  style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                  value={editForm.remark}
+                  onChange={(e) => setEditForm((f) => ({ ...f, remark: e.target.value }))}
+                />
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-              <button style={buttonStyle} onClick={saveEdit}>保存</button>
-              <button style={{ ...buttonStyle, background: '#6b7280' }} onClick={() => setEditingTrade(null)}>取消</button>
+              <button style={buttonStyle} onClick={saveEdit}>
+                保存
+              </button>
+              <button style={{ ...buttonStyle, background: '#6b7280' }} onClick={() => setEditingTrade(null)}>
+                取消
+              </button>
             </div>
           </div>
         </div>

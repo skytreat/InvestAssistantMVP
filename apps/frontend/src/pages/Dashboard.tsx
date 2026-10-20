@@ -62,12 +62,17 @@ interface SystemLog {
 }
 
 const DIRECTION_LABEL: Record<string, string> = {
-  buy: '买入', sell: '卖出', hold: '持仓',
+  buy: '买入',
+  sell: '卖出',
+  hold: '持仓',
 };
 
 const LEVEL_COLOR: Record<string, string> = {
-  ERROR: '#dc2626', WARN: '#d97706', SKIP: '#9ca3af',
-  SUCCESS: '#16a34a', INFO: '#2563eb',
+  ERROR: '#dc2626',
+  WARN: '#d97706',
+  SKIP: '#9ca3af',
+  SUCCESS: '#16a34a',
+  INFO: '#2563eb',
 };
 
 /** A 股 ETF 判定：sh51xxxx / sh56xxxx / sh58xxxx / sz15xxxx / sz16xxxx */
@@ -98,17 +103,25 @@ export function DonutChart({ stock, etf }: { stock: number; etf: number }) {
   const stockPct = (stock / total) * 100;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-      <div style={{
-        width: 120, height: 120, borderRadius: '50%',
-        background: `conic-gradient(#2563eb 0% ${stockPct}%, #16a34a ${stockPct}% 100%)`,
-      }} />
+      <div
+        style={{
+          width: 120,
+          height: 120,
+          borderRadius: '50%',
+          background: `conic-gradient(#2563eb 0% ${stockPct}%, #16a34a ${stockPct}% 100%)`,
+        }}
+      />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14 }}>
         <div>
-          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#2563eb', marginRight: 6 }} />
+          <span
+            style={{ display: 'inline-block', width: 10, height: 10, background: '#2563eb', marginRight: 6 }}
+          />
           股票 {fmt(stock)}（{stockPct.toFixed(1)}%）
         </div>
         <div>
-          <span style={{ display: 'inline-block', width: 10, height: 10, background: '#16a34a', marginRight: 6 }} />
+          <span
+            style={{ display: 'inline-block', width: 10, height: 10, background: '#16a34a', marginRight: 6 }}
+          />
           ETF {fmt(etf)}（{(100 - stockPct).toFixed(1)}%）
         </div>
       </div>
@@ -207,7 +220,7 @@ export default function Dashboard() {
     return { stock, etf };
   }, [positions]);
 
-  const activePositions = positions.filter(p => p.totalQuantity > 0);
+  const activePositions = positions.filter((p) => p.totalQuantity > 0);
 
   return (
     <div style={pageContainerStyle}>
@@ -218,22 +231,34 @@ export default function Dashboard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>总资产</div>
           <div style={{ display: 'flex', border: '1px solid #d1d5db', borderRadius: 4, overflow: 'hidden' }}>
-            {([['price', '价格口径'], ['actual', '实际口径']] as [Caliber, string][]).map(([k, label]) => (
-              <button key={k} onClick={() => setCaliber(k)} style={{
-                ...buttonStyle,
-                borderRadius: 0,
-                background: caliber === k ? '#2563eb' : '#fff',
-                color: caliber === k ? '#fff' : '#374151',
-                border: 'none',
-              }}>{label}</button>
+            {(
+              [
+                ['price', '价格口径'],
+                ['actual', '实际口径'],
+              ] as [Caliber, string][]
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setCaliber(k)}
+                style={{
+                  ...buttonStyle,
+                  borderRadius: 0,
+                  background: caliber === k ? '#2563eb' : '#fff',
+                  color: caliber === k ? '#fff' : '#374151',
+                  border: 'none',
+                }}
+              >
+                {label}
+              </button>
             ))}
           </div>
         </div>
 
         {statLoading && <div>加载中...</div>}
         {statError && <div style={{ color: '#dc2626' }}>{statError}</div>}
-        {!statLoading && !statError && (
-          stat ? (
+        {!statLoading &&
+          !statError &&
+          (stat ? (
             <>
               <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginTop: 8 }}>
                 <div>
@@ -243,21 +268,39 @@ export default function Dashboard() {
                   <div style={{ fontSize: 13, color: '#6b7280' }}>总资产</div>
                 </div>
                 <div>
-                  <div style={{
-                    fontSize: 30, fontWeight: 'bold',
-                    color: (caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0 ? '#16a34a' : '#dc2626',
-                  }}>
-                    {(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0 ? '+' : ''}
+                  <div
+                    style={{
+                      fontSize: 30,
+                      fontWeight: 'bold',
+                      color:
+                        (caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
+                          ? '#16a34a'
+                          : '#dc2626',
+                    }}
+                  >
+                    {(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
+                      ? '+'
+                      : ''}
                     {fmt(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual)}
                   </div>
                   <div style={{ fontSize: 13, color: '#6b7280' }}>总盈亏</div>
                 </div>
                 <div>
-                  <div style={{
-                    fontSize: 30, fontWeight: 'bold',
-                    color: (caliber === 'price' ? stat.total_assets_price_yield : stat.total_assets_actual_yield) >= 0 ? '#16a34a' : '#dc2626',
-                  }}>
-                    {fmtPct(caliber === 'price' ? stat.total_assets_price_yield : stat.total_assets_actual_yield)}
+                  <div
+                    style={{
+                      fontSize: 30,
+                      fontWeight: 'bold',
+                      color:
+                        (caliber === 'price'
+                          ? stat.total_assets_price_yield
+                          : stat.total_assets_actual_yield) >= 0
+                          ? '#16a34a'
+                          : '#dc2626',
+                    }}
+                  >
+                    {fmtPct(
+                      caliber === 'price' ? stat.total_assets_price_yield : stat.total_assets_actual_yield,
+                    )}
                   </div>
                   <div style={{ fontSize: 13, color: '#6b7280' }}>总收益率</div>
                 </div>
@@ -281,8 +324,7 @@ export default function Dashboard() {
             <div style={{ color: '#9ca3af', padding: '12px 0' }}>
               暂无资产快照（每天 17:02 信号生成后自动写入）
             </div>
-          )
-        )}
+          ))}
       </div>
 
       {/* G7c 资产组成饼图 */}
@@ -296,8 +338,9 @@ export default function Dashboard() {
         <div style={cardTitleStyle}>持仓明细（{activePositions.length} 只）</div>
         {posLoading && <div>加载中...</div>}
         {posError && <div style={{ color: '#dc2626' }}>{posError}</div>}
-        {!posLoading && !posError && (
-          activePositions.length === 0 ? (
+        {!posLoading &&
+          !posError &&
+          (activePositions.length === 0 ? (
             <div style={{ color: '#6b7280', padding: 20, textAlign: 'center' }}>暂无持仓</div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
@@ -320,16 +363,22 @@ export default function Dashboard() {
                     <tr key={p.asset_code}>
                       <td style={thTdStyle}>
                         <code>{p.asset_code}</code>
-                        {isEtf(p.asset_code) && <span style={{ color: '#16a34a', fontSize: 11, marginLeft: 4 }}>ETF</span>}
+                        {isEtf(p.asset_code) && (
+                          <span style={{ color: '#16a34a', fontSize: 11, marginLeft: 4 }}>ETF</span>
+                        )}
                       </td>
                       <td style={thTdStyle}>{fmt(p.currentPrice)}</td>
                       <td style={thTdStyle}>{p.totalQuantity}</td>
                       <td style={thTdStyle}>{fmt(p.avgCost, 4)}</td>
                       <td style={thTdStyle}>{fmt(p.marketValue)}</td>
-                      <td style={{ ...thTdStyle, color: (p.unrealizedPnl ?? 0) >= 0 ? '#16a34a' : '#dc2626' }}>
+                      <td
+                        style={{ ...thTdStyle, color: (p.unrealizedPnl ?? 0) >= 0 ? '#16a34a' : '#dc2626' }}
+                      >
                         {fmt(p.unrealizedPnl)}
                       </td>
-                      <td style={{ ...thTdStyle, color: (p.unrealizedYield ?? 0) >= 0 ? '#16a34a' : '#dc2626' }}>
+                      <td
+                        style={{ ...thTdStyle, color: (p.unrealizedYield ?? 0) >= 0 ? '#16a34a' : '#dc2626' }}
+                      >
                         {fmtPct(p.unrealizedYield)}
                       </td>
                       <td style={thTdStyle}>{fmtPct(p.weight)}</td>
@@ -341,8 +390,7 @@ export default function Dashboard() {
                 </tbody>
               </table>
             </div>
-          )
-        )}
+          ))}
       </div>
 
       <div style={cardStyle}>
@@ -362,17 +410,28 @@ export default function Dashboard() {
             </thead>
             <tbody>
               {signals.length === 0 ? (
-                <tr><td style={thTdStyle} colSpan={5}>暂无信号</td></tr>
+                <tr>
+                  <td style={thTdStyle} colSpan={5}>
+                    暂无信号
+                  </td>
+                </tr>
               ) : (
                 signals.map((s, i) => (
                   <tr key={i}>
                     <td style={thTdStyle}>{s.asset_code}</td>
                     <td style={thTdStyle}>{s.plugin_id}</td>
                     <td style={thTdStyle}>
-                      <span style={{
-                        color: s.direction === 'buy' ? '#16a34a' : s.direction === 'sell' ? '#dc2626' : '#374151',
-                        fontWeight: 600,
-                      }}>
+                      <span
+                        style={{
+                          color:
+                            s.direction === 'buy'
+                              ? '#16a34a'
+                              : s.direction === 'sell'
+                                ? '#dc2626'
+                                : '#374151',
+                          fontWeight: 600,
+                        }}
+                      >
                         {DIRECTION_LABEL[s.direction] ?? s.direction}
                       </span>
                     </td>
@@ -403,15 +462,17 @@ export default function Dashboard() {
               </thead>
               <tbody>
                 {logs.length === 0 ? (
-                  <tr><td style={thTdStyle} colSpan={4}>暂无日志</td></tr>
+                  <tr>
+                    <td style={thTdStyle} colSpan={4}>
+                      暂无日志
+                    </td>
+                  </tr>
                 ) : (
                   logs.map((l, i) => (
                     <tr key={i}>
                       <td style={thTdStyle}>{l.created_at}</td>
                       <td style={thTdStyle}>{l.log_type}</td>
-                      <td style={{ ...thTdStyle, color: LEVEL_COLOR[l.level] ?? '#374151' }}>
-                        {l.level}
-                      </td>
+                      <td style={{ ...thTdStyle, color: LEVEL_COLOR[l.level] ?? '#374151' }}>{l.level}</td>
                       <td style={thTdStyle}>{l.message}</td>
                     </tr>
                   ))

@@ -1,9 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import {
-  queryDuckDB,
-  duckdbHealthCheck,
-  closeDuckDBInstance,
-} from '../../src/db/duckdb.js';
+import { queryDuckDB, duckdbHealthCheck, closeDuckDBInstance } from '../../src/db/duckdb.js';
 
 /**
  * 回归测试：P0-9（串行泄漏）/ P0-12（并发互抢）/ P0-10（BigInt 序列化）
@@ -80,9 +76,7 @@ describe('P0-12 DuckDB 并发互抢（instance 单例）', () => {
 
 describe('P0-10 BigInt / Date 归一化', () => {
   it('查询结果不含 bigint 类型（否则 JSON.stringify 会抛）', async () => {
-    const rows = await queryDuckDB<Record<string, unknown>>(
-      'SELECT 1::BIGINT AS big_col, 1 AS norm_col',
-    );
+    const rows = await queryDuckDB<Record<string, unknown>>('SELECT 1::BIGINT AS big_col, 1 AS norm_col');
     expect(rows).toHaveLength(1);
     for (const [k, v] of Object.entries(rows[0])) {
       expect(typeof v, `列 ${k} 仍是 ${typeof v}，JSON 序列化会失败`).not.toBe('bigint');

@@ -20,7 +20,7 @@ describe('MACD', () => {
   });
 
   it('返回数组长度与输入一致', () => {
-    const data = new Array(50).fill(100).map((v, i) => v + i);  // 线性上涨
+    const data = new Array(50).fill(100).map((v, i) => v + i); // 线性上涨
     const result = calculateMACD(data);
     expect(result.dif.length).toBe(50);
     expect(result.dea.length).toBe(50);

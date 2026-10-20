@@ -87,11 +87,7 @@ function isFq(value: unknown): value is Fq {
  * 解析整数 query 参数。缺省 / 非数字 → null（调用方用默认值）。
  * 有值但越界 → 返回 'INVALID'，由调用方回 400（**不静默夹取**）。
  */
-function parseBoundedInt(
-  raw: unknown,
-  min: number,
-  max: number
-): number | null | 'INVALID' {
+function parseBoundedInt(raw: unknown, min: number, max: number): number | null | 'INVALID' {
   if (raw === undefined || raw === null || raw === '') return null;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) return 'INVALID';
@@ -118,7 +114,9 @@ export async function registerKlineRoutes(app: FastifyInstance) {
 
     // fq 白名单：非法值直接 400，绝不静默回落 qfq（否则用户以为在看别的复权口径）
     if (!isFq(fq)) {
-      return reply.code(400).send(fail(400, 'PARAM_INVALID', `fq 仅支持 ${FQ_VALUES.join(' / ')}，收到 "${String(fq)}"`));
+      return reply
+        .code(400)
+        .send(fail(400, 'PARAM_INVALID', `fq 仅支持 ${FQ_VALUES.join(' / ')}，收到 "${String(fq)}"`));
     }
 
     const periodInputs: Array<{
@@ -127,26 +125,45 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       fallback: number;
       range: { readonly min: number; readonly max: number };
     }> = [
-      { name: 'rsi_period', raw: query.rsi_period, fallback: RSI_DEFAULT_PERIOD, range: PERIOD_RANGE.rsiPeriod },
-      { name: 'macd_fast', raw: query.macd_fast, fallback: MACD_DEFAULT_FAST_PERIOD, range: PERIOD_RANGE.macdFast },
-      { name: 'macd_slow', raw: query.macd_slow, fallback: MACD_DEFAULT_SLOW_PERIOD, range: PERIOD_RANGE.macdSlow },
-      { name: 'macd_signal', raw: query.macd_signal, fallback: MACD_DEFAULT_SIGNAL_PERIOD, range: PERIOD_RANGE.macdSignal },
+      {
+        name: 'rsi_period',
+        raw: query.rsi_period,
+        fallback: RSI_DEFAULT_PERIOD,
+        range: PERIOD_RANGE.rsiPeriod,
+      },
+      {
+        name: 'macd_fast',
+        raw: query.macd_fast,
+        fallback: MACD_DEFAULT_FAST_PERIOD,
+        range: PERIOD_RANGE.macdFast,
+      },
+      {
+        name: 'macd_slow',
+        raw: query.macd_slow,
+        fallback: MACD_DEFAULT_SLOW_PERIOD,
+        range: PERIOD_RANGE.macdSlow,
+      },
+      {
+        name: 'macd_signal',
+        raw: query.macd_signal,
+        fallback: MACD_DEFAULT_SIGNAL_PERIOD,
+        range: PERIOD_RANGE.macdSignal,
+      },
     ];
 
     const resolvedPeriods: number[] = [];
     for (const p of periodInputs) {
       const parsed = parseBoundedInt(p.raw, p.range.min, p.range.max);
       if (parsed === 'INVALID') {
-        return reply.code(400).send(fail(400, 'PARAM_INVALID', `${p.name} 取值非法（需为 ${p.range.min}~${p.range.max} 的整数）`));
+        return reply
+          .code(400)
+          .send(
+            fail(400, 'PARAM_INVALID', `${p.name} 取值非法（需为 ${p.range.min}~${p.range.max} 的整数）`),
+          );
       }
       resolvedPeriods.push(parsed === null ? p.fallback : parsed);
     }
-    const [rsiPeriod, macdFast, macdSlow, macdSignal] = resolvedPeriods as [
-      number,
-      number,
-      number,
-      number,
-    ];
+    const [rsiPeriod, macdFast, macdSlow, macdSignal] = resolvedPeriods as [number, number, number, number];
 
     const limit = Math.min(Math.max(Number(days) || 120, 10), 500);
 
@@ -154,7 +171,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       // 复权视图按标的类别路由（ETF 不能走 v_stock_*）
       const classRows = await queryDuckDB<{ class: string }>(
         'SELECT class FROM raw_symbol_class WHERE symbol = ?',
-        [symbol]
+        [symbol],
       );
       const symbolClass = classRows[0]?.class ?? 'stock';
       const views = FQ_VIEWS_BY_CLASS[symbolClass] ?? FQ_VIEWS_BY_CLASS.stock;
@@ -166,7 +183,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
          WHERE symbol = ?
          ORDER BY date DESC
          LIMIT ?`,
-        [symbol, limit]
+        [symbol, limit],
       );
 
       // 反转为升序（前端画图需要从旧到新）
@@ -184,8 +201,9 @@ export async function registerKlineRoutes(app: FastifyInstance) {
 
       // 查询该标的的近 N 条策略信号：先取最近 20 条，再按 trade_date 升序返回（与 klines 同序）
       const db = ConfigStore.getInstance().db;
-      const signals = db.prepare(
-        `SELECT trade_date, direction, label, strength, plugin_id
+      const signals = db
+        .prepare(
+          `SELECT trade_date, direction, label, strength, plugin_id
          FROM (
            SELECT trade_date, direction, label, strength, plugin_id
            FROM user_strategy_signal
@@ -193,10 +211,18 @@ export async function registerKlineRoutes(app: FastifyInstance) {
            ORDER BY trade_date DESC
            LIMIT ${SIGNAL_LIMIT}
          )
-         ORDER BY trade_date ASC`
-      ).all(symbol) as Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>;
+         ORDER BY trade_date ASC`,
+        )
+        .all(symbol) as Array<{
+        trade_date: string;
+        direction: string;
+        label: string;
+        strength: number | null;
+        plugin_id: string;
+      }>;
 
-      return reply.send(ok({
+      return reply.send(
+        ok({
           symbol,
           fq,
           symbolClass,
@@ -216,7 +242,8 @@ export async function registerKlineRoutes(app: FastifyInstance) {
             },
           },
           signals,
-        }));
+        }),
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       app.log.warn({ err, symbol, fq, days }, 'K 线查询失败');

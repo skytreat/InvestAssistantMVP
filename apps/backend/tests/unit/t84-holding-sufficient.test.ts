@@ -21,21 +21,33 @@ import { calcPosition, validateSufficientHolding } from '../../src/services/posi
 
 let db: ReturnType<typeof ConfigStore.getInstance>;
 
-beforeAll(() => { db = ConfigStore.getInstance(); });
+beforeAll(() => {
+  db = ConfigStore.getInstance();
+});
 
 afterAll(() => {
-  try { (db.db as any).close(); } catch { /* ignore */ }
+  try {
+    (db.db as any).close();
+  } catch {
+    /* ignore */
+  }
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
 });
 
 function seed(uid: number, code: string) {
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
-  ).run(uid, `user_${uid}`, 'dummy-hash');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    )
+    .run(uid, `user_${uid}`, 'dummy-hash');
 }
 
 /** T87：trade_time 必填，测试里按序号生成以避免同日撞唯一键 */
@@ -44,16 +56,19 @@ function ins(uid: number, code: string, type: string, date: string, qty: number,
   const seq = (insSeq.get(uid) ?? 0) + 1;
   insSeq.set(uid, seq);
   const time = `${String(9 + Math.floor(seq / 3600)).padStart(2, '0')}:${String(Math.floor(seq / 60) % 60).padStart(2, '0')}:${String(seq % 60).padStart(2, '0')}`;
-  db.db.prepare(
-    `INSERT INTO user_trade_record
+  db.db
+    .prepare(
+      `INSERT INTO user_trade_record
      (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
-  ).run(uid, code, type, date, time, qty, price);
+    )
+    .run(uid, code, type, date, time, qty, price);
 }
 
 describe('T84 时点回放：日期交错不能绕过校验', () => {
   it('原始 P0-13 场景：08-01 买100、10-16 买100，08-06 想卖 105 → 必须拒绝', () => {
-    const uid = 8001, code = 'sh600000';
+    const uid = 8001,
+      code = 'sh600000';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-08-01', 100);
     ins(uid, code, 'buy', '2026-10-16', 100);
@@ -65,7 +80,8 @@ describe('T84 时点回放：日期交错不能绕过校验', () => {
   });
 
   it('时点之后买入不能支撑之前的卖出，但能支撑之后的卖出', () => {
-    const uid = 8002, code = 'sz000002';
+    const uid = 8002,
+      code = 'sz000002';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-08-01', 100);
     ins(uid, code, 'buy', '2026-10-16', 100);
@@ -75,7 +91,8 @@ describe('T84 时点回放：日期交错不能绕过校验', () => {
   });
 
   it('同日多笔：同日第二笔卖出应看到同日第一笔的扣减', () => {
-    const uid = 8003, code = 'sh600519';
+    const uid = 8003,
+      code = 'sh600519';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-09-01', 100);
     ins(uid, code, 'reduce', '2026-09-10', 60);
@@ -86,28 +103,32 @@ describe('T84 时点回放：日期交错不能绕过校验', () => {
   });
 
   it('精确持平：买100 卖100 → 允许', () => {
-    const uid = 8004, code = 'sh601398';
+    const uid = 8004,
+      code = 'sh601398';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-07-01', 100);
     expect(validateSufficientHolding(uid, code, 100, '2026-07-10')).toBe(true);
   });
 
   it('边界：持仓100 卖 99 → 允许', () => {
-    const uid = 8005, code = 'sz300750';
+    const uid = 8005,
+      code = 'sz300750';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-07-01', 100);
     expect(validateSufficientHolding(uid, code, 99, '2026-07-10')).toBe(true);
   });
 
   it('边界：持仓100 卖 101 → 拒绝', () => {
-    const uid = 8006, code = 'sz000001';
+    const uid = 8006,
+      code = 'sz000001';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-07-01', 100);
     expect(validateSufficientHolding(uid, code, 101, '2026-07-10')).toBe(false);
   });
 
   it('非正数量 → 一律拒绝', () => {
-    const uid = 8007, code = 'sh600036';
+    const uid = 8007,
+      code = 'sh600036';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-07-01', 100);
     expect(validateSufficientHolding(uid, code, 0, '2026-07-10')).toBe(false);
@@ -115,7 +136,8 @@ describe('T84 时点回放：日期交错不能绕过校验', () => {
   });
 
   it('不传时点（向后兼容）→ 沿用全量回放口径', () => {
-    const uid = 8008, code = 'sh601988';
+    const uid = 8008,
+      code = 'sh601988';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-01-01', 100);
     expect(validateSufficientHolding(uid, code, 100)).toBe(true);
@@ -125,7 +147,8 @@ describe('T84 时点回放：日期交错不能绕过校验', () => {
 
 describe('T84 calcPosition：asOf 时点参数', () => {
   it('asOf 只回放该时点之前的记录', () => {
-    const uid = 8009, code = 'sh600028';
+    const uid = 8009,
+      code = 'sh600028';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-01-01', 100);
     ins(uid, code, 'buy', '2026-12-01', 100);
@@ -135,21 +158,23 @@ describe('T84 calcPosition：asOf 时点参数', () => {
   });
 
   it('asOf 早于全部记录 → 持仓 0', () => {
-    const uid = 8010, code = 'sh601857';
+    const uid = 8010,
+      code = 'sh601857';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-05-01', 100);
     expect(calcPosition(uid, code, '2026-01-01').totalQuantity).toBe(0);
   });
 
   it('存量脏数据不使持仓页 500，但脏状态必须可见', () => {
-    const uid = 8011, code = 'sh600000';
+    const uid = 8011,
+      code = 'sh600000';
     seed(uid, code);
     ins(uid, code, 'buy', '2026-08-01', 100);
-    ins(uid, code, 'reduce', '2026-08-06', 150);  // 超卖 50 —— 存量脏数据
+    ins(uid, code, 'reduce', '2026-08-06', 150); // 超卖 50 —— 存量脏数据
 
     const pos = calcPosition(uid, code);
     expect(pos.totalQuantity).toBe(0);
-    expect(pos.totalQuantity).toBeGreaterThanOrEqual(0);  // 绝不出现负持仓
+    expect(pos.totalQuantity).toBeGreaterThanOrEqual(0); // 绝不出现负持仓
     expect(pos.hasOversell).toBe(true);
     expect(pos.oversellDetail?.date).toBe('2026-08-06');
     expect(pos.oversellDetail?.shortfall).toBe(50);

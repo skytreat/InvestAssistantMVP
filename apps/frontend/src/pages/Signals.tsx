@@ -60,8 +60,7 @@ export default function Signals() {
     }
   };
 
-  const columns: string[] =
-    rows.length > 0 ? Object.keys(rows[0]) : [];
+  const columns: string[] = rows.length > 0 ? Object.keys(rows[0]) : [];
 
   const COLUMN_LABELS: Record<string, string> = {
     id: 'ID',
@@ -98,11 +97,7 @@ export default function Signals() {
         />
 
         <label style={{ fontSize: 14, color: '#374151' }}>方向</label>
-        <select
-          style={inputStyle}
-          value={direction}
-          onChange={(e) => setDirection(e.target.value)}
-        >
+        <select style={inputStyle} value={direction} onChange={(e) => setDirection(e.target.value)}>
           <option value="">全部</option>
           <option value="hold">持仓</option>
           <option value="buy">买入</option>

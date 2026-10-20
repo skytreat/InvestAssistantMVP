@@ -189,16 +189,18 @@ function installFetchRouter(routes: FetchRoutes): FetchCounters {
       const off = routes.tushareMismatch?.has(row.symbol) ?? false;
       const px = (v: number): number => (off ? +(v + 0.5).toFixed(2) : v);
       const fields = ['ts_code', 'open', 'high', 'low', 'close', 'pre_close', 'vol', 'amount'];
-      const items = [[
-        tsCode,
-        px(row.open),
-        px(row.high),
-        px(row.low),
-        px(row.close),
-        px(row.pre_close),
-        px(row.volume),
-        px(row.amount),
-      ]];
+      const items = [
+        [
+          tsCode,
+          px(row.open),
+          px(row.high),
+          px(row.low),
+          px(row.close),
+          px(row.pre_close),
+          px(row.volume),
+          px(row.amount),
+        ],
+      ];
       return new Response(JSON.stringify({ code: 0, data: { fields, items } }), { status: 200 });
     }
 
@@ -220,8 +222,12 @@ function installFetchRouter(routes: FetchRoutes): FetchCounters {
       // （本夹具 open=high=low=close，见 makeC12Rows）
       const kline = [
         '2026-10-15',
-        px.toFixed(2), px.toFixed(2), px.toFixed(2), px.toFixed(2),
-        '1234567', '12967890.00',
+        px.toFixed(2),
+        px.toFixed(2),
+        px.toFixed(2),
+        px.toFixed(2),
+        '1234567',
+        '12967890.00',
       ].join(',');
       return new Response(JSON.stringify({ data: { klines: [kline] } }), { status: 200 });
     }
@@ -233,10 +239,7 @@ function installFetchRouter(routes: FetchRoutes): FetchCounters {
 }
 
 /** 默认路由：Tushare 全部匹配、东财全部匹配 */
-function happyRoutes(
-  c11Rows: C11LocalFixture[],
-  c12Rows: C12LocalFixture[],
-): FetchRoutes {
+function happyRoutes(c11Rows: C11LocalFixture[], c12Rows: C12LocalFixture[]): FetchRoutes {
   return { c11Rows, c12Rows, tushareMismatch: new Set(), emDelta: new Map() };
 }
 
@@ -265,12 +268,22 @@ afterAll(() => {
   try {
     const store = (ConfigStore as unknown as { _instance: { db: { close: () => void } } | null })._instance;
     if (store) store.db.close();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
   if (ORIGINAL_SQLITE_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_PATH;
   else delete process.env.SQLITE_DB_PATH;
   if (ORIGINAL_TOKEN !== undefined) process.env.TUSHARE_TOKEN = ORIGINAL_TOKEN;
@@ -465,9 +478,7 @@ describe('T97 ⑥ — C12 退避重试 200ms → 400ms', () => {
     expect(timerDelays.filter((d) => d === 200)).toHaveLength(1);
     expect(timerDelays.filter((d) => d === 400)).toHaveLength(1);
     // C12 是最后一项校验：其末尾 22 次延时恰为「首只退避 200/400 + 20 只节流 500」
-    const c12Delays = timerDelays.slice(
-      -(EXEC_PARAMS.RETRY_BACKOFF_MS.length + EXEC_PARAMS.C12_SAMPLE_SIZE),
-    );
+    const c12Delays = timerDelays.slice(-(EXEC_PARAMS.RETRY_BACKOFF_MS.length + EXEC_PARAMS.C12_SAMPLE_SIZE));
     expect(c12Delays).toEqual([
       ...EXEC_PARAMS.RETRY_BACKOFF_MS,
       ...Array<number>(EXEC_PARAMS.C12_SAMPLE_SIZE).fill(EXEC_PARAMS.C12_THROTTLE_MS),

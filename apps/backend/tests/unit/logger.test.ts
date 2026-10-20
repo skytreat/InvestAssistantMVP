@@ -29,7 +29,11 @@ import { ConfigStore } from '../../src/config/configStore.js';
 function cleanupTestDb(): void {
   for (const ext of ['', '-wal', '-shm', '-journal']) {
     const p = TEST_DB + ext;
-    try { fs.unlinkSync(p); } catch { /* 文件被占用或不存在，忽略 */ }
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      /* 文件被占用或不存在，忽略 */
+    }
   }
 }
 
@@ -46,7 +50,9 @@ describe('logger — writeSystemLog', () => {
     try {
       const store = ConfigStore.getInstance();
       (store.db as any).close();
-    } catch { /* 可能没有真正的 db 连接 */ }
+    } catch {
+      /* 可能没有真正的 db 连接 */
+    }
     cleanupTestDb();
     // 还原环境变量（不污染同进程其他测试）
     if (ORIGINAL_SQLITE_DB_PATH !== undefined) {
@@ -68,9 +74,7 @@ describe('logger — writeSystemLog', () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       // 核心断言：writeSystemLog 不应该因为 SQLite 挂了而 throw
-      expect(() =>
-        writeSystemLog({ logType: 'startup', level: 'INFO', message: 'test' }),
-      ).not.toThrow();
+      expect(() => writeSystemLog({ logType: 'startup', level: 'INFO', message: 'test' })).not.toThrow();
 
       // 第二层降级：console.error 应该被调用（SQLite 不可用时 journal 自动捕获）
       expect(consoleSpy).toHaveBeenCalled();
@@ -121,9 +125,7 @@ describe('logger — writeSystemLog', () => {
       }
 
       // 断言
-      const count = db
-        .prepare('SELECT COUNT(*) AS c FROM system_log')
-        .get() as { c: number };
+      const count = db.prepare('SELECT COUNT(*) AS c FROM system_log').get() as { c: number };
       expect(count.c).toBe(100);
     });
 
@@ -134,11 +136,11 @@ describe('logger — writeSystemLog', () => {
       writeSystemLog({ logType: 'startup', level: 'INFO', message: 'happy path' });
 
       // 正常写 SQLite 成功，不会触发 console.error
-      const sqliteFallbackCalls = consoleSpy.mock.calls.filter(
-        (c) => String(c[0]).includes('[system_log fallback]'),
+      const sqliteFallbackCalls = consoleSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('[system_log fallback]'),
       );
-      const journalFallbackCalls = consoleSpy.mock.calls.filter(
-        (c) => String(c[0]).includes('invest-assistant'),
+      const journalFallbackCalls = consoleSpy.mock.calls.filter((c) =>
+        String(c[0]).includes('invest-assistant'),
       );
       expect(sqliteFallbackCalls.length).toBe(0);
       expect(journalFallbackCalls.length).toBe(0);
@@ -194,7 +196,8 @@ describe('logger — writeSystemLog', () => {
       const db = ConfigStore.getInstance().db;
       db.prepare('DELETE FROM system_log').run();
       writeSystemLog({
-        logType: 'trade', level: 'SUCCESS',
+        logType: 'trade',
+        level: 'SUCCESS',
         message: '买入 sh600000 qty=12345678 price=9999.99',
       });
       const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
@@ -208,11 +211,12 @@ describe('logger — writeSystemLog', () => {
       const db = ConfigStore.getInstance().db;
       db.prepare('DELETE FROM system_log').run();
       writeSystemLog({
-        logType: 'trade', level: 'SUCCESS',
+        logType: 'trade',
+        level: 'SUCCESS',
         message: '手续费 50.00 元',
       });
       const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
-      expect(row.message).toMatch(/50/);  // 应该保留
+      expect(row.message).toMatch(/50/); // 应该保留
     });
 
     it('username 脱敏：保留前 2 位，后面 ****', () => {
@@ -220,7 +224,8 @@ describe('logger — writeSystemLog', () => {
       const db = ConfigStore.getInstance().db;
       db.prepare('DELETE FROM system_log').run();
       writeSystemLog({
-        logType: 'plugin_execute', level: 'INFO',
+        logType: 'plugin_execute',
+        level: 'INFO',
         message: 'user login username=admin123 ok',
       });
       const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
@@ -233,7 +238,8 @@ describe('logger — writeSystemLog', () => {
       const db = ConfigStore.getInstance().db;
       db.prepare('DELETE FROM system_log').run();
       writeSystemLog({
-        logType: 'startup', level: 'INFO',
+        logType: 'startup',
+        level: 'INFO',
         message: 'user=ab connected',
       });
       const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;

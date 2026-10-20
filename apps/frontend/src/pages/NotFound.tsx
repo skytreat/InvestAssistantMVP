@@ -57,7 +57,9 @@ export default function NotFound() {
         </p>
         <div>
           {KNOWN_ROUTES.map((r) => (
-            <Link key={r.to} to={r.to} style={linkStyle}>{r.label}</Link>
+            <Link key={r.to} to={r.to} style={linkStyle}>
+              {r.label}
+            </Link>
           ))}
         </div>
       </div>

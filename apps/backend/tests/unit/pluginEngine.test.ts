@@ -23,8 +23,12 @@ import {
 
 // === 最小 mock context（隔离 DuckDB 依赖） ===
 const mockContext: PluginContext = {
-  async getDailyKlines() { return []; },
-  async batchGetDailyKlines() { return new Map(); },
+  async getDailyKlines() {
+    return [];
+  },
+  async batchGetDailyKlines() {
+    return new Map();
+  },
   calculateRSI: () => [],
   calculateMACD: () => ({ dif: [], dea: [], macd: [] }),
   calculateSMA: () => [],
@@ -68,7 +72,7 @@ describe('pluginEngine — P3 执行超时', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(PLUGIN_TIMEOUT_MS - 20);
     expect(result.durationMs).toBeLessThanOrEqual(PLUGIN_TIMEOUT_MS + 20);
     expect(result.signals).toEqual([]);
-  }, 5000);  // 整个测试的独立 timeout
+  }, 5000); // 整个测试的独立 timeout
 
   it('正常执行 < 50ms → 返回非 TIMEOUT（SKIP 或 SUCCESS）', async () => {
     const plugin = makePlugin({
@@ -224,7 +228,6 @@ describe('pluginEngine — P5/P6/P7 沙盒隔离', () => {
       `);
     }).toThrow(/插件源码执行失败/);
   });
-
 });
 
 describe('pluginEngine — 边界覆盖', () => {

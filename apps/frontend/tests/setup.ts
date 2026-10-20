@@ -55,8 +55,7 @@ function createMemoryStorage(): Storage {
 }
 
 function installLocalStorage(): void {
-  const isUsable = (v: unknown): v is Storage =>
-    !!v && typeof (v as Storage).getItem === 'function';
+  const isUsable = (v: unknown): v is Storage => !!v && typeof (v as Storage).getItem === 'function';
 
   // globalThis
   if (!isUsable((globalThis as { localStorage?: unknown }).localStorage)) {

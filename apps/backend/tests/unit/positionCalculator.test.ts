@@ -40,7 +40,11 @@ afterAll(() => {
     // ignore
   }
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
@@ -58,14 +62,16 @@ describe('positionCalculator — calcPosition', () => {
     const uid = 1001;
     const code = 'sh600000';
     // 按 trade_date ASC 插入
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
 
     const insert = db.db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     );
     insert.run(uid, code, 'buy', '2025-01-01', '09:01:00', 100, 10.0, 1.0);
     insert.run(uid, code, 'buy', '2025-01-05', '09:02:00', 50, 12.0, 0.5);
@@ -76,7 +82,7 @@ describe('positionCalculator — calcPosition', () => {
 
     // 手动验证：成本基 = 100*10+1 + 50*12+0.5 + 200*8+2.0
     // = 1001 + 600.5 + 1602 = 3203.5
-    const expectedCost = (100 * 10.0 + 1.0) + (50 * 12.0 + 0.5) + (200 * 8.0 + 2.0);
+    const expectedCost = 100 * 10.0 + 1.0 + (50 * 12.0 + 0.5) + (200 * 8.0 + 2.0);
     expect(pos.totalCostBasis).toBeCloseTo(expectedCost, 4);
     expect(pos.avgCost).toBeCloseTo(expectedCost / 350, 6);
   });
@@ -86,29 +92,37 @@ describe('positionCalculator — validateSufficientHolding', () => {
   it('有持仓：持仓 100 验证卖 50 → true', () => {
     const uid = 1002;
     const code = 'sh601398';
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_trade_record
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
-).run(uid, code, 'buy', '2025-02-01', '09:30:00', 100, 5.0, 0);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      )
+      .run(uid, code, 'buy', '2025-02-01', '09:30:00', 100, 5.0, 0);
 
-  expect(validateSufficientHolding(uid, code, 50)).toBe(true);
+    expect(validateSufficientHolding(uid, code, 50)).toBe(true);
   });
 
   it('超持仓：持仓 100 验证卖 200 → false', () => {
     const uid = 1003;
     const code = 'sz000001';
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_trade_record
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
-    ).run(uid, code, 'buy', '2025-02-02', '09:30:00', 100, 10.0, 0);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      )
+      .run(uid, code, 'buy', '2025-02-02', '09:30:00', 100, 10.0, 0);
 
     expect(validateSufficientHolding(uid, code, 200)).toBe(false);
   });
@@ -117,20 +131,22 @@ describe('positionCalculator — validateSufficientHolding', () => {
 describe('positionCalculator — calcAllPositions', () => {
   it('多标的：返回数组 length=2', () => {
     const uid = 1004;
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
     const insert = db.db.prepare(
       `INSERT OR IGNORE INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     );
     insert.run(uid, 'sh600519', 'buy', '2025-03-01', '09:04:00', 10, 1500.0, 5.0);
     insert.run(uid, 'sz300750', 'buy', '2025-03-02', '09:05:00', 20, 200.0, 1.0);
 
     const positions = calcAllPositions(uid);
     expect(positions.length).toBe(2);
-    const codes = positions.map(p => p.asset_code).sort();
+    const codes = positions.map((p) => p.asset_code).sort();
     expect(codes).toEqual(['sh600519', 'sz300750']);
   });
 });
@@ -143,13 +159,15 @@ describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数�
   it('一买一卖：卖出 realized_pnl = 净收入 - 数量×移动加权均价', () => {
     const uid = 2001;
     const code = 'sh600000';
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
     const insert = db.db.prepare(
       `INSERT INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     );
     // 成本基 = 100*10 + 2 = 1002 → 均价 10.02
     insert.run(uid, code, 'buy', '2025-04-01', '09:06:00', 100, 10.0, 2.0);
@@ -166,13 +184,15 @@ describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数�
   it('多次加仓后卖出：按卖出时点的移动加权均价计成本', () => {
     const uid = 2002;
     const code = 'sz000002';
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
     const insert = db.db.prepare(
       `INSERT INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     );
     // 成本基 = 100*10 + 100*12 = 2200 → 均价 11
     insert.run(uid, code, 'buy', '2025-05-01', '09:08:00', 100, 10.0, 0);
@@ -188,35 +208,39 @@ describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数�
   it('软删除的平仓记录不计入', () => {
     const uid = 2003;
     const code = 'sz000003';
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
     const insert = db.db.prepare(
       `INSERT INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     insert.run(uid, code, 'buy', '2025-06-01', '09:11:00', 100, 10.0, 0, 0);
-    insert.run(uid, code, 'reduce', '2025-06-10', '09:12:00', 100, 11.0, 0, 1);  // 已软删
+    insert.run(uid, code, 'reduce', '2025-06-10', '09:12:00', 100, 11.0, 0, 1); // 已软删
     expect(calcClosedTradePnLs(uid)).toEqual([]);
   });
 
   it('除权类交易（dividend/bonus/transfer）不参与回放', () => {
     const uid = 2004;
     const code = 'sh601398';
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
     const insert = db.db.prepare(
       `INSERT INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     );
     insert.run(uid, code, 'buy', '2025-07-01', '09:13:00', 100, 10.0, 0);
     insert.run(uid, code, 'dividend', '2025-07-02', '09:14:00', 100, 0.5, 0);
     insert.run(uid, code, 'bonus', '2025-07-03', '09:15:00', 10, 0, 0);
 
     const closed = calcClosedTradePnLs(uid);
-    expect(closed.length).toBe(0);  // 只有买入，无平仓
+    expect(closed.length).toBe(0); // 只有买入，无平仓
   });
 });

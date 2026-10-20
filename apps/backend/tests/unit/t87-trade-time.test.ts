@@ -23,12 +23,22 @@ import { validateTradeTime, nowTradeTime } from '../../src/routes/trade.js';
 
 let db: ReturnType<typeof ConfigStore.getInstance>;
 
-beforeAll(() => { db = ConfigStore.getInstance(); });
+beforeAll(() => {
+  db = ConfigStore.getInstance();
+});
 
 afterAll(() => {
-  try { (db.db as any).close(); } catch { /* ignore */ }
+  try {
+    (db.db as any).close();
+  } catch {
+    /* ignore */
+  }
   for (const f of [tmpDbPath, tmpDbPath + '-wal', tmpDbPath + '-shm']) {
-    try { fs.unlinkSync(f); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
@@ -65,7 +75,8 @@ describe('T87 trade_time 格式校验', () => {
 describe('T87 DDL：trade_time 列与 UNIQUE 约束', () => {
   it('trade_time 列为 NOT NULL', () => {
     const cols = db.db.prepare('PRAGMA table_info(user_trade_record)').all() as Array<{
-      name: string; notnull: number;
+      name: string;
+      notnull: number;
     }>;
     const col = cols.find((c) => c.name === 'trade_time');
     expect(col).toBeTruthy();
@@ -98,22 +109,27 @@ describe('T87 DDL：trade_time 列与 UNIQUE 约束', () => {
 });
 
 describe('T87 唯一键行为：同日分笔可追加', () => {
-  const uid = 9001, code = 'sh600000';
+  const uid = 9001,
+    code = 'sh600000';
   let userId: number;
 
   beforeAll(() => {
-    db.db.prepare(
-      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
-    ).run(uid, `user_${uid}`, 'dummy-hash');
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
     userId = uid;
   });
 
   function ins(time: string, qty: number, price = 10) {
-    return db.db.prepare(
-      `INSERT INTO user_trade_record
+    return db.db
+      .prepare(
+        `INSERT INTO user_trade_record
        (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
        VALUES (?, ?, 'buy', '2026-09-01', ?, ?, ?, 0, 0)`,
-    ).run(userId, code, time, qty, price);
+      )
+      .run(userId, code, time, qty, price);
   }
 
   // ⚠️ T81：下面每个用例都自带**独立的成交时间**（10:00/11:00/12:00/13:00/14:00 段），
@@ -137,22 +153,26 @@ describe('T87 唯一键行为：同日分笔可追加', () => {
   it('不同 trade_type → 不冲突', () => {
     ins('13:00:00', 100);
     expect(() =>
-      db.db.prepare(
-        `INSERT INTO user_trade_record
+      db.db
+        .prepare(
+          `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
          VALUES (?, ?, 'reduce', '2026-09-01', '13:00:00', 50, 10, 0, 0)`,
-      ).run(userId, code),
+        )
+        .run(userId, code),
     ).not.toThrow();
   });
 
   it('不同 trade_date → 不冲突', () => {
     ins('14:00:00', 100);
     expect(() =>
-      db.db.prepare(
-        `INSERT INTO user_trade_record
+      db.db
+        .prepare(
+          `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
          VALUES (?, ?, 'buy', '2026-09-02', '14:00:00', 100, 10, 0, 0)`,
-      ).run(userId, code),
+        )
+        .run(userId, code),
     ).not.toThrow();
   });
 });

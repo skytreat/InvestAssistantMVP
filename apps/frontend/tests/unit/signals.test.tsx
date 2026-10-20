@@ -294,7 +294,9 @@ describe('Signals · 结果表可读性', () => {
     await screen.findByRole('table');
     const dataRows = screen.getAllByRole('row').slice(1);
     expect(dataRows).toHaveLength(1);
-    const cells = within(dataRows[0]).getAllByRole('cell').map((td) => td.textContent);
+    const cells = within(dataRows[0])
+      .getAllByRole('cell')
+      .map((td) => td.textContent);
     expect(cells).toEqual(['1', 'sh600000', 'filter_v2', '买入', '放量突破', '2026-10-12']);
   });
 
@@ -314,9 +316,7 @@ describe('Signals · 结果表可读性', () => {
     expect(dataRows).toHaveLength(3);
 
     // 第 4 列是 direction（列序 = Object.keys(rows[0]) 的顺序）
-    const directionCells = dataRows.map(
-      (row) => within(row).getAllByRole('cell')[3].textContent,
-    );
+    const directionCells = dataRows.map((row) => within(row).getAllByRole('cell')[3].textContent);
     expect(directionCells).toEqual(['买入', '卖出', '持仓']);
     // 原始英文枚举值不应直接上屏
     expect(directionCells).not.toContain('buy');

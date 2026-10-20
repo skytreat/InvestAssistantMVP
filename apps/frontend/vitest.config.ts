@@ -27,8 +27,8 @@ export default defineConfig({
       reporter: ['text', 'html', 'json', 'json-summary'],
       include: ['src/**/*.{ts,tsx}'],
       exclude: [
-        'src/main.tsx',      // 入口文件（挂载 ReactDOM），无可测逻辑
-        'src/types.ts',      // 纯类型声明，编译后无运行时代码
+        'src/main.tsx', // 入口文件（挂载 ReactDOM），无可测逻辑
+        'src/types.ts', // 纯类型声明，编译后无运行时代码
         'src/vite-env.d.ts',
       ],
     },

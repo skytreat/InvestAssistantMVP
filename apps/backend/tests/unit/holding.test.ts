@@ -36,9 +36,8 @@ process.env.SQLITE_DB_PATH = path.join(TMP_DIR, 'holding.db');
 const CLOSE_PRICE = 12;
 
 const { batchGetDailyMock } = vi.hoisted(() => ({
-  batchGetDailyMock: vi.fn<
-    (symbols: string[], date: string, period?: string) => Promise<Map<string, DailyKline>>
-  >(),
+  batchGetDailyMock:
+    vi.fn<(symbols: string[], date: string, period?: string) => Promise<Map<string, DailyKline>>>(),
 }));
 
 vi.mock('../../src/services/marketData.js', () => ({
@@ -97,7 +96,10 @@ function handCalcSpec(trades: RawTrade[]): HandResult {
       realizedPnL += t.quantity * t.price - t.fee - t.quantity * avgCost;
       quantity -= t.quantity;
       costBasis = quantity * avgCost;
-      if (quantity <= 0) { quantity = 0; costBasis = 0; }
+      if (quantity <= 0) {
+        quantity = 0;
+        costBasis = 0;
+      }
     } else if (t.tradeType === 'bonus' && quantity > 0) {
       // 送转：股数增加（quantity 字段即送转股数），成本不变 → 均价稀释
       quantity += t.quantity;
@@ -134,7 +136,10 @@ function handCalcCurrent(trades: RawTrade[]): HandResult {
       realizedPnL += sellQty * t.price - t.fee - sellQty * avgCost;
       quantity -= sellQty;
       costBasis = quantity * avgCost;
-      if (quantity <= 0) { quantity = 0; costBasis = 0; }
+      if (quantity <= 0) {
+        quantity = 0;
+        costBasis = 0;
+      }
     }
   }
   return { quantity, avgCost: quantity > 0 ? costBasis / quantity : 0, costBasis, realizedPnL };
@@ -149,9 +154,11 @@ let userSeq = 3100;
 function createUser(): number {
   userSeq += 1;
   const id = userSeq;
-  db.db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
-  ).run(id, `holding_user_${id}`, 'dummy-hash');
+  db.db
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    )
+    .run(id, `holding_user_${id}`, 'dummy-hash');
   return id;
 }
 
@@ -174,8 +181,15 @@ function insertTrades(userId: number, assetCode: string, trades: TradeInput[]): 
   for (const t of trades) {
     seq += 1;
     stmt.run(
-      userId, assetCode, t.type, t.date, t.time ?? `09:0${seq}:00`,
-      t.quantity, t.price, t.fee ?? 0, `holding.test.ts 造数`,
+      userId,
+      assetCode,
+      t.type,
+      t.date,
+      t.time ?? `09:0${seq}:00`,
+      t.quantity,
+      t.price,
+      t.fee ?? 0,
+      `holding.test.ts 造数`,
     );
   }
 }
@@ -206,11 +220,19 @@ beforeAll(() => {
 
 afterAll(() => {
   // 先关连接（Windows 上打开的 .db 删不掉），再删临时目录
-  try { (ConfigStore.getInstance().db as unknown as { close(): void }).close(); } catch { /* ignore */ }
+  try {
+    (ConfigStore.getInstance().db as unknown as { close(): void }).close();
+  } catch {
+    /* ignore */
+  }
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   if (ORIG_SQLITE_PATH === undefined) delete process.env.SQLITE_DB_PATH;
   else process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
-  try { rmSync(TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   vi.restoreAllMocks();
 });
 
@@ -359,10 +381,12 @@ describe('yield_caliber_switch — 价格口径 / 实际口径独立可查', () 
 
     await insertAssetStatSnapshots(tradeDate);
 
-    const row = db.db.prepare(
-      `SELECT total_assets_price_yield, total_assets_actual_yield, total_profit_price, total_profit_actual
+    const row = db.db
+      .prepare(
+        `SELECT total_assets_price_yield, total_assets_actual_yield, total_profit_price, total_profit_actual
          FROM user_asset_stat WHERE user_id = ? AND trade_date = ?`,
-    ).get(uid, tradeDate) as {
+      )
+      .get(uid, tradeDate) as {
       total_assets_price_yield: number;
       total_assets_actual_yield: number;
       total_profit_price: number;
@@ -379,11 +403,7 @@ describe('yield_caliber_switch — 价格口径 / 实际口径独立可查', () 
     expectAvgCostMatches(row.total_profit_actual, 250, 'F4 实际口径利润');
 
     // 两口径互相独立：差额 = 分红福利 / 成本 = 50/1000 = 0.05
-    expectAvgCostMatches(
-      row.total_assets_actual_yield - row.total_assets_price_yield,
-      0.05,
-      'F4 两口径差值',
-    );
+    expectAvgCostMatches(row.total_assets_actual_yield - row.total_assets_price_yield, 0.05, 'F4 两口径差值');
     expect(row.total_assets_actual_yield).toBeGreaterThan(row.total_assets_price_yield);
   });
 
@@ -398,10 +418,12 @@ describe('yield_caliber_switch — 价格口径 / 实际口径独立可查', () 
 
     await insertAssetStatSnapshots(tradeDate);
 
-    const row = db.db.prepare(
-      `SELECT total_assets_price_yield, total_assets_actual_yield
+    const row = db.db
+      .prepare(
+        `SELECT total_assets_price_yield, total_assets_actual_yield
          FROM user_asset_stat WHERE user_id = ? AND trade_date = ?`,
-    ).get(uid, tradeDate) as {
+      )
+      .get(uid, tradeDate) as {
       total_assets_price_yield: number;
       total_assets_actual_yield: number;
     };

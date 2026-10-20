@@ -64,10 +64,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** 仓库根：本文件位于 `apps/frontend/tests/unit/`，向上 4 层 */
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const GOLDEN_PATH = path.join(
-  REPO_ROOT,
-  'packages/core/tests/fixtures/golden/kdj.json',
-);
+const GOLDEN_PATH = path.join(REPO_ROOT, 'packages/core/tests/fixtures/golden/kdj.json');
 
 /** golden 里的一根 K 线 */
 interface GoldenBar {
@@ -133,11 +130,7 @@ function toNullable(series: number[]): Array<number | null> {
  * - golden 为 `null` → 实际必须是 NaN
  * - golden 为数值 → 实际必须 `toBe` 严格相等（不使用 `toBeCloseTo`）
  */
-function expectBitwise(
-  actual: number[],
-  expected: Array<number | null>,
-  label: string,
-): void {
+function expectBitwise(actual: number[], expected: Array<number | null>, label: string): void {
   expect(actual.length, `${label} 长度`).toBe(expected.length);
   for (let i = 0; i < expected.length; i++) {
     const exp = expected[i];
@@ -151,23 +144,12 @@ function expectBitwise(
 
 /** 用 golden 的 params 调前端 KDJ */
 function calcKdj(): KDJResult {
-  return calculateKDJ(
-    highs,
-    lows,
-    closes,
-    golden.params.n,
-    golden.params.m1,
-    golden.params.m2,
-  );
+  return calculateKDJ(highs, lows, closes, golden.params.n, golden.params.m1, golden.params.m2);
 }
 
 /** 用 golden 的 params 调前端布林带 */
 function calcBoll(): BollResult {
-  return calculateBoll(
-    closes,
-    golden.boll.params.period,
-    golden.boll.params.stdDev,
-  );
+  return calculateBoll(closes, golden.boll.params.period, golden.boll.params.stdDev);
 }
 
 /* ------------------------------------------------------------------ *
@@ -246,9 +228,7 @@ describe('kline_render · KDJ 指标对 golden 逐位相等（零容差）', () 
     expect(r.k.filter((v) => Number.isNaN(v)).length).toBe(warmup);
     // golden 的 null 位置也必须恰好落在 warmup 期
     expect(golden.expected.k.slice(0, warmup).every((v) => v === null)).toBe(true);
-    expect(
-      golden.expected.k.slice(warmup).every((v) => v !== null),
-    ).toBe(true);
+    expect(golden.expected.k.slice(warmup).every((v) => v !== null)).toBe(true);
   });
 
   it('kline_render: K/D/J 三个序列长度均等于 K 线数量', () => {
@@ -280,9 +260,7 @@ describe('kline_render · KDJ 口径自洽（独立于 golden 的防错校验）
       if (Number.isNaN(r.k[i]) || Number.isNaN(r.d[i]) || Number.isNaN(r.j[i])) {
         continue;
       }
-      expect(r.j[i], `J[${i}] 应等于 3*K-2*D`).toBe(
-        J_K_COEFFICIENT * r.k[i] - J_D_COEFFICIENT * r.d[i],
-      );
+      expect(r.j[i], `J[${i}] 应等于 3*K-2*D`).toBe(J_K_COEFFICIENT * r.k[i] - J_D_COEFFICIENT * r.d[i]);
       checked += 1;
     }
     // 至少要检查到 200 个有效点，否则断言形同虚设
@@ -301,14 +279,7 @@ describe('kline_render · KDJ 口径自洽（独立于 golden 的防错校验）
 
   it('kline_render: 默认参数与显式参数结果一致', () => {
     const byDefault = calculateKDJ(highs, lows, closes);
-    const byExplicit = calculateKDJ(
-      highs,
-      lows,
-      closes,
-      golden.params.n,
-      golden.params.m1,
-      golden.params.m2,
-    );
+    const byExplicit = calculateKDJ(highs, lows, closes, golden.params.n, golden.params.m1, golden.params.m2);
     expect(byDefault.k).toEqual(byExplicit.k);
     expect(byDefault.d).toEqual(byExplicit.d);
     expect(byDefault.j).toEqual(byExplicit.j);
@@ -362,17 +333,12 @@ describe('kline_render · KDJ 口径自洽（独立于 golden 的防错校验）
       closes.push(v);
     }
     const r = calculateKDJ(highs, lows, closes);
-    const expectedK =
-      (RSV_PERCENT_SCALE + (KDJ_DEFAULT_M1 - 1) * KDJ_INITIAL_VALUE) / KDJ_DEFAULT_M1;
+    const expectedK = (RSV_PERCENT_SCALE + (KDJ_DEFAULT_M1 - 1) * KDJ_INITIAL_VALUE) / KDJ_DEFAULT_M1;
     expect(r.k[n - 1]).toBe(expectedK);
     // RSV 保持 100 → K 继续向 100 收敛而非跳变
-    expect(r.k[n]).toBe(
-      (RSV_PERCENT_SCALE + (KDJ_DEFAULT_M1 - 1) * r.k[n - 1]) / KDJ_DEFAULT_M1,
-    );
+    expect(r.k[n]).toBe((RSV_PERCENT_SCALE + (KDJ_DEFAULT_M1 - 1) * r.k[n - 1]) / KDJ_DEFAULT_M1);
     expect(r.k[n]).toBeGreaterThan(r.k[n - 1]);
-    expect(r.d[n]).toBe(
-      (r.k[n] + (KDJ_DEFAULT_M2 - 1) * r.d[n - 1]) / KDJ_DEFAULT_M2,
-    );
+    expect(r.d[n]).toBe((r.k[n] + (KDJ_DEFAULT_M2 - 1) * r.d[n - 1]) / KDJ_DEFAULT_M2);
   });
 });
 
@@ -418,17 +384,11 @@ describe('kline_render · 布林带 BOLL 对 golden 逐位相等', () => {
     const warmup = golden.boll.params.period - 1;
     for (let i = warmup; i < b.upper.length; i++) {
       // 上下轨关于中轨对称（总体标准差口径 → 上下轨各偏离 2 倍 sigma）
-      expect(b.upper[i] - b.middle[i], `upper[${i}] 与 middle[${i}] 的偏移`).toBe(
-        b.middle[i] - b.lower[i],
-      );
+      expect(b.upper[i] - b.middle[i], `upper[${i}] 与 middle[${i}] 的偏移`).toBe(b.middle[i] - b.lower[i]);
       // %B = (close - lower) / (upper - lower)
-      expect(b.pb[i], `pb[${i}]`).toBe(
-        (closes[i] - b.lower[i]) / (b.upper[i] - b.lower[i]),
-      );
+      expect(b.pb[i], `pb[${i}]`).toBe((closes[i] - b.lower[i]) / (b.upper[i] - b.lower[i]));
       // 带宽 = (upper - lower) / middle
-      expect(b.width[i], `width[${i}]`).toBe(
-        (b.upper[i] - b.lower[i]) / b.middle[i],
-      );
+      expect(b.width[i], `width[${i}]`).toBe((b.upper[i] - b.lower[i]) / b.middle[i]);
     }
   });
 

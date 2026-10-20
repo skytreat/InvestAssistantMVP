@@ -30,23 +30,26 @@ process.env.SQLITE_DB_PATH = tmpDbPath;
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { registerBatchCandidateRoutes } = await import('../../src/routes/candidates.js');
-const {
-  MAX_BATCH_CANDIDATES,
-  batchInsertCandidates,
-} = await import('../../src/services/candidateService.js');
+const { MAX_BATCH_CANDIDATES, batchInsertCandidates } =
+  await import('../../src/services/candidateService.js');
 
 const TEST_UID = 5601;
 const TEST_USERNAME = 't56_user';
 const MISSING_UID = 999_999; // user_account 中不存在 → 触发 FK 违例
 const USER_PAYLOAD: JwtPayload = {
-  sub: TEST_UID, username: TEST_USERNAME, role: 'user',
-  iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600,
+  sub: TEST_UID,
+  username: TEST_USERNAME,
+  role: 'user',
+  iat: Math.floor(Date.now() / 1000),
+  exp: Math.floor(Date.now() / 1000) + 3600,
 };
 
 let app: FastifyInstance;
 let store: InstanceType<typeof ConfigStore>;
 
-function candidatesOf(uid: number): Array<{ asset_code: string; candidate_reason: string | null; is_deleted: number }> {
+function candidatesOf(
+  uid: number,
+): Array<{ asset_code: string; candidate_reason: string | null; is_deleted: number }> {
   return store.db
     .prepare(
       `SELECT asset_code, candidate_reason, is_deleted FROM user_asset_rel
@@ -93,7 +96,11 @@ afterAll(async () => {
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   if (prevSqlitePath !== undefined) process.env.SQLITE_DB_PATH = prevSqlitePath;
   else delete process.env.SQLITE_DB_PATH;
-  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });
 
 // ══════════════════ 参数校验 ══════════════════
@@ -223,7 +230,9 @@ describe('T56 幂等：INSERT OR IGNORE + duplicates', () => {
     // 已是 candidate → 仍进 duplicates；watch 行的存在不影响候选池判定
     expect(res.json().data.added).toBe(0);
     const rows = store.db
-      .prepare(`SELECT rel_type FROM user_asset_rel WHERE user_id = ? AND asset_code = 'sh600001' ORDER BY rel_type`)
+      .prepare(
+        `SELECT rel_type FROM user_asset_rel WHERE user_id = ? AND asset_code = 'sh600001' ORDER BY rel_type`,
+      )
       .all(TEST_UID) as Array<{ rel_type: string }>;
     expect(rows.map((r) => r.rel_type)).toEqual(['candidate', 'watch']);
   });
@@ -251,8 +260,8 @@ describe('T56 事务：中途失败全量回滚', () => {
 
     expect(() => batchInsertCandidates(MISSING_UID, batchCodes)).toThrow(/FOREIGN KEY/i);
 
-    expect(countFor(MISSING_UID, batchCodes)).toBe(0);            // 失败批全回滚
-    expect(countFor(TEST_UID, batchCodes)).toBe(beforeCount);      // 其他用户数据零影响
+    expect(countFor(MISSING_UID, batchCodes)).toBe(0); // 失败批全回滚
+    expect(countFor(TEST_UID, batchCodes)).toBe(beforeCount); // 其他用户数据零影响
   });
 
   it('回滚后再用合法 user 重试 → 整批成功（证明回滚没有留下「半截」状态）', () => {

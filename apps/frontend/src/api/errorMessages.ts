@@ -57,9 +57,7 @@ export function resolveErrorMessage(
   const raw = body?.message;
   if (typeof raw === 'string' && raw.trim() !== '') return raw;
 
-  const code = typeof body?.code === 'string' ? body.code
-    : typeof body?.error === 'string' ? body.error
-    : '';
+  const code = typeof body?.code === 'string' ? body.code : typeof body?.error === 'string' ? body.error : '';
   if (code) return ERROR_MESSAGES[code]?.message ?? fallback;
 
   return fallback;
@@ -69,8 +67,6 @@ export function resolveErrorMessage(
 export function resolveErrorHint(
   body: { code?: unknown; error?: unknown } | undefined | null,
 ): string | undefined {
-  const code = typeof body?.code === 'string' ? body.code
-    : typeof body?.error === 'string' ? body.error
-    : '';
+  const code = typeof body?.code === 'string' ? body.code : typeof body?.error === 'string' ? body.error : '';
   return code ? ERROR_MESSAGES[code]?.hint : undefined;
 }

@@ -25,18 +25,23 @@ const ORIG_SQLITE_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = path.join(TMP_SQLITE_DIR, 't94.db');
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
-const {
-  registerStrategyRoutes,
-  reloadPluginsFromDir,
-} = await import('../../src/routes/strategy.js');
+const { registerStrategyRoutes, reloadPluginsFromDir } = await import('../../src/routes/strategy.js');
 const { signToken, verifyToken, extractToken } = await import('../../src/services/auth.js');
 
 afterAll(() => {
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   if (ORIG_SQLITE_PATH === undefined) delete process.env.SQLITE_DB_PATH;
   else process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
-  try { rmSync(TMP_SQLITE_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
-  try { rmSync(TMP_PLUGIN_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(TMP_SQLITE_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+  try {
+    rmSync(TMP_PLUGIN_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });
 
 function tokenFor(sub: number, username: string, role: 'user' | 'admin'): string {
@@ -125,10 +130,13 @@ describe('T94 — reloadPluginsFromDir 纯函数行为（临时目录，默认�
 
   it('沙盒内 process 为 undefined：访问 process.env 的插件加载失败但不抛未捕获异常', () => {
     writePlugin('aaa_valid.js', VALID_PLUGIN_JS);
-    writePlugin('env_leak.js', `
+    writePlugin(
+      'env_leak.js',
+      `
       const token = process.env.TUSHARE_TOKEN;
       return ({ id: 'env_leak', name: 'x', category: 'monitor', execute: async () => ({}) });
-    `);
+    `,
+    );
     try {
       const r = reloadPluginsFromDir(TMP_PLUGIN_DIR);
       expect(r.loaded).toBe(1);
@@ -142,10 +150,13 @@ describe('T94 — reloadPluginsFromDir 纯函数行为（临时目录，默认�
   });
 
   it('沙盒内 require 为 undefined：require("fs") 的插件加载失败', () => {
-    writePlugin('require_fs.js', `
+    writePlugin(
+      'require_fs.js',
+      `
       const fs = require('fs');
       return ({ id: 'require_fs', name: 'x', category: 'monitor', execute: async () => ({}) });
-    `);
+    `,
+    );
     try {
       const r = reloadPluginsFromDir(TMP_PLUGIN_DIR);
       expect(r.loaded).toBe(0);

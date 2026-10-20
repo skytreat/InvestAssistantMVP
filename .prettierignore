@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.duckdb
+*.duckdb.wal
+data/
+package-lock.json
+docs/

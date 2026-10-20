@@ -74,8 +74,12 @@ const { queryDuckDBMock } = vi.hoisted(() => ({
 
 vi.mock('../../src/db/duckdb.js', () => ({
   queryDuckDB: queryDuckDBMock,
-  closeDuckDBInstance: vi.fn(async () => { /* 测试不需要真实 instance */ }),
-  duckdbHealthCheck: vi.fn(async () => { /* noop */ }),
+  closeDuckDBInstance: vi.fn(async () => {
+    /* 测试不需要真实 instance */
+  }),
+  duckdbHealthCheck: vi.fn(async () => {
+    /* noop */
+  }),
 }));
 
 const { registerStockScanRoutes, parseScanFilters, buildPoolQuery } =
@@ -87,58 +91,60 @@ let poolSymbols: FakeSymbol[] = [...FAKE_SYMBOLS];
 
 /** mock 的 queryDuckDB 实现：按 SQL 形状分派 */
 function installDuckDBMock(): void {
-  queryDuckDBMock.mockImplementation(async (sql: string, params?: unknown[]): Promise<Record<string, unknown>[]> => {
-    // 1. 交易日历（getLatestTradingDay）
-    if (sql.includes('raw_holidays')) {
-      return [{ date: TRADE_DATE }];
-    }
-    // 1b. 最新有行情数据的日期（T85b ② resolveLatestQuoteDate）
-    //     —— 查行情必须落在真有数据的那天，否则查出来是 0 行
-    if (sql.includes('MAX(d)')) {
-      return [{ d: TRADE_DATE }];
-    }
-    // 2. 候选池（buildPoolQuery）
-    if (sql.includes('raw_symbol_name')) {
-      return poolSymbols.map((s, idx) => ({
-        src_view: 'v_stock_qfq',
-        symbol: s.symbol,
-        amount: 1_000_000 * (poolSymbols.length - idx),
-        name: s.name,
-        totalmv: 10_000_000_000,
-      }));
-    }
-    // 2b. 预取区间日线（T85b ①：按 view 分组的 1 次 IN 查询取整段区间）
-    //     形状 = 同时含 BETWEEN 与 IN ( → 必须排在下面两条分支之前
-    if (sql.includes('BETWEEN') && sql.includes('IN (')) {
-      const symbols = (params ?? []).slice(2).map((p) => String(p));
-      return symbols.flatMap((sym) => {
+  queryDuckDBMock.mockImplementation(
+    async (sql: string, params?: unknown[]): Promise<Record<string, unknown>[]> => {
+      // 1. 交易日历（getLatestTradingDay）
+      if (sql.includes('raw_holidays')) {
+        return [{ date: TRADE_DATE }];
+      }
+      // 1b. 最新有行情数据的日期（T85b ② resolveLatestQuoteDate）
+      //     —— 查行情必须落在真有数据的那天，否则查出来是 0 行
+      if (sql.includes('MAX(d)')) {
+        return [{ d: TRADE_DATE }];
+      }
+      // 2. 候选池（buildPoolQuery）
+      if (sql.includes('raw_symbol_name')) {
+        return poolSymbols.map((s, idx) => ({
+          src_view: 'v_stock_qfq',
+          symbol: s.symbol,
+          amount: 1_000_000 * (poolSymbols.length - idx),
+          name: s.name,
+          totalmv: 10_000_000_000,
+        }));
+      }
+      // 2b. 预取区间日线（T85b ①：按 view 分组的 1 次 IN 查询取整段区间）
+      //     形状 = 同时含 BETWEEN 与 IN ( → 必须排在下面两条分支之前
+      if (sql.includes('BETWEEN') && sql.includes('IN (')) {
+        const symbols = (params ?? []).slice(2).map((p) => String(p));
+        return symbols.flatMap((sym) => {
+          const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
+          // ⚠️ 必须带 symbol —— 真实 SQL 是 `SELECT symbol, date, ...`，
+          //    预取 map 以 symbol 为 key，缺了它缓存就永远 miss（会退化成逐只查库）
+          return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT).map((k) => ({
+            symbol: sym,
+            ...k,
+          })) as unknown as Record<string, unknown>[];
+        });
+      }
+      // 3. 批量 IN 取日线（loadCandidateDaily）
+      if (sql.includes('IN (')) {
+        const symbols = (params ?? []).slice(1).map((p) => String(p));
+        return symbols.map((sym) => {
+          const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
+          const klines = fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT);
+          const last = klines[klines.length - 1];
+          return { symbol: sym, ...last };
+        });
+      }
+      // 4. 单标的区间取日线（ctx.getDailyKlines → getDailyRange）
+      if (sql.includes('BETWEEN')) {
+        const sym = String((params ?? [])[0] ?? '');
         const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
-        // ⚠️ 必须带 symbol —— 真实 SQL 是 `SELECT symbol, date, ...`，
-        //    预取 map 以 symbol 为 key，缺了它缓存就永远 miss（会退化成逐只查库）
-        return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT).map((k) => ({
-          symbol: sym,
-          ...k,
-        })) as unknown as Record<string, unknown>[];
-      });
-    }
-    // 3. 批量 IN 取日线（loadCandidateDaily）
-    if (sql.includes('IN (')) {
-      const symbols = (params ?? []).slice(1).map((p) => String(p));
-      return symbols.map((sym) => {
-        const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
-        const klines = fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT);
-        const last = klines[klines.length - 1];
-        return { symbol: sym, ...last };
-      });
-    }
-    // 4. 单标的区间取日线（ctx.getDailyKlines → getDailyRange）
-    if (sql.includes('BETWEEN')) {
-      const sym = String((params ?? [])[0] ?? '');
-      const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
-      return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT) as unknown as Record<string, unknown>[];
-    }
-    return [];
-  });
+        return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT) as unknown as Record<string, unknown>[];
+      }
+      return [];
+    },
+  );
 }
 
 let app: Awaited<ReturnType<typeof Fastify>>;
@@ -155,7 +161,11 @@ afterAll(async () => {
   (await import('../../src/config/configStore.js')).ConfigStore.resetInstance();
   if (ORIG_SQLITE_PATH === undefined) delete process.env.SQLITE_DB_PATH;
   else process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
-  try { rmSync(TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   vi.restoreAllMocks();
 });
 
@@ -356,17 +366,19 @@ describe('scan — DuckDB 查询次数', () => {
     //   本用例从「锁定偏差」升级为「**断言偏差已消除**」—— 防止回归。
     queryDuckDBMock.mockClear();
 
-    return app.inject({
-      method: 'POST',
-      url: '/api/stockscan',
-      payload: { plugin_id: 'ma_bullish_alignment' },
-    }).then((res) => {
-      expect(res.statusCode).toBe(200);
-      const calls = queryDuckDBMock.mock.calls.map((c) => String(c[0]));
-      const rangeCalls = calls.filter((s) => s.includes('BETWEEN'));
-      // 唯一一次 BETWEEN 查询 = 区间预取本身，不再有「每标的一次」
-      expect(rangeCalls, '逐标的区间查询应归零（只剩 1 次区间预取）').toHaveLength(1);
-      expect(rangeCalls.length, '区间查询次数必须与候选标的数无关').toBeLessThan(FAKE_SYMBOLS.length);
-    });
+    return app
+      .inject({
+        method: 'POST',
+        url: '/api/stockscan',
+        payload: { plugin_id: 'ma_bullish_alignment' },
+      })
+      .then((res) => {
+        expect(res.statusCode).toBe(200);
+        const calls = queryDuckDBMock.mock.calls.map((c) => String(c[0]));
+        const rangeCalls = calls.filter((s) => s.includes('BETWEEN'));
+        // 唯一一次 BETWEEN 查询 = 区间预取本身，不再有「每标的一次」
+        expect(rangeCalls, '逐标的区间查询应归零（只剩 1 次区间预取）').toHaveLength(1);
+        expect(rangeCalls.length, '区间查询次数必须与候选标的数无关').toBeLessThan(FAKE_SYMBOLS.length);
+      });
   });
 });

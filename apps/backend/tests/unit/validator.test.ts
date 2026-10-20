@@ -18,17 +18,22 @@ const TEST_DB = path.join(tmpDir, 'val-test.db');
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
-import {
-  runAllChecks,
-  TOLERANCES,
-} from '../../src/services/validator.js';
+import { runAllChecks, TOLERANCES } from '../../src/services/validator.js';
 import { ConfigStore } from '../../src/config/configStore.js';
 
 function cleanup(): void {
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 // T81：还原顶层写过的 env，避免漏给下一个测试文件
@@ -42,7 +47,7 @@ describe('validator — TOLERANCES 常量', () => {
     // C1-C8 新鲜度类
     expect(TOLERANCES.MIN_SYMBOL_COUNT).toBe(3000);
     expect(TOLERANCES.EX_DIVIDEND_FRESH_DAYS).toBe(7);
-    expect(TOLERANCES.CLASS_COUNT_DROP).toBe(0.10);
+    expect(TOLERANCES.CLASS_COUNT_DROP).toBe(0.1);
     expect(TOLERANCES.MAX_OPEN_CLOSE_RATIO).toBe(2);
     expect(TOLERANCES.MAX_UPDATE_SECONDS).toBe(120);
     // C9/C10 内容类
@@ -61,11 +66,8 @@ describe('validator — runAllChecks 结构', () => {
     expect(Array.isArray(summaries)).toBe(true);
     expect(summaries.length).toBe(12);
 
-    const ids = summaries.map(s => s.checkId);
-    expect(ids).toEqual([
-      'C1', 'C2', 'C3', 'C4', 'C5', 'C6',
-      'C7', 'C8', 'C9', 'C10', 'C11', 'C12',
-    ]);
+    const ids = summaries.map((s) => s.checkId);
+    expect(ids).toEqual(['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12']);
   }, 60_000);
 
   it('每项都有 checkId / result / durationMs', async () => {
@@ -91,7 +93,7 @@ describe('validator — C11 SKIP 条件', () => {
 
     try {
       const summaries = await runAllChecks('2026-10-15');
-      const c11 = summaries.find(s => s.checkId === 'C11');
+      const c11 = summaries.find((s) => s.checkId === 'C11');
       expect(c11).toBeDefined();
       expect(c11!.result).toBe('SKIP');
       expect(c11!.detail).toContain('TUSHARE_TOKEN');
@@ -126,9 +128,9 @@ describe('validator — system_log 写入', () => {
 
     await runAllChecks('2026-10-15');
 
-    const rows = db.prepare(
-      "SELECT COUNT(*) AS c FROM system_log WHERE log_type = 'datacheck'"
-    ).get() as { c: number };
+    const rows = db.prepare("SELECT COUNT(*) AS c FROM system_log WHERE log_type = 'datacheck'").get() as {
+      c: number;
+    };
     expect(rows.c).toBeGreaterThanOrEqual(12);
   }, 60_000);
 });

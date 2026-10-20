@@ -37,7 +37,11 @@ export function renderWithRouter(
     return (
       <MemoryRouter initialEntries={initialEntries} basename={basename}>
         {children}
-        <LocationSpy onChange={(p) => { pathRef.current = p; }} />
+        <LocationSpy
+          onChange={(p) => {
+            pathRef.current = p;
+          }}
+        />
       </MemoryRouter>
     );
   }

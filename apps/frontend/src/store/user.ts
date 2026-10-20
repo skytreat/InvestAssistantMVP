@@ -18,6 +18,6 @@ export const useUserStore = create<UserState>()(
       login: (token, username, role) => set({ token, username, role }),
       logout: () => set({ token: null, username: null, role: null }),
     }),
-    { name: 'invest-user' }
-  )
+    { name: 'invest-user' },
+  ),
 );

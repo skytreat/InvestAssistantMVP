@@ -35,7 +35,7 @@ const { BACKUP_DIR } = backupMod;
 
 const helpers = await import('./integration/_helpers.js');
 const { createTestApp, cleanupIntegrationTest } = helpers;
-const ADMIN_USER = helpers.ADMIN_USER;      // int_admin —— createTestApp 实际 seed 的 admin
+const ADMIN_USER = helpers.ADMIN_USER; // int_admin —— createTestApp 实际 seed 的 admin
 const ADMIN_PASS = helpers.ADMIN_PASS;
 type TestAppBundle = Awaited<ReturnType<typeof createTestApp>>;
 
@@ -70,7 +70,11 @@ afterAll(async () => {
   await ctx.bundle.app.close().catch(() => {});
   ConfigStore.resetInstance();
   cleanupIntegrationTest();
-  try { rmSync(TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   if (ORIG_BACKUP_DIR !== undefined) process.env.BACKUP_DIR = ORIG_BACKUP_DIR;
   else delete process.env.BACKUP_DIR;
 }, 20000);
@@ -97,36 +101,72 @@ const getPosition = () =>
 
 beforeAll(async () => {
   snap.build = await postTrade({
-    asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-05', trade_time: '09:00:01',
-    quantity: 1000, price: 10.0, fee: 5, trade_reason: 'M4 端到端建仓',
+    asset_code: TRADE_CODE,
+    trade_type: 'buy',
+    trade_date: '2026-01-05',
+    trade_time: '09:00:01',
+    quantity: 1000,
+    price: 10.0,
+    fee: 5,
+    trade_reason: 'M4 端到端建仓',
   });
   snap.noReason = await postTrade({
-    asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-06', trade_time: '09:00:02',
-    quantity: 100, price: 10,
+    asset_code: TRADE_CODE,
+    trade_type: 'buy',
+    trade_date: '2026-01-06',
+    trade_time: '09:00:02',
+    quantity: 100,
+    price: 10,
   });
   snap.add = await postTrade({
-    asset_code: TRADE_CODE, trade_type: 'buy', trade_date: '2026-01-10', trade_time: '09:00:03',
-    quantity: 500, price: 12.0, fee: 0, trade_reason: 'M4 加仓',
+    asset_code: TRADE_CODE,
+    trade_type: 'buy',
+    trade_date: '2026-01-10',
+    trade_time: '09:00:03',
+    quantity: 500,
+    price: 12.0,
+    fee: 0,
+    trade_reason: 'M4 加仓',
   });
   snap.oversell = await postTrade({
-    asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-02', trade_time: '09:00:04',
-    quantity: 99999, price: 15.0, trade_reason: 'M4 超卖校验',
+    asset_code: TRADE_CODE,
+    trade_type: 'reduce',
+    trade_date: '2026-02-02',
+    trade_time: '09:00:04',
+    quantity: 99999,
+    price: 15.0,
+    trade_reason: 'M4 超卖校验',
   });
   snap.reduce = await postTrade({
-    asset_code: TRADE_CODE, trade_type: 'reduce', trade_date: '2026-02-10', trade_time: '09:00:05',
-    quantity: 400, price: 15.0, fee: 2, trade_reason: 'M4 减仓止盈',
+    asset_code: TRADE_CODE,
+    trade_type: 'reduce',
+    trade_date: '2026-02-10',
+    trade_time: '09:00:05',
+    quantity: 400,
+    price: 15.0,
+    fee: 2,
+    trade_reason: 'M4 减仓止盈',
   });
   snap.posBeforeDividend = await getPosition();
   snap.dividend = await postTrade({
-    asset_code: TRADE_CODE, trade_type: 'dividend', trade_date: '2026-03-01', trade_time: '09:00:06',
-    quantity: 1100, price: 0.5, trade_reason: '2025 年度分红',
+    asset_code: TRADE_CODE,
+    trade_type: 'dividend',
+    trade_date: '2026-03-01',
+    trade_time: '09:00:06',
+    quantity: 1100,
+    price: 0.5,
+    trade_reason: '2025 年度分红',
   });
   snap.posAfterDividend = await getPosition();
   snap.positions = await ctx.bundle.app.inject({
-    method: 'GET', url: '/api/holding', headers: adminHeaders(),
+    method: 'GET',
+    url: '/api/holding',
+    headers: adminHeaders(),
   });
   snap.reduceList = await ctx.bundle.app.inject({
-    method: 'GET', url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
+    method: 'GET',
+    url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=reduce`,
+    headers: adminHeaders(),
   });
   ctx.tradeId = JSON.parse(snap.build.body).data?.trade_id;
 });
@@ -134,7 +174,8 @@ beforeAll(async () => {
 describe('M4 · 登录与鉴权', () => {
   it('admin 凭据可登录拿 JWT', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/auth/login',
+      method: 'POST',
+      url: '/api/auth/login',
       payload: { username: ADMIN_USER, password: ADMIN_PASS },
     });
     expect(res.statusCode).toBe(200);
@@ -151,7 +192,8 @@ describe('M4 · 登录与鉴权', () => {
 
   it('伪造 token → 401 INVALID_TOKEN', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/holding',
+      method: 'GET',
+      url: '/api/holding',
       headers: { authorization: 'Bearer not.a.real.token' },
     });
     expect(res.statusCode).toBe(401);
@@ -160,14 +202,17 @@ describe('M4 · 登录与鉴权', () => {
 
   it('普通用户访问 admin 路由 → 403', async () => {
     const seed = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/auth/seed',
+      method: 'POST',
+      url: '/api/auth/seed',
       payload: { username: 'm4_normal', password: 'm4_pass1234', role: 'user' },
     });
     expect(seed.statusCode).toBe(201);
     const userToken = JSON.parse(seed.body).data.token;
 
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/admin/users', headers: userHeaders(userToken),
+      method: 'GET',
+      url: '/api/admin/users',
+      headers: userHeaders(userToken),
     });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('FORBIDDEN');
@@ -243,7 +288,9 @@ describe('M4 · 交易闭环与双口径收益', () => {
 
   it('GET /api/asset-stat/history 可读（快照由 17:02 cron 写入，可为空）', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/asset-stat/history?days=30', headers: adminHeaders(),
+      method: 'GET',
+      url: '/api/asset-stat/history?days=30',
+      headers: adminHeaders(),
     });
     expect(res.statusCode).toBe(200);
     expect(Array.isArray(JSON.parse(res.body).data)).toBe(true);
@@ -256,7 +303,9 @@ describe('M4 · 交易闭环与双口径收益', () => {
 describe('M4 · 信号与复盘归因', () => {
   it('GET /api/signal 结构完整（可为空列表）', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/signal?page=1&page_size=10', headers: adminHeaders(),
+      method: 'GET',
+      url: '/api/signal?page=1&page_size=10',
+      headers: adminHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -268,14 +317,20 @@ describe('M4 · 信号与复盘归因', () => {
   //   本用例 PATCH 出来的标记 → 提为 beforeAll，各 `it` 只做断言。
   beforeAll(async () => {
     snap.reviewPatch = await ctx.bundle.app.inject({
-      method: 'PATCH', url: `/api/trade/${ctx.tradeId}`, headers: adminHeaders(),
+      method: 'PATCH',
+      url: `/api/trade/${ctx.tradeId}`,
+      headers: adminHeaders(),
       payload: {
         review_summary: 'M4：建仓理由成立，仓位偏重',
-        strategy_match: 1, is_stop_loss: 0, remark: '下次分批建仓',
+        strategy_match: 1,
+        is_stop_loss: 0,
+        remark: '下次分批建仓',
       },
     });
     snap.buyList = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=buy`, headers: adminHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=buy`,
+      headers: adminHeaders(),
     });
   });
 
@@ -290,7 +345,11 @@ describe('M4 · 信号与复盘归因', () => {
   });
 
   it('GET /api/review/yield 胜率/盈亏比口径正确', async () => {
-    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: adminHeaders() });
+    const res = await ctx.bundle.app.inject({
+      method: 'GET',
+      url: '/api/review/yield',
+      headers: adminHeaders(),
+    });
     expect(res.statusCode).toBe(200);
     const s = JSON.parse(res.body).data;
     // 本链路只有 1 笔平仓（reduce 400 @15，均价 10.67 → 盈利）
@@ -302,11 +361,13 @@ describe('M4 · 信号与复盘归因', () => {
 
   it('strategy_match 筛选可用', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/trade?strategy_match=1', headers: adminHeaders(),
+      method: 'GET',
+      url: '/api/trade?strategy_match=1',
+      headers: adminHeaders(),
     });
     const rows = JSON.parse(res.body).data as any[];
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(rows.every(r => r.strategy_match === 1)).toBe(true);
+    expect(rows.every((r) => r.strategy_match === 1)).toBe(true);
   });
 
   it('软删平仓交易 → 统计排除 → 恢复', async () => {
@@ -314,19 +375,31 @@ describe('M4 · 信号与复盘归因', () => {
     const reduceId = JSON.parse(snap.reduceList.body).data[0].id;
 
     const del = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/trade/${reduceId}/soft-delete`, headers: adminHeaders(),
+      method: 'POST',
+      url: `/api/trade/${reduceId}/soft-delete`,
+      headers: adminHeaders(),
     });
     expect(del.statusCode).toBe(200);
 
-    const gone = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: adminHeaders() });
+    const gone = await ctx.bundle.app.inject({
+      method: 'GET',
+      url: '/api/review/yield',
+      headers: adminHeaders(),
+    });
     expect(JSON.parse(gone.body).data.closedCount).toBe(0);
 
     const restore = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/trade/${reduceId}/restore`, headers: adminHeaders(),
+      method: 'POST',
+      url: `/api/trade/${reduceId}/restore`,
+      headers: adminHeaders(),
     });
     expect(restore.statusCode).toBe(200);
 
-    const back = await ctx.bundle.app.inject({ method: 'GET', url: '/api/review/yield', headers: adminHeaders() });
+    const back = await ctx.bundle.app.inject({
+      method: 'GET',
+      url: '/api/review/yield',
+      headers: adminHeaders(),
+    });
     expect(JSON.parse(back.body).data.closedCount).toBe(1);
   });
 });
@@ -337,16 +410,22 @@ describe('M4 · 信号与复盘归因', () => {
 describe('M4 · 候选池与插件管理', () => {
   it('候选 → 自选迁移幂等（T92：只打标记，不建关联）', async () => {
     await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/candidate', headers: adminHeaders(),
+      method: 'POST',
+      url: '/api/candidate',
+      headers: adminHeaders(),
       payload: { asset_code: TRADE_CODE },
     });
     const first = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/candidate/${TRADE_CODE}/migrate`, headers: adminHeaders(),
+      method: 'POST',
+      url: `/api/candidate/${TRADE_CODE}/migrate`,
+      headers: adminHeaders(),
       payload: { price_mode: 'base' },
     });
     expect(first.statusCode).toBe(200);
     const second = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/candidate/${TRADE_CODE}/migrate`, headers: adminHeaders(),
+      method: 'POST',
+      url: `/api/candidate/${TRADE_CODE}/migrate`,
+      headers: adminHeaders(),
       payload: { price_mode: 'base' },
     });
     expect(second.statusCode).toBe(200);
@@ -356,25 +435,37 @@ describe('M4 · 候选池与插件管理', () => {
   });
 
   it('插件列表可读，参数可保存、可启停', async () => {
-    const list = await ctx.bundle.app.inject({ method: 'GET', url: '/api/strategy/plugins', headers: adminHeaders() });
+    const list = await ctx.bundle.app.inject({
+      method: 'GET',
+      url: '/api/strategy/plugins',
+      headers: adminHeaders(),
+    });
     expect(list.statusCode).toBe(200);
     const plugins = JSON.parse(list.body).data as any[];
     expect(plugins.length).toBeGreaterThan(0);
     const target = plugins[0];
 
     const cfg = await ctx.bundle.app.inject({
-      method: 'PUT', url: `/api/strategy/plugins/${target.id}/config`, headers: adminHeaders(),
+      method: 'PUT',
+      url: `/api/strategy/plugins/${target.id}/config`,
+      headers: adminHeaders(),
       payload: { params: { period: 14 } },
     });
     expect(cfg.statusCode).toBe(200);
 
     const toggle = await ctx.bundle.app.inject({
-      method: 'PUT', url: `/api/strategy/plugins/${target.id}/toggle`, headers: adminHeaders(),
+      method: 'PUT',
+      url: `/api/strategy/plugins/${target.id}/toggle`,
+      headers: adminHeaders(),
       payload: { enabled: 0 },
     });
     expect(toggle.statusCode).toBe(200);
 
-    const after = await ctx.bundle.app.inject({ method: 'GET', url: '/api/strategy/plugins', headers: adminHeaders() });
+    const after = await ctx.bundle.app.inject({
+      method: 'GET',
+      url: '/api/strategy/plugins',
+      headers: adminHeaders(),
+    });
     const reloaded = (JSON.parse(after.body).data as any[]).find((p) => p.id === target.id);
     expect(reloaded.enabled).toBe(0);
   });
@@ -391,7 +482,10 @@ describe('M4 · 备份与恢复', () => {
   beforeAll(async () => {
     // 坑 2：db.backup() 真跑 IO，给足超时
     backupRes = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/admin/backup', headers: adminHeaders(), payload: {},
+      method: 'POST',
+      url: '/api/admin/backup',
+      headers: adminHeaders(),
+      payload: {},
     });
     const files = fs.readdirSync(BACKUP_DIR).filter((f) => /^business\.db\.\d{4}-\d{2}-\d{2}$/.test(f));
     ctx.backupFile = files.sort().pop()!;
@@ -410,7 +504,11 @@ describe('M4 · 备份与恢复', () => {
   });
 
   it('GET /api/admin/backups 列出备份文件', async () => {
-    const res = await ctx.bundle.app.inject({ method: 'GET', url: '/api/admin/backups', headers: adminHeaders() });
+    const res = await ctx.bundle.app.inject({
+      method: 'GET',
+      url: '/api/admin/backups',
+      headers: adminHeaders(),
+    });
     expect(res.statusCode).toBe(200);
     const list = JSON.parse(res.body).data as any[];
     expect(list.some((f) => f.name === ctx.backupFile)).toBe(true);
@@ -418,8 +516,10 @@ describe('M4 · 备份与恢复', () => {
 
   it('恢复未带 confirm → 400 CONFIRM_REQUIRED', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/admin/backup/${ctx.backupFile}/restore`,
-      headers: adminHeaders(), payload: {},
+      method: 'POST',
+      url: `/api/admin/backup/${ctx.backupFile}/restore`,
+      headers: adminHeaders(),
+      payload: {},
     });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe('CONFIRM_REQUIRED');
@@ -427,8 +527,10 @@ describe('M4 · 备份与恢复', () => {
 
   it('路径穿越文件名 → 拒绝恢复', async () => {
     const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/admin/backup/..%2F..%2Fetc%2Fpasswd/restore',
-      headers: adminHeaders(), payload: { confirm: true },
+      method: 'POST',
+      url: '/api/admin/backup/..%2F..%2Fetc%2Fpasswd/restore',
+      headers: adminHeaders(),
+      payload: { confirm: true },
     });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe('RESTORE_FAILED');
@@ -439,24 +541,39 @@ describe('M4 · 备份与恢复', () => {
   beforeAll(async () => {
     // 先破坏数据：软删那笔平仓交易
     const list = await ctx.bundle.app.inject({
-      method: 'GET', url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=reduce`, headers: adminHeaders(),
+      method: 'GET',
+      url: `/api/trade?asset_code=${TRADE_CODE}&trade_type=reduce`,
+      headers: adminHeaders(),
     });
     const reduceId = JSON.parse(list.body).data[0].id;
-    await ctx.bundle.app.inject({ method: 'POST', url: `/api/trade/${reduceId}/soft-delete`, headers: adminHeaders() });
+    await ctx.bundle.app.inject({
+      method: 'POST',
+      url: `/api/trade/${reduceId}/soft-delete`,
+      headers: adminHeaders(),
+    });
 
-    snap.beforeStats = JSON.parse((await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/review/yield', headers: adminHeaders(),
-    })).body).data;
+    snap.beforeStats = JSON.parse(
+      (
+        await ctx.bundle.app.inject({
+          method: 'GET',
+          url: '/api/review/yield',
+          headers: adminHeaders(),
+        })
+      ).body,
+    ).data;
 
     // 恢复 —— 回到"备份那一刻"的状态（reduce 交易应当回来）
     snap.restore = await ctx.bundle.app.inject({
-      method: 'POST', url: `/api/admin/backup/${ctx.backupFile}/restore`,
-      headers: adminHeaders(), payload: { confirm: true },
+      method: 'POST',
+      url: `/api/admin/backup/${ctx.backupFile}/restore`,
+      headers: adminHeaders(),
+      payload: { confirm: true },
     });
 
     // restore 会重置 ConfigStore 单例并重建连接 → 必须重新登录拿新 token
     const login = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/auth/login',
+      method: 'POST',
+      url: '/api/auth/login',
       payload: { username: ADMIN_USER, password: ADMIN_PASS },
     });
     snap.login = login;
@@ -464,18 +581,26 @@ describe('M4 · 备份与恢复', () => {
       ctx.adminToken = JSON.parse(login.body).data.token;
     }
 
-    snap.afterStats = JSON.parse((await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/review/yield', headers: adminHeaders(),
-    })).body).data;
+    snap.afterStats = JSON.parse(
+      (
+        await ctx.bundle.app.inject({
+          method: 'GET',
+          url: '/api/review/yield',
+          headers: adminHeaders(),
+        })
+      ).body,
+    ).data;
 
     // 关键表齐全（连接已重建，必须重新取单例，不能复用 bundle.db 旧句柄）
-    snap.tables = ConfigStore.getInstance().db.prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_account','user_trade_record','system_log')`
-    ).all() as any[];
+    snap.tables = ConfigStore.getInstance()
+      .db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('user_account','user_trade_record','system_log')`,
+      )
+      .all() as any[];
   }, 60000);
 
   it('恢复成功后业务数据回到备份时刻 + 生成安全备份', () => {
-    expect(snap.beforeStats.closedCount).toBe(0);   // 已破坏
+    expect(snap.beforeStats.closedCount).toBe(0); // 已破坏
 
     expect(snap.restore.statusCode).toBe(200);
     const restoreBody = JSON.parse(snap.restore.body);
@@ -483,15 +608,15 @@ describe('M4 · 备份与恢复', () => {
     expect(restoreBody.data.safetyBackup).toMatch(/pre-restore/);
 
     expect(snap.login.statusCode).toBe(200);
-    expect(snap.afterStats.closedCount).toBe(1);    // 数据回到备份时刻
+    expect(snap.afterStats.closedCount).toBe(1); // 数据回到备份时刻
     expect(snap.tables.length).toBe(3);
   });
 
   it('恢复操作写 system_log 留痕', () => {
     // 恢复动作已在同 describe 的 beforeAll 完成（同一 describe 内 beforeAll 先于 it 执行）
-    const rows = ConfigStore.getInstance().db.prepare(
-      `SELECT * FROM system_log WHERE message LIKE '%备份恢复%' ORDER BY id DESC LIMIT 1`
-    ).all() as any[];
+    const rows = ConfigStore.getInstance()
+      .db.prepare(`SELECT * FROM system_log WHERE message LIKE '%备份恢复%' ORDER BY id DESC LIMIT 1`)
+      .all() as any[];
     expect(rows.length).toBe(1);
   });
 });
@@ -502,35 +627,49 @@ describe('M4 · 备份与恢复', () => {
 describe('M4 · 权限边界收尾', () => {
   it('普通用户不能触发手动备份', async () => {
     const seed = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/auth/seed',
+      method: 'POST',
+      url: '/api/auth/seed',
       payload: { username: 'm4_plain2', password: 'm4_pass1234', role: 'user' },
     });
     const token = JSON.parse(seed.body).data.token;
     const res = await ctx.bundle.app.inject({
-      method: 'POST', url: '/api/admin/backup', headers: userHeaders(token), payload: {},
+      method: 'POST',
+      url: '/api/admin/backup',
+      headers: userHeaders(token),
+      payload: {},
     });
     expect(res.statusCode).toBe(403);
   });
 
   it('禁止把当前 admin 降级自己', async () => {
-    const me = JSON.parse((await ctx.bundle.app.inject({
-      method: 'GET', url: '/api/admin/users', headers: adminHeaders(),
-    })).body).data.find((u: any) => u.username === ADMIN_USER);
+    const me = JSON.parse(
+      (
+        await ctx.bundle.app.inject({
+          method: 'GET',
+          url: '/api/admin/users',
+          headers: adminHeaders(),
+        })
+      ).body,
+    ).data.find((u: any) => u.username === ADMIN_USER);
 
     const res = await ctx.bundle.app.inject({
-      method: 'PATCH', url: `/api/admin/role/${me.id}`, headers: adminHeaders(),
+      method: 'PATCH',
+      url: `/api/admin/role/${me.id}`,
+      headers: adminHeaders(),
       payload: { role: 'user' },
     });
     expect(res.statusCode).toBe(400);
-        // T89a：中文文案在 `message`（`error`/`code` 是错误码）
+    // T89a：中文文案在 `message`（`error`/`code` 是错误码）
     expect(JSON.parse(res.body).message).toContain('禁止降级');
   });
 
   it('全程无明文 token / 密码落 system_log（AGENTS.md 安全硬约束）', () => {
-    const leaked = ConfigStore.getInstance().db.prepare(
-      `SELECT COUNT(*) AS c FROM system_log
-       WHERE detail LIKE '%ghp_%' OR detail LIKE '%m4_pass1234%' OR message LIKE '%m4_pass1234%'`
-    ).get() as { c: number };
+    const leaked = ConfigStore.getInstance()
+      .db.prepare(
+        `SELECT COUNT(*) AS c FROM system_log
+       WHERE detail LIKE '%ghp_%' OR detail LIKE '%m4_pass1234%' OR message LIKE '%m4_pass1234%'`,
+      )
+      .get() as { c: number };
     expect(leaked.c).toBe(0);
   });
 });

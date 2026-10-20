@@ -31,8 +31,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 
 // 路径解析：env 优先（绝对路径），否则从模块位置向上定位项目根
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DUCKDB_PATH = process.env.DUCKDB_PATH
-  ?? path.resolve(__dirname, '../../../../data/quotes.duckdb');
+const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve(__dirname, '../../../../data/quotes.duckdb');
 const MAX_RETRY = 2;
 const RETRY_DELAY_MS = 200;
 
@@ -146,7 +145,7 @@ export async function duckdbHealthCheck(): Promise<void> {
       const result = await conn.runAndReadAll('SELECT 1 AS ok');
       const rows = result.getRows();
       if (rows.length === 1 && rows[0][0] === 1) {
-        return;  // 成功
+        return; // 成功
       }
     } catch (err) {
       lastErr = err;

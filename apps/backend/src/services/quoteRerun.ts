@@ -31,8 +31,7 @@ const RETRY_SETTLE_MS = Number(process.env.TDX2DB_RERUN_SETTLE_MS ?? 3_000);
 const TDX2DB_BIN = process.env.TDX2DB_BIN ?? '/usr/local/bin/tdx2db';
 
 /** DuckDB URI（与 deploy/tdx2db.service 保持一致） */
-const DUCKDB_URI = process.env.TDX2DB_DBURI
-  ?? `duckdb:///${process.env.DUCKDB_PATH ?? 'data/quotes.duckdb'}`;
+const DUCKDB_URI = process.env.TDX2DB_DBURI ?? `duckdb:///${process.env.DUCKDB_PATH ?? 'data/quotes.duckdb'}`;
 
 export interface RerunResult {
   status: 'SUCCESS' | 'FAIL' | 'SKIP';
@@ -50,7 +49,8 @@ async function _trySystemdRun(): Promise<RerunResult | null> {
     );
     const text = `${stdout}${stderr}`.trim();
     writeSystemLog({
-      logType: 'tdx2db_update', level: 'SUCCESS',
+      logType: 'tdx2db_update',
+      level: 'SUCCESS',
       message: 'WARN/ERROR 触发 tdx2db 补跑（systemd-run）成功',
       detail: text.slice(0, 500) || undefined,
     });
@@ -58,7 +58,8 @@ async function _trySystemdRun(): Promise<RerunResult | null> {
   } catch (err: any) {
     // systemd-run 不存在 / 无权限 / tdx2db 失败 → 交给下一级
     writeSystemLog({
-      logType: 'tdx2db_update', level: 'WARN',
+      logType: 'tdx2db_update',
+      level: 'WARN',
       message: 'systemd-run 补跑未成功，尝试降级方式',
       detail: String(err).slice(0, 300),
     });
@@ -72,27 +73,38 @@ async function _trySystemctl(): Promise<RerunResult | null> {
     // 异步启动，轮询等待 oneshot 结束
     const deadline = Date.now() + RERUN_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 3_000));
+      await new Promise((r) => setTimeout(r, 3_000));
       const { stdout } = await execFileAsync(
         'systemctl',
         ['show', 'tdx2db.service', '-p', 'ActiveState', '-p', 'ExecMainStatus', '--value'],
         { timeout: 10_000 },
       ).catch(() => ({ stdout: '' }));
-      const lines = String(stdout).trim().split('\n').map(s => s.trim()).filter(Boolean);
+      const lines = String(stdout)
+        .trim()
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
       if (lines.includes('inactive') || lines.includes('failed')) {
-        const statusLine = lines.find(l => /^\d+$/.test(l)) ?? '0';
+        const statusLine = lines.find((l) => /^\d+$/.test(l)) ?? '0';
         const exitCode = Number(statusLine);
         const ok = exitCode === 0;
         writeSystemLog({
-          logType: 'tdx2db_update', level: ok ? 'SUCCESS' : 'ERROR',
+          logType: 'tdx2db_update',
+          level: ok ? 'SUCCESS' : 'ERROR',
           message: `WARN/ERROR 触发 tdx2db 补跑（systemctl）${ok ? '成功' : '失败'}`,
           detail: `exit_code=${exitCode}`,
         });
-        return { status: ok ? 'SUCCESS' : 'FAIL', method: 'systemctl', exitCode, message: `exit_code=${exitCode}` };
+        return {
+          status: ok ? 'SUCCESS' : 'FAIL',
+          method: 'systemctl',
+          exitCode,
+          message: `exit_code=${exitCode}`,
+        };
       }
     }
     writeSystemLog({
-      logType: 'tdx2db_update', level: 'ERROR',
+      logType: 'tdx2db_update',
+      level: 'ERROR',
       message: 'systemctl 补跑超时（超过 5 分钟）',
     });
     return { status: 'FAIL', method: 'systemctl', message: 'timeout' };
@@ -108,7 +120,8 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
     });
     const text = `${stdout}${stderr}`.trim();
     writeSystemLog({
-      logType: 'tdx2db_update', level: 'SUCCESS',
+      logType: 'tdx2db_update',
+      level: 'SUCCESS',
       message: 'WARN/ERROR 触发 tdx2db 补跑（直接 exec）成功',
       detail: text.slice(0, 500) || undefined,
     });
@@ -118,10 +131,12 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
     const code = err?.code;
     const level = code === 'ENOENT' ? 'INFO' : 'WARN';
     writeSystemLog({
-      logType: 'tdx2db_update', level,
-      message: code === 'ENOENT'
-        ? 'tdx2db 二进制不存在，跳过补跑（本地开发环境正常现象）'
-        : 'tdx2db 直接 exec 补跑失败',
+      logType: 'tdx2db_update',
+      level,
+      message:
+        code === 'ENOENT'
+          ? 'tdx2db 二进制不存在，跳过补跑（本地开发环境正常现象）'
+          : 'tdx2db 直接 exec 补跑失败',
       detail: String(err).slice(0, 300),
     });
     return null;
@@ -135,24 +150,24 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
  */
 export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
   writeSystemLog({
-    logType: 'tdx2db_update', level: 'WARN',
+    logType: 'tdx2db_update',
+    level: 'WARN',
     message: `触发行情更新补跑（原因：${reason}）`,
     detail: `dburi=${DUCKDB_URI}`,
   });
 
-  const result = (await _trySystemdRun())
-    ?? (await _trySystemctl())
-    ?? (await _tryDirectExec());
+  const result = (await _trySystemdRun()) ?? (await _trySystemctl()) ?? (await _tryDirectExec());
 
   if (result) {
     if (result.status === 'SUCCESS') {
-      await new Promise(r => setTimeout(r, RETRY_SETTLE_MS));
+      await new Promise((r) => setTimeout(r, RETRY_SETTLE_MS));
     }
     return result;
   }
 
   writeSystemLog({
-    logType: 'tdx2db_update', level: 'SKIP',
+    logType: 'tdx2db_update',
+    level: 'SKIP',
     message: '补跑不可用（无 systemd 且无 tdx2db 二进制），保持现状继续主流程',
   });
   return { status: 'SKIP', method: 'none', message: '补跑通道不可用' };

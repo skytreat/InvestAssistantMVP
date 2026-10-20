@@ -56,16 +56,33 @@ export function Navbar() {
         <span style={{ fontWeight: 'bold', fontSize: 20 }}>InvestAssistant</span>
         <nav style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
           {items.map((i) => (
-            <Link key={i.to} to={i.to} style={linkStyle}>{i.label}</Link>
+            <Link key={i.to} to={i.to} style={linkStyle}>
+              {i.label}
+            </Link>
           ))}
         </nav>
         <span style={{ marginLeft: 'auto', color: '#666', fontSize: 13 }}>
           {username} ({isAdmin ? '管理员' : '普通用户'})
         </span>
-        <button onClick={() => { logout(); navigate('/login'); }}>退出登录</button>
+        <button
+          onClick={() => {
+            logout();
+            navigate('/login');
+          }}
+        >
+          退出登录
+        </button>
       </div>
       {/* 全局合规声明 */}
-      <div style={{ background: '#fef3c7', color: '#92400e', fontSize: 12, textAlign: 'center', padding: '4px 0' }}>
+      <div
+        style={{
+          background: '#fef3c7',
+          color: '#92400e',
+          fontSize: 12,
+          textAlign: 'center',
+          padding: '4px 0',
+        }}
+      >
         本工具不构成投资建议，数据仅供参考
       </div>
       {/* G10a 移动端底部 TabBar（<768px 显示，桌面隐藏） */}
@@ -86,35 +103,48 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
   if (!isMobile) return null;
 
   return (
-    <nav style={{
-      position: 'fixed',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      display: 'flex',
-      background: '#fff',
-      borderTop: '1px solid #e5e7eb',
-      zIndex: 300,
-      paddingBottom: 'env(safe-area-inset-bottom)',
-    }}>
+    <nav
+      style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        display: 'flex',
+        background: '#fff',
+        borderTop: '1px solid #e5e7eb',
+        zIndex: 300,
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+    >
       {MOBILE_TAB.map((t) => (
-        <Link key={t.to} to={t.to} style={{
-          flex: 1,
-          textAlign: 'center',
-          padding: '8px 0',
-          fontSize: 11,
-          color: '#374151',
-          textDecoration: 'none',
-        }}>
+        <Link
+          key={t.to}
+          to={t.to}
+          style={{
+            flex: 1,
+            textAlign: 'center',
+            padding: '8px 0',
+            fontSize: 11,
+            color: '#374151',
+            textDecoration: 'none',
+          }}
+        >
           <div style={{ fontSize: 20, lineHeight: '24px' }}>{t.icon}</div>
           {t.label}
         </Link>
       ))}
       {isAdmin && (
-        <Link to="/admin" style={{
-          flex: 1, textAlign: 'center', padding: '8px 0', fontSize: 11,
-          color: '#374151', textDecoration: 'none',
-        }}>
+        <Link
+          to="/admin"
+          style={{
+            flex: 1,
+            textAlign: 'center',
+            padding: '8px 0',
+            fontSize: 11,
+            color: '#374151',
+            textDecoration: 'none',
+          }}
+        >
           <div style={{ fontSize: 20, lineHeight: '24px' }}>🛠️</div>
           管理
         </Link>
@@ -125,8 +155,8 @@ function MobileTabBar({ isAdmin }: { isAdmin: boolean }) {
 
 /** 视口宽度是否 < MOBILE_BREAKPOINT（SSR 安全，默认 false） */
 export function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = React.useState<boolean>(() =>
-    typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT
+  const [isMobile, setIsMobile] = React.useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT,
   );
 
   React.useEffect(() => {

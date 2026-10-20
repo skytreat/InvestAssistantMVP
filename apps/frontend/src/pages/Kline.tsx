@@ -27,7 +27,13 @@ interface KlineApiResponse {
     fq: string;
     klines: KlineBar[];
     indicators: Indicators | null;
-    signals?: Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>;
+    signals?: Array<{
+      trade_date: string;
+      direction: string;
+      label: string;
+      strength: number | null;
+      plugin_id: string;
+    }>;
   };
   error?: string;
   message?: string;
@@ -53,7 +59,13 @@ function setupCanvas(canvas: HTMLCanvasElement, cssWidth: number, cssHeight: num
   return ctx;
 }
 
-function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Indicators, signals: Array<{ trade_date: string; direction: string; label: string; plugin_id?: string }> | undefined, width: number) {
+function drawMain(
+  canvas: HTMLCanvasElement,
+  klines: KlineBar[],
+  indicators: Indicators,
+  signals: Array<{ trade_date: string; direction: string; label: string; plugin_id?: string }> | undefined,
+  width: number,
+) {
   const W = width;
   const H = MAIN_HEIGHT;
   const ctx = setupCanvas(canvas, W, H);
@@ -66,9 +78,13 @@ function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Ind
   ctx.fillRect(0, 0, W, H);
 
   const allValues: number[] = [];
-  klines.forEach((k) => { allValues.push(k.high, k.low); });
+  klines.forEach((k) => {
+    allValues.push(k.high, k.low);
+  });
   [indicators.ma5, indicators.ma10, indicators.ma20].forEach((ma) => {
-    ma.forEach((v) => { if (!isNaN(v)) allValues.push(v); });
+    ma.forEach((v) => {
+      if (!isNaN(v)) allValues.push(v);
+    });
   });
   const max = Math.max(...allValues);
   const min = Math.min(...allValues);
@@ -130,8 +146,12 @@ function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Ind
       if (isNaN(v)) return;
       const x = pad.left + i * barW + barW / 2;
       const y = pad.top + ((max - v) / range) * chartH;
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else { ctx.lineTo(x, y); }
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
     });
     ctx.stroke();
   };
@@ -147,9 +167,27 @@ function drawMain(canvas: HTMLCanvasElement, klines: KlineBar[], indicators: Ind
     ctx.fillStyle = color;
     ctx.fillText(value, x + 20, y);
   };
-  drawLegend('MA5', indicators.ma5[indicators.ma5.length - 1]?.toFixed(2) ?? '--', pad.left + 4, pad.top - 6, '#fbbf24');
-  drawLegend('MA10', indicators.ma10[indicators.ma10.length - 1]?.toFixed(2) ?? '--', pad.left + 100, pad.top - 6, '#60a5fa');
-  drawLegend('MA20', indicators.ma20[indicators.ma20.length - 1]?.toFixed(2) ?? '--', pad.left + 210, pad.top - 6, '#c084fc');
+  drawLegend(
+    'MA5',
+    indicators.ma5[indicators.ma5.length - 1]?.toFixed(2) ?? '--',
+    pad.left + 4,
+    pad.top - 6,
+    '#fbbf24',
+  );
+  drawLegend(
+    'MA10',
+    indicators.ma10[indicators.ma10.length - 1]?.toFixed(2) ?? '--',
+    pad.left + 100,
+    pad.top - 6,
+    '#60a5fa',
+  );
+  drawLegend(
+    'MA20',
+    indicators.ma20[indicators.ma20.length - 1]?.toFixed(2) ?? '--',
+    pad.left + 210,
+    pad.top - 6,
+    '#c084fc',
+  );
 
   // 绘制策略信号标记（买入绿▲ / 卖出红▼）
   if (signals && signals.length > 0) {
@@ -218,8 +256,12 @@ function drawMACD(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: In
       if (isNaN(v)) return;
       const x = pad.left + i * barW + barW / 2;
       const y = zeroY - (v / maxAbs) * (chartH / 2 - 4);
-      if (!started) { ctx.moveTo(x, y); started = true; }
-      else { ctx.lineTo(x, y); }
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
     });
     ctx.stroke();
   };
@@ -272,8 +314,12 @@ function drawRSI(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Ind
     if (isNaN(v)) return;
     const x = pad.left + i * barW + barW / 2;
     const y = pad.top + ((100 - v) / 100) * chartH;
-    if (!started) { ctx.moveTo(x, y); started = true; }
-    else { ctx.lineTo(x, y); }
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
+    }
   });
   ctx.stroke();
   ctx.lineWidth = 1;
@@ -293,7 +339,15 @@ export default function Kline() {
   const [days, setDays] = useState(120);
   const [klines, setKlines] = useState<KlineBar[]>([]);
   const [indicators, setIndicators] = useState<Indicators | null>(null);
-  const [signals, setSignals] = useState<Array<{ trade_date: string; direction: string; label: string; strength: number | null; plugin_id: string }>>([]);
+  const [signals, setSignals] = useState<
+    Array<{
+      trade_date: string;
+      direction: string;
+      label: string;
+      strength: number | null;
+      plugin_id: string;
+    }>
+  >([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -348,7 +402,9 @@ export default function Kline() {
     if (rsiRef.current && (!isMobile || subTab === 'rsi')) drawRSI(rsiRef.current, klines, indicators, w);
   }, [klines, indicators, signals, canvasWidth, isMobile, subTab]);
 
-  useEffect(() => { redraw(); }, [redraw]);
+  useEffect(() => {
+    redraw();
+  }, [redraw]);
 
   // 窗口尺寸变化（旋转屏幕 / 拖窗口）重画
   useEffect(() => {
@@ -368,7 +424,13 @@ export default function Kline() {
             value={symbol}
             onChange={(e) => setSymbol(e.target.value)}
             placeholder="如 sh600000"
-            style={{ padding: '4px 8px', marginLeft: 4, width: 120, border: '1px solid #d1d5db', borderRadius: 4 }}
+            style={{
+              padding: '4px 8px',
+              marginLeft: 4,
+              width: 120,
+              border: '1px solid #d1d5db',
+              borderRadius: 4,
+            }}
           />
         </label>
         <label style={{ fontSize: 14 }}>
@@ -420,7 +482,12 @@ export default function Kline() {
       {/* G10b 移动端副图 Tab 切换（PRD §5.8#6 手机端布局） */}
       {isMobile && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-          {([['macd', 'MACD'], ['rsi', 'RSI']] as ['macd' | 'rsi', string][]).map(([k, label]) => (
+          {(
+            [
+              ['macd', 'MACD'],
+              ['rsi', 'RSI'],
+            ] as ['macd' | 'rsi', string][]
+          ).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setSubTab(k)}

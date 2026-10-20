@@ -63,10 +63,7 @@ function orNaN(value: number | undefined): number {
  *
  * @returns 与 `closes` 等长的数组；数据不足期（前 `period` 个）填 {@link RSI_INSUFFICIENT_VALUE}
  */
-export function calculateRSI(
-  closes: number[],
-  period: number = RSI_DEFAULT_PERIOD
-): number[] {
+export function calculateRSI(closes: number[], period: number = RSI_DEFAULT_PERIOD): number[] {
   const values = RSI.calculate({ values: closes, period });
   if (values.length === 0) {
     return new Array<number>(closes.length).fill(RSI_INSUFFICIENT_VALUE);
@@ -89,7 +86,7 @@ export function calculateMACD(
   closes: number[],
   fastPeriod: number = MACD_DEFAULT_FAST_PERIOD,
   slowPeriod: number = MACD_DEFAULT_SLOW_PERIOD,
-  signalPeriod: number = MACD_DEFAULT_SIGNAL_PERIOD
+  signalPeriod: number = MACD_DEFAULT_SIGNAL_PERIOD,
 ): MACDResult {
   if (closes.length < slowPeriod + signalPeriod) {
     return { dif: [], dea: [], macd: [] };
@@ -107,13 +104,21 @@ export function calculateMACD(
 
   return {
     // DIF 从 slowPeriod - 1 根起有值
-    dif: padFront(closes.length, rows.map((r) => orNaN(r.MACD)), NaN),
+    dif: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.MACD)),
+      NaN,
+    ),
     // DEA / 柱值还要再等 signalPeriod - 1 根
-    dea: padFront(closes.length, rows.map((r) => orNaN(r.signal)), NaN),
+    dea: padFront(
+      closes.length,
+      rows.map((r) => orNaN(r.signal)),
+      NaN,
+    ),
     macd: padFront(
       closes.length,
       rows.map((r) => orNaN(r.histogram) * A_SHARE_HISTOGRAM_SCALE),
-      NaN
+      NaN,
     ),
   };
 }

@@ -42,7 +42,10 @@ interface ScanResult {
 
 const CATEGORY_LABEL: Record<string, string> = { monitor: '监控', filter: '过滤' };
 const SIGNAL_LABEL: Record<string, string> = {
-  BUY: '买入', SELL: '卖出', HOLD: '持仓', ALERT: '预警',
+  BUY: '买入',
+  SELL: '卖出',
+  HOLD: '持仓',
+  ALERT: '预警',
 };
 
 export default function StockScan() {
@@ -63,8 +66,7 @@ export default function StockScan() {
   const [rowAction, setRowAction] = useState<Record<string, string>>({});
   const [rowMsg, setRowMsg] = useState<string>('');
 
-  const markRow = (symbol: string, state: string) =>
-    setRowAction((prev) => ({ ...prev, [symbol]: state }));
+  const markRow = (symbol: string, state: string) => setRowAction((prev) => ({ ...prev, [symbol]: state }));
 
   /** 加入候选池 */
   const addCandidate = async (symbol: string) => {
@@ -259,29 +261,30 @@ export default function StockScan() {
           />
         </div>
 
-        {selectedPluginId && (() => {
-          const cur = plugins.find((x) => x.id === selectedPluginId);
-          const schema = cur?.paramSchema?.filter((f) => f.key !== 'symbol') ?? [];
-          if (schema.length === 0) return null;
-          return (
-            <div style={{ ...formRowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
-              <span style={labelStyle}>可用参数：</span>
-              <div style={{ fontSize: 13, color: '#374151', marginLeft: 90 }}>
-                {schema.map((f) => (
-                  <span key={f.key} style={{ marginRight: 12 }}>
-                    <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>
-                      {f.key}
-                    </code>
-                    : {f.label}（{f.type}
-                    {f.min !== undefined && f.max !== undefined ? `, ${f.min}~${f.max}` : ''}
-                    {f.default !== undefined ? `, 默认${String(f.default)}` : ''}
-                    {f.unit ? ` ${f.unit}` : ''}）
-                  </span>
-                ))}
+        {selectedPluginId &&
+          (() => {
+            const cur = plugins.find((x) => x.id === selectedPluginId);
+            const schema = cur?.paramSchema?.filter((f) => f.key !== 'symbol') ?? [];
+            if (schema.length === 0) return null;
+            return (
+              <div style={{ ...formRowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                <span style={labelStyle}>可用参数：</span>
+                <div style={{ fontSize: 13, color: '#374151', marginLeft: 90 }}>
+                  {schema.map((f) => (
+                    <span key={f.key} style={{ marginRight: 12 }}>
+                      <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: 4 }}>
+                        {f.key}
+                      </code>
+                      : {f.label}（{f.type}
+                      {f.min !== undefined && f.max !== undefined ? `, ${f.min}~${f.max}` : ''}
+                      {f.default !== undefined ? `, 默认${String(f.default)}` : ''}
+                      {f.unit ? ` ${f.unit}` : ''}）
+                    </span>
+                  ))}
+                </div>
               </div>
-            </div>
-          );
-        })()}
+            );
+          })()}
 
         {errorMsg && <div style={errorStyle}>{errorMsg}</div>}
 
@@ -289,9 +292,7 @@ export default function StockScan() {
           <button style={buttonStyle} onClick={runScan} disabled={loading || !selectedPluginId}>
             {loading ? '运行中...' : '开始选股'}
           </button>
-          {timeMs > 0 && !loading && (
-            <span style={{ color: '#6b7280', fontSize: 13 }}>耗时 {timeMs}ms</span>
-          )}
+          {timeMs > 0 && !loading && <span style={{ color: '#6b7280', fontSize: 13 }}>耗时 {timeMs}ms</span>}
         </div>
       </div>
 
@@ -327,12 +328,21 @@ export default function StockScan() {
                 return (
                   <tr key={r.symbol}>
                     <td style={thTdStyle}>{i + 1}</td>
-                    <td style={thTdStyle}><code>{r.symbol}</code></td>
                     <td style={thTdStyle}>
-                      <span style={{
-                        color: r.signalType === 'BUY' ? '#16a34a' : r.signalType === 'SELL' ? '#dc2626' : '#374151',
-                        fontWeight: 600,
-                      }}>
+                      <code>{r.symbol}</code>
+                    </td>
+                    <td style={thTdStyle}>
+                      <span
+                        style={{
+                          color:
+                            r.signalType === 'BUY'
+                              ? '#16a34a'
+                              : r.signalType === 'SELL'
+                                ? '#dc2626'
+                                : '#374151',
+                          fontWeight: 600,
+                        }}
+                      >
                         {SIGNAL_LABEL[r.signalType] ?? r.signalType}
                       </span>
                     </td>
@@ -360,9 +370,7 @@ export default function StockScan() {
             </tbody>
           </table>
         )}
-        {rowMsg && (
-          <div style={{ color: '#16a34a', marginTop: 8, fontSize: 13 }}>{rowMsg}</div>
-        )}
+        {rowMsg && <div style={{ color: '#16a34a', marginTop: 8, fontSize: 13 }}>{rowMsg}</div>}
       </div>
     </div>
   );

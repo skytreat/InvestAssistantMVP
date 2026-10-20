@@ -100,10 +100,7 @@ describe('T52 KDJ golden · 221 条固定行情逐位断言（@invest/core 消�
 });
 
 describe('T52 · routes/kline.ts 私有 sma() 已迁至 core', () => {
-  const klineSrc = readFileSync(
-    path.join(REPO_ROOT, 'apps/backend/src/routes/kline.ts'),
-    'utf8'
-  );
+  const klineSrc = readFileSync(path.join(REPO_ROOT, 'apps/backend/src/routes/kline.ts'), 'utf8');
 
   it('kline.ts 不再定义私有 sma 函数', () => {
     expect(/function\s+sma\s*\(/i.test(klineSrc)).toBe(false);
@@ -117,10 +114,7 @@ describe('T52 · routes/kline.ts 私有 sma() 已迁至 core', () => {
 });
 
 describe('T52 · KDJ 无魔法数（公式常数具名）', () => {
-  const kdjSrc = readFileSync(
-    path.join(REPO_ROOT, 'packages/core/src/indicators/kdj.ts'),
-    'utf8'
-  );
+  const kdjSrc = readFileSync(path.join(REPO_ROOT, 'packages/core/src/indicators/kdj.ts'), 'utf8');
 
   it('9 / 3 / 3 / 50 / 2 / 3 全部以具名常量出现', () => {
     for (const name of [

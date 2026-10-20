@@ -50,7 +50,7 @@ function getJwtSecret(): Buffer {
   if (process.env.NODE_ENV === 'production') {
     throw new Error(
       '[auth] JWT_SECRET 未设置 —— 生产环境拒绝以随机密钥启动。' +
-      '请在系统环境变量中配置（见 docs/deploy.md §3）。',
+        '请在系统环境变量中配置（见 docs/deploy.md §3）。',
     );
   }
 
@@ -61,12 +61,12 @@ function getJwtSecret(): Buffer {
     _devFallbackSecret = crypto.randomBytes(32);
     console.warn(
       '[auth] ⚠️ JWT_SECRET 未设置 —— 已使用进程内随机密钥（重启即失效）。' +
-      '生产请配置 JWT_SECRET 与 NODE_ENV=production（见 docs/deploy.md §3）。',
+        '生产请配置 JWT_SECRET 与 NODE_ENV=production（见 docs/deploy.md §3）。',
     );
   }
   return _devFallbackSecret;
 }
-const JWT_TTL_SEC = 7 * 60 * 60 * 24;  // 7 天（SDD S4 access token）
+const JWT_TTL_SEC = 7 * 60 * 60 * 24; // 7 天（SDD S4 access token）
 
 function b64url(buf: Buffer): string {
   return buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -122,7 +122,7 @@ export function verifyPassword(password: string, storedHash: string): boolean {
 // --- JWT ---
 
 export interface JwtPayload {
-  sub: number;          // user_id
+  sub: number; // user_id
   username: string;
   role: 'user' | 'admin';
   iat: number;

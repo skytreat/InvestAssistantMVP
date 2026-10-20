@@ -26,7 +26,11 @@ export function cleanupSmoke3(): void {
   } else {
     delete process.env.SQLITE_DB_PATH;
   }
-  try { rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(_SMOKE_TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -73,13 +77,14 @@ beforeAll(async () => {
   await app.listen({ port: PORT, host: HOST });
 
   // seed admin（INSERT OR IGNORE 幂等）
-  db.db.prepare(
-    'INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)'
-  ).run(ADMIN_USER, hashPassword(ADMIN_PASS), 'admin');
+  db.db
+    .prepare('INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)')
+    .run(ADMIN_USER, hashPassword(ADMIN_PASS), 'admin');
 
   // login 拿 JWT（存入 globalThis，getter 动态取）
   const loginRes = await app.inject({
-    method: 'POST', url: '/api/auth/login',
+    method: 'POST',
+    url: '/api/auth/login',
     payload: { username: ADMIN_USER, password: ADMIN_PASS },
   });
   expect(loginRes.statusCode).toBe(200);
@@ -113,16 +118,47 @@ describe('M3 Trade + 持仓校验', () => {
 
   beforeAll(async () => {
     snap.buy = await app.inject({
-      method: 'POST', url: '/api/trade', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'buy', trade_date: TRADE_DATE, trade_time: '09:00:01', quantity: 100, price: 10.0, fee: 1, trade_reason: 'smoke买入' },
+      method: 'POST',
+      url: '/api/trade',
+      headers: adminHeaders(),
+      payload: {
+        asset_code: 'sh600000',
+        trade_type: 'buy',
+        trade_date: TRADE_DATE,
+        trade_time: '09:00:01',
+        quantity: 100,
+        price: 10.0,
+        fee: 1,
+        trade_reason: 'smoke买入',
+      },
     });
     snap.oversell = await app.inject({
-      method: 'POST', url: '/api/trade', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + '-dup', trade_time: '09:00:02', quantity: 5000, price: 20.0, trade_reason: 'smoke超卖测试' },
+      method: 'POST',
+      url: '/api/trade',
+      headers: adminHeaders(),
+      payload: {
+        asset_code: 'sh600000',
+        trade_type: 'reduce',
+        trade_date: TRADE_DATE + '-dup',
+        trade_time: '09:00:02',
+        quantity: 5000,
+        price: 20.0,
+        trade_reason: 'smoke超卖测试',
+      },
     });
     snap.sell50 = await app.inject({
-      method: 'POST', url: '/api/trade', headers: adminHeaders(),
-      payload: { asset_code: 'sh600000', trade_type: 'reduce', trade_date: TRADE_DATE + 'b', trade_time: '09:00:03', quantity: 50, price: 20.0, trade_reason: 'smoke卖出50' },
+      method: 'POST',
+      url: '/api/trade',
+      headers: adminHeaders(),
+      payload: {
+        asset_code: 'sh600000',
+        trade_type: 'reduce',
+        trade_date: TRADE_DATE + 'b',
+        trade_time: '09:00:03',
+        quantity: 50,
+        price: 20.0,
+        trade_reason: 'smoke卖出50',
+      },
     });
     snap.positions = await app.inject({ method: 'GET', url: '/api/holding', headers: adminHeaders() });
   });
@@ -171,11 +207,15 @@ describe('M3 Watch/Candidate 列表（UNIQUE 三列独立共存）', () => {
   //   → 场景在 beforeAll 里构造完，各 `it` 只做断言。
   beforeAll(async () => {
     snap.watchAdd = await app.inject({
-      method: 'POST', url: '/api/watch', headers: adminHeaders(),
+      method: 'POST',
+      url: '/api/watch',
+      headers: adminHeaders(),
       payload: { asset_code: 'sz000001' },
     });
     snap.candidateAdd = await app.inject({
-      method: 'POST', url: '/api/candidate', headers: adminHeaders(),
+      method: 'POST',
+      url: '/api/candidate',
+      headers: adminHeaders(),
       payload: { asset_code: 'sz000001' },
     });
     snap.watchList = await app.inject({ method: 'GET', url: '/api/watch', headers: adminHeaders() });
@@ -209,10 +249,15 @@ describe('M3 Watch/Candidate 列表（UNIQUE 三列独立共存）', () => {
 // === Admin + Signal ===
 describe('M3 Admin 手动触发 + Signal 查询', () => {
   it('admin run-datacheck → system_log 有 trigger_manual', async () => {
-    const res = await app.inject({ method: 'POST', url: '/api/admin/datacheck/trigger', headers: adminHeaders() });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/datacheck/trigger',
+      headers: adminHeaders(),
+    });
     expect([200, 500]).toContain(res.statusCode);
     const logs = db.db
-      .prepare("SELECT * FROM system_log WHERE log_type='trigger_manual' ORDER BY id DESC LIMIT 5").all();
+      .prepare("SELECT * FROM system_log WHERE log_type='trigger_manual' ORDER BY id DESC LIMIT 5")
+      .all();
     expect((logs as any[]).length).toBeGreaterThanOrEqual(1);
   });
 
@@ -222,15 +267,18 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
   });
 
   it('非 admin token 访问 /api/admin/* → 403', async () => {
-    db.db.prepare(
-      'INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)'
-    ).run('user1', hashPassword('pass1'), 'user');
+    db.db
+      .prepare('INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)')
+      .run('user1', hashPassword('pass1'), 'user');
     const loginRes = await app.inject({
-      method: 'POST', url: '/api/auth/login', payload: { username: 'user1', password: 'pass1' },
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'user1', password: 'pass1' },
     });
     const userTok = JSON.parse(loginRes.body).data.token;
     const res = await app.inject({
-      method: 'POST', url: '/api/admin/datacheck/trigger',
+      method: 'POST',
+      url: '/api/admin/datacheck/trigger',
       headers: { Authorization: `Bearer ${userTok}` },
     });
     expect(res.statusCode).toBe(403);
@@ -243,7 +291,7 @@ describe.sequential('M3 Scheduler + Backup', () => {
     registerCronJobs(app);
     const jobs = app.scheduler.getAllJobs();
     expect(jobs.length).toBe(4);
-    const ids = jobs.map(j => j.id).sort();
+    const ids = jobs.map((j) => j.id).sort();
     expect(ids).toEqual(['backup', 'datacheck-c1-c12', 'dividend-import', 'signal-generate']);
   });
 

@@ -1,5 +1,9 @@
 import { ConfigStore } from '../config/configStore.js';
-import { calculateMovingWeightedCost, type TradeRecord as CoreTrade, type PositionResult } from '@invest/core';
+import {
+  calculateMovingWeightedCost,
+  type TradeRecord as CoreTrade,
+  type PositionResult,
+} from '@invest/core';
 
 /**
  * 持仓聚合服务（T26）
@@ -29,12 +33,24 @@ function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
     //   且已实现盈亏被错记为卖出价差（实测：买 100@10 + 加仓 100@12 → 期望 200 股/均价 11，
     //   实得 0 股/已实现 200）。T49 落地了 `add` 类型但成本计算分支没跟上。
     case 'add':
-      return { date: row.trade_date, direction: 'buy', quantity: row.quantity, price: row.price, fee: row.fee };
+      return {
+        date: row.trade_date,
+        direction: 'buy',
+        quantity: row.quantity,
+        price: row.price,
+        fee: row.fee,
+      };
     case 'reduce':
     case 'clear':
-      return { date: row.trade_date, direction: 'sell', quantity: row.quantity, price: row.price, fee: row.fee };
+      return {
+        date: row.trade_date,
+        direction: 'sell',
+        quantity: row.quantity,
+        price: row.price,
+        fee: row.fee,
+      };
     default:
-      return null;  // dividend/bonus/transfer 不参与移动加权（MVP 初版）
+      return null; // dividend/bonus/transfer 不参与移动加权（MVP 初版）
   }
 }
 
@@ -54,20 +70,24 @@ export function calcPosition(
   asOfTime?: string,
 ): PositionResult {
   const db = ConfigStore.getInstance().db;
-  const rows = db.prepare(
-    `SELECT id, user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted
+  const rows = db
+    .prepare(
+      `SELECT id, user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted
      FROM user_trade_record
      WHERE user_id = ? AND asset_code = ? AND is_deleted = 0
        AND (? IS NULL OR (trade_date < ? OR (trade_date = ? AND trade_time <= ?)))
      ORDER BY trade_date ASC, trade_time ASC, id ASC`,
-  ).all(
-    userId, assetCode,
-    asOfDate ?? null, asOfDate ?? null, asOfDate ?? null, asOfTime ?? '23:59:59',
-  ) as DbTradeRow[];
+    )
+    .all(
+      userId,
+      assetCode,
+      asOfDate ?? null,
+      asOfDate ?? null,
+      asOfDate ?? null,
+      asOfTime ?? '23:59:59',
+    ) as DbTradeRow[];
 
-  const coreTrades = rows
-    .map(mapToCoreTrade)
-    .filter((t): t is CoreTrade => t !== null);
+  const coreTrades = rows.map(mapToCoreTrade).filter((t): t is CoreTrade => t !== null);
 
   return calculateMovingWeightedCost(coreTrades, { strictOversell: false });
 }
@@ -78,9 +98,9 @@ export function calcPosition(
  */
 export function calcAllPositions(userId: number): Array<{ asset_code: string } & PositionResult> {
   const db = ConfigStore.getInstance().db;
-  const codes = db.prepare(
-    'SELECT DISTINCT asset_code FROM user_trade_record WHERE user_id = ? AND is_deleted = 0'
-  ).all(userId) as { asset_code: string }[];
+  const codes = db
+    .prepare('SELECT DISTINCT asset_code FROM user_trade_record WHERE user_id = ? AND is_deleted = 0')
+    .all(userId) as { asset_code: string }[];
 
   return codes.map((c) => ({ asset_code: c.asset_code, ...calcPosition(userId, c.asset_code) }));
 }
@@ -129,13 +149,15 @@ export interface ClosedTradePnl {
  */
 export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
   const db = ConfigStore.getInstance().db;
-  const rows = db.prepare(
-    `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
+  const rows = db
+    .prepare(
+      `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
      FROM user_trade_record
      WHERE user_id = ? AND is_deleted = 0
        AND trade_type IN ('buy','add','reduce','clear')
-     ORDER BY trade_date ASC, trade_time ASC, id ASC`
-  ).all(userId) as Array<Omit<ClosedTradePnl, 'realized_pnl'> & { fee: number }>;
+     ORDER BY trade_date ASC, trade_time ASC, id ASC`,
+    )
+    .all(userId) as Array<Omit<ClosedTradePnl, 'realized_pnl'> & { fee: number }>;
 
   // 每个标的独立维护持仓量与成本基
   const state = new Map<string, { qty: number; costBasis: number }>();
@@ -148,13 +170,16 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
       st.costBasis += row.quantity * row.price + row.fee;
       st.qty += row.quantity;
     } else {
-      if (st.qty <= 0) continue;  // 空仓卖出跳过（脏数据，POS 校验理论上已拦）
+      if (st.qty <= 0) continue; // 空仓卖出跳过（脏数据，POS 校验理论上已拦）
       const avgCost = st.costBasis / st.qty;
       const revenue = row.quantity * row.price - row.fee;
       result.push({ ...row, realized_pnl: revenue - row.quantity * avgCost });
       st.qty -= row.quantity;
-      st.costBasis = st.qty * avgCost;  // 卖出后成本基按剩余数量等比减少
-      if (st.qty <= 0) { st.qty = 0; st.costBasis = 0; }
+      st.costBasis = st.qty * avgCost; // 卖出后成本基按剩余数量等比减少
+      if (st.qty <= 0) {
+        st.qty = 0;
+        st.costBasis = 0;
+      }
     }
 
     state.set(row.asset_code, st);

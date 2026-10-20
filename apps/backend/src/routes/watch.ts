@@ -32,9 +32,11 @@ function _crud(app: FastifyInstance, relType: 'watch') {
   app.get(`/api/${relType}`, async (request, reply) => {
     const user = (request as any).user;
     const db = ConfigStore.getInstance().db;
-    const rows = db.prepare(
-      'SELECT * FROM user_asset_rel WHERE user_id = ? AND rel_type = ? AND is_deleted = 0 ORDER BY created_at DESC'
-    ).all(user.sub, relType);
+    const rows = db
+      .prepare(
+        'SELECT * FROM user_asset_rel WHERE user_id = ? AND rel_type = ? AND is_deleted = 0 ORDER BY created_at DESC',
+      )
+      .all(user.sub, relType);
     reply.send(ok(rows));
   });
 
@@ -45,9 +47,9 @@ function _crud(app: FastifyInstance, relType: 'watch') {
     if (!body?.asset_code) return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_code 必填'));
     const db = ConfigStore.getInstance().db;
     try {
-      const info = db.prepare(
-        `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)`
-      ).run(user.sub, body.asset_code, relType);
+      const info = db
+        .prepare(`INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, ?)`)
+        .run(user.sub, body.asset_code, relType);
       reply.code(201).send(ok({ id: info.lastInsertRowid }));
     } catch (err: any) {
       if (String(err).includes('UNIQUE')) {
@@ -62,14 +64,15 @@ function _crud(app: FastifyInstance, relType: 'watch') {
     const user = (request as any).user;
     const asset = (request.params as any).asset_code as string;
     const db = ConfigStore.getInstance().db;
-    const info = db.prepare(
-      `UPDATE user_asset_rel SET is_deleted = 1
-       WHERE user_id = ? AND asset_code = ? AND rel_type = ? AND is_deleted = 0`
-    ).run(user.sub, asset, relType);
+    const info = db
+      .prepare(
+        `UPDATE user_asset_rel SET is_deleted = 1
+       WHERE user_id = ? AND asset_code = ? AND rel_type = ? AND is_deleted = 0`,
+      )
+      .run(user.sub, asset, relType);
     if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     reply.send(ok(null));
   });
-
 }
 
 export async function registerWatchRoutes(app: FastifyInstance) {

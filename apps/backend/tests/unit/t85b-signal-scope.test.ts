@@ -45,12 +45,22 @@ function cleanup(): void {
   try {
     const store = (ConfigStore as any)._instance;
     if (store) (store.db as any).close();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   (ConfigStore as any)._instance = null;
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
   if (ORIGINAL_SQLITE_DB_PATH !== undefined) process.env.SQLITE_DB_PATH = ORIGINAL_SQLITE_DB_PATH;
   else delete process.env.SQLITE_DB_PATH;
 }
@@ -63,9 +73,7 @@ function cleanup(): void {
  *   → 每个用例前先清干净。
  */
 function cleanRelations(): void {
-  ConfigStore.getInstance().db
-    .prepare('DELETE FROM user_asset_rel WHERE user_id = ?')
-    .run(SIGNAL_USER_ID);
+  ConfigStore.getInstance().db.prepare('DELETE FROM user_asset_rel WHERE user_id = ?').run(SIGNAL_USER_ID);
 }
 
 /** 铺自选 / 持仓 / 候选池数据 */
@@ -89,8 +97,12 @@ beforeAll(() => {
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 });
 
-afterEach(() => { cleanup(); });
-afterAll(() => { cleanup(); });
+afterEach(() => {
+  cleanup();
+});
+afterAll(() => {
+  cleanup();
+});
 
 describe('T85b ① — resolveSignalSymbols（标的域 = 自选 ∪ 持仓）', () => {
   it('自选 ∪ 持仓去重，候选池不计入', () => {
@@ -107,7 +119,10 @@ describe('T85b ① — resolveSignalSymbols（标的域 = 自选 ∪ 持仓）',
   });
 
   it('软删的行不计入', () => {
-    seedRelations([['sh600001', 'watch'], ['sh600002', 'hold']]);
+    seedRelations([
+      ['sh600001', 'watch'],
+      ['sh600002', 'hold'],
+    ]);
     const db = ConfigStore.getInstance().db;
     db.prepare('UPDATE user_asset_rel SET is_deleted = 1 WHERE asset_code = ?').run('sh600002');
     expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual(['sh600001']);
@@ -124,7 +139,10 @@ describe('T85b ① — resolveSignalSymbols（标的域 = 自选 ∪ 持仓）',
 describe('T85b ① — executeAllPlugins 的标的域注入', () => {
   it('信号只对传入的标的域产生，且不出现集合外的标的', async () => {
     installDuckDBMock();
-    seedRelations([['sh600001', 'watch'], ['sh600002', 'hold']]);
+    seedRelations([
+      ['sh600001', 'watch'],
+      ['sh600002', 'hold'],
+    ]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
 
     const result = await executeAllPlugins({ symbols });
@@ -140,7 +158,11 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
 
   it('stats.total = 插件数 × 标的数（不再是「插件数」这种无意义口径）', async () => {
     installDuckDBMock();
-    seedRelations([['sh600001', 'watch'], ['sh600002', 'watch'], ['sh600003', 'hold']]);
+    seedRelations([
+      ['sh600001', 'watch'],
+      ['sh600002', 'watch'],
+      ['sh600003', 'hold'],
+    ]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
     const monitorCount = getAllPlugins().filter((p) => p.category === 'monitor').length;
 

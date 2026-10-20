@@ -22,9 +22,17 @@ import * as loggerNs from '../../src/services/logger.js';
 
 function cleanup(): void {
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 beforeAll(() => {
@@ -41,7 +49,7 @@ afterAll(() => {
 describe('scheduler — registerCronJobs 无 scheduler', () => {
   it('app 没有 scheduler 属性 → 写 ERROR 日志并 return（不崩溃）', () => {
     const logSpy = vi.spyOn(loggerNs, 'writeSystemLog').mockImplementation(() => {});
-    const fakeApp = { /* 没有 scheduler */ } as any;
+    const fakeApp = {/* 没有 scheduler */} as any;
 
     expect(() => registerCronJobs(fakeApp)).not.toThrow();
 

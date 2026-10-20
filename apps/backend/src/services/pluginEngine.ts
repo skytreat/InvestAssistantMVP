@@ -5,10 +5,7 @@
 
 import { calculateRSI, calculateMACD, type MACDResult } from '@invest/core';
 import { calculateSMA } from './indicators.js';
-import {
-  getDailyRange,
-  batchGetDailyRange,
-} from './marketData.js';
+import { getDailyRange, batchGetDailyRange } from './marketData.js';
 import type { DailyKline } from '@invest/core';
 import { writeSystemLog } from './logger.js';
 import fs from 'node:fs';
@@ -50,16 +47,16 @@ const round3 = (ms: number): number => Math.round(ms * 1000) / 1000;
 // ---------------------------------------------------------------------------
 
 export type PluginId = string;
-export type Period = 'daily';                       // MVP 固定日线
+export type Period = 'daily'; // MVP 固定日线
 export type PluginCategory = 'monitor' | 'filter';
 export type PluginSubCategory =
-  | 'momentum'       // 动量类：RSI、KDJ
-  | 'trend'          // 趋势类：MACD、均线
-  | 'volume'         // 量能类：OBV、量比
-  | 'breakout'       // 突破类
+  | 'momentum' // 动量类：RSI、KDJ
+  | 'trend' // 趋势类：MACD、均线
+  | 'volume' // 量能类：OBV、量比
+  | 'breakout' // 突破类
   | 'mean_reversion' // 均值回归类
-  | 'pattern'        // 形态类
-  | 'custom';        // 自定义
+  | 'pattern' // 形态类
+  | 'custom'; // 自定义
 export type PluginComplexity = 'simple' | 'medium' | 'complex';
 
 /** 图表渲染元数据（前端 KLineChart 副图 / 叠加层渲染用） */
@@ -84,7 +81,7 @@ export interface ChartOverlayConfig {
 // ---------------------------------------------------------------------------
 
 export interface ParamField {
-  key: string;                          // 注意：core 包是 name，这里按规格用 key
+  key: string; // 注意：core 包是 name，这里按规格用 key
   label: string;
   // 注：SDD §5.3 只列 number|string|select|boolean；本项目额外支持 integer（前后端表单按整数步进渲染）
   type: 'number' | 'string' | 'boolean' | 'integer' | 'select';
@@ -92,7 +89,7 @@ export interface ParamField {
   min?: number;
   max?: number;
   step?: number;
-  options?: string[];                   // select 类型的合法值
+  options?: string[]; // select 类型的合法值
   unit?: string;
   description?: string;
   required?: boolean;
@@ -128,11 +125,11 @@ export interface PluginContext {
 export interface PluginSignal {
   symbol: string;
   signalType: 'BUY' | 'SELL' | 'HOLD';
-  label?: string;                        // 人读标签（落 user_strategy_signal.label，缺省用 signalType）
-  strength?: number;                     // 0-1 信号强度
+  label?: string; // 人读标签（落 user_strategy_signal.label，缺省用 signalType）
+  strength?: number; // 0-1 信号强度
   pluginId: string;
-  timestamp: string;                     // ISO
-  metrics?: Record<string, number>;       // 指标明细，例如 { rsi: 28.5, period: 14 }
+  timestamp: string; // ISO
+  metrics?: Record<string, number>; // 指标明细，例如 { rsi: 28.5, period: 14 }
   detail?: string;
 }
 
@@ -146,7 +143,7 @@ export interface Plugin {
   readonly author: string;
   /** 周期，MVP 固定 'daily' */
   readonly period: Period;
-  category: PluginCategory;              // monitor=每日收盘跑信号 / filter=全市场条件选股
+  category: PluginCategory; // monitor=每日收盘跑信号 / filter=全市场条件选股
   /** 归属子分类（UI 分组用） */
   readonly subCategory: PluginSubCategory;
   /** 执行复杂度标记（日志统计用，非硬约束） */
@@ -162,10 +159,7 @@ export interface Plugin {
    * 单字段的 min/max 走 paramSchema，这里只管字段之间的关系。
    */
   validateCrossFields?(params: Record<string, unknown>): void;
-  execute(
-    context: PluginContext,
-    params: Record<string, unknown>,
-  ): Promise<PluginSignal[] | PluginSignal>;
+  execute(context: PluginContext, params: Record<string, unknown>): Promise<PluginSignal[] | PluginSignal>;
 }
 
 /**
@@ -223,11 +217,18 @@ export function normalizePlugin(plugin: Plugin): Plugin {
 
   return {
     ...plugin,
-    version: typeof plugin.version === 'string' && plugin.version ? plugin.version : CONTRACT_FALLBACK.version,
+    version:
+      typeof plugin.version === 'string' && plugin.version ? plugin.version : CONTRACT_FALLBACK.version,
     author: typeof plugin.author === 'string' && plugin.author ? plugin.author : CONTRACT_FALLBACK.author,
     period: plugin.period === 'daily' ? 'daily' : CONTRACT_FALLBACK.period,
-    subCategory: typeof plugin.subCategory === 'string' && plugin.subCategory ? plugin.subCategory : CONTRACT_FALLBACK.subCategory,
-    complexity: typeof plugin.complexity === 'string' && plugin.complexity ? plugin.complexity : CONTRACT_FALLBACK.complexity,
+    subCategory:
+      typeof plugin.subCategory === 'string' && plugin.subCategory
+        ? plugin.subCategory
+        : CONTRACT_FALLBACK.subCategory,
+    complexity:
+      typeof plugin.complexity === 'string' && plugin.complexity
+        ? plugin.complexity
+        : CONTRACT_FALLBACK.complexity,
     defaultParams:
       plugin.defaultParams && Object.keys(plugin.defaultParams).length > 0
         ? plugin.defaultParams
@@ -297,7 +298,14 @@ export const builtinPlugins: Plugin[] = [
       ],
     },
     paramSchema: [
-      { key: 'symbol', label: '标的代码', type: 'string', default: 'sh600000', required: true, runtimeInjected: true },
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
       { key: 'period', label: 'RSI 周期', type: 'integer', default: 14, min: 5, max: 30 },
       { key: 'oversold', label: '超卖阈值', type: 'number', default: 30, min: 1, max: 50 },
       { key: 'overbought', label: '超买阈值', type: 'number', default: 70, min: 50, max: 100 },
@@ -325,7 +333,7 @@ export const builtinPlugins: Plugin[] = [
       const klines = await ctx.getDailyKlines(symbol, days);
       if (klines.length < period + 1) return [];
 
-      const closes = klines.map(k => k.close);
+      const closes = klines.map((k) => k.close);
       const rsi = ctx.calculateRSI(closes, period);
       const latestRSI = rsi[rsi.length - 1];
       if (latestRSI === undefined || Number.isNaN(latestRSI)) return [];
@@ -378,11 +386,21 @@ export const builtinPlugins: Plugin[] = [
     chartOverlay: {
       position: 'sub',
       subChartHeightRatio: 0.3,
-      lines: [{ key: 'dif', color: '#e74c3c', width: 1 }, { key: 'dea', color: '#3498db', width: 1 }],
+      lines: [
+        { key: 'dif', color: '#e74c3c', width: 1 },
+        { key: 'dea', color: '#3498db', width: 1 },
+      ],
       fillAreas: { above: '#e74c3c', below: '#2ecc71' },
     },
     paramSchema: [
-      { key: 'symbol', label: '标的代码', type: 'string', default: 'sh600000', required: true, runtimeInjected: true },
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
       { key: 'fast', label: '快线 EMA', type: 'integer', default: 12, min: 2, max: 30 },
       { key: 'slow', label: '慢线 EMA', type: 'integer', default: 26, min: 10, max: 60 },
       { key: 'signal', label: '信号线', type: 'integer', default: 9, min: 2, max: 20 },
@@ -398,7 +416,7 @@ export const builtinPlugins: Plugin[] = [
       const klines = await ctx.getDailyKlines(symbol, days);
       if (klines.length < slow + signal) return [];
 
-      const closes = klines.map(k => k.close);
+      const closes = klines.map((k) => k.close);
       // 调用底层 calculateMACD（它接受 fast/slow/signal 参数）
       const macdResult = calculateMACD(closes, fast, slow, signal);
       const dif = macdResult.dif;
@@ -487,16 +505,14 @@ export const builtinPlugins: Plugin[] = [
       const klineMap =
         symbols.length > 1
           ? await ctx.batchGetDailyKlines(symbols, days)
-          : new Map<string, DailyKline[]>([
-              [symbols[0], await ctx.getDailyKlines(symbols[0], days)],
-            ]);
+          : new Map<string, DailyKline[]>([[symbols[0], await ctx.getDailyKlines(symbols[0], days)]]);
 
       const signals: PluginSignal[] = [];
       for (const symbol of symbols) {
         const klines = klineMap.get(symbol) ?? [];
         if (klines.length < periodLong + 1) continue;
 
-        const closes = klines.map(k => k.close);
+        const closes = klines.map((k) => k.close);
         const maShort = ctx.calculateSMA(closes, periodShort);
         const maMid = ctx.calculateSMA(closes, periodMid);
         const maLong = ctx.calculateSMA(closes, periodLong);
@@ -505,9 +521,14 @@ export const builtinPlugins: Plugin[] = [
         const mid = maMid[i];
         const long = maLong[i];
         if (
-          short === undefined || mid === undefined || long === undefined
-          || Number.isNaN(short) || Number.isNaN(mid) || Number.isNaN(long)
-        ) continue;
+          short === undefined ||
+          mid === undefined ||
+          long === undefined ||
+          Number.isNaN(short) ||
+          Number.isNaN(mid) ||
+          Number.isNaN(long)
+        )
+          continue;
 
         const close = closes[i];
         if (!(short > mid && mid > long && close > long)) continue;
@@ -558,9 +579,7 @@ export const builtinPlugins: Plugin[] = [
       const klineMap =
         symbols.length > 1
           ? await ctx.batchGetDailyKlines(symbols, days)
-          : new Map<string, DailyKline[]>([
-              [symbols[0], await ctx.getDailyKlines(symbols[0], days)],
-            ]);
+          : new Map<string, DailyKline[]>([[symbols[0], await ctx.getDailyKlines(symbols[0], days)]]);
 
       const signals: PluginSignal[] = [];
       for (const symbol of symbols) {
@@ -571,7 +590,7 @@ export const builtinPlugins: Plugin[] = [
         const prev = klines.slice(-(lookback + 1), -1);
         if (prev.length < lookback) continue;
 
-        const prevHigh = Math.max(...prev.map(k => k.high));
+        const prevHigh = Math.max(...prev.map((k) => k.high));
         const avgVolume = prev.reduce((acc, k) => acc + k.volume, 0) / prev.length;
         if (!(avgVolume > 0)) continue;
         const ratio = last.volume / avgVolume;
@@ -615,9 +634,7 @@ const PLUGIN_FILENAME_RE = /^[a-z0-9_-]+\.js$/;
  *   3. createPluginSandbox(source) 包装成 Plugin 实例
  *   4. push 到结果数组
  */
-export function loadPluginsFromDir(
-  dirPath: string = PLUGIN_ALLOWED_PATH,
-): Plugin[] {
+export function loadPluginsFromDir(dirPath: string = PLUGIN_ALLOWED_PATH): Plugin[] {
   const loaded: Plugin[] = [];
 
   let entries: string[];
@@ -654,9 +671,7 @@ export function loadPluginsFromDir(
     const resolved = path.resolve(filePath);
     const allowedResolved = path.resolve(dirPath);
     if (!resolved.startsWith(allowedResolved + path.sep)) {
-      console.error(
-        `[pluginEngine] 插件路径逃逸被拦截: ${filePath} (resolved=${resolved})`,
-      );
+      console.error(`[pluginEngine] 插件路径逃逸被拦截: ${filePath} (resolved=${resolved})`);
       continue;
     }
 
@@ -759,10 +774,7 @@ export function createPluginSandbox(source: string): Plugin {
   `;
 
   // eslint-disable-next-line no-new-func
-  const factory = new Function(
-    ...Object.keys(sandbox),
-    wrappedSource,
-  );
+  const factory = new Function(...Object.keys(sandbox), wrappedSource);
 
   let maybePlugin: unknown;
   try {
@@ -783,10 +795,7 @@ export function createPluginSandbox(source: string): Plugin {
   }
 
   // 验证接口契约
-  if (
-    maybePlugin === null ||
-    typeof maybePlugin !== 'object'
-  ) {
+  if (maybePlugin === null || typeof maybePlugin !== 'object') {
     throw new Error('插件必须导出一个对象（含 id/name/category/execute）');
   }
   const p = maybePlugin as Record<string, unknown>;
@@ -797,9 +806,7 @@ export function createPluginSandbox(source: string): Plugin {
     throw new Error('插件缺少字符串类型的 name');
   }
   if (p.category !== 'monitor' && p.category !== 'filter') {
-    throw new Error(
-      `插件 category 必须是 'monitor' 或 'filter'，实际 ${String(p.category)}`,
-    );
+    throw new Error(`插件 category 必须是 'monitor' 或 'filter'，实际 ${String(p.category)}`);
   }
   if (typeof p.execute !== 'function') {
     throw new Error('插件缺少 execute 函数');
@@ -808,9 +815,7 @@ export function createPluginSandbox(source: string): Plugin {
   // 类型收窄为 Plugin 返回
   // T93：契约字段（version/author/period/sub_category/complexity）自定义插件缺省时走兜底值，
   // 不再静默填 undefined；defaultParams 一律由 paramSchema 派生，避免两处默认值漂移。
-  const paramSchema = Array.isArray(p.paramSchema)
-    ? (p.paramSchema as Plugin['paramSchema'])
-    : undefined;
+  const paramSchema = Array.isArray(p.paramSchema) ? (p.paramSchema as Plugin['paramSchema']) : undefined;
 
   return normalizePlugin({
     id: p.id as string,
@@ -819,18 +824,15 @@ export function createPluginSandbox(source: string): Plugin {
     author: typeof p.author === 'string' ? (p.author as string) : CONTRACT_FALLBACK.author,
     period: p.period === 'daily' ? 'daily' : CONTRACT_FALLBACK.period,
     category: p.category as 'monitor' | 'filter',
-    subCategory: typeof p.sub_category === 'string'
-      ? (p.sub_category as PluginSubCategory)
-      : typeof p.subCategory === 'string'
-        ? (p.subCategory as PluginSubCategory)
-        : CONTRACT_FALLBACK.subCategory,
-    complexity: typeof p.complexity === 'string'
-      ? (p.complexity as PluginComplexity)
-      : CONTRACT_FALLBACK.complexity,
-    description:
-      typeof p.description === 'string'
-        ? (p.description as string)
-        : undefined,
+    subCategory:
+      typeof p.sub_category === 'string'
+        ? (p.sub_category as PluginSubCategory)
+        : typeof p.subCategory === 'string'
+          ? (p.subCategory as PluginSubCategory)
+          : CONTRACT_FALLBACK.subCategory,
+    complexity:
+      typeof p.complexity === 'string' ? (p.complexity as PluginComplexity) : CONTRACT_FALLBACK.complexity,
+    description: typeof p.description === 'string' ? (p.description as string) : undefined,
     paramSchema,
     defaultParams: deriveDefaultParams(paramSchema),
     chartOverlay:
@@ -903,11 +905,7 @@ export function validatePluginParams(
     const value = hasInput ? rawValue : field.default;
 
     // required 字段但没有 default 也没输入
-    if (
-      !hasInput &&
-      field.default === undefined &&
-      field.required === true
-    ) {
+    if (!hasInput && field.default === undefined && field.required === true) {
       throw new PluginParamError(plugin.id, field.key, '必填参数缺失');
     }
 
@@ -918,25 +916,13 @@ export function validatePluginParams(
     switch (field.type) {
       case 'number': {
         if (typeof value !== 'number' || Number.isNaN(value)) {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `期望 number，实际 ${typeof value}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `期望 number，实际 ${typeof value}`);
         }
         if (field.min !== undefined && value < field.min) {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `值 ${value} 小于最小值 ${field.min}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `值 ${value} 小于最小值 ${field.min}`);
         }
         if (field.max !== undefined && value > field.max) {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `值 ${value} 大于最大值 ${field.max}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `值 ${value} 大于最大值 ${field.max}`);
         }
         merged[field.key] = value;
         break;
@@ -950,51 +936,31 @@ export function validatePluginParams(
           );
         }
         if (field.min !== undefined && value < field.min) {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `值 ${value} 小于最小值 ${field.min}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `值 ${value} 小于最小值 ${field.min}`);
         }
         if (field.max !== undefined && value > field.max) {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `值 ${value} 大于最大值 ${field.max}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `值 ${value} 大于最大值 ${field.max}`);
         }
         merged[field.key] = value;
         break;
       }
       case 'string': {
         if (typeof value !== 'string') {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `期望 string，实际 ${typeof value}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `期望 string，实际 ${typeof value}`);
         }
         merged[field.key] = value;
         break;
       }
       case 'boolean': {
         if (typeof value !== 'boolean') {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `期望 boolean，实际 ${typeof value}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `期望 boolean，实际 ${typeof value}`);
         }
         merged[field.key] = value;
         break;
       }
       case 'select': {
         if (typeof value !== 'string') {
-          throw new PluginParamError(
-            plugin.id,
-            field.key,
-            `select 期望 string，实际 ${typeof value}`,
-          );
+          throw new PluginParamError(plugin.id, field.key, `select 期望 string，实际 ${typeof value}`);
         }
         if (field.options && !field.options.includes(value)) {
           throw new PluginParamError(
@@ -1068,10 +1034,7 @@ export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContex
       return await getDailyRange(symbol, start, end);
     },
 
-    async batchGetDailyKlines(
-      symbols: string[],
-      days: number,
-    ): Promise<Map<string, DailyKline[]>> {
+    async batchGetDailyKlines(symbols: string[], days: number): Promise<Map<string, DailyKline[]>> {
       const end = new Date().toISOString().slice(0, 10);
       const start = windowStart(days);
       return await batchGetDailyRange(symbols, start, end);
@@ -1148,12 +1111,14 @@ export async function executePlugin(
   const ctx = context ?? buildPluginContext();
 
   // === 3. T88：IO 感知的 50ms 预算窗口 ===
-  let computeStart = performance.now();   // 计时起点（每次 IO 结束后重置）
-  let ioMs = 0;                           // 被排除在预算外的 IO 累计耗时
-  let ioDepth = 0;                        // 嵌套/并发 IO 计数（>0 时视为仍在 IO 段内）
+  let computeStart = performance.now(); // 计时起点（每次 IO 结束后重置）
+  let ioMs = 0; // 被排除在预算外的 IO 累计耗时
+  let ioDepth = 0; // 嵌套/并发 IO 计数（>0 时视为仍在 IO 段内）
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let settle: (r: PluginExecutionResult) => void = () => { /* 未初始化占位 */ };
+  let settle: (r: PluginExecutionResult) => void = () => {
+    /* 未初始化占位 */
+  };
 
   const race = new Promise<PluginExecutionResult>((resolve) => {
     settle = resolve;
@@ -1195,7 +1160,7 @@ export async function executePlugin(
 
   /** 行情 IO 包装：进入前 disarm 计时器，结束后重置计时起点并重新挂满预算 */
   const withIo = async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (ioDepth > 0) return await fn();   // 已在 IO 段内（并发/嵌套），不重复重置
+    if (ioDepth > 0) return await fn(); // 已在 IO 段内（并发/嵌套），不重复重置
     ioDepth += 1;
     disarm();
     const ioStart = performance.now();
@@ -1204,7 +1169,7 @@ export async function executePlugin(
     } finally {
       ioMs += performance.now() - ioStart;
       ioDepth -= 1;
-      computeStart = performance.now();  // 取数后重置计时起点
+      computeStart = performance.now(); // 取数后重置计时起点
       arm();
     }
   };
@@ -1333,11 +1298,9 @@ export interface ExecuteAllPluginsOptions {
  *   现在支持传入**标的域**（自选 ∪ 持仓），并对整个标的域**批量预取**日线
  *   （SDD §5.3 P8「1 次 IN 查询 → N 插件共享」）。
  */
-export async function executeAllPlugins(
-  options: ExecuteAllPluginsOptions = {},
-): Promise<PluginBatchResult> {
+export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}): Promise<PluginBatchResult> {
   // 合并内置 + 磁盘加载（SDD §5.3 磁盘热加载）
-  const monitorPlugins = getAllPlugins().filter(p => p.category === 'monitor');
+  const monitorPlugins = getAllPlugins().filter((p) => p.category === 'monitor');
   const symbols = options.symbols;
 
   // ── 标的域模式：批量预取 + 逐标的执行 ──
@@ -1346,7 +1309,11 @@ export async function executeAllPlugins(
   if (symbols !== undefined) {
     if (symbols.length === 0) {
       const emptyStats: PluginBatchStats = {
-        total: 0, success: 0, timeout: 0, error: 0, skip: 0,
+        total: 0,
+        success: 0,
+        timeout: 0,
+        error: 0,
+        skip: 0,
       };
       writeSystemLog({
         logType: 'plugin_execute',

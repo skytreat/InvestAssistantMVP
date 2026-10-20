@@ -27,10 +27,14 @@ function cleanup(): void {
   else delete process.env.SQLITE_DB_PATH;
 }
 
-afterAll(() => { cleanup(); });
+afterAll(() => {
+  cleanup();
+});
 
 describe('assetStat — insertAssetStatSnapshots', () => {
-  afterEach(() => { cleanup(); });
+  afterEach(() => {
+    cleanup();
+  });
 
   it('空用户表 → inserted=0', async () => {
     const result = await insertAssetStatSnapshots('2026-10-15');

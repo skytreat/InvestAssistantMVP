@@ -74,12 +74,15 @@ describe('golden · RSI', () => {
 describe('golden · MACD', () => {
   const closes = macdGolden.closes as number[];
 
-  it.each(macdGolden.cases)('fast=$params.fastPeriod slow=$params.slowPeriod signal=$params.signalPeriod 逐位一致', (c) => {
-    const r = calculateMACD(closes, c.params.fastPeriod, c.params.slowPeriod, c.params.signalPeriod);
-    assertBitwiseEqual(r.dif, c.dif);
-    assertBitwiseEqual(r.dea, c.dea);
-    assertBitwiseEqual(r.macd, c.macd);
-  });
+  it.each(macdGolden.cases)(
+    'fast=$params.fastPeriod slow=$params.slowPeriod signal=$params.signalPeriod 逐位一致',
+    (c) => {
+      const r = calculateMACD(closes, c.params.fastPeriod, c.params.slowPeriod, c.params.signalPeriod);
+      assertBitwiseEqual(r.dif, c.dif);
+      assertBitwiseEqual(r.dea, c.dea);
+      assertBitwiseEqual(r.macd, c.macd);
+    },
+  );
 
   it('SMA(5/10/20/60) 逐位一致', () => {
     for (const c of macdGolden.sma.values) {

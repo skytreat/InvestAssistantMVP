@@ -49,9 +49,11 @@ describe('auth — signToken + verifyToken', () => {
     // 用过期 payload 替换原 payload（保留原始签名）
     const parts = expiredToken.split('.');
     const expiredPayloadObj = {
-      sub: 1, username: 'admin', role: 'admin',
+      sub: 1,
+      username: 'admin',
+      role: 'admin',
       iat: now - 86400 - 100,
-      exp: now - 1,  // 已过期
+      exp: now - 1, // 已过期
     };
     // 复用 auth.ts 里的 b64url / b64urlDecode？这里直接用 crypto 手动拼接
     // 更简单：截掉原 payload 段，手动改 exp 后重新签名
@@ -60,7 +62,7 @@ describe('auth — signToken + verifyToken', () => {
     const crypto = require('node:crypto');
     const secret = Buffer.from(
       process.env.JWT_SECRET ?? 'investassistant-mvp-dev-secret-change-me-in-prod-2026',
-      'utf-8'
+      'utf-8',
     );
     const newPayloadB64 = b64url(Buffer.from(JSON.stringify(expiredPayloadObj)));
     const headerB64 = parts[0];

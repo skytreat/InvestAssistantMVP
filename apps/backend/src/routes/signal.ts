@@ -61,12 +61,20 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       }
 
       const whereSql = 'WHERE ' + where.join(' AND ');
-      const count = (db.prepare(`SELECT COUNT(*) AS c FROM user_strategy_signal ${whereSql}`).get(...params) as { c: number }).c;
-      const rows = db.prepare(
-        `SELECT * FROM user_strategy_signal ${whereSql} ORDER BY trade_date ASC, created_at ASC, id ASC LIMIT ? OFFSET ?`
-      ).all(...params, pageSize, (page - 1) * pageSize);
+      const count = (
+        db.prepare(`SELECT COUNT(*) AS c FROM user_strategy_signal ${whereSql}`).get(...params) as {
+          c: number;
+        }
+      ).c;
+      const rows = db
+        .prepare(
+          `SELECT * FROM user_strategy_signal ${whereSql} ORDER BY trade_date ASC, created_at ASC, id ASC LIMIT ? OFFSET ?`,
+        )
+        .all(...params, pageSize, (page - 1) * pageSize);
 
-      reply.send(ok(rows, { pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) } }));
+      reply.send(
+        ok(rows, { pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) } }),
+      );
     } catch (err) {
       reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }

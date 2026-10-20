@@ -51,13 +51,7 @@ interface SymbolOption {
 }
 
 /** 自动补全输入框：输入代码/名称后弹出匹配列表，点击选择后自动补全前缀 */
-function SymbolAutocomplete({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (val: string) => void;
-}) {
+function SymbolAutocomplete({ value, onChange }: { value: string; onChange: (val: string) => void }) {
   const [options, setOptions] = useState<SymbolOption[]>([]);
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
@@ -122,7 +116,9 @@ function SymbolAutocomplete({
         value={displayName}
         onChange={(e) => handleChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        onFocus={() => { if (options.length > 0) setOpen(true); }}
+        onFocus={() => {
+          if (options.length > 0) setOpen(true);
+        }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         required
       />
@@ -214,7 +210,7 @@ export default function TradeInput() {
       asset_code: assetCode,
       trade_type: tradeType,
       trade_date: tradeDate,
-    trade_time: tradeTime,
+      trade_time: tradeTime,
       quantity: Number(quantity),
       price: Number(price),
       fee: Number(fee) || 0,
@@ -270,29 +266,29 @@ export default function TradeInput() {
             </select>
           </div>
 
-<div style={formRowStyle}>
-              <label style={labelStyle}>交易日期</label>
-              <input
-                style={{ ...inputStyle, flex: 1 }}
-                type="date"
-                value={tradeDate}
-                onChange={(e) => setTradeDate(e.target.value)}
-                required
-              />
-            </div>
+          <div style={formRowStyle}>
+            <label style={labelStyle}>交易日期</label>
+            <input
+              style={{ ...inputStyle, flex: 1 }}
+              type="date"
+              value={tradeDate}
+              onChange={(e) => setTradeDate(e.target.value)}
+              required
+            />
+          </div>
 
-            <div style={formRowStyle}>
-              <label style={labelStyle}>成交时间</label>
-              <input
-                style={{ ...inputStyle, flex: 1 }}
-                type="time"
-                step="1"
-                value={tradeTime}
-                onChange={(e) => setTradeTime(e.target.value)}
-                required
-              />
-            </div>
-            {/* T87：同日同标的同类型可分笔录入，唯一键含成交时间；提交前请确认成交时间无误 */}
+          <div style={formRowStyle}>
+            <label style={labelStyle}>成交时间</label>
+            <input
+              style={{ ...inputStyle, flex: 1 }}
+              type="time"
+              step="1"
+              value={tradeTime}
+              onChange={(e) => setTradeTime(e.target.value)}
+              required
+            />
+          </div>
+          {/* T87：同日同标的同类型可分笔录入，唯一键含成交时间；提交前请确认成交时间无误 */}
 
           <div style={formRowStyle}>
             <label style={labelStyle}>数量</label>
@@ -351,7 +347,8 @@ export default function TradeInput() {
           {error && <div style={errorStyle}>{error}</div>}
           {result && (
             <div style={successStyle}>
-              提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价={result.position.avgCost.toFixed(4)}
+              提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价=
+              {result.position.avgCost.toFixed(4)}
             </div>
           )}
         </form>

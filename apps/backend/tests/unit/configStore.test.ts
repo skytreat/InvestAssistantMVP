@@ -24,9 +24,17 @@ function cleanup(): void {
   // 清除单例，以便下次测试创建新实例
   (ConfigStore as any)._instance = null;
   for (const ext of ['', '-wal', '-shm']) {
-    try { fs.unlinkSync(TEST_DB + ext); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(TEST_DB + ext);
+    } catch {
+      /* ignore */
+    }
   }
-  try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true });
+  } catch {
+    /* ignore */
+  }
   if (ORIGINAL_PATH !== undefined) {
     process.env.SQLITE_DB_PATH = ORIGINAL_PATH;
   } else {
@@ -55,25 +63,30 @@ describe('configStore — getInstance 单例', () => {
 describe('configStore — DDL 表创建', () => {
   it('所有业务表都存在', () => {
     const store = ConfigStore.getInstance();
-    const tables = ['user_account', 'user_trade_record', 'user_asset_rel',
-                    'user_strategy_signal', 'user_plugin_config', 'user_asset_stat', 'system_log'];
+    const tables = [
+      'user_account',
+      'user_trade_record',
+      'user_asset_rel',
+      'user_strategy_signal',
+      'user_plugin_config',
+      'user_asset_stat',
+      'system_log',
+    ];
     for (const t of tables) {
-      const exists = store.db.prepare(
-        `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`
-      ).get(t);
+      const exists = store.db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(t);
       expect(exists).toBeDefined();
     }
   });
 
   it('WAL 模式已开启', () => {
     const store = ConfigStore.getInstance();
-    const mode = store.db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    const mode = store.db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
     expect(mode.journal_mode).toBe('wal');
   });
 
   it('foreign_keys=ON', () => {
     const store = ConfigStore.getInstance();
-    const fk = store.db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number };
+    const fk = store.db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
     expect(fk.foreign_keys).toBe(1);
   });
 
@@ -153,7 +166,7 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
       `);
       Legacy.prepare(
         `INSERT INTO user_trade_record (user_id, asset_code, trade_type, trade_date, quantity, price, fee)
-         VALUES (1, 'sh600000', 'buy', '2025-01-01', 100, 10, 0)`
+         VALUES (1, 'sh600000', 'buy', '2025-01-01', 100, 10, 0)`,
       ).run();
       Legacy.close();
 
@@ -162,8 +175,9 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
       (ConfigStore as any)._instance = null;
       const store = ConfigStore.getInstance();
 
-      const cols = (store.db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[])
-        .map(c => c.name);
+      const cols = (store.db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[]).map(
+        (c) => c.name,
+      );
       expect(cols).toContain('strategy_match');
 
       // 3. 存量数据完好 + 新列默认 NULL（三态"未标记"）
@@ -176,9 +190,11 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
       expect(rows[0].trade_time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
 
       // 3c. T87 + T49：UNIQUE 已含 trade_time，trade_type CHECK 已含 add
-      const ddl = (store.db
-        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
-        .get() as { sql: string }).sql;
+      const ddl = (
+        store.db
+          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
+          .get() as { sql: string }
+      ).sql;
       expect(ddl).toContain('trade_time');
       expect(ddl).toMatch(/UNIQUE\s*\(user_id, asset_code, trade_type, trade_date, trade_time\)/);
       expect(ddl).toContain("'add'");
@@ -186,36 +202,48 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
 
       // 3d. 迁移后可按新唯一键追加同日的第二笔（不同成交时间）
       // 先补 user_account —— legacy 表只有 trade_record，FK 目标不存在会直接违例
-      store.db.prepare(
-        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role)
+      store.db
+        .prepare(
+          `INSERT OR IGNORE INTO user_account (id, username, password_hash, role)
          VALUES (1, 'legacy_user', 'dummy-hash', 'user')`,
-      ).run();
+        )
+        .run();
       expect(() =>
-        store.db.prepare(
-          `INSERT INTO user_trade_record
+        store.db
+          .prepare(
+            `INSERT INTO user_trade_record
            (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee)
            VALUES (1, 'sh600000', 'buy', '2025-01-01', '09:30:01', 50, 10, 0)`,
-        ).run(),
+          )
+          .run(),
       ).not.toThrow();
       // 同日 + 同成交时间 → 唯一键冲突（quantity 不同也冲突，quantity 不进主键）
       expect(() =>
-        store.db.prepare(
-          `INSERT INTO user_trade_record
+        store.db
+          .prepare(
+            `INSERT INTO user_trade_record
            (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee)
            VALUES (1, 'sh600000', 'buy', '2025-01-01', '09:30:01', 999, 10, 0)`,
-        ).run(),
+          )
+          .run(),
       ).toThrow(/UNIQUE/);
 
       // 4. 新列可写（三态 0/1 合法，2 被 CHECK 拦）
       store.db.prepare('UPDATE user_trade_record SET strategy_match = 1').run();
-      expect((store.db.prepare('SELECT strategy_match FROM user_trade_record').get() as any).strategy_match).toBe(1);
+      expect(
+        (store.db.prepare('SELECT strategy_match FROM user_trade_record').get() as any).strategy_match,
+      ).toBe(1);
       expect(() => store.db.prepare('UPDATE user_trade_record SET strategy_match = 2').run()).toThrow();
 
       store.db.close();
     } finally {
       (ConfigStore as any)._instance = null;
       if (legacyPath !== undefined) process.env.SQLITE_DB_PATH = legacyPath;
-      try { fs.rmSync(legacyDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   });
 });

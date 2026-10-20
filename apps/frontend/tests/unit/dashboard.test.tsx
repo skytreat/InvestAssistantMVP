@@ -255,9 +255,7 @@ describe('DonutChart · 角度计算', () => {
     const chart = donutNode(container);
     expect(chart).not.toBeNull();
     // 背景用原始数值（无 toFixed）—— 60 恰好整除，不产生小数尾巴
-    expect(chart?.getAttribute('style')).toContain(
-      'conic-gradient(#2563eb 0% 60%, #16a34a 60% 100%)',
-    );
+    expect(chart?.getAttribute('style')).toContain('conic-gradient(#2563eb 0% 60%, #16a34a 60% 100%)');
 
     expect(screen.getByText('股票 600.00（60.0%）')).toBeInTheDocument();
     expect(screen.getByText('ETF 400.00（40.0%）')).toBeInTheDocument();
@@ -276,9 +274,7 @@ describe('DonutChart · 角度计算', () => {
 
     const chart = donutNode(container);
     expect(chart).not.toBeNull();
-    expect(chart?.getAttribute('style')).toContain(
-      'conic-gradient(#2563eb 0% 0%, #16a34a 0% 100%)',
-    );
+    expect(chart?.getAttribute('style')).toContain('conic-gradient(#2563eb 0% 0%, #16a34a 0% 100%)');
 
     expect(screen.getByText('股票 0.00（0.0%）')).toBeInTheDocument();
     expect(screen.getByText('ETF 100.00（100.0%）')).toBeInTheDocument();

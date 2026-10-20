@@ -79,7 +79,9 @@ export default function Settings() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   const openEditor = (p: PluginItem) => {
     const next: Record<string, unknown> = {};
@@ -156,13 +158,21 @@ export default function Settings() {
         </label>
         {f.type === 'boolean' && (
           <label style={{ fontSize: 14 }}>
-            <input type="checkbox" checked={Boolean(value)} onChange={(e) => set(e.target.checked)} />
-            {' '}启用该选项
+            <input type="checkbox" checked={Boolean(value)} onChange={(e) => set(e.target.checked)} />{' '}
+            启用该选项
           </label>
         )}
         {f.type === 'select' && (
-          <select style={{ ...inputStyle, width: '100%' }} value={String(value)} onChange={(e) => set(e.target.value)}>
-            {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+          <select
+            style={{ ...inputStyle, width: '100%' }}
+            value={String(value)}
+            onChange={(e) => set(e.target.value)}
+          >
+            {(f.options ?? []).map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
           </select>
         )}
         {(f.type === 'number' || f.type === 'integer') && (
@@ -177,8 +187,11 @@ export default function Settings() {
           />
         )}
         {f.type === 'string' && (
-          <input style={{ ...inputStyle, width: '100%' }} value={String(value)}
-            onChange={(e) => set(e.target.value)} />
+          <input
+            style={{ ...inputStyle, width: '100%' }}
+            value={String(value)}
+            onChange={(e) => set(e.target.value)}
+          />
         )}
         {(f.min !== undefined || f.max !== undefined) && (
           <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
@@ -203,57 +216,74 @@ export default function Settings() {
         {!loading && plugins.length === 0 && (
           <div style={{ color: '#6b7280', padding: 16 }}>暂无可用插件</div>
         )}
-        {!loading && plugins.map((p) => (
-          <div key={p.id} style={{
-            border: '1px solid #e5e7eb', borderRadius: 6, padding: 12, marginBottom: 12,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: 180 }}>
-                <div style={{ fontWeight: 600, fontSize: 15 }}>
-                  {p.name}
-                  <span style={{
-                    marginLeft: 8, fontSize: 12, padding: '1px 6px', borderRadius: 10,
-                    background: p.category === 'monitor' ? '#dbeafe' : '#ede9fe',
-                    color: p.category === 'monitor' ? '#1e40af' : '#5b21b6',
-                  }}>
-                    {CATEGORY_LABEL[p.category] ?? p.category}
-                  </span>
+        {!loading &&
+          plugins.map((p) => (
+            <div
+              key={p.id}
+              style={{
+                border: '1px solid #e5e7eb',
+                borderRadius: 6,
+                padding: 12,
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>
+                    {p.name}
+                    <span
+                      style={{
+                        marginLeft: 8,
+                        fontSize: 12,
+                        padding: '1px 6px',
+                        borderRadius: 10,
+                        background: p.category === 'monitor' ? '#dbeafe' : '#ede9fe',
+                        color: p.category === 'monitor' ? '#1e40af' : '#5b21b6',
+                      }}
+                    >
+                      {CATEGORY_LABEL[p.category] ?? p.category}
+                    </span>
+                  </div>
+                  {p.description && (
+                    <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>{p.description}</div>
+                  )}
+                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
+                    <code>{p.id}</code>
+                  </div>
                 </div>
-                {p.description && (
-                  <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>{p.description}</div>
+                <label
+                  style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                >
+                  <input type="checkbox" checked={p.enabled === 1} onChange={() => toggle(p)} />
+                  {p.enabled === 1 ? '已启用' : '已禁用'}
+                </label>
+                {(p.paramSchema?.length ?? 0) > 0 && (
+                  <button style={buttonStyle} onClick={() => openEditor(p)}>
+                    {expanded === p.id ? '收起参数' : '参数配置'}
+                  </button>
                 )}
-                <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
-                  <code>{p.id}</code>
-                </div>
               </div>
-              <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                <input type="checkbox" checked={p.enabled === 1} onChange={() => toggle(p)} />
-                {p.enabled === 1 ? '已启用' : '已禁用'}
-              </label>
-              {(p.paramSchema?.length ?? 0) > 0 && (
-                <button style={buttonStyle} onClick={() => openEditor(p)}>
-                  {expanded === p.id ? '收起参数' : '参数配置'}
-                </button>
+
+              {expanded === p.id && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
+                  {/* T85b ①：runtimeInjected 的参数（如 symbol）由后端运行时注入，
+                    不该作为用户可配置项出现在表单里 */}
+                  {(p.paramSchema ?? []).filter((f) => !f.runtimeInjected).map((f) => renderField(p, f))}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
+                      {saving === p.id ? '保存中...' : '保存'}
+                    </button>
+                    <button
+                      style={{ ...buttonStyle, background: '#6b7280' }}
+                      onClick={() => setExpanded(null)}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
-
-            {expanded === p.id && (
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
-                {/* T85b ①：runtimeInjected 的参数（如 symbol）由后端运行时注入，
-                    不该作为用户可配置项出现在表单里 */}
-                {(p.paramSchema ?? []).filter((f) => !f.runtimeInjected).map((f) => renderField(p, f))}
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
-                    {saving === p.id ? '保存中...' : '保存'}
-                  </button>
-                  <button style={{ ...buttonStyle, background: '#6b7280' }} onClick={() => setExpanded(null)}>
-                    取消
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
+          ))}
       </div>
 
       <div style={cardStyle}>

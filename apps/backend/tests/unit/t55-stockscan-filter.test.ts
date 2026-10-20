@@ -42,19 +42,19 @@ process.env.SQLITE_DB_PATH = path.join(TMP_DIR, 't55.db');
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { queryDuckDB, closeDuckDBInstance } = await import('../../src/db/duckdb.js');
-const {
-  buildPoolQuery,
-  loadCandidateDaily,
-  parseScanFilters,
-  registerStockScanRoutes,
-} = await import('../../src/routes/stockscan.js');
+const { buildPoolQuery, loadCandidateDaily, parseScanFilters, registerStockScanRoutes } =
+  await import('../../src/routes/stockscan.js');
 type AppliedScanFilters = import('../../src/routes/stockscan.js').AppliedScanFilters;
 
 afterAll(() => {
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   if (ORIG_SQLITE_PATH === undefined) delete process.env.SQLITE_DB_PATH;
   else process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
-  try { rmSync(TMP_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 });
 
 /** 实测：最近一个有行情的交易日（2026-10-12 有 5561 只股票） */
@@ -74,10 +74,13 @@ function withFilter(patch: Partial<AppliedScanFilters>): AppliedScanFilters {
 
 async function runPool(filters: AppliedScanFilters) {
   const { sql, params } = buildPoolQuery(TRADE_DATE, filters);
-  return await queryDuckDB<{ src_view: string; symbol: string; amount: number; name: string | null; totalmv: number | null }>(
-    sql,
-    params,
-  );
+  return await queryDuckDB<{
+    src_view: string;
+    symbol: string;
+    amount: number;
+    name: string | null;
+    totalmv: number | null;
+  }>(sql, params);
 }
 
 describe('T55 — parseScanFilters 参数校验（纯函数）', () => {
@@ -148,7 +151,13 @@ describe('T55 — buildPoolQuery SQL 形状（纯函数）', () => {
   it('占位符数量与 params 数量一致（无字符串拼接用户输入）', () => {
     const { sql, params } = buildPoolQuery(
       TRADE_DATE,
-      withFilter({ assetType: 'all', excludeSt: true, industryCode: 'BK0001', marketCapMaxYi: 50, minAmount: 1000 }),
+      withFilter({
+        assetType: 'all',
+        excludeSt: true,
+        industryCode: 'BK0001',
+        marketCapMaxYi: 50,
+        minAmount: 1000,
+      }),
     );
     const placeholders = (sql.match(/\?/g) ?? []).length;
     expect(placeholders).toBe(params.length);
@@ -156,8 +165,16 @@ describe('T55 — buildPoolQuery SQL 形状（纯函数）', () => {
     // 参数顺序 = 分支顺序（src_view 标记占位符在每个分支的第一位，date/成交额紧随其后）
     // 顺序错位会让 DuckDB 报 "Unimplemented type for cast (INTEGER -> DATE)"
     expect(params).toEqual([
-      'v_stock_qfq', TRADE_DATE, 1000, 'BK0001', 50 * 100_000_000,
-      'v_etf_qfq', TRADE_DATE, 1000, 'BK0001', 50 * 100_000_000,
+      'v_stock_qfq',
+      TRADE_DATE,
+      1000,
+      'BK0001',
+      50 * 100_000_000,
+      'v_etf_qfq',
+      TRADE_DATE,
+      1000,
+      'BK0001',
+      50 * 100_000_000,
     ]);
 
     // 用户输入不得出现在 SQL 文本里
@@ -209,99 +226,135 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     await closeDuckDBInstance();
   });
 
-  itReal('基础候选池 > 3000（实测 5561）且带出 name', async () => {
-    const pool = await runPool(NO_FILTER);
-    expect(pool.length).toBeGreaterThan(3000);
-    expect(pool.some((r) => r.name !== null)).toBe(true);
-  }, 60000);
+  itReal(
+    '基础候选池 > 3000（实测 5561）且带出 name',
+    async () => {
+      const pool = await runPool(NO_FILTER);
+      expect(pool.length).toBeGreaterThan(3000);
+      expect(pool.some((r) => r.name !== null)).toBe(true);
+    },
+    60000,
+  );
 
-  itReal('exclude_st=true：结果里没有 ST / *ST 名称（实测 5561 → 5363）', async () => {
-    const base = await runPool(NO_FILTER);
-    const filtered = await runPool(withFilter({ excludeSt: true }));
+  itReal(
+    'exclude_st=true：结果里没有 ST / *ST 名称（实测 5561 → 5363）',
+    async () => {
+      const base = await runPool(NO_FILTER);
+      const filtered = await runPool(withFilter({ excludeSt: true }));
 
-  expect(filtered.length).toBeGreaterThan(0);
-  // 注意：候选池有 LIMIT 5000，排除 ST 后候选仍 >5000，两次查询都取满 5000 条，
-  // 因此不能用「条数变少」判断过滤是否生效 —— 只能断言「结果里不含 ST 名称」。
-  const stNames = filtered.filter((r) => r.name !== null && /^\*?ST/.test(r.name));
-    expect(stNames).toHaveLength(0);
-  }, 60000);
+      expect(filtered.length).toBeGreaterThan(0);
+      // 注意：候选池有 LIMIT 5000，排除 ST 后候选仍 >5000，两次查询都取满 5000 条，
+      // 因此不能用「条数变少」判断过滤是否生效 —— 只能断言「结果里不含 ST 名称」。
+      const stNames = filtered.filter((r) => r.name !== null && /^\*?ST/.test(r.name));
+      expect(stNames).toHaveLength(0);
+    },
+    60000,
+  );
 
-  itReal('asset_type=etf：只回 ETF（与 raw_symbol_class.class 交叉核对）', async () => {
-    const pool = await runPool(withFilter({ assetType: 'etf' }));
-    expect(pool.length).toBeGreaterThan(100);
+  itReal(
+    'asset_type=etf：只回 ETF（与 raw_symbol_class.class 交叉核对）',
+    async () => {
+      const pool = await runPool(withFilter({ assetType: 'etf' }));
+      expect(pool.length).toBeGreaterThan(100);
 
-    const classes = await queryDuckDB<{ cls: string; n: number }>(
-      `SELECT sc.class AS cls, COUNT(*) AS n
+      const classes = await queryDuckDB<{ cls: string; n: number }>(
+        `SELECT sc.class AS cls, COUNT(*) AS n
          FROM raw_symbol_class sc
         WHERE sc.symbol IN (${pool.map(() => '?').join(',')})
         GROUP BY sc.class`,
-      pool.map((r) => r.symbol),
-    );
-    expect(classes).toEqual([{ cls: 'etf', n: pool.length }]);
-    // src_view 标记决定后续日线从哪张视图取
-    expect(new Set(pool.map((r) => r.src_view))).toEqual(new Set(['v_etf_qfq']));
-  }, 60000);
+        pool.map((r) => r.symbol),
+      );
+      expect(classes).toEqual([{ cls: 'etf', n: pool.length }]);
+      // src_view 标记决定后续日线从哪张视图取
+      expect(new Set(pool.map((r) => r.src_view))).toEqual(new Set(['v_etf_qfq']));
+    },
+    60000,
+  );
 
-  itReal('asset_type=all：同时含股票与 ETF', async () => {
-    const pool = await runPool(withFilter({ assetType: 'all' }));
-    const views = new Set(pool.map((r) => r.src_view));
-    expect(views.has('v_stock_qfq')).toBe(true);
-    expect(views.has('v_etf_qfq')).toBe(true);
-  }, 60000);
+  itReal(
+    'asset_type=all：同时含股票与 ETF',
+    async () => {
+      const pool = await runPool(withFilter({ assetType: 'all' }));
+      const views = new Set(pool.map((r) => r.src_view));
+      expect(views.has('v_stock_qfq')).toBe(true);
+      expect(views.has('v_etf_qfq')).toBe(true);
+    },
+    60000,
+  );
 
-  itReal('market_cap_max=50 亿：全部命中项 totalmv ≤ 50 亿', async () => {
-    const pool = await runPool(withFilter({ marketCapMaxYi: 50 }));
-    const base = await runPool(NO_FILTER);
-    expect(pool.length).toBeGreaterThan(0);
-    expect(pool.length).toBeLessThan(base.length);
-    const cap = 50 * 100_000_000;
-    for (const row of pool) {
-      if (row.totalmv === null) continue; // 无市值记录的放行（口径见 buildPoolQuery 注释）
-      expect(row.totalmv).toBeLessThanOrEqual(cap);
-    }
-  }, 60000);
+  itReal(
+    'market_cap_max=50 亿：全部命中项 totalmv ≤ 50 亿',
+    async () => {
+      const pool = await runPool(withFilter({ marketCapMaxYi: 50 }));
+      const base = await runPool(NO_FILTER);
+      expect(pool.length).toBeGreaterThan(0);
+      expect(pool.length).toBeLessThan(base.length);
+      const cap = 50 * 100_000_000;
+      for (const row of pool) {
+        if (row.totalmv === null) continue; // 无市值记录的放行（口径见 buildPoolQuery 注释）
+        expect(row.totalmv).toBeLessThanOrEqual(cap);
+      }
+    },
+    60000,
+  );
 
-  itReal('过滤叠加（exclude_st + market_cap_max）结果同时满足两个条件', async () => {
-    const pool = await runPool(withFilter({ excludeSt: true, marketCapMaxYi: 30 }));
-    expect(pool.length).toBeGreaterThan(0);
-    for (const row of pool) {
-      if (row.name !== null) expect(/^\*?ST/.test(row.name)).toBe(false);
-      if (row.totalmv !== null) expect(row.totalmv).toBeLessThanOrEqual(30 * 100_000_000);
-    }
-  }, 60000);
+  itReal(
+    '过滤叠加（exclude_st + market_cap_max）结果同时满足两个条件',
+    async () => {
+      const pool = await runPool(withFilter({ excludeSt: true, marketCapMaxYi: 30 }));
+      expect(pool.length).toBeGreaterThan(0);
+      for (const row of pool) {
+        if (row.name !== null) expect(/^\*?ST/.test(row.name)).toBe(false);
+        if (row.totalmv !== null) expect(row.totalmv).toBeLessThanOrEqual(30 * 100_000_000);
+      }
+    },
+    60000,
+  );
 
-  itReal('industry_code：板块成分表为 0 行 → 返回 0 条（数据缺失，不是 SQL 错）', async () => {
-    const pool = await runPool(withFilter({ industryCode: 'BK0001' }));
-    expect(pool).toHaveLength(0);
-  }, 60000);
+  itReal(
+    'industry_code：板块成分表为 0 行 → 返回 0 条（数据缺失，不是 SQL 错）',
+    async () => {
+      const pool = await runPool(withFilter({ industryCode: 'BK0001' }));
+      expect(pool).toHaveLength(0);
+    },
+    60000,
+  );
 
-  itReal('候选池 + 日线加载 ≤ 15s（DuckDB 侧耗时上界，防劣化）', async () => {
-    const t0 = Date.now();
-    const pool = await runPool(withFilter({ excludeSt: true }));
-    const daily = await loadCandidateDaily(pool, TRADE_DATE);
-    const elapsed = Date.now() - t0;
-    // eslint-disable-next-line no-console
-    console.log(`[T55] 候选池 ${pool.length} 只 + 日线加载耗时 ${elapsed}ms`);
-    expect(daily.size).toBe(pool.length);
-    // ⚠️ 预算说明（本机实测基线 2026-10-19，data/quotes.duckdb = 1.2GB）：
-    //    runPool 1.9~2.5s + loadCandidateDaily 1.7~3.0s。
-    //    根因是 v_stock_qfq 是**非物化视图**，date 过滤无法下推 ——
-    //    单日 `SELECT count(*) FROM v_stock_qfq WHERE date = ?` 就要 1.15s。
-    //    即 PE2「选股 ≤ 3s」在本机**不成立**（src 侧真实性能问题，不在 T81 范围）。
-    //    SDD §12.5 里 PE2 的权威门槛是 integration 用例 scan_5000_target（curl 计时），
-    //    尚未实现（实施计划 §12.5 缺口清单），故此处只留一个宽松上界防劣化。
-    expect(elapsed).toBeLessThan(15000);
-  }, 60000);
+  itReal(
+    '候选池 + 日线加载 ≤ 15s（DuckDB 侧耗时上界，防劣化）',
+    async () => {
+      const t0 = Date.now();
+      const pool = await runPool(withFilter({ excludeSt: true }));
+      const daily = await loadCandidateDaily(pool, TRADE_DATE);
+      const elapsed = Date.now() - t0;
+      // eslint-disable-next-line no-console
+      console.log(`[T55] 候选池 ${pool.length} 只 + 日线加载耗时 ${elapsed}ms`);
+      expect(daily.size).toBe(pool.length);
+      // ⚠️ 预算说明（本机实测基线 2026-10-19，data/quotes.duckdb = 1.2GB）：
+      //    runPool 1.9~2.5s + loadCandidateDaily 1.7~3.0s。
+      //    根因是 v_stock_qfq 是**非物化视图**，date 过滤无法下推 ——
+      //    单日 `SELECT count(*) FROM v_stock_qfq WHERE date = ?` 就要 1.15s。
+      //    即 PE2「选股 ≤ 3s」在本机**不成立**（src 侧真实性能问题，不在 T81 范围）。
+      //    SDD §12.5 里 PE2 的权威门槛是 integration 用例 scan_5000_target（curl 计时），
+      //    尚未实现（实施计划 §12.5 缺口清单），故此处只留一个宽松上界防劣化。
+      expect(elapsed).toBeLessThan(15000);
+    },
+    60000,
+  );
 
-  itReal('loadCandidateDaily：按 view 分组取回，且不产生重复 symbol', async () => {
-    const pool = (await runPool(withFilter({ assetType: 'all' }))).slice(0, 300);
-    const daily = await loadCandidateDaily(pool, TRADE_DATE);
-    expect(daily.size).toBe(pool.length);
-    for (const [symbol, k] of daily) {
-      expect(pool.some((r) => r.symbol === symbol)).toBe(true);
-      expect(k.close).toBeGreaterThan(0);
-    }
-  }, 60000);
+  itReal(
+    'loadCandidateDaily：按 view 分组取回，且不产生重复 symbol',
+    async () => {
+      const pool = (await runPool(withFilter({ assetType: 'all' }))).slice(0, 300);
+      const daily = await loadCandidateDaily(pool, TRADE_DATE);
+      expect(daily.size).toBe(pool.length);
+      for (const [symbol, k] of daily) {
+        expect(pool.some((r) => r.symbol === symbol)).toBe(true);
+        expect(k.close).toBeGreaterThan(0);
+      }
+    },
+    60000,
+  );
 });
 
 describe('T55 — 路由契约（app.inject，不占端口）', () => {

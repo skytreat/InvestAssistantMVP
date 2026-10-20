@@ -98,21 +98,32 @@ describe('T53 · fq 四值白名单', () => {
     { fq: 'raw', expectedView: 'raw_kline_daily', base: 700 },
   ];
 
-  it.each(CASES)('fq=$fq → 200 且映射到 $expectedView，首行 close=$base', async ({ fq, expectedView, base }) => {
-    const res = await bundle.app.inject({ method: 'GET', url: `/api/quote/sh600000/kline?fq=${fq}`, headers: headers() });
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body) as {
-      data: { fq: string; klines: Array<{ close: number }> };
-    };
-    expect(body.data.fq).toBe(fq);
-    expect(body.data.klines.length).toBe(BAR_COUNT);
-    // mock 返回降序，路由反转为升序 → 首行 = 最早 = base
-    expect(body.data.klines[0].close).toBe(base);
-    expect(requestedViews).toContain(expectedView);
-  });
+  it.each(CASES)(
+    'fq=$fq → 200 且映射到 $expectedView，首行 close=$base',
+    async ({ fq, expectedView, base }) => {
+      const res = await bundle.app.inject({
+        method: 'GET',
+        url: `/api/quote/sh600000/kline?fq=${fq}`,
+        headers: headers(),
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as {
+        data: { fq: string; klines: Array<{ close: number }> };
+      };
+      expect(body.data.fq).toBe(fq);
+      expect(body.data.klines.length).toBe(BAR_COUNT);
+      // mock 返回降序，路由反转为升序 → 首行 = 最早 = base
+      expect(body.data.klines[0].close).toBe(base);
+      expect(requestedViews).toContain(expectedView);
+    },
+  );
 
   it('非法 fq → 400 PARAM_INVALID，且不查询 DuckDB（不静默回落 qfq）', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh600000/kline?fq=xxx', headers: headers() });
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/quote/sh600000/kline?fq=xxx',
+      headers: headers(),
+    });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body) as { error: string; message: string };
     expect(body.error).toBe('PARAM_INVALID');
@@ -121,7 +132,11 @@ describe('T53 · fq 四值白名单', () => {
   });
 
   it('非法 symbol → 400 INVALID_SYMBOL', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/badcode/kline', headers: headers() });
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/quote/badcode/kline',
+      headers: headers(),
+    });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body) as { error: string };
     expect(body.error).toBe('SYMBOL_NOT_FOUND');
@@ -131,7 +146,11 @@ describe('T53 · fq 四值白名单', () => {
 describe('T53 · ETF 路由', () => {
   it('class=etf 的标的走 v_etf_qfq，而不是 v_stock_qfq', async () => {
     symbolClass = 'etf';
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh500001/kline?fq=qfq', headers: headers() });
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/quote/sh500001/kline?fq=qfq',
+      headers: headers(),
+    });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
       data: { symbolClass: string; klines: Array<{ close: number }> };
@@ -145,7 +164,11 @@ describe('T53 · ETF 路由', () => {
 
 describe('T53 · indicators 含 ma60（走 core 适配层）', () => {
   it('ma60 长度等于 klines 长度，且与 calculateSMA(closes, 60) 逐位一致', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh600000/kline?fq=qfq', headers: headers() });
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/quote/sh600000/kline?fq=qfq',
+      headers: headers(),
+    });
     const body = JSON.parse(res.body) as {
       data: {
         klines: Array<{ close: number }>;
@@ -196,7 +219,11 @@ describe('T53 · rsi / macd period 走 query 参数', () => {
   });
 
   it('非法 period → 400 PARAM_INVALID', async () => {
-    const res = await bundle.app.inject({ method: 'GET', url: '/api/quote/sh600000/kline?rsi_period=1', headers: headers() });
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/quote/sh600000/kline?rsi_period=1',
+      headers: headers(),
+    });
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body) as { error: string };
     expect(body.error).toBe('PARAM_INVALID');
@@ -210,14 +237,18 @@ describe('T53 · signals 升序返回，与 klines 同序', () => {
     const insert = bundle.db.db.prepare(
       `INSERT INTO user_strategy_signal
          (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, is_final)
-       VALUES (?, ?, ?, 'monitor', ?, 'buy', 't', 0.5, 1)`
+       VALUES (?, ?, ?, 'monitor', ?, 'buy', 't', 0.5, 1)`,
     );
     // 故意乱序插入，验证路由排序
     for (const d of ['2026-10-05', '2026-10-01', '2026-10-03']) {
       insert.run(bundle.userId, SYMBOL, `p_${d}`, d);
     }
 
-    const res = await bundle.app.inject({ method: 'GET', url: `/api/quote/${SYMBOL}/kline?fq=qfq`, headers: headers() });
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/quote/${SYMBOL}/kline?fq=qfq`,
+      headers: headers(),
+    });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
       data: {

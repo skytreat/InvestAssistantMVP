@@ -165,7 +165,12 @@ function bg(el: HTMLElement): string {
   const raw = el.style.background.trim().toLowerCase();
   if (raw.startsWith('#')) {
     const hex = raw.slice(1);
-    return hex.length === 3 ? `#${hex.split('').map((c) => c + c).join('')}` : `#${hex}`;
+    return hex.length === 3
+      ? `#${hex
+          .split('')
+          .map((c) => c + c)
+          .join('')}`
+      : `#${hex}`;
   }
   const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(raw);
   if (m) {
@@ -240,12 +245,7 @@ describe('Review · 收益曲线 bucketByPeriod 分桶', () => {
   });
 
   it('yearly：同一自然年只保留 trade_date 最大的一条', () => {
-    const rows = [
-      hp('2025-06-10', 0.1),
-      hp('2025-11-20', 0.2),
-      hp('2026-02-10', 0.3),
-      hp('2026-08-15', 0.4),
-    ];
+    const rows = [hp('2025-06-10', 0.1), hp('2025-11-20', 0.2), hp('2026-02-10', 0.3), hp('2026-08-15', 0.4)];
 
     const out = bucketByPeriod(rows, 'yearly');
 
@@ -253,11 +253,7 @@ describe('Review · 收益曲线 bucketByPeriod 分桶', () => {
   });
 
   it('返回结果按 trade_date 升序（与入参顺序无关）', () => {
-    const rows = [
-      hp('2026-03-15', 0.5),
-      hp('2026-01-25', 0.2),
-      hp('2026-02-20', 0.4),
-    ];
+    const rows = [hp('2026-03-15', 0.5), hp('2026-01-25', 0.2), hp('2026-02-20', 0.4)];
 
     const out = bucketByPeriod(rows, 'monthly');
 
@@ -266,11 +262,7 @@ describe('Review · 收益曲线 bucketByPeriod 分桶', () => {
   });
 
   it('入参乱序时仍保留桶内 trade_date 最大的一条（`>=` 语义）', () => {
-    const rows = [
-      hp('2026-01-25', 0.2),
-      hp('2026-01-10', 0.1),
-      hp('2026-01-18', 0.3),
-    ];
+    const rows = [hp('2026-01-25', 0.2), hp('2026-01-10', 0.1), hp('2026-01-18', 0.3)];
 
     const out = bucketByPeriod(rows, 'monthly');
 

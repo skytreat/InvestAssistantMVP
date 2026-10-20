@@ -42,19 +42,18 @@ process.env.SQLITE_DB_PATH = tmpDbPath;
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { registerCandidateRoutes } = await import('../../src/routes/candidate.js');
 const { batchGetLatestClose } = await import('../../src/services/marketData.js');
-const {
-  computeRelativeReturn,
-  isValidBasePrice,
-  CandidateNotFoundError,
-  batchInsertCandidates,
-} = await import('../../src/services/candidateService.js');
+const { computeRelativeReturn, isValidBasePrice, CandidateNotFoundError, batchInsertCandidates } =
+  await import('../../src/services/candidateService.js');
 
 // ── 测试用户 ──
 const TEST_UID = 5001;
 const TEST_USERNAME = 't50_user';
 const USER_PAYLOAD: JwtPayload = {
-  sub: TEST_UID, username: TEST_USERNAME, role: 'user',
-  iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600,
+  sub: TEST_UID,
+  username: TEST_USERNAME,
+  role: 'user',
+  iat: Math.floor(Date.now() / 1000),
+  exp: Math.floor(Date.now() / 1000) + 3600,
 };
 
 let app: FastifyInstance;
@@ -71,9 +70,14 @@ function rowOf(assetCode: string, relType = 'candidate') {
     )
     .get(TEST_UID, assetCode, relType) as
     | {
-        id: number; asset_code: string; rel_type: string; candidate_reason: string | null;
-        candidate_base_price: number | null; is_deleted: number;
-        migrated_from_candidate: number | null; migrated_price_mode: string | null;
+        id: number;
+        asset_code: string;
+        rel_type: string;
+        candidate_reason: string | null;
+        candidate_base_price: number | null;
+        is_deleted: number;
+        migrated_from_candidate: number | null;
+        migrated_price_mode: string | null;
       }
     | undefined;
 }
@@ -111,7 +115,11 @@ afterAll(async () => {
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   if (prevSqlitePath !== undefined) process.env.SQLITE_DB_PATH = prevSqlitePath;
   else delete process.env.SQLITE_DB_PATH;
-  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   const { closeDuckDBInstance } = await import('../../src/db/duckdb.js');
   await closeDuckDBInstance();
 });
@@ -253,7 +261,7 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
       expect(res.statusCode).toBe(201);
       const d = res.json().data;
       expect(d.base_price_source).toBe('duckdb');
-      expect(d.candidate_base_price).toBe(hit.close);           // ① 基准价 = 加入日前复权收盘价
+      expect(d.candidate_base_price).toBe(hit.close); // ① 基准价 = 加入日前复权收盘价
       expect(d.candidate_base_price_date).toBe(hit.date);
       expect(d.candidate_base_price_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(rowOf('sh600000')?.candidate_base_price).toBe(hit.close);
@@ -271,7 +279,7 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
     const res = await post('/api/candidate', { asset_code: 'sh999999' });
 
     if (quote.size === 0) {
-      expect(res.statusCode).toBe(404);                        // ④ DuckDB 无该日数据 → 明确错误
+      expect(res.statusCode).toBe(404); // ④ DuckDB 无该日数据 → 明确错误
       expect(res.json().error).toBe('SYMBOL_NOT_FOUND');
       expect(String(res.json().message)).toContain('sh999999');
     } else {
@@ -285,9 +293,8 @@ describe('T50 缺省 candidate_base_price → 1 次 DuckDB 批量查加入日前
   });
 
   itReal('resolveBasePrices 对缺失标的抛 QuoteUnavailableError 并列出全部缺号', async () => {
-    const { resolveBasePrices, QuoteUnavailableError } = await import(
-      '../../src/services/candidateService.js'
-    );
+    const { resolveBasePrices, QuoteUnavailableError } =
+      await import('../../src/services/candidateService.js');
     let missing: string[] = [];
     try {
       await resolveBasePrices(['sh999998', 'sh999997']);
@@ -362,9 +369,7 @@ describe('T50 GET /api/candidate —— 基准价 + 相对收益', () => {
 describe('T50 POST /api/candidate/:asset_code/promote —— price_mode', () => {
   beforeEach(() => {
     store.db
-      .prepare(
-        `DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'candidate'`,
-      )
+      .prepare(`DELETE FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = 'candidate'`)
       .run(TEST_UID, 'sh600036');
     store.db
       .prepare(
@@ -428,11 +433,7 @@ describe('T50 POST /api/candidate/:asset_code/promote —— price_mode', () => 
         `INSERT INTO user_asset_rel (user_id, asset_code, rel_type, is_deleted) VALUES (?, 'sh601988', 'candidate', 1)`,
       )
       .run(TEST_UID);
-    expect(() => markCandidateMigrated(TEST_UID, 'sh601988', 'base')).toThrow(
-      CandidateNotFoundError,
-    );
-    expect(() => markCandidateMigrated(TEST_UID, 'sh999997', 'base')).toThrow(
-      CandidateNotFoundError,
-    );
+    expect(() => markCandidateMigrated(TEST_UID, 'sh601988', 'base')).toThrow(CandidateNotFoundError);
+    expect(() => markCandidateMigrated(TEST_UID, 'sh999997', 'base')).toThrow(CandidateNotFoundError);
   });
 });

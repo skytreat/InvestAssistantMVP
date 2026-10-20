@@ -32,17 +32,18 @@ export async function runDatacheckWithRerun(date: string): Promise<{
   const summaries = await runAllChecks(date);
 
   // 内部一致性校验（C1-C10）才触发补跑；C11/C12 是外部源，SKIP 不算
-  const internal = summaries.filter(s => s.checkId !== 'C11' && s.checkId !== 'C12');
-  const errorItems = internal.filter(s => s.result === 'ERROR');
-  const warnItems = internal.filter(s => s.result === 'WARN');
+  const internal = summaries.filter((s) => s.checkId !== 'C11' && s.checkId !== 'C12');
+  const errorItems = internal.filter((s) => s.result === 'ERROR');
+  const warnItems = internal.filter((s) => s.result === 'WARN');
 
   if (errorItems.length === 0 && warnItems.length === 0) {
     return { summaries, reran: false, rerunOk: true };
   }
 
-  const reason = errorItems.length > 0
-    ? `C1-C10 ERROR×${errorItems.length}（${errorItems.map(s => s.checkId).join(',')}）`
-    : `C1-C10 WARN×${warnItems.length}（${warnItems.map(s => s.checkId).join(',')}）`;
+  const reason =
+    errorItems.length > 0
+      ? `C1-C10 ERROR×${errorItems.length}（${errorItems.map((s) => s.checkId).join(',')}）`
+      : `C1-C10 WARN×${warnItems.length}（${warnItems.map((s) => s.checkId).join(',')}）`;
 
   const rerun = await rerunQuoteUpdate(reason);
   if (rerun.status !== 'SUCCESS') {
@@ -57,19 +58,20 @@ export async function runDatacheckWithRerun(date: string): Promise<{
 
   // 补跑成功 → 重新校验，把最新结果作为终态
   const after = await runAllChecks(date);
-  const afterInternal = after.filter(s => s.checkId !== 'C11' && s.checkId !== 'C12');
-  const afterErrors = afterInternal.filter(s => s.result === 'ERROR');
-  const afterWarns = afterInternal.filter(s => s.result === 'WARN');
+  const afterInternal = after.filter((s) => s.checkId !== 'C11' && s.checkId !== 'C12');
+  const afterErrors = afterInternal.filter((s) => s.result === 'ERROR');
+  const afterWarns = afterInternal.filter((s) => s.result === 'WARN');
 
   writeSystemLog({
     logType: 'datacheck',
     level: afterErrors.length > 0 ? 'ERROR' : afterWarns.length > 0 ? 'WARN' : 'SUCCESS',
     message: `补跑后重新校验: ERROR=${afterErrors.length} WARN=${afterWarns.length}（首轮 ${reason}）`,
-    detail: afterErrors.length > 0
-      ? `二次仍 ERROR: ${afterErrors.map(s => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
-      : afterWarns.length > 0
-        ? `二次仍 WARN: ${afterWarns.map(s => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
-        : '补跑自愈成功',
+    detail:
+      afterErrors.length > 0
+        ? `二次仍 ERROR: ${afterErrors.map((s) => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
+        : afterWarns.length > 0
+          ? `二次仍 WARN: ${afterWarns.map((s) => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
+          : '补跑自愈成功',
   });
 
   return { summaries: after, reran: true, rerunOk: true };
@@ -89,158 +91,179 @@ export async function runDatacheckWithRerun(date: string): Promise<{
 export function registerCronJobs(app: FastifyInstance): void {
   if (!app.scheduler) {
     writeSystemLog({
-      logType: 'startup', level: 'ERROR',
+      logType: 'startup',
+      level: 'ERROR',
       message: '@fastify/schedule 未注册，无法初始化 cron',
     });
     return;
   }
 
   // === 17:01 数据校验 C1-C12 ===
-  app.scheduler.addCronJob(new CronJob(
-    { cronExpression: '1 17 * * 1-5' },
-    new AsyncTask('datacheck-c1-c12', async () => {
-      writeSystemLog({
-        logType: 'datacheck', level: 'INFO', message: 'C1-C12 校验开始',
-      });
-      // 单一事实源（T85b ②）：日历口径的当前交易日（数据陈旧会如实暴露，不会假绿）
-      const date = (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
-      try {
-        const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
-        const errors = summaries.filter(s => s.result === 'ERROR').length;
-        const warns = summaries.filter(s => s.result === 'WARN').length;
+  app.scheduler.addCronJob(
+    new CronJob(
+      { cronExpression: '1 17 * * 1-5' },
+      new AsyncTask('datacheck-c1-c12', async () => {
         writeSystemLog({
           logType: 'datacheck',
-          level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
-          message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
+          level: 'INFO',
+          message: 'C1-C12 校验开始',
         });
-      } catch (err: any) {
-        writeSystemLog({
-          logType: 'datacheck', level: 'ERROR',
-          message: 'C1-C12 校验异常', detail: String(err),
-        });
-      }
-    }),
-    { id: 'datacheck-c1-c12' },
-  ));
+        // 单一事实源（T85b ②）：日历口径的当前交易日（数据陈旧会如实暴露，不会假绿）
+        const date = (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
+        try {
+          const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
+          const errors = summaries.filter((s) => s.result === 'ERROR').length;
+          const warns = summaries.filter((s) => s.result === 'WARN').length;
+          writeSystemLog({
+            logType: 'datacheck',
+            level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
+            message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
+          });
+        } catch (err: any) {
+          writeSystemLog({
+            logType: 'datacheck',
+            level: 'ERROR',
+            message: 'C1-C12 校验异常',
+            detail: String(err),
+          });
+        }
+      }),
+      { id: 'datacheck-c1-c12' },
+    ),
+  );
 
   // === 17:02 插件信号生成 ===
-  app.scheduler.addCronJob(new CronJob(
-    { cronExpression: '2 17 * * 1-5' },
-    new AsyncTask('signal-generate', async () => {
-      writeSystemLog({
-        logType: 'signal_generate', level: 'INFO', message: '插件信号生成开始',
-      });
-      try {
-        // 🔴 T85b ①（I-19）：信号只对**用户的自选 ∪ 持仓**生成（PRD M4）。
-        //   修复前 executeAllPlugins() 传空参 → 插件落到硬编码 symbol:'sh600000'，
-        //   用户的标的一只都跑不到。
-        const signalSymbols = resolveSignalSymbols(SIGNAL_USER_ID);
-        if (signalSymbols.length === 0) {
-          writeSystemLog({
-            logType: 'signal_generate', level: 'INFO',
-            message: '信号生成跳过：用户无自选/持仓标的（signal 域为空）',
-            detail: JSON.stringify({ userId: SIGNAL_USER_ID }),
-          });
-        }
-        const result = await executeAllPlugins({ symbols: signalSymbols });
-        // T27 补：从 result.results 里筛 SUCCESS 的，每个 plugin 单独持久化（保留 pluginId）
-        // 数据口径（T85b ②）：信号要落在**确有行情**的那天（算指标必须有数据）
-        const tradeDate = (await resolveLatestQuoteDate()) ?? getTradeDate();
-        let totalInserted = 0;
-        let totalSkipped = 0;
-        let totalErrors = 0;
-        for (const pluginResult of result.results) {
-          if (pluginResult.status !== 'SUCCESS' || pluginResult.signals.length === 0) continue;
-          const persist = persistSignals(
-            pluginResult.signals,
-            pluginResult.pluginId,
-            'monitor',
-            tradeDate,
-          );
-          totalInserted += persist.inserted;
-          totalSkipped += persist.skipped;
-          totalErrors += persist.errors;
-        }
+  app.scheduler.addCronJob(
+    new CronJob(
+      { cronExpression: '2 17 * * 1-5' },
+      new AsyncTask('signal-generate', async () => {
         writeSystemLog({
           logType: 'signal_generate',
-          level: totalErrors > 0 || result.stats.error > 0 || result.stats.timeout > 0 ? 'WARN' : 'SUCCESS',
-          message: `信号生成完成: signals=${result.signals.length} inserted=${totalInserted} skipped=${totalSkipped} persist_errors=${totalErrors}`,
-          detail: JSON.stringify({ stats: result.stats, tradeDate }),
+          level: 'INFO',
+          message: '插件信号生成开始',
         });
-
-        // T26: 双口径资产快照写入（SDD §5.1 17:02 信号生成最后一步）
-        // 快照失败不影响信号生成主流程（独立 try-catch）
         try {
-          const snap = await insertAssetStatSnapshots(tradeDate);
+          // 🔴 T85b ①（I-19）：信号只对**用户的自选 ∪ 持仓**生成（PRD M4）。
+          //   修复前 executeAllPlugins() 传空参 → 插件落到硬编码 symbol:'sh600000'，
+          //   用户的标的一只都跑不到。
+          const signalSymbols = resolveSignalSymbols(SIGNAL_USER_ID);
+          if (signalSymbols.length === 0) {
+            writeSystemLog({
+              logType: 'signal_generate',
+              level: 'INFO',
+              message: '信号生成跳过：用户无自选/持仓标的（signal 域为空）',
+              detail: JSON.stringify({ userId: SIGNAL_USER_ID }),
+            });
+          }
+          const result = await executeAllPlugins({ symbols: signalSymbols });
+          // T27 补：从 result.results 里筛 SUCCESS 的，每个 plugin 单独持久化（保留 pluginId）
+          // 数据口径（T85b ②）：信号要落在**确有行情**的那天（算指标必须有数据）
+          const tradeDate = (await resolveLatestQuoteDate()) ?? getTradeDate();
+          let totalInserted = 0;
+          let totalSkipped = 0;
+          let totalErrors = 0;
+          for (const pluginResult of result.results) {
+            if (pluginResult.status !== 'SUCCESS' || pluginResult.signals.length === 0) continue;
+            const persist = persistSignals(pluginResult.signals, pluginResult.pluginId, 'monitor', tradeDate);
+            totalInserted += persist.inserted;
+            totalSkipped += persist.skipped;
+            totalErrors += persist.errors;
+          }
           writeSystemLog({
-            logType: 'signal_generate', level: 'INFO',
-            message: `双口径资产快照写入成功: inserted=${snap.inserted}`,
-            detail: JSON.stringify({ tradeDate }),
+            logType: 'signal_generate',
+            level: totalErrors > 0 || result.stats.error > 0 || result.stats.timeout > 0 ? 'WARN' : 'SUCCESS',
+            message: `信号生成完成: signals=${result.signals.length} inserted=${totalInserted} skipped=${totalSkipped} persist_errors=${totalErrors}`,
+            detail: JSON.stringify({ stats: result.stats, tradeDate }),
           });
-        } catch (snapErr: any) {
+
+          // T26: 双口径资产快照写入（SDD §5.1 17:02 信号生成最后一步）
+          // 快照失败不影响信号生成主流程（独立 try-catch）
+          try {
+            const snap = await insertAssetStatSnapshots(tradeDate);
+            writeSystemLog({
+              logType: 'signal_generate',
+              level: 'INFO',
+              message: `双口径资产快照写入成功: inserted=${snap.inserted}`,
+              detail: JSON.stringify({ tradeDate }),
+            });
+          } catch (snapErr: any) {
+            writeSystemLog({
+              logType: 'signal_generate',
+              level: 'WARN',
+              message: '双口径资产快照写入失败（不影响主流程）',
+              detail: String(snapErr),
+            });
+          }
+        } catch (err: any) {
           writeSystemLog({
-            logType: 'signal_generate', level: 'WARN',
-            message: '双口径资产快照写入失败（不影响主流程）', detail: String(snapErr),
+            logType: 'signal_generate',
+            level: 'ERROR',
+            message: '插件信号生成异常',
+            detail: String(err),
           });
         }
-      } catch (err: any) {
-        writeSystemLog({
-          logType: 'signal_generate', level: 'ERROR',
-          message: '插件信号生成异常', detail: String(err),
-        });
-      }
-    }),
-    { id: 'signal-generate' },
-  ));
+      }),
+      { id: 'signal-generate' },
+    ),
+  );
 
   // === 17:03 除权自动导入 ===
-  app.scheduler.addCronJob(new CronJob(
-    { cronExpression: '3 17 * * 1-5' },
-    new AsyncTask('dividend-import', async () => {
-      writeSystemLog({
-        logType: 'dividend_import', level: 'INFO', message: '除权自动导入开始',
-      });
-      const date = new Date().toISOString().slice(0, 10);
-      try {
-        const result = await importDividendEvents(date);
+  app.scheduler.addCronJob(
+    new CronJob(
+      { cronExpression: '3 17 * * 1-5' },
+      new AsyncTask('dividend-import', async () => {
         writeSystemLog({
           logType: 'dividend_import',
-          level: result.errors > 0 ? 'ERROR' : result.eventsProcessed > 0 ? 'SUCCESS' : 'SKIP',
-          message: `除权导入完成: events=${result.eventsProcessed} imported=${result.importedDividend + result.importedBonus} skipped=${result.duplicatesSkipped + result.holdingsSkipped} errors=${result.errors}`,
+          level: 'INFO',
+          message: '除权自动导入开始',
         });
-      } catch (err: any) {
-        writeSystemLog({
-          logType: 'dividend_import', level: 'ERROR',
-          message: '除权自动导入异常', detail: String(err),
-        });
-      }
-    }),
-    { id: 'dividend-import' },
-  ));
+        const date = new Date().toISOString().slice(0, 10);
+        try {
+          const result = await importDividendEvents(date);
+          writeSystemLog({
+            logType: 'dividend_import',
+            level: result.errors > 0 ? 'ERROR' : result.eventsProcessed > 0 ? 'SUCCESS' : 'SKIP',
+            message: `除权导入完成: events=${result.eventsProcessed} imported=${result.importedDividend + result.importedBonus} skipped=${result.duplicatesSkipped + result.holdingsSkipped} errors=${result.errors}`,
+          });
+        } catch (err: any) {
+          writeSystemLog({
+            logType: 'dividend_import',
+            level: 'ERROR',
+            message: '除权自动导入异常',
+            detail: String(err),
+          });
+        }
+      }),
+      { id: 'dividend-import' },
+    ),
+  );
 
   // === 17:05 双库备份 ===
-  app.scheduler.addCronJob(new CronJob(
-    { cronExpression: '5 17 * * 1-5' },
-    new AsyncTask('backup', async () => {
-      writeSystemLog({ logType: 'backup', level: 'INFO', message: '双库备份开始' });
-      try {
-        const result = await runFullBackup();
-        const anyError = !result.sqlite.success || !result.duckdb.success;
-        writeSystemLog({
-          logType: 'backup',
-          level: anyError ? 'ERROR' : 'SUCCESS',
-          message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} duckdb=${result.duckdb.success ? 'OK' : 'FAIL'} cleaned=${result.cleanedFiles}`,
-          detail: JSON.stringify(result),
-        });
-      } catch (err: any) {
-        writeSystemLog({ logType: 'backup', level: 'ERROR', message: '备份异常', detail: String(err) });
-      }
-    }),
-    { id: 'backup' },
-  ));
+  app.scheduler.addCronJob(
+    new CronJob(
+      { cronExpression: '5 17 * * 1-5' },
+      new AsyncTask('backup', async () => {
+        writeSystemLog({ logType: 'backup', level: 'INFO', message: '双库备份开始' });
+        try {
+          const result = await runFullBackup();
+          const anyError = !result.sqlite.success || !result.duckdb.success;
+          writeSystemLog({
+            logType: 'backup',
+            level: anyError ? 'ERROR' : 'SUCCESS',
+            message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} duckdb=${result.duckdb.success ? 'OK' : 'FAIL'} cleaned=${result.cleanedFiles}`,
+            detail: JSON.stringify(result),
+          });
+        } catch (err: any) {
+          writeSystemLog({ logType: 'backup', level: 'ERROR', message: '备份异常', detail: String(err) });
+        }
+      }),
+      { id: 'backup' },
+    ),
+  );
 
   writeSystemLog({
-    logType: 'startup', level: 'INFO',
+    logType: 'startup',
+    level: 'INFO',
     message: '4 段 cron 已注册: 17:01 校验 / 17:02 信号 / 17:03 除权 / 17:05 备份',
   });
 }

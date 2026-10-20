@@ -191,13 +191,14 @@ export class ConfigStore {
       const table = this._db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
         .get();
-      if (!table) return;  // 表还没建（DDL_SQL 已 CREATE IF NOT EXISTS，理论上必有），保守返回
+      if (!table) return; // 表还没建（DDL_SQL 已 CREATE IF NOT EXISTS，理论上必有），保守返回
 
-      const cols = (this._db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[])
-        .map(c => c.name);
+      const cols = (this._db.prepare('PRAGMA table_info(user_trade_record)').all() as { name: string }[]).map(
+        (c) => c.name,
+      );
 
-      const missing = Object.keys(EXPECTED).filter(c => !cols.includes(c));
-      if (missing.length === 0) return;  // 已是最新 schema
+      const missing = Object.keys(EXPECTED).filter((c) => !cols.includes(c));
+      if (missing.length === 0) return; // 已是最新 schema
 
       for (const col of missing) {
         this._db.exec(`ALTER TABLE user_trade_record ADD COLUMN ${col} ${EXPECTED[col]}`);
@@ -214,9 +215,18 @@ export class ConfigStore {
    * 检测方式：CREATE TABLE system_log_new (完整 DDL) → ALTER RENAME → INSERT SELECT → DROP
    */
   private _ensureSystemLogCheckConstraint(): void {
-    const EXPECTED_TYPES = ['tdx2db_update', 'datacheck', 'plugin_execute', 'signal_generate',
-                            'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade',
-                            'candidate_migrate'];
+    const EXPECTED_TYPES = [
+      'tdx2db_update',
+      'datacheck',
+      'plugin_execute',
+      'signal_generate',
+      'dividend_import',
+      'backup',
+      'trigger_manual',
+      'startup',
+      'trade',
+      'candidate_migrate',
+    ];
     const EXPECTED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
 
     try {
@@ -226,11 +236,13 @@ export class ConfigStore {
       if (!current) return;
 
       // 检测 CHECK 白名单是否已包含所有期望值
-      const missingType = EXPECTED_TYPES.find(t => !current.sql.includes(`'${t}'`));
-      const missingLevel = EXPECTED_LEVELS.find(l => !current.sql.includes(`'${l}'`));
-      if (!missingType && !missingLevel) return;  // 已是最新 schema
+      const missingType = EXPECTED_TYPES.find((t) => !current.sql.includes(`'${t}'`));
+      const missingLevel = EXPECTED_LEVELS.find((l) => !current.sql.includes(`'${l}'`));
+      if (!missingType && !missingLevel) return; // 已是最新 schema
 
-      console.warn(`[ConfigStore] system_log CHECK 约束过旧（缺 type=${missingType ?? '无'} level=${missingLevel ?? '无'}），迁移中...`);
+      console.warn(
+        `[ConfigStore] system_log CHECK 约束过旧（缺 type=${missingType ?? '无'} level=${missingLevel ?? '无'}），迁移中...`,
+      );
 
       // 检测是否有数据（没数据直接 DROP 重建更快）
       const count = (this._db.prepare('SELECT COUNT(*) AS c FROM system_log').get() as { c: number }).c;
@@ -277,34 +289,35 @@ export class ConfigStore {
     }
   }
 
-/**
- * T87：把 user_trade_record 迁移到**最终 schema**：
- *   - 新增 `trade_time TEXT NOT NULL`（秒级 HH:mm:ss）
- *   - UNIQUE 改为 (user_id, asset_code, trade_type, trade_date, trade_time)  —— **quantity 不进主键**
- *   - trade_type CHECK 改为 7 种（`add` 替换 `sell`，DEC-2 / T49）
- *
- * ⚠️ 为什么一次做完 T87 + T49 两项：AGENTS.md「DDL 变更判据」要求
- * 「多个幂等重建若落在同一张表上，**合并为一次重建**，不要叠加多次 DROP/RENAME」。
- * 因此本函数直接产出最终形态；T49 的 DDL 部分因此成为 no-op（应用层改动仍在 T49）。
- *
- * SQLite 不能 ALTER TABLE 加 NOT NULL 列 / 改 UNIQUE，只能重建：
- *   CREATE new → INSERT SELECT → DROP old → RENAME
- */
-private _ensureTradeRecordUniqueConstraint(): void {
-  try {
-    // 已达最终 schema？两个条件都要满足：UNIQUE 含 trade_time + 有 trade_time 列
-    const idx = this._db
-      .prepare(
-        "SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='user_trade_record' AND sql LIKE '%UNIQUE%' AND sql LIKE '%trade_time%'",
-      )
-      .get();
-    const hasTimeCol = this._db
-      .prepare("SELECT 1 FROM pragma_table_info('user_trade_record') WHERE name = 'trade_time'")
-      .get();
-    if (idx && hasTimeCol) return;  // 已是最终 schema
+  /**
+   * T87：把 user_trade_record 迁移到**最终 schema**：
+   *   - 新增 `trade_time TEXT NOT NULL`（秒级 HH:mm:ss）
+   *   - UNIQUE 改为 (user_id, asset_code, trade_type, trade_date, trade_time)  —— **quantity 不进主键**
+   *   - trade_type CHECK 改为 7 种（`add` 替换 `sell`，DEC-2 / T49）
+   *
+   * ⚠️ 为什么一次做完 T87 + T49 两项：AGENTS.md「DDL 变更判据」要求
+   * 「多个幂等重建若落在同一张表上，**合并为一次重建**，不要叠加多次 DROP/RENAME」。
+   * 因此本函数直接产出最终形态；T49 的 DDL 部分因此成为 no-op（应用层改动仍在 T49）。
+   *
+   * SQLite 不能 ALTER TABLE 加 NOT NULL 列 / 改 UNIQUE，只能重建：
+   *   CREATE new → INSERT SELECT → DROP old → RENAME
+   */
+  private _ensureTradeRecordUniqueConstraint(): void {
+    try {
+      // 已达最终 schema？两个条件都要满足：UNIQUE 含 trade_time + 有 trade_time 列
+      const idx = this._db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='user_trade_record' AND sql LIKE '%UNIQUE%' AND sql LIKE '%trade_time%'",
+        )
+        .get();
+      const hasTimeCol = this._db
+        .prepare("SELECT 1 FROM pragma_table_info('user_trade_record') WHERE name = 'trade_time'")
+        .get();
+      if (idx && hasTimeCol) return; // 已是最终 schema
 
       // 表为空 → 直接 DROP 再重建（最简单）
-      const count = (this._db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
+      const count = (this._db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number })
+        .c;
       if (count === 0) {
         this._db.exec('DROP TABLE IF EXISTS user_trade_record');
         this._db.exec(`
@@ -368,12 +381,12 @@ private _ensureTradeRecordUniqueConstraint(): void {
           )
         `);
         // T87：存量记录的 trade_time 取 created_at 的时间部分；
-// created_at 形如 '2026-09-01 14:23:05' → substr(created_at, 12) 得 '14:23:05'。
-// 若 created_at 异常（NULL / 长度不足 / 非 HH:mm:ss）则回退 '00:00:00'。
-// ⚠️ 回退值可能与其它记录撞唯一键 → INSERT OR IGNORE 会跳过该条，
-//    故此处对回退行加 id 后缀秒位微调不可行（NOT NULL + 唯一），
-//    改为：撞键时保留先插入者（与既有迁移语义一致），并在日志中告警。
-this._db.exec(`
+        // created_at 形如 '2026-09-01 14:23:05' → substr(created_at, 12) 得 '14:23:05'。
+        // 若 created_at 异常（NULL / 长度不足 / 非 HH:mm:ss）则回退 '00:00:00'。
+        // ⚠️ 回退值可能与其它记录撞唯一键 → INSERT OR IGNORE 会跳过该条，
+        //    故此处对回退行加 id 后缀秒位微调不可行（NOT NULL + 唯一），
+        //    改为：撞键时保留先插入者（与既有迁移语义一致），并在日志中告警。
+        this._db.exec(`
           INSERT OR IGNORE INTO user_trade_record (
             user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee,
             trade_reason, is_auto_import, is_deleted, review_summary,
@@ -427,7 +440,11 @@ this._db.exec(`
    */
   static resetInstance(): void {
     if (ConfigStore._instance) {
-      try { ConfigStore._instance._db.close(); } catch { /* 已关闭 */ }
+      try {
+        ConfigStore._instance._db.close();
+      } catch {
+        /* 已关闭 */
+      }
       ConfigStore._instance = null;
     }
   }
@@ -453,9 +470,18 @@ this._db.exec(`
       // SDD §12.5 要求 writeSystemLog 独立事务——
       // 用闭包事务包装单条 INSERT，避免共享连接池时被其他事务阻塞
       const writeOne = this._db.transaction(() => {
-        this._db.prepare(
-          'INSERT INTO system_log(log_date, log_type, level, check_item, message, detail) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(logDate ?? new Date().toISOString().slice(0, 10), logType, level, checkItem ?? null, message, detail ?? null);
+        this._db
+          .prepare(
+            'INSERT INTO system_log(log_date, log_type, level, check_item, message, detail) VALUES (?, ?, ?, ?, ?, ?)',
+          )
+          .run(
+            logDate ?? new Date().toISOString().slice(0, 10),
+            logType,
+            level,
+            checkItem ?? null,
+            message,
+            detail ?? null,
+          );
       });
       writeOne();
     } catch (err) {

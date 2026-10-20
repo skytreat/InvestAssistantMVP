@@ -9,10 +9,13 @@ export type AdjustPeriod = 'qfq' | 'bfq' | 'hfq';
 
 function resolveTable(period: AdjustPeriod): string {
   switch (period) {
-    case 'qfq': return 'v_stock_qfq';
-    case 'hfq': return 'v_stock_hfq';
+    case 'qfq':
+      return 'v_stock_qfq';
+    case 'hfq':
+      return 'v_stock_hfq';
     case 'bfq':
-    default:    return 'v_stock_bfq';
+    default:
+      return 'v_stock_bfq';
   }
 }
 
@@ -31,7 +34,7 @@ export async function getDailyBySymbol(
     `SELECT date, open, high, low, close, volume, amount
      FROM ${tableName}
      WHERE symbol = ? AND date = ?`,
-    [symbol, date]
+    [symbol, date],
   );
   return rows.length > 0 ? rows[0] : null;
 }
@@ -53,7 +56,7 @@ export async function getDailyRange(
      FROM ${tableName}
      WHERE symbol = ? AND date BETWEEN ? AND ?
      ORDER BY date ASC`,
-    [symbol, fromDate, toDate]
+    [symbol, fromDate, toDate],
   );
 }
 
@@ -80,7 +83,7 @@ export async function batchGetDaily(
     `SELECT symbol, date, open, high, low, close, volume, amount
      FROM ${tableName}
      WHERE date = ? AND symbol IN (${placeholders})`,
-    [date, ...symbols]
+    [date, ...symbols],
   );
 
   for (const row of rows) {
@@ -115,7 +118,7 @@ export async function batchGetDailyRange(
      FROM ${tableName}
      WHERE date BETWEEN ? AND ? AND symbol IN (${placeholders})
      ORDER BY symbol, date ASC`,
-    [fromDate, toDate, ...symbols]
+    [fromDate, toDate, ...symbols],
   );
 
   for (const row of rows) {
@@ -192,7 +195,7 @@ export async function batchGetLatestClose(
        FROM ${tableName}
        WHERE symbol IN (${placeholders})
      ) WHERE rn = 1`,
-    [...symbols]
+    [...symbols],
   );
 
   for (const row of rows) {
@@ -244,7 +247,7 @@ export function toDateString(value: unknown): string {
 async function isHolidayListed(date: string): Promise<boolean> {
   const rows = await queryDuckDB<{ count: number }>(
     'SELECT COUNT(*) AS count FROM raw_holidays WHERE date = ?',
-    [date]
+    [date],
   );
   return rows.length > 0 && Number(rows[0].count) > 0;
 }
@@ -298,7 +301,7 @@ export async function resolveTargetTradeDate(referenceDate?: string): Promise<st
          WHERE EXTRACT(ISODOW FROM g) BETWEEN 1 AND 5
            AND NOT EXISTS (SELECT 1 FROM raw_holidays WHERE date = g)
        ) s`,
-      [ref, ref]
+      [ref, ref],
     );
     if (rows.length === 0) return null;
     const val = rows[0].d;
@@ -328,7 +331,7 @@ export async function resolveLatestQuoteDate(referenceDate?: string): Promise<st
   try {
     const fast = await queryDuckDB<{ d: unknown }>(
       'SELECT MAX(date) AS d FROM raw_kline_daily WHERE date <= ?',
-      [ref]
+      [ref],
     );
     fastVal = fast[0]?.d;
   } catch {
@@ -346,7 +349,7 @@ export async function resolveLatestQuoteDate(referenceDate?: string): Promise<st
          UNION ALL
          SELECT MAX(date) AS d FROM v_etf_qfq WHERE date <= ?
        ) s`,
-      [ref, ref]
+      [ref, ref],
     );
     if (rows.length === 0) return null;
     const val = rows[0].d;

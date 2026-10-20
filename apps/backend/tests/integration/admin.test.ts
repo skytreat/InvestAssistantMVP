@@ -33,7 +33,8 @@ describe('Admin · run-datacheck', () => {
   it('admin 触发 → 200 + summaries 数组', async () => {
     if (!DUCKDB_EXISTS) return;
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/datacheck/trigger',
+      method: 'POST',
+      url: '/api/admin/datacheck/trigger',
       headers: adminHeaders(),
       payload: {},
     });
@@ -45,23 +46,25 @@ describe('Admin · run-datacheck', () => {
       expect(Array.isArray(body.data.summaries)).toBe(true);
       expect(body.data.summaries.length).toBeGreaterThan(0);
     }
-    }, 90_000);
+  }, 90_000);
 
   it('指定 trade_date → summaries 用该日期', async () => {
     if (!DUCKDB_EXISTS) return;
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/datacheck/trigger',
+      method: 'POST',
+      url: '/api/admin/datacheck/trigger',
       headers: adminHeaders(),
       payload: { trade_date: '2026-10-14' },
     });
     expect([200, 500]).toContain(res.statusCode);
-    }, 90_000);
+  }, 90_000);
 });
 
 describe('Admin · run-signal', () => {
   it('admin 触发信号生成 → 200 + stats', async () => {
     const res = await bundle.app.inject({
-      method: 'POST', url: '/api/admin/run-signal',
+      method: 'POST',
+      url: '/api/admin/run-signal',
       headers: adminHeaders(),
       payload: {},
     });
@@ -81,15 +84,18 @@ describe('Admin · system-log 分页查询', () => {
   //   原本靠同文件前面的用例产生日志 → shuffle 下随机失败。
   //   → 块级 beforeAll 自己造一条 log。
   beforeAll(() => {
-    bundle.db.db.prepare(
-      "INSERT INTO system_log (log_date, log_type, level, message) VALUES (date('now','localtime'), 'trade', 'INFO', '分页测试用日志')"
-    ).run();
+    bundle.db.db
+      .prepare(
+        "INSERT INTO system_log (log_date, log_type, level, message) VALUES (date('now','localtime'), 'trade', 'INFO', '分页测试用日志')",
+      )
+      .run();
   });
 
   // 先造条 log 验证分页
   it('log 分页基本结构', async () => {
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/admin/system-log?page=1&page_size=5',
+      method: 'GET',
+      url: '/api/admin/system-log?page=1&page_size=5',
       headers: adminHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -105,7 +111,8 @@ describe('Admin · system-log 分页查询', () => {
 
   it('log_type 过滤', async () => {
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/admin/system-log?log_type=trade&page_size=3',
+      method: 'GET',
+      url: '/api/admin/system-log?log_type=trade&page_size=3',
       headers: adminHeaders(),
     });
     expect(res.statusCode).toBe(200);
@@ -118,12 +125,13 @@ describe('Admin · system-log 分页查询', () => {
 
   it('默认 page=1 / page_size 超限自动截断到 200', async () => {
     const res = await bundle.app.inject({
-      method: 'GET', url: '/api/admin/system-log?page=999&page_size=9999',
+      method: 'GET',
+      url: '/api/admin/system-log?page=999&page_size=9999',
       headers: adminHeaders(),
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.pagination.pageSize).toBe(200);  // min(200, 9999)
+    expect(body.pagination.pageSize).toBe(200); // min(200, 9999)
     // page=999 可能超过总行数 → data=[] 是合理的
     expect(Array.isArray(body.data)).toBe(true);
   });

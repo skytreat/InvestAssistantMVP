@@ -34,11 +34,11 @@ describe('calculateSMA — 简单移动平均', () => {
       expect(result.length).toBe(6);
       expect(Number.isNaN(result[0])).toBe(true);
 
-      expect(result[1]).toBeCloseTo(1.5);  // (1+2)/2
-      expect(result[2]).toBeCloseTo(2.5);  // (2+3)/2
-      expect(result[3]).toBeCloseTo(3.5);  // (3+4)/2
-      expect(result[4]).toBeCloseTo(4.5);  // (4+5)/2
-      expect(result[5]).toBeCloseTo(5.5);  // (5+6)/2
+      expect(result[1]).toBeCloseTo(1.5); // (1+2)/2
+      expect(result[2]).toBeCloseTo(2.5); // (2+3)/2
+      expect(result[3]).toBeCloseTo(3.5); // (3+4)/2
+      expect(result[4]).toBeCloseTo(4.5); // (4+5)/2
+      expect(result[5]).toBeCloseTo(5.5); // (5+6)/2
     });
 
     it('包含负数的输入 → 均值计算正确', () => {
@@ -122,7 +122,7 @@ describe('calculateSMA — 简单移动平均', () => {
       expect(result.length).toBe(3);
       expect(Number.isNaN(result[0])).toBe(true);
       expect(Number.isNaN(result[1])).toBe(true);
-      expect(result[2]).toBeCloseTo(20);  // (10+20+30)/3
+      expect(result[2]).toBeCloseTo(20); // (10+20+30)/3
     });
   });
 });

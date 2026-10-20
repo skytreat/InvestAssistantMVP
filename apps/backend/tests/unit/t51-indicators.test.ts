@@ -56,7 +56,7 @@ describe('T51 落地状态 · fast-technical-indicators 精确锁版本', () => 
 
   it('node_modules 实际安装版本 = 1.1.6', () => {
     const pkg = JSON.parse(
-      readFileSync(path.join(REPO_ROOT, 'node_modules/fast-technical-indicators/package.json'), 'utf8')
+      readFileSync(path.join(REPO_ROOT, 'node_modules/fast-technical-indicators/package.json'), 'utf8'),
     ) as { version: string };
     expect(pkg.version).toBe('1.1.6');
   });
@@ -88,11 +88,7 @@ describe('T51 适配层 · 数组补齐（形状契约）', () => {
 
   it('RSI 数据不足期填 50（保持既有对外契约，不是 NaN / undefined）', () => {
     const rsi = calculateRSI([100, 101, 102], 14);
-    expect(rsi).toEqual([
-      RSI_INSUFFICIENT_VALUE,
-      RSI_INSUFFICIENT_VALUE,
-      RSI_INSUFFICIENT_VALUE,
-    ]);
+    expect(rsi).toEqual([RSI_INSUFFICIENT_VALUE, RSI_INSUFFICIENT_VALUE, RSI_INSUFFICIENT_VALUE]);
     expect(rsi.some((v) => Number.isNaN(v))).toBe(false);
   });
 });
