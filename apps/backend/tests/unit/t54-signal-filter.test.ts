@@ -7,11 +7,12 @@
  *   ③ 组合筛选（symbol + plugin_id + 日期范围）同时生效
  *   ④ 无匹配返回**空数组**（200，不报错）
  *   ⑤ 排序 `trade_date ASC`
+ *   ⑥ 分页窗口 = **最近 N 条**（页内仍升序）—— P2-2 口径统一后新增
  *
  * 本文件用 `app.inject()`（进程内，不 listen、不占端口）。
  * 只注册 signal 路由 + 注入 user，不走 JWT —— 被测的是筛选 SQL，不是鉴权。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -221,6 +222,82 @@ describe('T54 · 排序 trade_date ASC', () => {
     expect(dates).toEqual([...dates].sort());
     expect(dates[0]).toBe('2026-10-01');
     expect(dates[dates.length - 1]).toBe('2026-10-31');
+  });
+});
+
+/**
+ * P2-2 —— 分页**窗口**口径：「最近 N 条」，页内仍升序
+ *
+ * ⚠️ 与上面的「升序」不冲突：**升序 = 页内行的排列方向**；
+ *    窗口 = 「第 1 页取哪 N 条」。改动前第 1 页取的是**最早** N 条，
+ *    改动后取**最近** N 条（与 K 线路由的「近 20 条信号」口径统一）。
+ */
+describe('T54 · 分页窗口 = 最近 N 条（页内升序）', () => {
+  /** 专用标的：避免污染其它用例的 total 断言 */
+  const WINDOW_ASSET = 'sz999998';
+
+  /** 造 25 条信号（>20 ⇒ 「最近 20 条」与「最早 20 条」出现分歧）*/
+  function seedWindowRows(): void {
+    const stmt = db.db.prepare(
+      `INSERT INTO user_strategy_signal
+         (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json, is_final)
+       VALUES (?, ?, ?, 'monitor', ?, 'buy', 'L', 0.5, '{}', 1)`,
+    );
+    for (let i = 1; i <= 25; i++) {
+      stmt.run(
+        TEST_USER_ID,
+        WINDOW_ASSET,
+        `p_${String(i).padStart(2, '0')}`,
+        `2026-11-${String(i).padStart(2, '0')}`,
+      );
+    }
+  }
+
+  /** 带自定义 page_size / page 的查询（`query()` 固定 page_size=200，不能复用）*/
+  async function queryPage(qs: string): Promise<{ rows: SignalRow[]; total: number }> {
+    const res = await app.inject({ method: 'GET', url: `/api/signal?${qs}` });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      success: boolean;
+      data: SignalRow[];
+      pagination: { total: number };
+    };
+    expect(body.success).toBe(true);
+    return { rows: body.data, total: body.pagination.total };
+  }
+
+  // ⚠️ 用例顺序是打乱的（vitest `sequence.shuffle`）→ 造的窗口数据必须**每个用例后清干净**，
+  //    否则会漏给「返回结果按 trade_date 升序」等精确断言。
+  afterEach(() => {
+    db.db.prepare('DELETE FROM user_strategy_signal WHERE asset_code = ?').run(WINDOW_ASSET);
+  });
+
+  it('第 1 页 = 最近 20 条（升序），第 2 页 = 更早的 5 条（升序）', async () => {
+    seedWindowRows();
+
+    const page1 = await queryPage(`asset_code=${WINDOW_ASSET}&page_size=20&page=1`);
+    const page2 = await queryPage(`asset_code=${WINDOW_ASSET}&page_size=20&page=2`);
+
+    const expectedRecent = Array.from({ length: 20 }, (_, i) => `2026-11-${String(i + 6).padStart(2, '0')}`);
+    const expectedOlder = Array.from({ length: 5 }, (_, i) => `2026-11-${String(i + 1).padStart(2, '0')}`);
+
+    expect(page1.total).toBe(25);
+    expect(page1.rows.map((r) => r.trade_date)).toEqual(expectedRecent);
+    expect(page2.rows.map((r) => r.trade_date)).toEqual(expectedOlder);
+
+    // 页内升序（G5.5「signals 升序」不受影响）
+    expect([...page1.rows.map((r) => r.trade_date)].sort()).toEqual(page1.rows.map((r) => r.trade_date));
+  });
+
+  it('单页装得下时（page_size ≥ 总数）行为不变：全部行按升序返回', async () => {
+    seedWindowRows();
+    const { rows, total } = await queryPage(`asset_code=${WINDOW_ASSET}&page_size=200`);
+    expect(total).toBe(25);
+    expect(rows.length).toBe(25);
+    const dates = rows.map((r) => r.trade_date);
+    expect(dates).toEqual([...dates].sort());
+    expect(dates[0]).toBe('2026-11-01');
+    expect(dates[dates.length - 1]).toBe('2026-11-25');
   });
 });
 

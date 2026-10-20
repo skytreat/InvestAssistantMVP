@@ -23,6 +23,10 @@ type AuthedRequest = FastifyRequest & { user: JwtPayload };
  *      WHERE 子句按固定顺序 append，参数数组与占位符顺序严格一一对应。
  *      排序 `ORDER BY trade_date ASC`（T53/T54 要求升序），`created_at / id`
  *      作为同日同刻的确定性 tie-break，避免分页抖动。
+ *
+ * 🔴 **窗口口径（P2-2）**：分页窗口取**最近 N 条**（内层 DESC），
+ *    输出再**升序**排回（外层 ASC）⇒ 页内升序不变，但第 1 页是**最新**的一页。
+ *    与 K 线路由（`routes/kline.ts`）的「近 20 条信号」口径统一。
  */
 export async function registerSignalRoutes(app: FastifyInstance) {
   app.get('/api/signal', async (request, reply) => {
@@ -68,9 +72,34 @@ export async function registerSignalRoutes(app: FastifyInstance) {
           c: number;
         }
       ).c;
+      /**
+       * 🔴 **窗口口径 = 「最近 N 条，输出升序」**（P2-2 口径统一）
+       *
+       * 形状：内层 `ORDER BY trade_date DESC ... LIMIT ? OFFSET ?` 取**最近**一页，
+       * 外层再 `ORDER BY trade_date ASC` 把这一页**升序**排回去。
+       * ⇒ ① **每一页内部仍然是升序**（G5.5「signals 升序」不受影响）
+       *   ② **第 1 页 = 最近 N 条**（此前 = 最早 N 条）
+       *   ③ `created_at / id` 作确定性 tie-break ⇒ 同日同刻不抖动
+       *
+       * ⚠️ **为何改**：K 线路由（`routes/kline.ts`）下发的是该标的**最近 20 条**信号
+       *   （图上标记画的就是最近的），而本端点此前给的是**最早 20 条** ⇒
+       *   信号总数 >20 时，「图上标记」与「信号列表」**对不上**。
+       *   统一为「最近 N 条 + 升序」后，两个端点**同一用户 + 同一标的 + 同一条数**
+       *   返回**完全相同的行集合**。
+       *
+       * ⚠️ **对前端的影响**：`Signals.tsx` 默认筛「今日」+ 不重排 ⇒ 显示顺序不变；
+       *   取消日期筛选后，第 1 页由「最早 20 条」变为「最近 20 条」（页内仍升序）；
+       *   `Dashboard.tsx` 的「最新信号」卡片此前因本口径**显示的是最早的 5 条**（与卡片标题矛盾），
+       *   改后与标题一致。
+       */
       const rows = db
         .prepare(
-          `SELECT * FROM user_strategy_signal ${whereSql} ORDER BY trade_date ASC, created_at ASC, id ASC LIMIT ? OFFSET ?`,
+          `SELECT * FROM (
+             SELECT * FROM user_strategy_signal ${whereSql}
+             ORDER BY trade_date DESC, created_at DESC, id DESC
+             LIMIT ? OFFSET ?
+           )
+           ORDER BY trade_date ASC, created_at ASC, id ASC`,
         )
         .all(...params, pageSize, (page - 1) * pageSize);
 
