@@ -10,8 +10,14 @@ import { mockResponse, renderWithRouter } from '../helpers';
  * 覆盖两条主线：
  * 1. 收益曲线 bucket 分组（`bucketByPeriod`）—— 按周期（月/季/年）取每期**最后一个**快照，
  *    用于收益率曲线的终点连线（PRD R2/R4）。
- * 2. 「编辑复盘」弹窗的**三态按钮组**（未标记 / 是 / 否）—— 两组独立：
- *    「是否符合策略」选中底色 `#dbeafe`，「是否止损」选中底色 `#fee2e2`，未选中 `#fff`。
+ * 2. 「编辑复盘」弹窗的**三态按钮组**（未标记 / 是 / 否）—— 两组独立。
+ *
+ * ⚠️ **T69 起三态配色按 PRD §5.5 改了口径**（本文件的颜色断言同步更新）：
+ *    旧实现「是否符合策略」选中底色 `#dbeafe`、「是否止损」选中底色 `#fee2e2`，
+ *    且**「是」和「否」共用同一底色**（只靠文字区分）—— 不符合 PRD §5.5
+ *    「三态字段默认未标记（null），显示灰色"未标记"文字，点击可切换为"是"（绿色）/"否"（红色）」。
+ *    新口径（两组一致）：**未标记 = 灰 `#f3f4f6` / 是 = 绿 `#dcfce7` / 否 = 红 `#fee2e2`**，未选中 `#fff`。
+ *    （实施计划 §12.7 的 G4.3 写「三态（PASS/WARN/ERROR）」是笔误，见 `src/components/TriStateGroup.tsx` 注释。）
  *
  * 断言口径全部按 `src/pages/Review.tsx` 源码逐行核实（**不按任务描述的推测口径**）：
  * - 周期取值集合是 **monthly / quarterly / yearly**（`CurvePeriod`，源码 61 行），
@@ -317,31 +323,31 @@ describe('Review · 编辑复盘 3 态弹窗', () => {
     // 标题形如「编辑复盘 — sh600000 (2026-10-17)」
     expect(screen.getByText('编辑复盘 — sh600000 (2026-10-17)')).toBeInTheDocument();
 
-    // 「是否符合策略」组：未标记选中（#dbeafe），是 / 否 未选中（#fff）
-    expect(bg(strategyButton('未标记'))).toBe('#dbeafe');
+    // 「是否符合策略」组：未标记选中（灰 #f3f4f6），是 / 否 未选中（#fff）
+    expect(bg(strategyButton('未标记'))).toBe('#f3f4f6');
     expect(bg(strategyButton('是'))).toBe('#ffffff');
     expect(bg(strategyButton('否'))).toBe('#ffffff');
 
-    // 「是否止损」组：未标记选中（#fee2e2），是 / 否 未选中（#fff）
-    expect(bg(stopLossButton('未标记'))).toBe('#fee2e2');
+    // 「是否止损」组：未标记选中（灰 #f3f4f6），是 / 否 未选中（#fff）
+    expect(bg(stopLossButton('未标记'))).toBe('#f3f4f6');
     expect(bg(stopLossButton('是'))).toBe('#ffffff');
     expect(bg(stopLossButton('否'))).toBe('#ffffff');
   });
 
-  it('点「是否符合策略」的「是」→ 该组选中态变 #dbeafe，且「是否止损」组不受影响', async () => {
+  it('点「是否符合策略」的「是」→ 该组选中态变 #dcfce7（绿），且「是否止损」组不受影响', async () => {
     const user = userEvent.setup();
     renderWithRouter(<Review />);
     await openEditModal(user);
 
     await user.click(strategyButton('是'));
 
-    expect(bg(strategyButton('是'))).toBe('#dbeafe');
+    expect(bg(strategyButton('是'))).toBe('#dcfce7');
     // 原选中项「未标记」让位
     expect(bg(strategyButton('未标记'))).toBe('#ffffff');
     expect(bg(strategyButton('否'))).toBe('#ffffff');
 
-    // 另一组完全不受影响：仍是「未标记」选中（#fee2e2），是 / 否 未选中（#fff）
-    expect(bg(stopLossButton('未标记'))).toBe('#fee2e2');
+    // 另一组完全不受影响：仍是「未标记」选中（灰），是 / 否 未选中（#fff）
+    expect(bg(stopLossButton('未标记'))).toBe('#f3f4f6');
     expect(bg(stopLossButton('是'))).toBe('#ffffff');
     expect(bg(stopLossButton('否'))).toBe('#ffffff');
 
@@ -349,7 +355,7 @@ describe('Review · 编辑复盘 3 态弹窗', () => {
     expect(patchMock).not.toHaveBeenCalled();
   });
 
-  it('点「是否止损」的「否」→ 该组选中态变 #fee2e2', async () => {
+  it('点「是否止损」的「否」→ 该组选中态变 #fee2e2（红）', async () => {
     const user = userEvent.setup();
     renderWithRouter(<Review />);
     await openEditModal(user);
@@ -361,7 +367,7 @@ describe('Review · 编辑复盘 3 态弹窗', () => {
     expect(bg(stopLossButton('是'))).toBe('#ffffff');
 
     // 策略组不受影响
-    expect(bg(strategyButton('未标记'))).toBe('#dbeafe');
+    expect(bg(strategyButton('未标记'))).toBe('#f3f4f6');
 
     expect(patchMock).not.toHaveBeenCalled();
   });
@@ -410,7 +416,7 @@ describe('Review · 编辑复盘 3 态弹窗', () => {
     renderWithRouter(<Review />);
     await openEditModal(user);
 
-    expect(bg(strategyButton('是'))).toBe('#dbeafe');
+    expect(bg(strategyButton('是'))).toBe('#dcfce7');
     expect(bg(strategyButton('未标记'))).toBe('#ffffff');
     expect(bg(stopLossButton('否'))).toBe('#fee2e2');
     expect(bg(stopLossButton('未标记'))).toBe('#ffffff');

@@ -3,6 +3,7 @@
  *
  * 业务口径（Requirements §5.1 / §13.4 B-11 裁决）：
  * - 唯一键 = (user_id, asset_code, trade_type, trade_date, trade_time)
+ *   （T87b：实现形态为**部分唯一索引** `WHERE is_deleted = 0` —— 软删记录不再占用唯一键）
  * - **quantity 不进主键** —— 交易笔数与成交时间唯一
  * - 同日同标的同类型**不同成交时间** → 201（追加成功）
  * - 同日同标的同类型**相同成交时间** → 409 TRADE_DUPLICATE
@@ -83,15 +84,38 @@ describe('T87 DDL：trade_time 列与 UNIQUE 约束', () => {
     expect(col!.notnull).toBe(1);
   });
 
-  it('UNIQUE 键包含 trade_time（5 列），不含 quantity', () => {
+  it('唯一键 = 5 列**部分唯一索引**（WHERE is_deleted = 0），表级 UNIQUE 已移除', () => {
+    // 表定义里**不得**再有表级 UNIQUE 约束（T87b：表级 UNIQUE 无法部分化 ⇒ 软删记录会永久占用唯一键）
     const rows = db.db
       .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
       .all() as Array<{ sql: string }>;
-    const m = rows[0].sql.match(/UNIQUE\s*\(([^)]*)\)/);
+    expect(rows[0].sql, '表定义里不应再有表级 UNIQUE').not.toMatch(/UNIQUE\s*\(/i);
+
+    // 唯一键改由部分唯一索引承担
+    const idx = db.db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name = 'idx_user_trade_record_unique_live'",
+      )
+      .get() as { sql: string } | undefined;
+    expect(idx, '部分唯一索引应存在').toBeTruthy();
+    const m = idx!.sql.match(/ON\s+"?user_trade_record"?\s*\(([^)]*)\)/i);
     expect(m).toBeTruthy();
-    const cols = m![1].split(',').map((s) => s.trim());
+    const cols = m![1].split(',').map((s) => s.trim().replace(/^"|"$/g, ''));
     expect(cols).toEqual(['user_id', 'asset_code', 'trade_type', 'trade_date', 'trade_time']);
     expect(cols).not.toContain('quantity');
+    // 谓词：只约束活记录
+    expect(idx!.sql).toMatch(/WHERE\s+is_deleted\s*=\s*0/i);
+
+    // 结构复核：PRAGMA index_list 的 unique / partial 标志
+    const list = db.db.prepare('PRAGMA index_list(user_trade_record)').all() as Array<{
+      name: string;
+      unique: number;
+      partial: number;
+    }>;
+    const meta = list.find((i) => i.name === 'idx_user_trade_record_unique_live');
+    expect(meta).toBeTruthy();
+    expect(meta!.unique).toBe(1);
+    expect(meta!.partial).toBe(1);
   });
 
   it('CHECK 已含 add（7 种交易类型，T49 目标，预置以免二次重建）', () => {

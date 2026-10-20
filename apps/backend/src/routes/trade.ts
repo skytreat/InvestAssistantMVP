@@ -86,6 +86,97 @@ export function nowTradeTime(): string {
 }
 
 /**
+ * G4.5 配套：交易日期格式校验（`YYYY-MM-DD`，且必须是**真实日历日**）
+ *
+ * ⚠️ `POST /api/trade` **目前不校验** `trade_date` 格式（DDL 对该列无 CHECK），
+ *   本函数只服务于预检端点 —— 预检必须能识别「非法日期」，
+ *   否则前端会拿一个必然提交失败的日期来问「该时刻是否被占用」。
+ */
+export function validateTradeDate(d: unknown): d is string {
+  if (typeof d !== 'string') return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const dt = new Date(year, month - 1, day);
+  // Date 构造器把 0-99 年映射到 1900+year → 显式纠正，否则 '0026-01-01' 会被误判
+  if (year < 100) dt.setFullYear(year);
+  return dt.getFullYear() === year && dt.getMonth() === month - 1 && dt.getDate() === day;
+}
+
+/**
+ * 占用记录（预检命中时返回）
+ *
+ * `is_deleted` 保留在返回结构里是为了**可观测**（理论上恒为 0 —— 预检只查活记录），
+ * 但**预检结论不因它改变** —— 口径必须与 INSERT 的实际行为一致。
+ */
+export interface TradeTimeOccupancy {
+  id: number;
+  created_at: string;
+  is_deleted: number;
+}
+
+/**
+ * 预检查询 SQL（导出供测试做 `EXPLAIN QUERY PLAN` 性能断言 —— **测的就是线上这条语句**）
+ *
+ * 🔴 **口径（2026-10-20 实测 + T87b 修复后）**：
+ *   `user_trade_record` 的唯一键是**部分唯一索引**
+ *   `idx_user_trade_record_unique_live ON (user_id, asset_code, trade_type, trade_date, trade_time)
+ *    WHERE is_deleted = 0`
+ *   —— **只约束「未软删」的活记录** ⇒
+ *     ① 软删记录**不再占用**唯一键（同一笔可以重新录入）
+ *     ② 未软删的同键记录**仍占用**（唯一性没丢）
+ *   ⇒ 故本查询**必须**带 `is_deleted = 0`：
+ *     少了它 → 预检会说「已占用」而提交却成功（预检与后端行为矛盾）；
+ *     多了它不存在 —— 唯一键本身就是按 `is_deleted = 0` 定义的。
+ *
+ * ⚠️ `is_deleted = 0` 同时是**性能前提**：部分索引只覆盖活记录，
+ *   查询不带该条件时 SQLite **无法**使用该索引（实测 `EXPLAIN QUERY PLAN` → `SCAN user_trade_record`），
+ *   带条件才是 `SEARCH ... USING INDEX idx_user_trade_record_unique_live`（等值 seek，不扫表）。
+ */
+export const TRADE_TIME_OCCUPANCY_SQL = `SELECT id, created_at, is_deleted FROM user_trade_record
+   WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND trade_date = ? AND trade_time = ? AND is_deleted = 0`;
+
+/**
+ * 查「该用户 + 该标的 + 该类型 + 该日 + 该时刻」是否已被占用
+ *
+ * ⚠️ **只查当前用户**：`user_id` 由调用方从 JWT 载荷 `sub` 取，**绝不信请求参数**。
+ */
+export function findTradeTimeOccupancy(
+  userId: number,
+  assetCode: string,
+  tradeType: string,
+  tradeDate: string,
+  tradeTime: string,
+): TradeTimeOccupancy | undefined {
+  const db = ConfigStore.getInstance().db;
+  return db.prepare(TRADE_TIME_OCCUPANCY_SQL).get(userId, assetCode, tradeType, tradeDate, tradeTime) as
+    TradeTimeOccupancy | undefined;
+}
+
+/**
+ * SQLite `datetime('now','localtime')` 文本（`'YYYY-MM-DD HH:mm:ss'`，**服务器本地墙钟**）→ ISO 8601
+ *
+ * ⚠️ `created_at` 存的是**本地墙钟、没有时区信息**。
+ *   本项目是**桌面应用**：后端（127.0.0.1）与前端跑在**同一台机器** ⇒ 按服务器本地时区解释即可，
+ *   转成 ISO 后前端 `new Date(taken_at)` 再本地化显示能还原原始墙钟。
+ *
+ * ⚠️ 形态不认识的字符串 → **原样返回**（不抛错）：
+ *   预检是辅助功能，绝不能因为一个展示字段的格式异常而 500。
+ */
+export function localDateTimeToIso(s: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return s;
+  const year = Number(m[1]);
+  const dt = new Date(year, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  if (year < 100) dt.setFullYear(year);
+  if (Number.isNaN(dt.getTime())) return s;
+  return dt.toISOString();
+}
+
+/**
  * T58：同步 `user_asset_rel` 的 `rel_type='hold'` 关系
  *
  * 口径（以 `calcPosition` 的移动加权成本结果为准，与 GET /api/positions 同一口径）：
@@ -270,6 +361,70 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     }
   });
 
+  /**
+   * G4.5 配套：**交易时刻占用预检**（只读）
+   *
+   * `GET /api/trade/check-duplicate?asset_code=&trade_type=&trade_date=&trade_time=`
+   *
+   * ── 为什么需要它 ──
+   *   T87 把唯一键改成「同日同刻」（`UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)`）后，
+   *   同一用户 + 同一标的 + 同一类型 + **同一时刻**只能有一条。
+   *   前端在提交前**不知道**该时刻是否已被占用 ⇒ 只能提交后吃 409 `TRADE_DUPLICATE`。
+   *   ADR-003 §「缓解措施（必做）」明确要求前端做**提交前预检** —— 本端点就是那个预检的数据源。
+   *
+   * ── 响应 ──
+   *   未占用：`{ code: 0, data: { taken: false }, timestamp, success: true }`
+   *   已占用：`{ code: 0, data: { taken: true, taken_at: "<ISO8601>" }, timestamp, success: true }`
+   *
+   * 🔴 **参数缺失 / 非法 → 400 `PARAM_INVALID`，绝不返回 `taken:false`**：
+   *   `taken:false` 的语义是「确定没被占用」。若把「查不了」也表达成 `taken:false`，
+   *   前端会把「查失败」误当「没占用」而放行提交 —— 恰好是本端点要消灭的体验。
+   *   ⇒ 前端拿到 4xx/5xx 时**必须**按「无法确定」处理：**仍允许提交**（乐观 UI），
+   *     最终以 `POST /api/trade` 的结果为准（409 `TRADE_DUPLICATE`）。
+   *
+   * 🔴 **只查当前用户**：`user_id` 取自 JWT 载荷 `sub`，**绝不信请求参数**（避免越权探测他人占用情况）。
+   *
+   * ⚠️ **软删除记录不再占用**（T87b：唯一键改为部分唯一索引 `WHERE is_deleted = 0`）：
+   *   软删后同一键**可以重新录入** ⇒ 预检返回 `taken: false`，
+   *   与 `POST /api/trade` 的实际行为一致（否则会出现「预检说占用、提交却成功」的新矛盾）。
+   */
+  app.get('/api/trade/check-duplicate', async (request, reply) => {
+    try {
+      const user = (request as any).user as { sub: number };
+      const q = request.query as Record<string, string | undefined>;
+      const assetCode = q.asset_code;
+      const tradeType = q.trade_type;
+      const tradeDate = q.trade_date;
+      const tradeTime = q.trade_time;
+
+      // ── 参数校验：缺失 / 非法一律 400 PARAM_INVALID（见上方「🔴 参数缺失」注释）──
+      if (typeof assetCode !== 'string' || assetCode.trim() === '') {
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'asset_code 必填'));
+      }
+      if (typeof tradeType !== 'string' || !TRADE_TYPE_SET.has(tradeType)) {
+        return reply
+          .code(400)
+          .send(fail(400, 'PARAM_INVALID', `trade_type 非法，仅支持 7 种：${TRADE_TYPES.join(' / ')}`));
+      }
+      if (!validateTradeDate(tradeDate)) {
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_date 必填，格式 YYYY-MM-DD'));
+      }
+      if (!validateTradeTime(tradeTime)) {
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_time 必填，格式 HH:mm:ss（秒级）'));
+      }
+
+      // ── 只查当前用户（user_id 来自 token，绝不信请求参数）──
+      //    asset_code 用**原值**查（不 trim）：与 INSERT 落库的值完全一致，避免口径漂移。
+      const hit = findTradeTimeOccupancy(user.sub, assetCode, tradeType, tradeDate, tradeTime);
+      if (hit) {
+        return reply.send(ok({ taken: true, taken_at: localDateTimeToIso(hit.created_at) }));
+      }
+      return reply.send(ok({ taken: false }));
+    } catch (err) {
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
+  });
+
   // 查询交易记录（T39: 增强筛选+分页）
   app.get('/api/trade', async (request, reply) => {
     try {
@@ -423,9 +578,24 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const db = ConfigStore.getInstance().db;
-    const info = db
-      .prepare(`UPDATE user_trade_record SET is_deleted = 0 WHERE id = ? AND user_id = ? AND is_deleted = 1`)
-      .run(tradeId, user.sub);
+    let info: { changes: number };
+    try {
+      info = db
+        .prepare(
+          `UPDATE user_trade_record SET is_deleted = 0 WHERE id = ? AND user_id = ? AND is_deleted = 1`,
+        )
+        .run(tradeId, user.sub);
+    } catch (err: any) {
+      // 🔴 T87b：唯一键改为**部分唯一索引（WHERE is_deleted = 0）**后，
+      //   「恢复」会把行**放回**索引里 ⇒ 若期间已有另一条同键的活记录，恢复会撞唯一键。
+      //   ⇒ 返回 409 TRADE_DUPLICATE（**不外泄裸 SQLite 报错**），语义与 POST /api/trade 的重复一致。
+      if (String(err).includes('UNIQUE')) {
+        return reply
+          .code(409)
+          .send(fail(409, 'TRADE_DUPLICATE', '恢复失败：已存在同一标的同类型同时刻的交易'));
+      }
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
     if (info.changes === 0) {
       return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     }

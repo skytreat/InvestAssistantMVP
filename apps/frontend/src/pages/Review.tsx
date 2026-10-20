@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import { truncatedTextStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
+import ScrollableTable from '../components/ScrollableTable';
+import TriStateGroup, { type TriState } from '../components/TriStateGroup';
+import { ReviewTagLegend, ReviewTagPill, reviewTagOf } from '../components/ReviewTag';
+import { TRADE_TYPES, tradeTypeLabel } from '../components/tradeTypes';
 import {
   pageContainerStyle,
   cardStyle,
@@ -47,16 +52,6 @@ interface ReviewStats {
   totalRealizedPnl: number;
 }
 
-const TRADE_TYPE_LABEL: Record<string, string> = {
-  buy: '买入',
-  add: '加仓',
-  reduce: '减仓',
-  clear: '清仓',
-  dividend: '分红',
-  bonus: '送股',
-  transfer: '转增',
-};
-
 /** 双口径（Requirements §5.4） */
 type Caliber = 'price' | 'actual';
 
@@ -70,8 +65,13 @@ type CurvePeriod = 'monthly' | 'quarterly' | 'yearly';
 
 const PERIOD_MONTHS: Record<CurvePeriod, number> = { monthly: 1, quarterly: 3, yearly: 12 };
 
-/** 三态标记：'' = 未标记，'1' = 是，'0' = 否 */
-type TriState = '' | '0' | '1';
+/**
+ * 筛选防抖时长（ux_v2 §3.3-3「筛选即时生效」）
+ *
+ * 300ms：既能合并「连续改多个下拉」产生的请求风暴，
+ * 又短到用户感觉不到延迟（ux_v2 只要求「即时」，未给具体值）。
+ */
+export const FILTER_DEBOUNCE_MS = 300;
 
 /**
  * 空值统一渲染 `--`（T65）
@@ -83,6 +83,12 @@ type TriState = '' | '0' | '1';
  */
 function dash(value: number | null | undefined): string {
   return value === null || value === undefined ? '--' : String(value);
+}
+
+/** 百分比格式化（带正负号）*/
+function fmtPct(value: number): string {
+  if (!Number.isFinite(value)) return '--';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
 /** 历史快照（/api/asset-stat/history） */
@@ -110,8 +116,17 @@ export function bucketByPeriod(rows: HistoryPoint[], period: CurvePeriod): Histo
   return [...bucket.values()].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
 }
 
-/** 纯 SVG 收益曲线（不引第三方图表库） */
+/**
+ * 纯 SVG 收益曲线（不引第三方图表库）
+ *
+ * PRD §5.5「收益曲线：月度/季度/年度切换；**悬浮显示具体数值**」——
+ * 每个数据点有一个透明命中圆（`fill="transparent"` + `pointerEvents:'all'`），
+ * 鼠标移上去显示该点的日期 + 两个口径的收益率（T69 ⑤）。
+ */
 function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Caliber }) {
+  /** 当前悬浮的数据点下标（null = 未悬浮）*/
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
   if (points.length === 0) {
     return (
       <div style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize }}>
@@ -144,10 +159,16 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
    * 这里只是兜底 —— 避免脏数据把整张图变成 NaN 坐标。
    */
   const color = Number.isFinite(last) ? (last >= 0 ? COLORS.success : COLORS.danger) : COLORS.neutral;
+  const hovered = hoverIndex !== null ? points[hoverIndex] : null;
 
   return (
-    <div>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, height: 'auto' }}>
+    <div style={{ position: 'relative' }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        role="img"
+        aria-label={`收益率曲线（${CALIBER_LABEL[caliber]}）`}
+        style={{ width: '100%', maxWidth: W, height: 'auto' }}
+      >
         <rect x={0} y={0} width={W} height={H} fill={COLORS.headerBg} rx={4} />
         {/* 零轴 */}
         <line
@@ -186,7 +207,49 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
         <text x={W - PAD.right} y={H - 6} fontSize={10} fill={COLORS.neutral} textAnchor="end">
           {points[points.length - 1].trade_date}
         </text>
+        {/*
+          命中区（每个数据点一个透明圆）：鼠标移上去显示具体数值。
+          ⚠️ `fill="transparent"` + `pointerEvents:'all'` —— `fill="none"` 的元素**不接收指针事件**，
+          那样命中区就永远触发不了。
+        */}
+        {points.map((p, i) => (
+          <circle
+            key={`${p.trade_date}-${i}`}
+            data-testid={`yield-point-${i}`}
+            cx={x(i)}
+            cy={y(values[i])}
+            r={7}
+            fill="transparent"
+            style={{ pointerEvents: 'all', cursor: 'crosshair' }}
+            onMouseEnter={() => setHoverIndex(i)}
+            onMouseLeave={() => setHoverIndex((cur) => (cur === i ? null : cur))}
+          />
+        ))}
       </svg>
+      {hovered && hoverIndex !== null && (
+        <div
+          data-testid="yield-curve-tooltip"
+          style={{
+            position: 'absolute',
+            left: `${(x(hoverIndex) / W) * 100}%`,
+            top: `${(y(values[hoverIndex]) / H) * 100}%`,
+            transform: 'translate(-50%, calc(-100% - 8px))',
+            background: COLORS.textPrimary,
+            color: COLORS.cardBg,
+            padding: '4px 8px',
+            borderRadius: RADIUS.sm,
+            fontSize: TYPO.captionSize,
+            lineHeight: '16px',
+            whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+            zIndex: 5,
+          }}
+        >
+          <div>{hovered.trade_date}</div>
+          <div>价格口径 {fmtPct(hovered.total_assets_price_yield * 100)}</div>
+          <div>实际口径 {fmtPct(hovered.total_assets_actual_yield * 100)}</div>
+        </div>
+      )}
       <div style={{ fontSize: TYPO.smallSize, marginTop: SPACING.gapTight, color }}>
         期末收益率 {Number.isFinite(last) ? `${last.toFixed(2)}%` : '--'}（{CALIBER_LABEL[caliber]}）
       </div>
@@ -199,8 +262,15 @@ export default function Review() {
   const [stats, setStats] = useState<ReviewStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 分页页码（翻页走 fetchTrades(page ± 1)，页码本身不再单独维护）
-  const [page] = useState(1);
+  /**
+   * 分页页码（T69 ③ 修 bug）
+   *
+   * ⚠️ **旧实现是 `const [page] = useState(1)` —— `setPage` 从未被调用**：
+   *    翻页按钮走 `fetchTrades(page ± 1)`（只发请求、不改页码状态），
+   *    于是「第 X / Y 页」永远显示第 1 页，保存/删除后也总是回查第 1 页。
+   *    现在 `setPage` 在 `fetchTrades` 发起时同步更新 → 页码与请求一致。
+   */
+  const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
@@ -209,6 +279,9 @@ export default function Review() {
   const [systemFollowed, setSystemFollowed] = useState('');
   const [strategyMatch, setStrategyMatch] = useState('');
   const [isStopLoss, setIsStopLoss] = useState('');
+  /** 日期范围（T69 ① · gap-list F-R1；后端 `/review/trades` 已支持 start_date / end_date）*/
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   // 编辑中的交易
   const [editingTrade, setEditingTrade] = useState<TradeRow | null>(null);
@@ -249,6 +322,8 @@ export default function Review() {
   const curvePoints = useMemo(() => bucketByPeriod(history, curvePeriod), [history, curvePeriod]);
 
   const fetchTrades = async (p: number) => {
+    // 页码与请求**同步**更新（乐观分页）：翻页后「第 X / Y 页」立即反映目标页
+    setPage(p);
     setLoading(true);
     setError(null);
     try {
@@ -257,6 +332,8 @@ export default function Review() {
       if (systemFollowed !== '') params.system_followed = systemFollowed;
       if (strategyMatch !== '') params.strategy_match = strategyMatch;
       if (isStopLoss !== '') params.is_stop_loss = isStopLoss;
+      if (startDate) params.start_date = startDate;
+      if (endDate) params.end_date = endDate;
       const res = await api.get('/review/trades', { params });
       if (res.data.success) {
         setTrades(res.data.data ?? []);
@@ -270,7 +347,7 @@ export default function Review() {
     }
   };
 
-  // 挂载时拉一次统计 / 交易 / 历史快照；筛选与翻页由各自的事件处理函数触发
+  // 挂载时拉一次统计 / 交易 / 历史快照
   useEffect(() => {
     fetchStats();
     fetchTrades(1);
@@ -278,9 +355,38 @@ export default function Review() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleFilter = () => {
-    fetchTrades(1);
-  };
+  /**
+   * 筛选即时生效（ux_v2 §3.3-3 · T69 ⑥）
+   *
+   * 旧实现有一个「筛选」按钮，改完下拉还要再点一下才生效 —— 与 PRD/ux_v2 的
+   * 「即时生效」口径不符，**按钮已删除**。
+   *
+   * 这里用 300ms 防抖把 6 个筛选控件（4 个下拉 + 2 个日期）合并成一次请求：
+   * - 防抖窗口内连续改动**只发一次**请求（避免请求风暴）；
+   * - 窗口过后自动重查，**无需任何按钮**。
+   *
+   * ⚠️ `lastQueriedFilterKey` 初始化为**挂载时的筛选指纹**（全空），
+   *    故挂载那一次不会重复触发（挂载 effect 已经查过第 1 页）。
+   */
+  const filterKey = JSON.stringify([
+    tradeType,
+    systemFollowed,
+    strategyMatch,
+    isStopLoss,
+    startDate,
+    endDate,
+  ]);
+  const lastQueriedFilterKey = useRef<string>(filterKey);
+
+  useEffect(() => {
+    if (lastQueriedFilterKey.current === filterKey) return;
+    const timer = setTimeout(() => {
+      lastQueriedFilterKey.current = filterKey;
+      void fetchTrades(1);
+    }, FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey]);
 
   const openEdit = (trade: TradeRow) => {
     setEditingTrade(trade);
@@ -440,7 +546,10 @@ export default function Review() {
         </div>
       )}
 
-      {/* 筛选栏 */}
+      {/*
+        筛选栏（T69 ①⑥）
+        ⚠️ **没有「筛选」按钮** —— 改动后 300ms 自动重查（ux_v2 §3.3-3）。
+      */}
       <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <label htmlFor="review-filter-trade-type" style={{ fontSize: TYPO.bodySize }}>
           交易类型：
@@ -452,9 +561,10 @@ export default function Review() {
           onChange={(e) => setTradeType(e.target.value)}
         >
           <option value="">全部</option>
-          {['buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].map((t) => (
+          {/* 交易类型标签统一取自 `components/tradeTypes`（单一真相源，gap-list F-R2）*/}
+          {TRADE_TYPES.map((t) => (
             <option key={t} value={t}>
-              {TRADE_TYPE_LABEL[t]}
+              {tradeTypeLabel(t)}
             </option>
           ))}
         </select>
@@ -497,147 +607,173 @@ export default function Review() {
           <option value="1">是</option>
           <option value="0">否</option>
         </select>
-        <button style={buttonStyle} onClick={handleFilter}>
-          筛选
-        </button>
+        <label htmlFor="review-filter-start-date" style={{ fontSize: TYPO.bodySize }}>
+          起始日期：
+        </label>
+        <input
+          id="review-filter-start-date"
+          type="date"
+          style={inputStyle}
+          value={startDate}
+          max={endDate || undefined}
+          onChange={(e) => setStartDate(e.target.value)}
+        />
+        <label htmlFor="review-filter-end-date" style={{ fontSize: TYPO.bodySize }}>
+          结束日期：
+        </label>
+        <input
+          id="review-filter-end-date"
+          type="date"
+          style={inputStyle}
+          value={endDate}
+          min={startDate || undefined}
+          onChange={(e) => setEndDate(e.target.value)}
+        />
       </div>
 
       {error && <div style={errorStyle}>{error}</div>}
 
       {/* 交易列表 */}
       <div style={cardStyle}>
+        {/* 标签图例（PRD §5.5「列表标签颜色」——4 色 pill 必须配图例）*/}
+        <div style={{ marginBottom: SPACING.gapBase }}>
+          <ReviewTagLegend />
+        </div>
         {loading ? (
           <Spinner />
         ) : trades.length === 0 ? (
           <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无交易记录</div>
         ) : (
-          <table style={tableStyle} aria-label="交易复盘列表">
-            <thead>
-              <tr>
-                <th scope="col" style={thStyle}>
-                  日期
-                </th>
-                <th scope="col" style={thStyle}>
-                  标的
-                </th>
-                <th scope="col" style={thStyle}>
-                  类型
-                </th>
-                <th scope="col" style={thStyle}>
-                  数量
-                </th>
-                <th scope="col" style={thStyle}>
-                  价格
-                </th>
-                <th scope="col" style={thStyle}>
-                  操作理由
-                </th>
-                <th scope="col" style={thStyle}>
-                  复盘
-                </th>
-                <th scope="col" style={thStyle}>
-                  符合策略
-                </th>
-                <th scope="col" style={thStyle}>
-                  止损
-                </th>
-                <th scope="col" style={thStyle}>
-                  来源
-                </th>
-                <th scope="col" style={thStyle}>
-                  操作
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {trades.map((t) => (
-                <tr key={t.id}>
-                  <td style={thTdStyle}>{t.trade_date}</td>
-                  <td style={thTdStyle}>
-                    <code>{t.asset_code}</code>
-                  </td>
-                  <td style={thTdStyle}>
-                    <span
-                      style={{
-                        color: t.trade_type === 'buy' ? COLORS.success : COLORS.danger,
-                        fontWeight: TYPO.cardTitleWeight,
-                      }}
-                    >
-                      {TRADE_TYPE_LABEL[t.trade_type] ?? t.trade_type}
-                    </span>
-                  </td>
-                  <td style={thTdStyle}>{t.quantity}</td>
-                  <td style={thTdStyle}>{t.price.toFixed(2)}</td>
-                  <td style={thTdStyle}>{t.trade_reason ?? '-'}</td>
-                  <td style={thTdStyle}>
-                    {t.review_summary ? (
-                      <span style={{ color: COLORS.success }}>✓</span>
-                    ) : (
-                      <span style={{ color: COLORS.textMuted }}>—</span>
-                    )}
-                  </td>
-                  <td style={thTdStyle}>
-                    {t.strategy_match === 1 ? (
-                      <span style={{ color: COLORS.success }}>是</span>
-                    ) : t.strategy_match === 0 ? (
-                      <span style={{ color: COLORS.danger }}>否</span>
-                    ) : (
-                      <span style={{ color: COLORS.textMuted }}>未标记</span>
-                    )}
-                  </td>
-                  <td style={thTdStyle}>
-                    {t.is_stop_loss === 1 ? (
-                      <span style={{ color: COLORS.danger }}>是</span>
-                    ) : t.is_stop_loss === 0 ? (
-                      <span style={{ color: COLORS.success }}>否</span>
-                    ) : (
-                      <span style={{ color: COLORS.textMuted }}>未标记</span>
-                    )}
-                  </td>
-                  <td style={thTdStyle}>
-                    {t.is_auto_import === 1 ? (
-                      <span style={{ color: COLORS.success }}>系统导入</span>
-                    ) : t.system_followed === 1 ? (
-                      <span style={{ color: COLORS.info }}>系统信号</span>
-                    ) : (
-                      <span style={{ color: COLORS.neutral }}>手动</span>
-                    )}
-                  </td>
-                  <td style={thTdStyle}>
-                    <button
-                      style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', marginRight: 4 }}
-                      onClick={() => openEdit(t)}
-                    >
-                      编辑复盘
-                    </button>
-                    <button
-                      style={{
-                        ...buttonStyle,
-                        fontSize: 12,
-                        padding: '2px 8px',
-                        background: COLORS.danger,
-                      }}
-                      onClick={() => handleDelete(t.id)}
-                    >
-                      删除
-                    </button>
-                  </td>
+          /*
+            G4.6（375px 无横向溢出）：
+            11 列表格实测总宽 555px，在 375px 视口下会**把文档撑宽 +241px**。
+            ⇒ 套 `ScrollableTable`（overflow-x:auto + min-width:0 + role/aria/tabindex），
+              表格在**自己内部**横向滚动，文档不再被撑宽。
+            ⚠️ **刻意不用 `table-layout: fixed`** —— 那会重算所有列宽、破坏既有观感与断言。
+          */
+          <ScrollableTable label="交易复盘列表表">
+            <table style={tableStyle} aria-label="交易复盘列表">
+              <thead>
+                <tr>
+                  <th scope="col" style={thStyle}>
+                    日期
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标的
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    类型
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    数量
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    价格
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    操作理由
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    复盘
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    符合策略
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    止损
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标签
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    操作
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {trades.map((t) => (
+                  <tr key={t.id}>
+                    <td style={thTdStyle}>{t.trade_date}</td>
+                    <td style={thTdStyle}>
+                      <code>{t.asset_code}</code>
+                    </td>
+                    <td style={thTdStyle}>{tradeTypeLabel(t.trade_type)}</td>
+                    <td style={thTdStyle}>{t.quantity}</td>
+                    <td style={thTdStyle}>{t.price.toFixed(2)}</td>
+                    <td style={thTdStyle}>
+                      {/* 长文本截断（视觉），完整内容用 title 暴露；DOM 文本仍是全文 */}
+                      <div style={truncatedTextStyle} title={t.trade_reason ?? undefined}>
+                        {t.trade_reason ?? '-'}
+                      </div>
+                    </td>
+                    <td style={thTdStyle}>
+                      {t.review_summary ? (
+                        <span style={{ color: COLORS.success }}>✓</span>
+                      ) : (
+                        <span style={{ color: COLORS.textMuted }}>—</span>
+                      )}
+                    </td>
+                    <td style={thTdStyle}>
+                      {t.strategy_match === 1 ? (
+                        <span style={{ color: COLORS.textPillSuccess }}>是</span>
+                      ) : t.strategy_match === 0 ? (
+                        <span style={{ color: COLORS.textPillDanger }}>否</span>
+                      ) : (
+                        <span style={{ color: COLORS.textMuted }}>未标记</span>
+                      )}
+                    </td>
+                    <td style={thTdStyle}>
+                      {t.is_stop_loss === 1 ? (
+                        <span style={{ color: COLORS.textPillSuccess }}>是</span>
+                      ) : t.is_stop_loss === 0 ? (
+                        <span style={{ color: COLORS.textPillDanger }}>否</span>
+                      ) : (
+                        <span style={{ color: COLORS.textMuted }}>未标记</span>
+                      )}
+                    </td>
+                    <td style={thTdStyle}>
+                      <ReviewTagPill tag={reviewTagOf(t)} />
+                    </td>
+                    <td style={thTdStyle}>
+                      <button
+                        style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', marginRight: 4 }}
+                        onClick={() => openEdit(t)}
+                      >
+                        编辑复盘
+                      </button>
+                      <button
+                        style={{
+                          ...buttonStyle,
+                          fontSize: 12,
+                          padding: '2px 8px',
+                          background: COLORS.danger,
+                        }}
+                        onClick={() => handleDelete(t.id)}
+                      >
+                        删除
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollableTable>
         )}
 
-        {/* 分页 */}
+        {/* 分页（T69 ③：页码 state 真的会变） */}
         {totalPages > 1 && (
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button style={buttonStyle} disabled={page <= 1} onClick={() => fetchTrades(page - 1)}>
+            <button style={buttonStyle} disabled={page <= 1} onClick={() => void fetchTrades(page - 1)}>
               上一页
             </button>
             <span style={{ fontSize: TYPO.bodySize }}>
               第 {page} / {totalPages} 页，共 {total} 条
             </span>
-            <button style={buttonStyle} disabled={page >= totalPages} onClick={() => fetchTrades(page + 1)}>
+            <button
+              style={buttonStyle}
+              disabled={page >= totalPages}
+              onClick={() => void fetchTrades(page + 1)}
+            >
               下一页
             </button>
           </div>
@@ -681,77 +817,22 @@ export default function Review() {
                 → 标题由 `<label>` 改为 `<span id=...>`，按钮组用
                   `role="group"` + `aria-labelledby` 指向该 span；
                   每个按钮加 `aria-pressed` 暴露选中态（否则选中态仅靠颜色传达）。
+                T69 ⑦：三态配色按 PRD §5.5 改为 是=绿 / 否=红 / 未标记=灰，
+                  且选中项加粗（fontWeight 600 + borderWidth 2px）。
               */}
-              <div style={{ display: 'flex', gap: SPACING.gapRelaxed }}>
-                <div>
-                  <span
-                    id="review-edit-strategy-match-label"
-                    style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
-                  >
-                    是否符合策略
-                  </span>
-                  <div
-                    role="group"
-                    aria-labelledby="review-edit-strategy-match-label"
-                    style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}
-                  >
-                    {(
-                      [
-                        ['', '未标记'],
-                        ['1', '是'],
-                        ['0', '否'],
-                      ] as [string, string][]
-                    ).map(([v, l]) => (
-                      <button
-                        key={v}
-                        aria-pressed={editForm.strategy_match === v}
-                        style={{
-                          ...inputStyle,
-                          background:
-                            editForm.strategy_match === v ? COLORS.bgSelectedPrimary : COLORS.cardBg,
-                          border: `1px solid ${COLORS.borderSelectedPrimary}`,
-                        }}
-                        onClick={() => setEditForm((f) => ({ ...f, strategy_match: v as TriState }))}
-                      >
-                        {l}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <span
-                    id="review-edit-stop-loss-label"
-                    style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
-                  >
-                    是否止损
-                  </span>
-                  <div
-                    role="group"
-                    aria-labelledby="review-edit-stop-loss-label"
-                    style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 4 }}
-                  >
-                    {(
-                      [
-                        ['', '未标记'],
-                        ['1', '是'],
-                        ['0', '否'],
-                      ] as [string, string][]
-                    ).map(([v, l]) => (
-                      <button
-                        key={v}
-                        aria-pressed={editForm.is_stop_loss === v}
-                        style={{
-                          ...inputStyle,
-                          background: editForm.is_stop_loss === v ? COLORS.bgSelectedDanger : COLORS.cardBg,
-                          border: `1px solid ${COLORS.borderSelectedDanger}`,
-                        }}
-                        onClick={() => setEditForm((f) => ({ ...f, is_stop_loss: v as TriState }))}
-                      >
-                        {l}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+              <div style={{ display: 'flex', gap: SPACING.gapRelaxed, flexWrap: 'wrap' }}>
+                <TriStateGroup
+                  labelId="review-edit-strategy-match-label"
+                  label="是否符合策略"
+                  value={editForm.strategy_match}
+                  onChange={(v) => setEditForm((f) => ({ ...f, strategy_match: v }))}
+                />
+                <TriStateGroup
+                  labelId="review-edit-stop-loss-label"
+                  label="是否止损"
+                  value={editForm.is_stop_loss}
+                  onChange={(v) => setEditForm((f) => ({ ...f, is_stop_loss: v }))}
+                />
               </div>
               <div>
                 <label

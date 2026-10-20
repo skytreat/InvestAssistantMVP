@@ -69,14 +69,52 @@ export const COLORS = {
   deaLine: '#f59e0b',
 
   // ── T62 补充：§3 明确要求新增的两组「三态选中」配色 ──────────────
-  /** 选中蓝：Review「是否符合策略」选中态背景（§3 的 BG_SELECTED_PRIMARY） */
+  /** 选中蓝：Dashboard / Settings / PositionToolbar 的激活态背景（§3 的 BG_SELECTED_PRIMARY） */
   bgSelectedPrimary: '#dbeafe',
   /** 选中蓝边框（§3 的 BG_SELECTED_PRIMARY 边框色） */
   borderSelectedPrimary: '#93c5fd',
-  /** 选中红：Review「是否止损」选中态背景（§3 的 BG_SELECTED_DANGER） */
+  /**
+   * 选中红（§3 的 BG_SELECTED_DANGER）
+   *
+   * ⚠️ **T69 起 Review 的三态按钮不再用它** —— PRD §5.5 规定三态是
+   *    「未标记（灰）/ 是（绿）/ 否（红）」，且**是/否必须区分**，
+   *    而本 token 的语义是「这一组的选中态」（旧实现里「是」和「否」共用同一底色，
+   *    只靠文字区分）→ 已迁到下面的 `bgPillDanger` / `bgPillSuccess` / `bgPillNeutral` 色板。
+   *    本 token **保留**：ui-spec §3 的 token 清单里有它，且数值与 `bgPillDanger` 同值（#fee2e2）。
+   */
   bgSelectedDanger: '#fee2e2',
-  /** 选中红边框（§3 的 BG_SELECTED_DANGER 边框色） */
+  /** 选中红边框（§3 的 BG_SELECTED_DANGER 边框色，数值同 `borderPillDanger`） */
   borderSelectedDanger: '#fca5a5',
+
+  // ── T69 补充：4 色标签（pill）+ 三态按钮的语义色板 ─────────────────
+  // 依据：PRD §5.5「列表标签颜色：未复盘（灰）/ 系统信号触发（绿）/ 主观决策（橙）/ 止损（红）」
+  //      + PRD §5.5「复盘编辑弹窗：三态默认未标记（灰），是（绿）/ 否（红）」
+  // ⚠️ ui-spec §1 未规定这组色值（PRD 只给了颜色语义），故在此登记为**新增 token**，
+  //    组件里**不得再写裸 hex**。
+  /** 绿 pill 底色：系统信号（系统导入）/ 三态「是」 */
+  bgPillSuccess: '#dcfce7',
+  /** 绿 pill 文字（深绿，保证在浅绿底上的对比度 ≥ 4.5:1） */
+  textPillSuccess: '#166534',
+  /** 绿 pill 边框 */
+  borderPillSuccess: '#86efac',
+  /** 红 pill 底色：止损 / 三态「否」（与 `bgSelectedDanger` 同值） */
+  bgPillDanger: '#fee2e2',
+  /** 红 pill 文字（深红，保证在浅红底上的对比度 ≥ 4.5:1） */
+  textPillDanger: '#991b1b',
+  /** 红 pill 边框（与 `borderSelectedDanger` 同值） */
+  borderPillDanger: '#fca5a5',
+  /** 橙 pill 底色：主观决策 */
+  bgPillWarning: '#ffedd5',
+  /** 橙 pill 文字（深橙，保证在浅橙底上的对比度 ≥ 4.5:1） */
+  textPillWarning: '#9a3412',
+  /** 橙 pill 边框 */
+  borderPillWarning: '#fdba74',
+  /** 灰 pill 底色：未复盘 / 三态「未标记」 */
+  bgPillNeutral: '#f3f4f6',
+  /** 灰 pill 文字 */
+  textPillNeutral: '#4b5563',
+  /** 灰 pill 边框 */
+  borderPillNeutral: '#d1d5db',
 
   // ── T62 补充：现网已在用、但 §1 建议表未覆盖的颜色（数值与现网一致） ──
   /** 紫色强调：已实现盈亏 / 胜率等特殊指标数字 */
