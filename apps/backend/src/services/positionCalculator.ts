@@ -166,7 +166,11 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
   for (const row of rows) {
     const st = state.get(row.asset_code) ?? { qty: 0, costBasis: 0 };
 
-    if (row.trade_type === 'buy') {
+    // 🔴 `add`（加仓）**必须**与 `buy` 同分支 —— 它是买入，不是卖出。
+    //   误落 else 分支 → 加仓被记成一笔「平仓」（凭空多出已实现盈亏、持仓被扣减），
+    //   复盘页胜率 / 盈亏比全部失真，且后续真实减仓因持仓被提前扣光而**整笔被跳过**。
+    //   与上方 `mapToCoreTrade` 的 `case 'buy': case 'add':` 共用分支保持同口径。
+    if (row.trade_type === 'buy' || row.trade_type === 'add') {
       st.costBasis += row.quantity * row.price + row.fee;
       st.qty += row.quantity;
     } else {

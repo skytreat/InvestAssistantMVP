@@ -9,6 +9,7 @@
  *   - duplicate trade (同日同标的同方向) → 409
  *   - quantity<=0 / price<0 → 400
  *   - 非法 trade_type → 400
+ *   - **交易类型白名单 ≡ DDL CHECK（7 种）**：add（加仓）→ 201、sell → 400 PARAM_INVALID
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
@@ -297,5 +298,162 @@ describe('Trade · 参数校验', () => {
     expect(dup.statusCode).toBe(409);
     const body = JSON.parse(dup.body);
     expect(body.error).toBe('TRADE_DUPLICATE');
+  });
+});
+
+/**
+ * 🔴 交易类型白名单（本次 bug 的修复面）
+ *
+ * 修复前白名单 = `['buy','sell','reduce','clear','dividend','bonus','transfer']`：
+ *   - `'sell'` 不在 DDL CHECK 内 → INSERT 撞约束 → **500 + 裸 SQLite 报错外泄**
+ *   - `'add'`（前端「加仓」）不在白名单内 → **400 PARAM_INVALID**（线上入口是坏的）
+ *
+ * 修复后白名单 = DDL CHECK = Requirements §5.1 的 7 种：
+ *   `['buy','add','reduce','clear','dividend','bonus','transfer']`
+ */
+describe('Trade · 交易类型白名单（≡ DDL CHECK）', () => {
+  const DDL_TYPES = ['buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'];
+
+  async function postTrade(payload: Record<string, unknown>) {
+    return bundle.app.inject({
+      method: 'POST',
+      url: '/api/trade',
+      headers: authHeaders(),
+      payload: {
+        trade_date: TRADE_DATE,
+        trade_time: '10:00:00',
+        quantity: 10,
+        price: 10,
+        ...payload,
+      },
+    });
+  }
+
+  it("'add'（加仓）→ 201，且持仓数量增加、均价按移动加权成本重算", async () => {
+    const CODE = 'szTYPE01';
+    // 建仓 100@10，手续费 5 → 成本 1005，持仓 100，均价 10.05
+    await seedBuy(CODE, 100, 10.0, 5);
+    const res = await postTrade({
+      asset_code: CODE,
+      trade_type: 'add',
+      trade_time: '10:00:01',
+      quantity: 100,
+      price: 12.0,
+      fee: 5,
+      trade_reason: '加仓测试',
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    // 加仓后：数量 100 → 200；均价 (100*10+5 + 100*12+5)/200 = 11.05
+    expect(body.data.position.totalQuantity).toBe(200);
+    expect(body.data.position.avgCost).toBeCloseTo(11.05, 6);
+    expect(body.data.position.totalCostBasis).toBeCloseTo(2210, 6);
+  });
+
+  it("'add' 缺 trade_reason → 400 TRADE_REASON_REQUIRED（Requirements §5.2）", async () => {
+    const CODE = 'szTYPE02';
+    await seedBuy(CODE, 100, 10.0, 5);
+    const res = await postTrade({
+      asset_code: CODE,
+      trade_type: 'add',
+      trade_time: '10:00:02',
+      quantity: 10,
+      price: 12.0,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('TRADE_REASON_REQUIRED');
+  });
+
+  it("'sell' → 400 PARAM_INVALID（DDL 不认；不 500、不落库、不外泄 SQLite 报错）", async () => {
+    const CODE = 'szTYPE03';
+    await seedBuy(CODE, 100, 10.0, 5);
+    const res = await postTrade({
+      asset_code: CODE,
+      trade_type: 'sell',
+      trade_time: '10:00:03',
+      quantity: 10,
+      price: 11.0,
+      trade_reason: '老客户端发 sell',
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('PARAM_INVALID');
+    // 文案须给出替代类型指引（部分卖出=reduce，全部卖出=clear）
+    expect(body.message).toContain('reduce');
+    expect(body.message).toContain('clear');
+    // 不得外泄底层 SQLite 报错
+    expect(res.body).not.toMatch(/CHECK constraint failed/i);
+    expect(res.body).not.toMatch(/SQLITE_CONSTRAINT/i);
+
+    // 未落库
+    const list = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}`,
+      headers: authHeaders(),
+    });
+    const rows = JSON.parse(list.body).data as any[];
+    expect(
+      rows.some((r) => r.trade_type === 'sell'),
+      'sell 不得落库',
+    ).toBe(false);
+  });
+
+  it("'foo'（非法类型）→ 400 PARAM_INVALID", async () => {
+    const res = await postTrade({
+      asset_code: 'szTYPE04',
+      trade_type: 'foo',
+      trade_time: '10:00:04',
+      trade_reason: '非法类型',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('PARAM_INVALID');
+  });
+
+  it('7 种类型逐个被接受（buy/add/reduce/clear/dividend/bonus/transfer）', async () => {
+    // 每个类型用独立标的，避免 UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time) 互撞
+    const sellTypes = ['reduce', 'clear'];
+    for (const type of DDL_TYPES) {
+      const CODE = `szT7${type}`;
+      // 卖出类需要先有持仓
+      if (sellTypes.includes(type)) {
+        await seedBuy(CODE, 100, 10.0, 0);
+      }
+      const res = await postTrade({
+        asset_code: CODE,
+        trade_type: type,
+        trade_time: '10:01:00',
+        quantity: type === 'clear' ? 100 : 10,
+        price: type === 'dividend' ? 0.5 : 10,
+        // 买入/加仓/减仓/清仓必须给理由；分红/送股/转增由系统固化
+        trade_reason:
+          sellTypes.includes(type) || type === 'buy' || type === 'add' ? `测试${type}` : undefined,
+      });
+      expect(res.statusCode, `类型 ${type} 应被接受`).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.data.trade_id).toBeGreaterThan(0);
+      expect(body.data.position).toBeDefined();
+    }
+  });
+
+  it('加仓后 GET /api/trade 能查到 trade_type=add 的记录', async () => {
+    const CODE = 'szTYPE05';
+    await seedBuy(CODE, 100, 10.0, 0);
+    await postTrade({
+      asset_code: CODE,
+      trade_type: 'add',
+      trade_time: '10:02:00',
+      quantity: 50,
+      price: 11,
+      trade_reason: '加仓落库校验',
+    });
+    const list = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/trade?asset_code=${CODE}&trade_type=add`,
+      headers: authHeaders(),
+    });
+    const rows = JSON.parse(list.body).data as any[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].trade_type).toBe('add');
+    expect(Number(rows[0].quantity)).toBe(50);
   });
 });

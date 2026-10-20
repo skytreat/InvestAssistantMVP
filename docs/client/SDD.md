@@ -1397,7 +1397,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/auth/register` | POST | 否 | 首个注册自动 admin；username UNIQUE |
 | `/api/auth/login` | POST | 否 | bcrypt 校验 + JWT（7d）+ refresh（30d）|
 | `/api/auth/refresh` | POST | refresh token | 刷新 access token |
-| `/api/trade` | POST | 是 | 7 种交易类型通用入口；前端校验 trade_type 合法性 |
+| `/api/trade` | POST | 是 | 7 种交易类型通用入口（`buy` 买入 / `add` 加仓 / `reduce` 减仓 / `clear` 清仓 / `dividend` 分红 / `bonus` 送股 / `transfer` 转增；**与 `user_trade_record.trade_type` 的 CHECK 约束逐项一致**）；非法类型（含历史别名 `'sell'`）→ **400 `PARAM_INVALID`**；`buy`/`add`/`reduce`/`clear` 必填 `trade_reason`（400 `TRADE_REASON_REQUIRED`）；`reduce`/`clear` 校验持仓充足（不足 → **409 `HOLDING_INSUFFICIENT`**）|
 | `/api/trade` | GET | 是 | 分页查询；支持 trade_type / date_range / symbol / reviewed 筛选 |
 | `/api/trade/:id` | PATCH | 是 | 仅复盘 4 字段可编辑；trade_type 不可变 |
 | `/api/trade/:id/soft-delete` | POST | 是 | 软删除（is_deleted=1）；已删除记录默认不返回 |

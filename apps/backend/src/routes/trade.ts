@@ -17,7 +17,50 @@ import { defaultMessage } from '../lib/errorMessages.js';
  * 所有路由需要 JWT 鉴权（由 registerRoutes 里的 onRequest hook 统一处理）
  */
 
-const REDUCE_TYPES = new Set(['sell', 'reduce', 'clear']);
+/**
+ * 交易类型白名单（**与 DDL CHECK + Requirements §5.1 三方一致**）
+ *
+ * 🔴 **本文件修复的 bug**：白名单曾写成
+ *   `['buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer']`
+ *   —— **含 DDL 不认的 `'sell'`、且漏了 DDL 认的 `'add'`**，后果：
+ *   ① `trade_type='sell'` → INSERT 撞 CHECK → **HTTP 500 + 裸 SQLite 报错外泄**
+ *   ② `trade_type='add'`（前端「加仓」选项）→ **400 PARAM_INVALID** ⇒ 线上入口是坏的
+ *
+ * 口径依据（三方一致，任一可查证）：
+ *   - `Requirements_simplified.md` §5.1：7 种（买入 / 加仓 / 减仓 / 清仓 + 分红 / 送股 / 转增）
+ *   - `config/configStore.ts` DDL：`CHECK (trade_type IN ('buy','add','reduce','clear','dividend','bonus','transfer'))`
+ *   - 实施计划 DEC-2 + T49 验收 ②：**移除 `sell`、加入 `add`**；`sell` 应为 400 非法值
+ *
+ * ⚠️ **`'sell'` 不是合法业务类型**（DEC-2 已裁定移除）：
+ *   部分卖出 = `'reduce'`（减仓），全部卖出 = `'clear'`（清仓）。
+ *   老客户端若仍发 `'sell'`，本入口返回 **400 PARAM_INVALID**（不落库、不 500），
+ *   并在 message 里给出替代类型提示 —— 兼容靠**报错文案指引**，不靠引入 DDL 外的语义别名。
+ */
+export const TRADE_TYPES = ['buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'] as const;
+
+export type TradeType = (typeof TRADE_TYPES)[number];
+
+/** 白名单查找表（路由入口校验用） */
+const TRADE_TYPE_SET: ReadonlySet<string> = new Set<string>(TRADE_TYPES);
+
+/**
+ * 非法类型的迁移提示（老客户端 → 合法类型的对照）
+ *
+ * `'sell'` 不在 DDL 与 Requirements §5.1 内，故**不做入口归一**（归一会引入 DDL 外的
+ * 第 8 种语义别名，正是本次 bug 的成因类别）；改为给出可执行的替代指引。
+ */
+const TRADE_TYPE_HINTS: Record<string, string> = {
+  sell: "trade_type 'sell' 不是合法类型：部分卖出请用 'reduce'（减仓），全部卖出请用 'clear'（清仓）",
+};
+
+/** 卖出类：需持仓充足性校验（Requirements §5.2 减仓/清仓不得超过当时持仓） */
+const REDUCE_TYPES = new Set<TradeType>(['reduce', 'clear']);
+
+/** 需用户填写操作理由的类型（Requirements §5.2：买入 / 加仓 / 减仓 / 清仓） */
+const NEED_REASON_TYPES = new Set<TradeType>(['buy', 'add', 'reduce', 'clear']);
+
+/** 系统自动导入类：理由由系统固化写入（Requirements §5.2 分红 / 送股 / 转增） */
+const AUTO_IMPORT_TYPES = new Set<TradeType>(['dividend', 'bonus', 'transfer']);
 
 /**
  * T87：`trade_time` 格式校验（秒级 HH:mm:ss）
@@ -102,7 +145,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     try {
       const body = request.body as {
         asset_code: string;
-        trade_type: 'buy' | 'sell' | 'reduce' | 'clear' | 'dividend' | 'bonus' | 'transfer';
+        trade_type: string;
         trade_date: string;
         trade_time?: string; // T87：秒级 HH:mm:ss，必填无默认
         quantity: number;
@@ -129,16 +172,21 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       if (body.quantity <= 0 || body.price < 0) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', '数量>0、价格>=0'));
       }
-      if (!['buy', 'sell', 'reduce', 'clear', 'dividend', 'bonus', 'transfer'].includes(body.trade_type)) {
-        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_type 非法'));
+      // 交易类型白名单（与 DDL CHECK 逐项一致，见文件头 TRADE_TYPES 注释）
+      if (!TRADE_TYPE_SET.has(body.trade_type)) {
+        const hint = TRADE_TYPE_HINTS[body.trade_type];
+        return reply
+          .code(400)
+          .send(
+            fail(400, 'PARAM_INVALID', hint ?? `trade_type 非法，仅支持 7 种：${TRADE_TYPES.join(' / ')}`),
+          );
       }
+      const tradeType = body.trade_type as TradeType;
 
-      const AUTO_IMPORT_TYPES = new Set(['dividend', 'bonus', 'transfer']);
-      const NEED_REASON_TYPES = new Set(['buy', 'sell', 'reduce', 'clear']);
       let tradeReason: string | null;
-      if (AUTO_IMPORT_TYPES.has(body.trade_type)) {
-        tradeReason = body.trade_reason ?? `自动导入 - ${body.trade_date} ${body.trade_type}`;
-      } else if (NEED_REASON_TYPES.has(body.trade_type)) {
+      if (AUTO_IMPORT_TYPES.has(tradeType)) {
+        tradeReason = body.trade_reason ?? `自动导入 - ${body.trade_date} ${tradeType}`;
+      } else if (NEED_REASON_TYPES.has(tradeType)) {
         if (!body.trade_reason?.trim()) {
           return reply
             .code(400)
@@ -149,7 +197,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         tradeReason = body.trade_reason ?? null;
       }
 
-      if (REDUCE_TYPES.has(body.trade_type)) {
+      if (REDUCE_TYPES.has(tradeType)) {
         // T84（P0-13）：必须传 trade_date —— 以卖出发生时点回放，
         // 否则尚未发生的买入会支撑更早的卖出（日期交错绕过校验）
         if (
@@ -164,7 +212,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           // B-10 裁决：HOLDING_INSUFFICIENT = HTTP 409（非 400）
           return reply
             .code(409)
-            .send(fail(409, 'HOLDING_INSUFFICIENT', `持仓不足：无法${body.trade_type} ${body.asset_code}`));
+            .send(fail(409, 'HOLDING_INSUFFICIENT', `持仓不足：无法${tradeType} ${body.asset_code}`));
         }
       }
 
@@ -178,7 +226,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         .run(
           user.sub,
           body.asset_code,
-          body.trade_type,
+          tradeType,
           body.trade_date,
           body.trade_time,
           body.quantity,
@@ -192,7 +240,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       writeSystemLog({
         logType: 'trade',
         level: 'SUCCESS',
-        message: `录入${body.trade_type} ${body.asset_code} qty=${body.quantity} price=${body.price}`,
+        message: `录入${tradeType} ${body.asset_code} qty=${body.quantity} price=${body.price}`,
       });
 
       // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
@@ -206,10 +254,19 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         }),
       );
     } catch (err: any) {
-      if (String(err).includes('UNIQUE')) {
+      const raw = String(err);
+      if (raw.includes('UNIQUE')) {
         return reply.code(409).send(fail(409, 'TRADE_DUPLICATE', '同日同标的同方向交易已存在'));
       }
-      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+      // 🔴 CHECK 约束失败 → 400 PARAM_INVALID（不再 500 + 裸 SQLite 报错外泄）
+      //   本次 bug 的症状之一就是「trade_type='sell' → 500 + 裸 SQLite 报错」；
+      //   白名单修好后这条路理论上不可达，但保留为**兜底**：任何漏网的值都不得以 500 泄漏内部报错。
+      if (raw.includes('CHECK constraint failed')) {
+        return reply
+          .code(400)
+          .send(fail(400, 'PARAM_INVALID', '数据不满足数据库约束（trade_type / quantity / price 非法）'));
+      }
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', raw));
     }
   });
 
