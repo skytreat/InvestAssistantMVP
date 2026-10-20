@@ -260,7 +260,7 @@ effect cleanup `clearTimeout` ⇒ 连续改多个控件**只发一次**。
 | Run | run id | Stage 2 | build-and-test | 结论 |
 |---|---|---|---|---|
 | #1 | `39458672254` | pass | pass | ✅ success |
-| #2 | 见 commit | | | |
+| #2 | `39459492517` | pass | pass | ✅ success |
 
 ---
 
