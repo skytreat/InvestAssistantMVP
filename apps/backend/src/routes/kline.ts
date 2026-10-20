@@ -26,6 +26,16 @@ import { ok, fail } from '../lib/envelope.js';
  *
  * 返回：klines（**升序** OHLCV）+ indicators（后端算好 MA5/10/20/60 + MACD / RSI）
  *      + signals（该标的近 20 条信号，**升序**，与 klines 同方向）
+ *
+ * ⚠️ **signals[] 每项含 `metrics_json`**（信号指标明细）：
+ *   - **形态 = 原始 JSON 文本**（SQLite TEXT 列，由 `signalService.serializeMetrics` 写入），
+ *     与 `GET /api/signal`（`SELECT *`）的下发形态**逐字节一致** ⇒ 两个端点口径统一。
+ *   - 为何下发**文本**而非解析后的对象：解析属于**展示层**职责，
+ *     前端已有 `parseMetricsJson()`（`apps/frontend/src/indicators/chartBars.ts`），
+ *     两端共用同一套解析口径；后端解析反而会让两个端点的字段类型**分叉**，
+ *     且遇到历史脏数据（非 JSON 文本）时会把整个端点打成 500。
+ *   - **收益**：K 线页 hover tooltip 展示指标明细（F-K8 / T70 ③）**不再需要**额外发
+ *     `GET /api/signal?asset_code=` 补取 ⇒ 少一次网络往返（PRD §5.2「零网络请求」）。
  */
 
 interface KlineRow {
@@ -200,12 +210,15 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       const rsiResult = calculateRSI(closes, rsiPeriod);
 
       // 查询该标的的近 N 条策略信号：先取最近 20 条，再按 trade_date 升序返回（与 klines 同序）
+      //
+      // ⚠️ `metrics_json` 是 **SQLite TEXT 列**（原始 JSON 文本）⇒ 原样下发，**不在后端解析**。
+      //    与 `GET /api/signal`（`SELECT *`）同形态 ⇒ 两个端点口径统一（前端同一个 parseMetricsJson 即可）。
       const db = ConfigStore.getInstance().db;
       const signals = db
         .prepare(
-          `SELECT trade_date, direction, label, strength, plugin_id
+          `SELECT trade_date, direction, label, strength, plugin_id, metrics_json
          FROM (
-           SELECT trade_date, direction, label, strength, plugin_id
+           SELECT trade_date, direction, label, strength, plugin_id, metrics_json
            FROM user_strategy_signal
            WHERE asset_code = ? AND is_deleted = 0
            ORDER BY trade_date DESC
@@ -219,6 +232,8 @@ export async function registerKlineRoutes(app: FastifyInstance) {
         label: string;
         strength: number | null;
         plugin_id: string;
+        /** 原始 JSON 文本；无指标时为 null（库里的 NULL，不是字符串 'null'）*/
+        metrics_json: string | null;
       }>;
 
       return reply.send(
