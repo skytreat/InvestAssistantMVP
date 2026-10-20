@@ -49,6 +49,18 @@ import type { SubIndicatorKind } from '../components/KlineChart';
  * | 1 | **K 线页必然「加载失败」** | 旧代码请求 `/kline/${symbol}` —— **该路由不存在**（真实路由是 `GET /api/quote/:symbol/kline`） | 本文件改为 `/quote/${symbol}/kline`（`api` 实例的 `baseURL` 是 `/api`）|
  * | 2 | 从「标的详情 Modal」的 `/kline?symbol=xxx` 跳过来**仍显示默认 sh600000** | 旧代码**不读 `?symbol=`** | 本文件用 `useSearchParams()` 消费 `?symbol=` |
  *
+ * ## 🔴 T73：信号指标明细**随 K 线一起下发**（省一次网络往返）
+ *
+ * ```
+ * GET /api/quote/:symbol/kline
+ *   └─ data.signals[] 每项带 metrics_json（原始 JSON 字符串 | null）
+ *        └─▶ parseMetricsJson ──▶ SignalMarker.metrics ──▶ hover 面板的「指标明细」行
+ * ```
+ *
+ * ⚠️ **T70 时代**因为后端不下发 `metrics_json`，本页额外请求了一次
+ *    `GET /api/signal?asset_code=&page_size=200` 来补明细 ⇒ **两次往返**。
+ *    后端补齐下发后，本次补取**已删除**（本页**只发一次** K 线请求）。
+ *
  * ## 复权口径（F-K1）
  *
  * 后端白名单是**四值** `qfq | bfq | hfq | raw`（`routes/kline.ts`），
@@ -120,21 +132,6 @@ interface KlineApiResponse {
   };
 }
 
-/** `GET /api/signal` 的响应体（envelope 内层）*/
-interface SignalApiResponse {
-  code?: number | string;
-  success?: boolean;
-  message?: string;
-  data?: Array<{
-    trade_date: string;
-    direction: string;
-    label: string;
-    strength: number | null;
-    plugin_id: string;
-    metrics_json?: string | null;
-  }>;
-}
-
 /**
  * 判断 envelope 是否成功
  *
@@ -191,7 +188,7 @@ export default function Kline() {
     setSymbol(urlSymbol);
   }, [urlSymbol]);
 
-  /** 取数：K 线 + 信号明细（指标明细用）*/
+  /** 取数：K 线（**含信号指标明细** `metrics_json` —— T73 起随 K 线一并下发）*/
   const load = useCallback(
     async (target: string, fqParam: 'qfq' | 'hfq' | 'bfq', dayCount: number) => {
       if (!target) return;
@@ -212,29 +209,19 @@ export default function Kline() {
         const raw = Array.isArray(body.data.klines) ? body.data.klines : [];
         const klineSignals = Array.isArray(body.data.signals) ? body.data.signals : [];
 
-        // 信号明细（`metrics_json`）：K 线接口不返回 ⇒ 单独取一次（失败则降级为无明细）
-        const metricsByKey = new Map<string, Record<string, unknown> | null>();
-        try {
-          const sigRes = await api.get<SignalApiResponse>('/signal', {
-            params: { asset_code: target, page_size: 200 },
-          });
-          const sigBody = sigRes.data;
-          if (isOkEnvelope(sigBody) && Array.isArray(sigBody.data)) {
-            for (const row of sigBody.data) {
-              metricsByKey.set(`${row.trade_date}|${row.plugin_id}`, parseMetricsJson(row.metrics_json));
-            }
-          }
-        } catch {
-          // 明细取不到不影响主流程 —— 标记仍显示方向 / 强度
-        }
-
+        // 🔴 T73：信号指标明细（`metrics_json`）**由 K 线接口一并下发**
+        //    ⇒ 不再单独请求 `/api/signal` 补取（省一次网络往返）。
+        //
+        //    ⚠️ 后端下发的是**原始 JSON 字符串**（`string | null`）；
+        //       无指标时是**库的 NULL**（不是字符串 `'null'`）⇒ 交给 `parseMetricsJson` 统一处理
+        //       （字符串 / 对象 / 脏数据都吃，解析失败一律降级为 `null`，不炸整页）。
         const signalMarkers: SignalMarker[] = klineSignals.map((s) => ({
           trade_date: s.trade_date,
           direction: s.direction,
           label: s.label,
           strength: s.strength ?? null,
           plugin_id: s.plugin_id,
-          metrics: metricsByKey.get(`${s.trade_date}|${s.plugin_id}`) ?? null,
+          metrics: parseMetricsJson(s.metrics_json),
         }));
 
         // 🔴 T71：这里只存**原始日线 + 信号**，指标由前端按当前参数算

@@ -38,6 +38,7 @@ import { calculateMACD, calculateRSI, calculateSMA } from '../../src/indicators/
 import {
   buildChartBars,
   aggregateBars,
+  formatIndicator,
   parseMetricsJson,
   type ChartBar,
   type RawBar,
@@ -698,6 +699,47 @@ describe('T70 · 信号标记（F-K8）', () => {
     expect(parseMetricsJson('not-json')).toBeNull();
     expect(parseMetricsJson(null)).toBeNull();
     expect(parseMetricsJson(undefined)).toBeNull();
+  });
+
+  /**
+   * T73 · hover 面板的 MA 行**必须活着**
+   *
+   * ⚠️ **历史坑**（T71 遗留）：`ChartBar` 的 MA 字段从 `ma5/ma10/ma20/ma60`
+   *    改名成**线序号** `ma1..ma4`（周期可编辑 ⇒ 字段名不能写死周期）。
+   *    一旦 hover 面板没跟着改，就会出现两种坏结果：
+   *    ① 编译不过（`bar.ma5` 不存在）；② 悄悄把 MA 行删掉 / 留成未使用变量
+   *    （`maPeriods` / `maValues` 变成 unused ⇒ eslint 报错）。
+   *
+   * ⇒ 本用例钉死：**MA 行按「当前周期」出标签，值取自 `ma1..ma4`**。
+   */
+  it('T73: hover 面板的 MA 行按**当前周期**出标签、值取自 `ma1..ma4`（不许被删掉 / 不许写死周期）', () => {
+    const bars = buildChartBars(makeBars(20), 'day', signals);
+    const bar = bars[2];
+    render(<KlineHoverPanel bar={bar} showMa subIndicator="macd" maPeriods={[25, 10, 20, 60]} />);
+
+    const panel = screen.getByTestId('kline-hover-panel');
+    // 标签 = **传入的当前周期**（不是写死的 5/10/20/60）
+    expect(panel).toHaveTextContent('MA25');
+    expect(panel).toHaveTextContent('MA10');
+    expect(panel).toHaveTextContent('MA20');
+    expect(panel).toHaveTextContent('MA60');
+    // 值 = `ma1..ma4`（线序号 ⇒ 与 periods 一一对应）
+    expect(panel).toHaveTextContent(`MA25 ${formatIndicator(bar.ma1)}`);
+    expect(panel).toHaveTextContent(`MA10 ${formatIndicator(bar.ma2)}`);
+    expect(panel).toHaveTextContent(`MA20 ${formatIndicator(bar.ma3)}`);
+    expect(panel).toHaveTextContent(`MA60 ${formatIndicator(bar.ma4)}`);
+  });
+
+  it('T73: `showMa=false` → MA 行不出现（但信号行仍在）', () => {
+    const bars = buildChartBars(makeBars(20), 'day', signals);
+    const bar = bars[2];
+    render(<KlineHoverPanel bar={bar} showMa={false} subIndicator="macd" />);
+
+    const panel = screen.getByTestId('kline-hover-panel');
+    expect(panel).not.toHaveTextContent('MA5');
+    expect(panel).not.toHaveTextContent('MA10');
+    // 信号行不受 MA 显隐影响
+    expect(screen.getByTestId('kline-hover-signal')).toHaveTextContent('买入');
   });
 });
 
