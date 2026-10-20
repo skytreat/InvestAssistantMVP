@@ -86,13 +86,22 @@ jobs:
       - name: Run smoke tests (m1 only)
         run: npx vitest run apps/backend/tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
 
+      # Frontend tests (T61) — jsdom 环境，不依赖后端与行情库
+      - name: Run frontend tests
+        run: npm run test -w @invest/frontend
+
+      # Frontend coverage — 与 G2.4（前端 coverage ≥60%）对齐
+      - name: Run frontend tests with coverage
+        run: npm run test:coverage -w @invest/frontend
+
       # 合并 coverage 报告到根目录 coverage/ 下，方便上传和统一查看
-      # 两个 workspace 各自生成，不会互相覆盖
+      # 各 workspace 各自生成，不会互相覆盖
       - name: Consolidate coverage
         run: |
-          mkdir -p coverage/core coverage/backend
+          mkdir -p coverage/core coverage/backend coverage/frontend
           cp -r packages/core/coverage/* coverage/core/ 2>/dev/null || true
           cp -r apps/backend/coverage/* coverage/backend/ 2>/dev/null || true
+          cp -r apps/frontend/coverage/* coverage/frontend/ 2>/dev/null || true
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
