@@ -109,7 +109,7 @@ export function validateTradeDate(d: unknown): d is string {
 /**
  * 占用记录（预检命中时返回）
  *
- * `is_deleted` 保留在返回结构里是为了**可观测**（软删记录仍占用唯一键，见下方注释），
+ * `is_deleted` 保留在返回结构里是为了**可观测**（理论上恒为 0 —— 预检只查活记录），
  * 但**预检结论不因它改变** —— 口径必须与 INSERT 的实际行为一致。
  */
 export interface TradeTimeOccupancy {
@@ -121,20 +121,23 @@ export interface TradeTimeOccupancy {
 /**
  * 预检查询 SQL（导出供测试做 `EXPLAIN QUERY PLAN` 性能断言 —— **测的就是线上这条语句**）
  *
- * 🔴 **口径（2026-10-20 实测，勿假设）**：
- *   `user_trade_record` 的唯一约束是
- *   `UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)` ——
- *   **不含 `is_deleted`** ⇒ **软删除的记录仍然占用唯一键**
- *   （实测：软删后再 INSERT 同键 → `UNIQUE constraint failed`）。
- *   ⇒ 故本查询**刻意不加 `is_deleted = 0`**：
- *     加了就会让预检说「未占用」而提交时吃 409 —— 预检与后端行为不一致，
- *     等于把「提交后才报错」的问题原样留给用户。
+ * 🔴 **口径（2026-10-20 实测 + T87b 修复后）**：
+ *   `user_trade_record` 的唯一键是**部分唯一索引**
+ *   `idx_user_trade_record_unique_live ON (user_id, asset_code, trade_type, trade_date, trade_time)
+ *    WHERE is_deleted = 0`
+ *   —— **只约束「未软删」的活记录** ⇒
+ *     ① 软删记录**不再占用**唯一键（同一笔可以重新录入）
+ *     ② 未软删的同键记录**仍占用**（唯一性没丢）
+ *   ⇒ 故本查询**必须**带 `is_deleted = 0`：
+ *     少了它 → 预检会说「已占用」而提交却成功（预检与后端行为矛盾）；
+ *     多了它不存在 —— 唯一键本身就是按 `is_deleted = 0` 定义的。
  *
- * ⚠️ 走 `sqlite_autoindex_user_trade_record_1`（5 列唯一索引）**等值 seek**，
- *   不扫表（实测 `EXPLAIN QUERY PLAN` → `SEARCH ... USING INDEX`）。
+ * ⚠️ `is_deleted = 0` 同时是**性能前提**：部分索引只覆盖活记录，
+ *   查询不带该条件时 SQLite **无法**使用该索引（实测 `EXPLAIN QUERY PLAN` → `SCAN user_trade_record`），
+ *   带条件才是 `SEARCH ... USING INDEX idx_user_trade_record_unique_live`（等值 seek，不扫表）。
  */
 export const TRADE_TIME_OCCUPANCY_SQL = `SELECT id, created_at, is_deleted FROM user_trade_record
-   WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND trade_date = ? AND trade_time = ?`;
+   WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND trade_date = ? AND trade_time = ? AND is_deleted = 0`;
 
 /**
  * 查「该用户 + 该标的 + 该类型 + 该日 + 该时刻」是否已被占用
@@ -381,8 +384,9 @@ export async function registerTradeRoutes(app: FastifyInstance) {
    *
    * 🔴 **只查当前用户**：`user_id` 取自 JWT 载荷 `sub`，**绝不信请求参数**（避免越权探测他人占用情况）。
    *
-   * ⚠️ **软删除记录仍然占用**（口径与 INSERT 一致，详见 `TRADE_TIME_OCCUPANCY_SQL` 注释）：
-   *   唯一键不含 `is_deleted` ⇒ 软删记录也返回 `taken: true`。
+   * ⚠️ **软删除记录不再占用**（T87b：唯一键改为部分唯一索引 `WHERE is_deleted = 0`）：
+   *   软删后同一键**可以重新录入** ⇒ 预检返回 `taken: false`，
+   *   与 `POST /api/trade` 的实际行为一致（否则会出现「预检说占用、提交却成功」的新矛盾）。
    */
   app.get('/api/trade/check-duplicate', async (request, reply) => {
     try {
@@ -574,9 +578,24 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const db = ConfigStore.getInstance().db;
-    const info = db
-      .prepare(`UPDATE user_trade_record SET is_deleted = 0 WHERE id = ? AND user_id = ? AND is_deleted = 1`)
-      .run(tradeId, user.sub);
+    let info: { changes: number };
+    try {
+      info = db
+        .prepare(
+          `UPDATE user_trade_record SET is_deleted = 0 WHERE id = ? AND user_id = ? AND is_deleted = 1`,
+        )
+        .run(tradeId, user.sub);
+    } catch (err: any) {
+      // 🔴 T87b：唯一键改为**部分唯一索引（WHERE is_deleted = 0）**后，
+      //   「恢复」会把行**放回**索引里 ⇒ 若期间已有另一条同键的活记录，恢复会撞唯一键。
+      //   ⇒ 返回 409 TRADE_DUPLICATE（**不外泄裸 SQLite 报错**），语义与 POST /api/trade 的重复一致。
+      if (String(err).includes('UNIQUE')) {
+        return reply
+          .code(409)
+          .send(fail(409, 'TRADE_DUPLICATE', '恢复失败：已存在同一标的同类型同时刻的交易'));
+      }
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
     if (info.changes === 0) {
       return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     }

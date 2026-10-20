@@ -14,7 +14,7 @@
  *      （`taken:false` 的语义是「确定没被占用」；把「查失败」也表达成它，
  *        前端会把「查失败」误当「没占用」而放行提交 —— 正是本端点要消灭的体验。）
  *   ③ **只查当前用户**（`user_id` 取自 token，**绝不信请求参数**）
- *   ④ **软删除记录仍然占用** —— 以 DDL 实测为准（见下方「软删除口径」注释块）
+ *   ④ **软删除记录不再占用唯一键**（T87b：唯一键改为部分唯一索引 `WHERE is_deleted = 0`）
  *   ⑤ 性能：预检是**单条等值索引 seek**，不扫表（`EXPLAIN QUERY PLAN` 断言）
  *
  * ── SQLite 隔离 ──
@@ -182,22 +182,23 @@ describe('G4.5 · check-duplicate · 基本语义', () => {
 });
 
 /**
- * 🔴 软删除口径 —— **以 DDL 实测为准**（2026-10-20 实测，非推断）
+ * 🔴 软删除口径 —— **以 DDL 实测为准**（T87b 修复后口径已翻转）
  *
- * `user_trade_record` 的唯一约束是
- *   `UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)`
- * —— **不含 `is_deleted`** ⇒ **软删除的记录仍然占用唯一键**。
+ * `user_trade_record` 的唯一键是**部分唯一索引**
+ *   `idx_user_trade_record_unique_live ON (user_id, asset_code, trade_type, trade_date, trade_time)
+ *    WHERE is_deleted = 0`
+ * —— **只约束「未软删」的活记录** ⇒ **软删除的记录不再占用唯一键**。
  *
  * 实测证据（探针脚本）：
  *   1. 插入 (u, code, buy, 2026-10-20, 10:30:00) → 成功
  *   2. `UPDATE ... SET is_deleted = 1` → 软删
- *   3. 再 INSERT 同键 → `SqliteError: UNIQUE constraint failed: ...`
+ *   3. 再 INSERT 同键 → **成功**（修复前会抛 `UNIQUE constraint failed`）
  *
- * ⇒ 预检**必须**把软删记录算作「已占用」，否则预检说「未占用」而提交吃 409，
- *   预检与后端行为不一致 ⇒ 预检形同虚设。
+ * ⇒ 预检**必须**只看活记录（`is_deleted = 0`），否则会造出
+ *   「预检说占用、提交却成功」的新矛盾。
  */
-describe('G4.5 · check-duplicate · 软删除口径（DDL 实测）', () => {
-  it('软删除记录仍占用唯一键 → taken:true（与 INSERT 实际行为一致）', async () => {
+describe('G4.5 · check-duplicate · 软删除口径（部分唯一索引）', () => {
+  it('软删除记录不再占用唯一键 → taken:false（与 INSERT 实际行为一致）', async () => {
     const id = insertTrade(USER_A.id, 'szCHKSOFT', 'buy', '2026-06-06', '14:00:00');
     db.prepare('UPDATE user_trade_record SET is_deleted = 1 WHERE id = ?').run(id);
 
@@ -208,10 +209,10 @@ describe('G4.5 · check-duplicate · 软删除口径（DDL 实测）', () => {
       trade_time: '14:00:00',
     });
     expect(status).toBe(200);
-    expect(body.data.taken, '软删记录仍占用唯一键 → 预检必须报 taken:true').toBe(true);
+    expect(body.data.taken, '软删记录不再占用唯一键 → 预检必须报 taken:false').toBe(false);
   });
 
-  it('实证锚点：软删后再 INSERT 同键确实报 UNIQUE（证明上面的 taken:true 是对的）', () => {
+  it('实证锚点：软删后再 INSERT 同键**确实成功**（证明上面的 taken:false 是对的）', () => {
     const id = insertTrade(USER_A.id, 'szCHKSOFT2', 'buy', '2026-06-07', '14:00:00');
     db.prepare('UPDATE user_trade_record SET is_deleted = 1 WHERE id = ?').run(id);
     expect(() =>
@@ -222,7 +223,7 @@ describe('G4.5 · check-duplicate · 软删除口径（DDL 实测）', () => {
            VALUES (?, 'szCHKSOFT2', 'buy', '2026-06-07', '14:00:00', 100, 10, 0, 0)`,
         )
         .run(USER_A.id),
-    ).toThrow(/UNIQUE/);
+    ).not.toThrow();
   });
 
   it('未软删的记录同样 taken:true（对照组）', async () => {
@@ -365,8 +366,9 @@ describe('G4.5 · check-duplicate · 鉴权与性能', () => {
     expect(detail).toContain('USING INDEX');
     // 不扫表（'SEARCH' 里不含 'SCAN'，两者互不为子串）
     expect(detail).not.toContain('SCAN');
-    // 用的是 5 列唯一索引（UNIQUE 约束的自动索引），且 5 列全部等值约束
-    expect(detail).toMatch(/sqlite_autoindex_user_trade_record_\d+/);
+    // 用的是 5 列**部分唯一索引**（T87b：唯一键改为 WHERE is_deleted = 0 的部分索引），
+    // 且 5 列全部等值约束
+    expect(detail).toContain('idx_user_trade_record_unique_live');
     expect(detail).toContain(
       '(user_id=? AND asset_code=? AND trade_type=? AND trade_date=? AND trade_time=?)',
     );

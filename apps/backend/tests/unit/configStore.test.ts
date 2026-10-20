@@ -3,7 +3,7 @@
  *
  * 覆盖 src/config/configStore.ts：
  *   - getInstance 单例行为（多次调用返回同一实例）
- *   - _ensureTradeRecordUniqueConstraint 空表迁移路径
+ *   - _ensureTradeRecordUniqueConstraint 旧 schema 迁移路径（T87b：表级 UNIQUE → 部分唯一索引）
  *   - _ensureSystemLogCheckConstraint 表已有预期约束时跳过
  *   - writeLog 写入 system_log 表
  */
@@ -190,16 +190,30 @@ describe('configStore — _ensureTradeRecordReviewColumns（G6a ALTER 补列）'
       // 3b. T87：trade_time 已由 created_at 迁移而来，且为合法 HH:mm:ss
       expect(rows[0].trade_time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
 
-      // 3c. T87 + T49：UNIQUE 已含 trade_time，trade_type CHECK 已含 add
+      // 3c. T87：UNIQUE 已含 trade_time，trade_type CHECK 已含 add
+      //      T87b：表级 UNIQUE 已被**部分唯一索引**取代（WHERE is_deleted = 0）
       const ddl = (
         store.db
           .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
           .get() as { sql: string }
       ).sql;
       expect(ddl).toContain('trade_time');
-      expect(ddl).toMatch(/UNIQUE\s*\(user_id, asset_code, trade_type, trade_date, trade_time\)/);
       expect(ddl).toContain("'add'");
       expect(ddl).not.toMatch(/IN \([^)]*'sell'/);
+      expect(ddl, '表级 UNIQUE 已移除（唯一键改由部分唯一索引承担）').not.toMatch(/UNIQUE\s*\(/i);
+
+      const idxSql = (
+        store.db
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name = 'idx_user_trade_record_unique_live'",
+          )
+          .get() as { sql: string } | undefined
+      )?.sql;
+      expect(idxSql, '部分唯一索引应存在').toBeTruthy();
+      expect(idxSql!).toMatch(
+        /ON\s+"?user_trade_record"?\s*\(user_id, asset_code, trade_type, trade_date, trade_time\)/i,
+      );
+      expect(idxSql!).toMatch(/WHERE\s+is_deleted\s*=\s*0/i);
 
       // 3d. 迁移后可按新唯一键追加同日的第二笔（不同成交时间）
       // 先补 user_account —— legacy 表只有 trade_record，FK 目标不存在会直接违例

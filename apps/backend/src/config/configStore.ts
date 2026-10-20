@@ -9,20 +9,19 @@ import fs from 'node:fs';
  * - DDL 全部幂等，支持重复启动不报错
  */
 
-// DDL 脚本（全部 CREATE TABLE IF NOT EXISTS）
-const DDL_SQL = `
--- 用户账户（MVP 单用户但保留多用户结构）
-CREATE TABLE IF NOT EXISTS user_account (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE CHECK(length(username) >= 3 AND length(username) <= 32),
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
-
--- 交易记录
-CREATE TABLE IF NOT EXISTS user_trade_record (
+/**
+ * `user_trade_record` 的**最终 schema**（列 + 约束）—— 单一真相源
+ *
+ * 🔴 **表级 UNIQUE 约束已被移除**（T87b）—— 改用**部分唯一索引**
+ *    （`TRADE_RECORD_UNIQUE_INDEX_SQL`，见下方注释）。
+ *    表级 UNIQUE **无法部分化**（不能带 WHERE 条件）⇒ 会把**软删记录也纳入约束**
+ *    ⇒ 软删记录永久占用唯一键。修复后软删记录不再占用唯一键。
+ *
+ * 这段常量被两处复用，保证「新建库」与「旧库重建」产出的 schema **逐字一致**：
+ *   ① DDL_SQL 的 `CREATE TABLE IF NOT EXISTS user_trade_record (...)`
+ *   ② `_ensureTradeRecordUniqueConstraint()` 的幂等表重建
+ */
+const TRADE_RECORD_COLUMNS_SQL = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     asset_code TEXT NOT NULL,
@@ -43,9 +42,51 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
     remark TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
+`;
+
+/**
+ * 唯一键：**部分唯一索引**（只约束「未软删」的活记录）
+ *
+ * 🔴 为什么必须是「部分索引」而不是表级 UNIQUE：
+ *   SQLite 的**表级 UNIQUE 无法部分化**（不支持 `WHERE` 条件）⇒
+ *   表级 UNIQUE 把软删记录一并纳入约束 ⇒ 软删后同一键**再也录不进去**，
+ *   而 `GET /api/trade` 过滤了 `is_deleted=0` ⇒ 用户**看不到**那条记录却提交必 409
+ *   —— 典型的「幽灵占用」。部分索引 `WHERE is_deleted = 0` 只约束活记录：
+ *     - 未软删时同键**仍被拒**（唯一性没丢）
+ *     - 软删后同键**可再次录入**（幽灵占用消失）
+ *
+ * ⚠️ 索引名固定为 `idx_user_trade_record_unique_live`：
+ *   幂等判定（`_inspectTradeRecordUniqueState`）、预检 SQL 的 `EXPLAIN QUERY PLAN`
+ *   断言都依赖它 —— 改名 = 契约漂移。
+ */
+const TRADE_RECORD_UNIQUE_INDEX_NAME = 'idx_user_trade_record_unique_live';
+const TRADE_RECORD_UNIQUE_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS ${TRADE_RECORD_UNIQUE_INDEX_NAME}
+    ON user_trade_record(user_id, asset_code, trade_type, trade_date, trade_time)
+    WHERE is_deleted = 0`;
+
+// DDL 脚本（全部 CREATE TABLE IF NOT EXISTS）
+const DDL_SQL = `
+-- 用户账户（MVP 单用户但保留多用户结构）
+CREATE TABLE IF NOT EXISTS user_account (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE CHECK(length(username) >= 3 AND length(username) <= 32),
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+-- 交易记录
+-- ⚠️ 表级 UNIQUE 已移除（T87b）：唯一键改由**部分唯一索引**承担
+--    （idx_user_trade_record_unique_live，WHERE is_deleted = 0），
+--    以便软删记录不再永久占用唯一键。
+--    ⚠️ 该索引**不在本段 DDL 里建**：存量库可能还没有 trade_time 列，
+--    建索引会直接报 "no such column: trade_time" 而**卡死启动**。
+--    ⇒ 索引统一由 _ensureTradeRecordUniqueConstraint() 负责
+--      （新库 ⇒ 直接补建；旧库 ⇒ 表重建时一并建好）。
+--    改已有表的约束必须走幂等表重建，见 _ensureTradeRecordUniqueConstraint()。
+CREATE TABLE IF NOT EXISTS user_trade_record (${TRADE_RECORD_COLUMNS_SQL});
 CREATE INDEX IF NOT EXISTS idx_trade_user_date ON user_trade_record(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_asset ON user_trade_record(user_id, asset_code);
 
@@ -159,10 +200,12 @@ export class ConfigStore {
     // 初始化所有表（幂等，重复运行安全）
     this._db.exec(DDL_SQL);
 
-    // SQLite CREATE TABLE IF NOT EXISTS 对已存在表无效——启动时检测并补齐缺失的列与 UNIQUE 约束
-    // 顺序要求：先补列（ALTER ADD COLUMN），让随后的 UNIQUE 重建能携带新列
+    // SQLite CREATE TABLE IF NOT EXISTS 对已存在表无效——启动时检测并补齐缺失的列与唯一键
+    // 顺序要求：先补列（ALTER ADD COLUMN，不重建表），让随后的表重建能携带新列；
+    //           表重建**全表只有这一处**（AGENTS.md「DDL 变更判据」：多次 DROP/RENAME = 数据丢失风险）
     this._ensureTradeRecordReviewColumns();
 
+    // T87b：唯一键从「表级 UNIQUE 约束」迁移到「部分唯一索引（WHERE is_deleted = 0）」
     this._ensureTradeRecordUniqueConstraint();
 
     // system_log 的 CHECK 白名单也需要迁移（smoke-m1 先 init 会建旧 schema，smoke-m2 复用导致 plugin_execute 被拒绝）
@@ -290,139 +333,279 @@ export class ConfigStore {
   }
 
   /**
-   * T87：把 user_trade_record 迁移到**最终 schema**：
-   *   - 新增 `trade_time TEXT NOT NULL`（秒级 HH:mm:ss）
-   *   - UNIQUE 改为 (user_id, asset_code, trade_type, trade_date, trade_time)  —— **quantity 不进主键**
-   *   - trade_type CHECK 改为 7 种（`add` 替换 `sell`，DEC-2 / T49）
+   * T87b：把 `user_trade_record` 的唯一键从**表级 UNIQUE 约束**迁移到**部分唯一索引**
    *
-   * ⚠️ 为什么一次做完 T87 + T49 两项：AGENTS.md「DDL 变更判据」要求
-   * 「多个幂等重建若落在同一张表上，**合并为一次重建**，不要叠加多次 DROP/RENAME」。
-   * 因此本函数直接产出最终形态；T49 的 DDL 部分因此成为 no-op（应用层改动仍在 T49）。
+   * ── 为什么要迁（P0 数据缺陷）──
+   *   旧表级约束 `UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)`
+   *   **不含 is_deleted** ⇒ **软删记录永久占用唯一键**。用户可见症状：
+   *     ① 软删一笔交易后，同一标的/类型/日期/时刻**再也录不进去**（提交必 409 TRADE_DUPLICATE）；
+   *     ② 但 `GET /api/trade` 过滤了 `is_deleted = 0` ⇒ **用户看不到那条记录**；
+   *     ⇒ 「列表里没有这一笔，但系统说重复」—— 典型的**幽灵占用**。
    *
-   * SQLite 不能 ALTER TABLE 加 NOT NULL 列 / 改 UNIQUE，只能重建：
-   *   CREATE new → INSERT SELECT → DROP old → RENAME
+   *   修法：SQLite 的**表级 UNIQUE 无法部分化**（不支持 WHERE 条件）
+   *   ⇒ 必须去掉表级约束 + 改用部分唯一索引 `WHERE is_deleted = 0`。
+   *
+   * ── 幂等策略（三态判定，见 `_inspectTradeRecordUniqueState`）──
+   *   ① `ready`         —— 无表级 UNIQUE + 有部分唯一索引 ⇒ **一个字节都不动**（重复启动零动作）
+   *   ② `missing-index` —— 表已是最终形态、只差索引 ⇒ **只补建索引**（不重建表、不碰数据）
+   *   ③ `legacy`        —— 仍有表级 UNIQUE ⇒ **幂等表重建**
+   *      （建新表 → 灌数据 → 删旧表 → 改名 → 建索引，全程包在 `db.transaction()` 里）
+   *
+   * ⚠️ **本表只此一处做表重建**（AGENTS.md「DDL 变更判据」：多个幂等重建落在同一张表上
+   *   要**合并为一次**，不要叠加多次 DROP/RENAME）。
+   *   `_ensureTradeRecordReviewColumns()` 只做 `ALTER TABLE ADD COLUMN`（不重建），
+   *   且在**本函数之前**执行 ⇒ 重建时新表已含复盘 4 列，两处不打架。
+   *
+   * ⚠️ 迁移失败**不阻塞启动**：DB 保持旧 schema，数据**零丢失**
+   *   （`db.transaction()` 事务体抛错会自动 ROLLBACK）。
    */
   private _ensureTradeRecordUniqueConstraint(): void {
     try {
-      // 已达最终 schema？两个条件都要满足：UNIQUE 含 trade_time + 有 trade_time 列
-      const idx = this._db
-        .prepare(
-          "SELECT 1 FROM sqlite_master WHERE type='index' AND tbl_name='user_trade_record' AND sql LIKE '%UNIQUE%' AND sql LIKE '%trade_time%'",
-        )
-        .get();
-      const hasTimeCol = this._db
-        .prepare("SELECT 1 FROM pragma_table_info('user_trade_record') WHERE name = 'trade_time'")
-        .get();
-      if (idx && hasTimeCol) return; // 已是最终 schema
+      const state = this._inspectTradeRecordUniqueState();
+      if (state === 'ready') return; // 幂等：已是新 schema，什么都不做
 
-      // 表为空 → 直接 DROP 再重建（最简单）
-      const count = (this._db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number })
-        .c;
-      if (count === 0) {
-        this._db.exec('DROP TABLE IF EXISTS user_trade_record');
-        this._db.exec(`
-          CREATE TABLE user_trade_record (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            asset_code TEXT NOT NULL,
-            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
-            trade_date TEXT NOT NULL,
-            trade_time TEXT NOT NULL,
-            quantity REAL NOT NULL CHECK (quantity >= 0),
-            price REAL NOT NULL CHECK (price >= 0),
-            fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
-            trade_reason TEXT,
-            is_auto_import INTEGER NOT NULL DEFAULT 0 CHECK (is_auto_import IN (0, 1)),
-            is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
-            review_summary TEXT,
-            system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
-            strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
-            is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
-            remark TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
-            FOREIGN KEY (user_id) REFERENCES user_account(id)
-          )
-        `);
-        this._db.exec('CREATE INDEX idx_trade_user_date ON user_trade_record(user_id, trade_date DESC)');
-        this._db.exec('CREATE INDEX idx_trade_asset ON user_trade_record(user_id, asset_code)');
-        console.log('[ConfigStore] user_trade_record 已补齐 UNIQUE 约束（空表重建）');
+      if (state === 'missing-index') {
+        // 表已是最终形态（新库刚建好 / 上次迁移只差索引）→ 只补索引，不重建表
+        this._db.exec(TRADE_RECORD_UNIQUE_INDEX_SQL);
+        console.log('[ConfigStore] user_trade_record 已补建部分唯一索引');
         return;
       }
 
-      // 表有数据 → 用完整迁移流程：备份表 → 建带约束新表 → 复制数据（跳过重复） → 删旧表 → 重命名
-      console.warn('[ConfigStore] user_trade_record 有数据，迁移补齐 UNIQUE 约束...');
-      this._db.pragma('foreign_keys = OFF');
-      this._db.exec('BEGIN');
-      try {
-        this._db.exec('ALTER TABLE user_trade_record RENAME TO _trade_record_old');
-        this._db.exec(`
-          CREATE TABLE user_trade_record (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            asset_code TEXT NOT NULL,
-            trade_type TEXT NOT NULL CHECK (trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')),
-            trade_date TEXT NOT NULL,
-            trade_time TEXT NOT NULL,
-            quantity REAL NOT NULL CHECK (quantity >= 0),
-            price REAL NOT NULL CHECK (price >= 0),
-            fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
-            trade_reason TEXT,
-            is_auto_import INTEGER NOT NULL DEFAULT 0 CHECK (is_auto_import IN (0, 1)),
-            is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
-            review_summary TEXT,
-            system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
-            strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
-            is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
-            remark TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-            UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
-            FOREIGN KEY (user_id) REFERENCES user_account(id)
-          )
-        `);
-        // T87：存量记录的 trade_time 取 created_at 的时间部分；
-        // created_at 形如 '2026-09-01 14:23:05' → substr(created_at, 12) 得 '14:23:05'。
-        // 若 created_at 异常（NULL / 长度不足 / 非 HH:mm:ss）则回退 '00:00:00'。
-        // ⚠️ 回退值可能与其它记录撞唯一键 → INSERT OR IGNORE 会跳过该条，
-        //    故此处对回退行加 id 后缀秒位微调不可行（NOT NULL + 唯一），
-        //    改为：撞键时保留先插入者（与既有迁移语义一致），并在日志中告警。
-        this._db.exec(`
-          INSERT OR IGNORE INTO user_trade_record (
-            user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee,
-            trade_reason, is_auto_import, is_deleted, review_summary,
-            system_followed, strategy_match, is_stop_loss, remark, created_at
-          )
-          SELECT user_id, asset_code, trade_type, trade_date,
-                 CASE
-                   WHEN created_at IS NOT NULL
-                    AND length(created_at) >= 19
-                    AND substr(created_at, 12, 8) GLOB '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
-                     AND substr(created_at, 14, 2) < '24'
-                    AND substr(created_at, 17, 2) < '60'
-                    AND substr(created_at, 20, 2) < '60'
-                   THEN substr(created_at, 12, 8)
-                   ELSE '00:00:00'
-                 END,
-                 quantity, price, fee,
-                 trade_reason, is_auto_import, is_deleted, review_summary,
-                 system_followed, strategy_match, is_stop_loss, remark, created_at
-          FROM _trade_record_old
-          ORDER BY id ASC
-        `);
-        this._db.exec('DROP TABLE _trade_record_old');
-        this._db.exec('CREATE INDEX idx_trade_user_date ON user_trade_record(user_id, trade_date DESC)');
-        this._db.exec('CREATE INDEX idx_trade_asset ON user_trade_record(user_id, asset_code)');
-        this._db.exec('COMMIT');
-        console.log('[ConfigStore] user_trade_record UNIQUE 约束补齐成功');
-      } catch (migErr) {
-        this._db.exec('ROLLBACK');
-        throw migErr;
-      } finally {
-        this._db.pragma('foreign_keys = ON');
-      }
+      // legacy：仍有表级 UNIQUE → 幂等表重建
+      console.warn('[ConfigStore] user_trade_record 仍是表级 UNIQUE 约束，迁移到部分唯一索引...');
+      this._rebuildTradeRecordTable();
+      console.log('[ConfigStore] user_trade_record 唯一键迁移成功（部分唯一索引）');
     } catch (err) {
-      console.error('[ConfigStore] UNIQUE 约束补齐失败（不阻塞启动）:', err);
+      console.error('[ConfigStore] user_trade_record 唯一键迁移失败（不阻塞启动）:', err);
     }
+  }
+
+  /**
+   * 判定 `user_trade_record` 处于哪种 schema 状态（三态）
+   *
+   * ⚠️ **判定依据必须落在「结构」上，不能靠「索引名猜测」**：
+   *   - 表级 UNIQUE 在 `sqlite_master` 里**没有**独立的索引行
+   *     （它生成的是 `sqlite_autoindex_*`，其 `sql` 字段为 **NULL**）
+   *     ⇒ 只能从**表定义文本**里判断「还有没有表级 UNIQUE」。
+   *   - 部分唯一索引是我们自己 `CREATE` 出来的 ⇒ `sqlite_master.sql` 有文本，
+   *     再用 `PRAGMA index_list` 的 `unique/partial` 标志做结构复核。
+   */
+  private _inspectTradeRecordUniqueState(): 'ready' | 'missing-index' | 'legacy' {
+    const tbl = this._db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
+      .get() as { sql: string | null } | undefined;
+    if (!tbl?.sql) return 'missing-index'; // 表不存在（理论上 DDL_SQL 已建）→ 保守按「只补索引」
+
+    // ⚠️ 列不齐（如存量库还没有 trade_time）⇒ 必须**重建**：
+    //   部分唯一索引引用 trade_time，缺列时建索引会直接报错。
+    if (!this._hasTradeRecordRequiredColumns()) return 'legacy';
+
+    const hasTableUnique = /UNIQUE\s*\(/i.test(tbl.sql);
+    if (hasTableUnique) return 'legacy';
+    return this._hasTradeRecordPartialUniqueIndex() ? 'ready' : 'missing-index';
+  }
+
+  /** 表是否具备「最终 schema」要求的列（至少 trade_time —— 唯一键与 CHECK 都依赖它） */
+  private _hasTradeRecordRequiredColumns(): boolean {
+    const row = this._db
+      .prepare("SELECT 1 FROM pragma_table_info('user_trade_record') WHERE name = 'trade_time'")
+      .get();
+    return row !== undefined;
+  }
+
+  /** 部分唯一索引是否存在且形态正确（5 列 + WHERE is_deleted = 0） */
+  private _hasTradeRecordPartialUniqueIndex(): boolean {
+    // 结构判定：PRAGMA index_list 的 unique / partial 标志
+    const list = this._db.prepare('PRAGMA index_list(user_trade_record)').all() as Array<{
+      name: string;
+      unique: number;
+      partial: number;
+    }>;
+    const meta = list.find((i) => i.name === TRADE_RECORD_UNIQUE_INDEX_NAME);
+    if (!meta || meta.unique !== 1 || meta.partial !== 1) return false;
+
+    // 语义判定：索引列 = 5 列唯一键，且谓词是 is_deleted = 0
+    const row = this._db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?")
+      .get(TRADE_RECORD_UNIQUE_INDEX_NAME) as { sql: string | null } | undefined;
+    if (!row?.sql) return false;
+    if (!/WHERE\s+is_deleted\s*=\s*0/i.test(row.sql)) return false;
+    // ⚠️ 表重建后 SQLite 会把表名写成带引号的 `"user_trade_record"` ⇒ 引号可选
+    const m = /ON\s+"?user_trade_record"?\s*\(([^)]*)\)/i.exec(row.sql);
+    if (!m) return false;
+    const cols = m[1].split(',').map((s) => s.trim().replace(/^"|"$/g, ''));
+    const expected = ['user_id', 'asset_code', 'trade_type', 'trade_date', 'trade_time'];
+    return cols.length === expected.length && expected.every((c) => cols.includes(c));
+  }
+
+  /**
+   * 幂等表重建：把 `user_trade_record` 换成「表级 UNIQUE → 部分唯一索引」的新 schema
+   *
+   * 完整形态（**全程包在 `db.transaction()` 里**，事务体抛错自动 ROLLBACK）：
+   *   ① DROP INDEX IF EXISTS idx_user_trade_record_unique_live  （释放索引名）
+   *   ② CREATE TABLE _user_trade_record_new (<最终 schema>)
+   *   ③ CREATE UNIQUE INDEX idx_user_trade_record_unique_live ON _user_trade_record_new(...) WHERE is_deleted = 0
+   *   ④ INSERT INTO _user_trade_record_new (<显式列清单>) SELECT <显式表达式> FROM user_trade_record ORDER BY id ASC
+   *   ⑤ DROP TABLE user_trade_record
+   *   ⑥ ALTER TABLE _user_trade_record_new RENAME TO user_trade_record
+   *   ⑦ CREATE INDEX idx_trade_user_date / idx_trade_asset（随旧表一起消失的普通索引要补回来）
+   *
+   * ⚠️ **为什么先建索引再灌数据**：让唯一性冲突在**事务内立刻炸**并整体回滚，
+   *   而不是等索引建成时才失败 —— **绝不静默丢行**（旧实现用 `INSERT OR IGNORE`，
+   *   撞键的行会被**静默丢弃** ⇒ 数据丢失）。
+   *
+   * ⚠️ **为什么不用 `INSERT INTO 新 SELECT * FROM 旧`**：旧表列顺序随历史演进而变
+   *   （`ALTER TABLE ADD COLUMN` 把新列追加到**末尾**），`SELECT *` 按位置对齐 ⇒ 串列。
+   *   ⇒ 逐列**按列名**显式映射（见 `_buildTradeRecordCopyPlan`）。
+   */
+  private _rebuildTradeRecordTable(): void {
+    const db = this._db;
+    const oldCols = new Set(
+      (db.prepare('PRAGMA table_info(user_trade_record)').all() as Array<{ name: string }>).map(
+        (c) => c.name,
+      ),
+    );
+
+    // 必备列缺失 → 无法安全迁移（不猜、不造数据）：直接失败，让上层记日志，DB 保持原样
+    for (const required of ['user_id', 'asset_code', 'trade_type', 'trade_date', 'quantity', 'price']) {
+      if (!oldCols.has(required)) {
+        throw new Error(`user_trade_record 缺少必需列 ${required}，无法安全迁移（未做任何改动）`);
+      }
+    }
+
+    // 预检：trade_type 必须满足新 CHECK（7 种），否则灌数据会在事务里失败
+    const badTypes = (
+      db
+        .prepare(
+          `SELECT DISTINCT trade_type FROM user_trade_record
+           WHERE trade_type IS NULL
+              OR trade_type NOT IN ('buy','add','reduce','clear','dividend','bonus','transfer')`,
+        )
+        .all() as Array<{ trade_type: string | null }>
+    ).map((r) => String(r.trade_type));
+    if (badTypes.length > 0) {
+      throw new Error(
+        `user_trade_record 存在非法 trade_type（${badTypes.join(', ')}），迁移会违反新 CHECK 约束；` +
+          `请先人工订正这些记录（迁移未做任何改动）`,
+      );
+    }
+
+    const before = (db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
+    const { columns, selects } = this._buildTradeRecordCopyPlan(oldCols);
+
+    // 被丢弃的旧列（不在新 schema 里）→ 记日志，避免「静默丢字段」
+    const target = new Set(columns);
+    const dropped = [...oldCols].filter((c) => !target.has(c));
+    if (dropped.length > 0) {
+      console.warn(`[ConfigStore] user_trade_record 迁移将丢弃旧列：${dropped.join(', ')}`);
+    }
+
+    // ⚠️ 迁移期间关闭 FK 检查：存量库可能有孤儿 user_id，
+    //    开着 FK 迁移会把它们判成违规而**回滚整笔迁移**（白跑一趟）；
+    //    关闭期间**不删除任何数据**，孤儿行原样搬过去，迁移结束立即恢复 FK。
+    db.pragma('foreign_keys = OFF');
+    try {
+      const tx = db.transaction(() => {
+        // ① 释放索引名（旧表上的同名索引随旧表一起消失，先显式 DROP 更稳）
+        db.exec(`DROP INDEX IF EXISTS ${TRADE_RECORD_UNIQUE_INDEX_NAME}`);
+        // ② 建新表（最终 schema：表级 UNIQUE 已去掉）
+        db.exec(`CREATE TABLE _user_trade_record_new (${TRADE_RECORD_COLUMNS_SQL})`);
+        // ③ 先建部分唯一索引，再灌数据 ⇒ 唯一性冲突在事务内立刻炸（不静默丢行）
+        db.exec(
+          `CREATE UNIQUE INDEX ${TRADE_RECORD_UNIQUE_INDEX_NAME}
+             ON _user_trade_record_new(user_id, asset_code, trade_type, trade_date, trade_time)
+             WHERE is_deleted = 0`,
+        );
+        // ④ 搬数据（逐列按列名显式映射；trade_time 有则原样保留，无则从 created_at 回填）
+        db.exec(
+          `INSERT INTO _user_trade_record_new (${columns.join(', ')})
+           SELECT ${selects.join(', ')} FROM user_trade_record ORDER BY id ASC`,
+        );
+        // ⑤ 删旧表 + 改名
+        db.exec('DROP TABLE user_trade_record');
+        db.exec('ALTER TABLE _user_trade_record_new RENAME TO user_trade_record');
+        // ⑥ 补回随旧表一起消失的普通索引
+        db.exec('CREATE INDEX idx_trade_user_date ON user_trade_record(user_id, trade_date DESC)');
+        db.exec('CREATE INDEX idx_trade_asset ON user_trade_record(user_id, asset_code)');
+      });
+      tx();
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+
+    // ⑦ 事后校验：行数必须一致（不等 = 迁移丢数据 ⇒ 抛错报警）
+    const after = (db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }).c;
+    if (after !== before) {
+      throw new Error(`user_trade_record 迁移后行数不一致（迁移前 ${before} → 迁移后 ${after}）`);
+    }
+    console.log(`[ConfigStore] user_trade_record 迁移完成：${before} 行全部保留`);
+  }
+
+  /**
+   * 生成「旧表 → 新表」的逐列搬运映射
+   *
+   * ⚠️ **不能**用 `INSERT INTO 新 SELECT * FROM 旧`：
+   *   旧表列顺序随历史演进而变（`ALTER TABLE ADD COLUMN` 把新列追加到**末尾**），
+   *   `SELECT *` 按位置对齐 ⇒ 串列（列名对了、值错了，比直接报错更难查）。
+   *   ⇒ 逐列**按列名**显式映射；缺列用安全默认值补齐。
+   *
+   * ⚠️ `trade_time` 的搬运口径：
+   *   - 旧表**已有** trade_time ⇒ **原样保留**（用户录的成交时刻不能被迁移改写）
+   *   - 旧表**没有** trade_time ⇒ 从 `created_at` 的时分秒回填（T87 存量迁移口径）
+   */
+  private _buildTradeRecordCopyPlan(oldCols: Set<string>): { columns: string[]; selects: string[] } {
+    const columns: string[] = [];
+    const selects: string[] = [];
+    const add = (col: string, expr: string): void => {
+      columns.push(col);
+      selects.push(expr);
+    };
+    const has = (col: string): boolean => oldCols.has(col);
+
+    // 无 trade_time 列时：从 created_at（'YYYY-MM-DD HH:mm:ss'）回填成交时刻
+    // ⚠️ 偏移量：年 1-4、月 6-7、日 9-10、空格 11、时 12-13、分 15-16、秒 18-19
+    const derivedTime = has('created_at')
+      ? `CASE
+          WHEN created_at IS NOT NULL
+           AND length(created_at) >= 19
+           AND substr(created_at, 12, 2) GLOB '[0-9][0-9]'
+           AND substr(created_at, 15, 2) GLOB '[0-9][0-9]'
+           AND substr(created_at, 18, 2) GLOB '[0-9][0-9]'
+           AND CAST(substr(created_at, 12, 2) AS INTEGER) < 24
+           AND CAST(substr(created_at, 15, 2) AS INTEGER) < 60
+           AND CAST(substr(created_at, 18, 2) AS INTEGER) < 60
+          THEN substr(created_at, 12, 2) || ':' || substr(created_at, 15, 2) || ':' || substr(created_at, 18, 2)
+          ELSE '00:00:00'
+        END`
+      : `'00:00:00'`;
+
+    const createdAtExpr = has('created_at')
+      ? `COALESCE(created_at, datetime('now','localtime'))`
+      : `datetime('now','localtime')`;
+
+    add('id', has('id') ? 'id' : 'NULL'); // 显式搬 id ⇒ AUTOINCREMENT 序号与历史一致
+    add('user_id', 'user_id');
+    add('asset_code', 'asset_code');
+    add('trade_type', 'trade_type');
+    add('trade_date', 'trade_date');
+    add(
+      'trade_time',
+      has('trade_time') ? `COALESCE(NULLIF(TRIM(trade_time), ''), ${derivedTime})` : derivedTime,
+    );
+    add('quantity', has('quantity') ? 'COALESCE(quantity, 0)' : '0');
+    add('price', has('price') ? 'COALESCE(price, 0)' : '0');
+    add('fee', has('fee') ? 'COALESCE(fee, 0)' : '0');
+    add('trade_reason', has('trade_reason') ? 'trade_reason' : 'NULL');
+    add('is_auto_import', has('is_auto_import') ? 'COALESCE(is_auto_import, 0)' : '0');
+    add('is_deleted', has('is_deleted') ? 'COALESCE(is_deleted, 0)' : '0');
+    add('review_summary', has('review_summary') ? 'review_summary' : 'NULL');
+    add('system_followed', has('system_followed') ? 'system_followed' : 'NULL');
+    add('strategy_match', has('strategy_match') ? 'strategy_match' : 'NULL');
+    add('is_stop_loss', has('is_stop_loss') ? 'is_stop_loss' : 'NULL');
+    add('remark', has('remark') ? 'remark' : 'NULL');
+    add('created_at', createdAtExpr);
+
+    return { columns, selects };
   }
 
   static getInstance(): ConfigStore {

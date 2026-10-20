@@ -1124,15 +1124,24 @@ CREATE TABLE IF NOT EXISTS user_trade_record (
     is_stop_loss INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1)),
     remark TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-    -- 去重语义：只有「完全同标的 + 同类型 + 同日期 + 同时刻」才算同一笔（409 TRADE_DUPLICATE）。
-    -- 份额 quantity 刻意不入键 —— 同一天同一标的同一类型的多笔，靠 trade_time 区分。
-    -- ⚠️ 改已有表的 UNIQUE 必须用幂等表重建（CREATE TABLE IF NOT EXISTS 对已存在的表无效），
-    --    见 AGENTS.md「DDL 变更判据」，先例 configStore.ts:164。
-    UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
 );
 CREATE INDEX IF NOT EXISTS idx_trade_user_date ON user_trade_record(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_asset ON user_trade_record(user_id, asset_code);
+-- 🔴 唯一键 = **部分唯一索引**（T87b，2026-10-20 修正）
+--    去重语义：只有「完全同标的 + 同类型 + 同日期 + 同时刻」的**活记录**才算同一笔
+--    （409 TRADE_DUPLICATE）。份额 quantity 刻意不入键 —— 同一天同一标的同一类型的多笔，
+--    靠 trade_time 区分。
+--    ⚠️ 为什么不是表级 UNIQUE：SQLite 的**表级 UNIQUE 无法部分化**（不支持 WHERE 条件）
+--      ⇒ 表级 UNIQUE 会把**软删记录也纳入约束** ⇒ 软删后同一键**再也录不进去**，
+--      而 `GET /api/trade` 过滤了 `is_deleted = 0` ⇒ 用户**看不到**那条记录却提交必 409
+--      —— 「列表里没有这一笔，但系统说重复」的**幽灵占用**（P0 数据缺陷）。
+--    ⚠️ 索引名固定为 idx_user_trade_record_unique_live（幂等判定 + 预检 EXPLAIN 断言依赖它）。
+--    ⚠️ 改已有表的约束必须用幂等表重建（CREATE TABLE IF NOT EXISTS 对已存在的表无效），
+--      见 AGENTS.md「DDL 变更判据」，先例 configStore.ts 的 _ensureTradeRecordUniqueConstraint()。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_trade_record_unique_live
+    ON user_trade_record(user_id, asset_code, trade_type, trade_date, trade_time)
+    WHERE is_deleted = 0;
 -- ⚠️ 2026-10-17 实测校正：初稿此处的 idx_trade_type(user_id, trade_type) **代码从未创建**，
 --    且现有查询均按 (user_id, asset_code) 或 (user_id, trade_date) 过滤，单独建 type 索引收益低 → 移除。
 --    如将来出现「按类型跨用户统计」需求再补，届时走幂等建索引。
@@ -1142,6 +1151,9 @@ CREATE INDEX IF NOT EXISTS idx_trade_asset ON user_trade_record(user_id, asset_c
 > - **加列** → `ALTER TABLE ADD COLUMN`（先 `PRAGMA table_info` 判存在）
 > - **改 CHECK / UNIQUE / 主键** → **幂等表重建**：建新表 → `INSERT SELECT` → `DROP 旧` → `ALTER RENAME`，必须包 `db.transaction()`
 > - 判别口诀：**只加列 → ALTER；碰约束 → 表重建。** 详见 AGENTS.md「DDL 变更判据」
+> - ⚠️ **同一张表上的多次幂等重建必须合并为一次**（多次 `DROP/RENAME` 同一张表 = 数据丢失风险）；
+>   `user_trade_record` 的复盘 4 列走 `ALTER ADD COLUMN`（不重建），
+>   唯一键迁移走**唯一一次**表重建（`configStore.ts` 的 `_ensureTradeRecordUniqueConstraint()`）。
 
 #### user_asset_rel（用户-标的关联）
 
@@ -1374,7 +1386,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | 参数校验 | `PARAM_INVALID` | 必填字段缺失、类型错误（如 `trade_time` 格式非法、缺省） | 400 |
 | 参数校验 | `TRADE_REASON_REQUIRED` | buy/add/reduce/clear 操作理由为空 | 400 |
 | 业务校验 | `HOLDING_INSUFFICIENT` | 减仓/清仓数量 > **该时刻**持仓（时点校验，非全表累计） | 409 |
-| 业务校验 | `TRADE_DUPLICATE` | 同标的 + 同类型 + 同日期 + **同时刻**已存在一笔（见 §3.2 UNIQUE） | 409 |
+| 业务校验 | `TRADE_DUPLICATE` | 同标的 + 同类型 + 同日期 + **同时刻**已存在一笔**活记录**（见 §3.2 部分唯一索引） | 409 |
 | 业务校验 | `DUPLICATE_IMPORT` | 除权自动导入幂等冲突 | 200（跳过）|
 | 业务校验 | `SYMBOL_NOT_FOUND` | 标的不在自选/持仓（手动补充除权）| 404 |
 | 权限 | `UNAUTHORIZED` | Token 无效或过期（缺失 / 无效 / 过期**统一用此码**，不再区分 `NO_TOKEN` / `INVALID_TOKEN`）| 401 |
@@ -1401,7 +1413,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/trade` | GET | 是 | 分页查询；支持 trade_type / date_range / symbol / reviewed 筛选 |
 | `/api/trade/:id` | PATCH | 是 | 仅复盘 4 字段可编辑；trade_type 不可变 |
 | `/api/trade/:id/soft-delete` | POST | 是 | 软删除（is_deleted=1）；已删除记录默认不返回 |
-| `/api/trade/check-duplicate` | GET | 是 | **交易时刻占用预检**（G4.5 · T87 配套，只读）：query `asset_code` / `trade_type` / `trade_date` / `trade_time`（**4 个全必填**）；命中 → `{ taken: true, taken_at: "<ISO8601>" }`，未命中 → `{ taken: false }`；**只查当前用户**（`user_id` 取自 token，**绝不信请求参数**）；**口径 = 实际唯一键** `UNIQUE(user_id, asset_code, trade_type, trade_date, trade_time)` —— **不含 `is_deleted`** ⇒ **软删除记录仍算占用**（与 `POST /api/trade` 的实际行为一致）；参数缺失/非法 → **400 `PARAM_INVALID`**（**不得**返回 `taken:false` —— 前端须把 4xx/5xx 当作「无法确定」并**仍允许提交**，最终以 `POST /api/trade` 的结果为准）|
+| `/api/trade/check-duplicate` | GET | 是 | **交易时刻占用预检**（G4.5 · T87 配套，只读）：query `asset_code` / `trade_type` / `trade_date` / `trade_time`（**4 个全必填**）；命中 → `{ taken: true, taken_at: "<ISO8601>" }`，未命中 → `{ taken: false }`；**只查当前用户**（`user_id` 取自 token，**绝不信请求参数**）；**口径 = 实际唯一键**（§3.2 部分唯一索引 `WHERE is_deleted = 0`）—— **软删除记录不再占用唯一键** ⇒ 预检**带 `is_deleted = 0`**（与 `POST /api/trade` 的实际行为一致：软删后同一键可重新录入）；⚠️ 该条件同时是**性能前提**（不带则部分索引不可用，查询退化为 `SCAN`）；参数缺失/非法 → **400 `PARAM_INVALID`**（**不得**返回 `taken:false` —— 前端须把 4xx/5xx 当作「无法确定」并**仍允许提交**，最终以 `POST /api/trade` 的结果为准）|
 | `/api/holding` | GET | 是 | 实时聚合；返回每只持仓的移动加权成本 + 盈亏 + 收益率 + 仓位占比 + **昨收 `prevClose`**（`number \| null`，该标的上一根日线收盘价）+ **最新信号 `signal`**（`{plugin_id, direction, label, trade_date} \| null`）+ **中文名 `name`**（`string \| null`，取自 `raw_symbol_name.name`，实测覆盖率约 70%，查不到即 null）+ **行业 `industry`**（`string \| null`，**契约预留字段，当前恒为 null** —— 板块数据源 `raw_tdx_blocks_member` / `raw_tdx_blocks_info` 实测 0 行）（T67 加字段，**只增不改**；行情/名称/信号不可用时降级为 null，接口不 500）|
 | `/api/quote/:symbol/kline` | GET | 是 | 前复权日线 OHLCV；支持 date_range + 不复权/前复权/后复权切换 |
 | `/api/strategy/plugins` | GET | 是 | 内置 + 自定义插件列表（含 enabled 状态）|
