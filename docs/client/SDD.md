@@ -1397,20 +1397,23 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/auth/register` | POST | 否 | 首个注册自动 admin；username UNIQUE |
 | `/api/auth/login` | POST | 否 | bcrypt 校验 + JWT（7d）+ refresh（30d）|
 | `/api/auth/refresh` | POST | refresh token | 刷新 access token |
-| `/api/trade` | POST | 是 | 7 种交易类型通用入口；前端校验 trade_type 合法性 |
+| `/api/trade` | POST | 是 | 7 种交易类型通用入口（`buy` 买入 / `add` 加仓 / `reduce` 减仓 / `clear` 清仓 / `dividend` 分红 / `bonus` 送股 / `transfer` 转增；**与 `user_trade_record.trade_type` 的 CHECK 约束逐项一致**）；非法类型（含历史别名 `'sell'`）→ **400 `PARAM_INVALID`**；`buy`/`add`/`reduce`/`clear` 必填 `trade_reason`（400 `TRADE_REASON_REQUIRED`）；`reduce`/`clear` 校验持仓充足（不足 → **409 `HOLDING_INSUFFICIENT`**）|
 | `/api/trade` | GET | 是 | 分页查询；支持 trade_type / date_range / symbol / reviewed 筛选 |
 | `/api/trade/:id` | PATCH | 是 | 仅复盘 4 字段可编辑；trade_type 不可变 |
 | `/api/trade/:id/soft-delete` | POST | 是 | 软删除（is_deleted=1）；已删除记录默认不返回 |
-| `/api/holding` | GET | 是 | 实时聚合；返回每只持仓的移动加权成本 + 盈亏 + 收益率 + 仓位占比 |
+| `/api/holding` | GET | 是 | 实时聚合；返回每只持仓的移动加权成本 + 盈亏 + 收益率 + 仓位占比 + **昨收 `prevClose`**（`number \| null`，该标的上一根日线收盘价）+ **最新信号 `signal`**（`{plugin_id, direction, label, trade_date} \| null`）+ **中文名 `name`**（`string \| null`，取自 `raw_symbol_name.name`，实测覆盖率约 70%，查不到即 null）+ **行业 `industry`**（`string \| null`，**契约预留字段，当前恒为 null** —— 板块数据源 `raw_tdx_blocks_member` / `raw_tdx_blocks_info` 实测 0 行）（T67 加字段，**只增不改**；行情/名称/信号不可用时降级为 null，接口不 500）|
 | `/api/quote/:symbol/kline` | GET | 是 | 前复权日线 OHLCV；支持 date_range + 不复权/前复权/后复权切换 |
 | `/api/strategy/plugins` | GET | 是 | 内置 + 自定义插件列表（含 enabled 状态）|
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
 | `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选 |
+| `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |
 | `/api/stockscan` | POST | 是 | 筛选插件执行；返回 ≤100 条；支持分页 |
 | `/api/review/yield` | GET | 是 | 双口径收益统计；支持 date_range + granularity（monthly/quarterly/yearly）|
+| `/api/candidate` | GET | 是 | **候选池列表**（`asset_code` / `baseline_price` / `candidate_reason` / `tracked_days` / `created_at`；按 `user_id` 隔离）—— T67 今日动态概览卡「重点关注」的候选侧数据源 |
 | `/api/candidate` | POST | 是 | 手动加标的；基准价自动取当日收盘价 |
 | `/api/candidate/:id/migrate` | POST | 是 | 迁移自选；支持 base/current 两种价格模式 |
+| `/api/ex-dividend/imports` | GET | 是 | 除权自动导入记录（**当前用户**，普通用户可读）；支持 `date`（YYYY-MM-DD 精确日）/ `days`（近 N 天，默认 1）；返回 `{ from, to, items[], summary{total,dividendCount,bonusCount} }` |
 | `/api/admin/datacheck/result` | GET | 是（仅 admin）| 12 项校验结果（含详情 JSON）|
 | `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发行情更新 + 校验 + 信号 + 除权 + 备份（串行）|
 | `/api/admin/system-log` | GET | 是（仅 admin）| 分页 + 日期过滤 + 类型过滤 |

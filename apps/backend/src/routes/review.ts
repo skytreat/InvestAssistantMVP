@@ -16,7 +16,17 @@ import { ok } from '../lib/envelope.js';
  */
 
 /** 复盘统计只认这 4 类主动交易（除权类由 C1-C12 校验，不进胜率） */
-const ACTIVE_TRADE_TYPES = "('buy','sell','reduce','clear')";
+/**
+ * 复盘页纳入统计的交易类型。
+ *
+ * 🔴 **必须与 `routes/trade.ts` 的 `TRADE_TYPES` + DDL CHECK 对齐**（2026-10-20 修正）：
+ *   原值含 DDL 不认的 `'sell'`，且**漏了 `'add'`** ⇒ 加仓交易不计入复盘页「总交易数 / 已复盘数」，
+ *   也不出现在带复盘字段的交易列表里。
+ *   `'add'` 修好后（`trade.ts` 白名单已对齐 DDL）本项**从「不可达」变「可达」** ⇒ 必须同步。
+ *
+ * ⚠️ `'sell'` 已从全仓移除（DEC-2 裁决：7 种类型里没有「卖出」，部分卖出=reduce、全部卖出=clear）
+ */
+const ACTIVE_TRADE_TYPES = "('buy','add','reduce','clear')";
 
 export async function registerReviewRoutes(app: FastifyInstance) {
   // 复盘统计卡片数据

@@ -141,6 +141,33 @@ function installApiMock(overrides: ApiOverrides = {}): void {
         return mockResponse([]);
       case '/admin/system-log':
         return mockResponse([]);
+      /*
+       * ── 批次 5 接线新增的 4 个端点 ──
+       *
+       * 「今日动态概览卡」（`components/TodayActivityCard.tsx`，卡 5）已接入 Dashboard，
+       * 它自己会拉这 4 个端点。**不补分支的话它们会落到下面的 `default:` 抛错分支**
+       * → 卡片整体降级 → 既测不到内容，又会在 stderr 刷「未预期的接口调用」。
+       *
+       * 这里返回**最小合法响应**（各块走「空态」分支，不是「降级」分支）：
+       * - `/signal/stats` → 形状必须是 `{total,up,down,hold}` 四个数字
+       *   （`TodayActivityCard` 的 `isTodaySignalStats()` 会校验形状，不符则退回列表计数）；
+       * - `/trade` → 今日成交列表（空数组）；
+       * - `/ex-dividend/imports` → 今日除权导入（`items` 空 + `summary.total = 0`）；
+       * - `/candidate` → 候选池（空数组）。
+       */
+      case '/signal/stats':
+        return mockResponse({ total: 0, up: 0, down: 0, hold: 0 });
+      case '/trade':
+        return mockResponse([]);
+      case '/ex-dividend/imports':
+        return mockResponse({
+          from: null,
+          to: null,
+          items: [],
+          summary: { total: 0, dividendCount: 0, bonusCount: 0 },
+        });
+      case '/candidate':
+        return mockResponse([]);
       default:
         throw new Error(`未预期的接口调用: ${url}`);
     }

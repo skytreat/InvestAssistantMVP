@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
+import { getTodaySignalStats } from '../services/todaySignals.js';
+import { getTradeDate } from '../services/signalService.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
@@ -77,6 +79,35 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       );
     } catch (err) {
       reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
+  });
+
+  /**
+   * GET /api/signal/stats —— **今日信号统计**（T67 Dashboard「今日动态概览卡 · 今日信号 ▲▼·」）
+   *
+   * ?trade_date=2026-10-20   指定交易日（缺省 = 今天）
+   *
+   * 响应：`{ total, up, down, hold }`（buy→up / sell→down / hold→hold）
+   *
+   * ── 为什么不复用 `GET /api/signal` 自己在前端数 ──
+   *   `/api/signal` 是**分页**接口（`page_size` 上限 200）。信号条数超过 1 页时，
+   *   前端拿到的只是第 1 页 → ▲▼· 计数会**静默偏小**（而 `pagination.total` 只是总数，
+   *   拆不出方向分布）。本端点用 **1 次 GROUP BY** 在服务端算准，
+   *   既不多一次往返，也不受分页影响。
+   */
+  app.get('/api/signal/stats', async (request, reply) => {
+    try {
+      const user = (request as AuthedRequest).user;
+      const q = request.query as Record<string, string | undefined>;
+      // 缺省 = 今天（东八区，与信号落库 `getTradeDate()` 同一口径）
+      const tradeDate = q.trade_date ?? getTradeDate();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_date 格式应为 YYYY-MM-DD'));
+      }
+      const stats = await getTodaySignalStats(user.sub, tradeDate);
+      return reply.send(ok(stats, { trade_date: tradeDate }));
+    } catch (err) {
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
 }

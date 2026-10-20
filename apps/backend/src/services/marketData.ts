@@ -206,6 +206,119 @@ export async function batchGetLatestClose(
 }
 
 /**
+ * 批量取多个标的的**最新收盘价 + 昨收**（**1 次查询**，T67 Dashboard 持仓卡用）
+ *
+ * 与 {@link batchGetLatestClose} 同源（同一张 view、同一个窗口函数），
+ * 只是把 `rn = 1` 放宽到 `rn <= 2` —— **一次扫描同时拿到「最新」与「上一交易日」**。
+ * ⚠️ 不做成两个函数各查一次：`v_stock_qfq` 是实时计算视图（实测扫 5 只标的 ≈ 2.5s），
+ *   两次查询 = 两次全量扫描 → `/api/holding` 首屏延迟翻倍。
+ *
+ * ── 昨收口径（**不用交易日历**）──
+ *   昨收 = 该标的自己日线序列的**倒数第二条**（rn = 2）。
+ *   理由：仓库里同时存在两种「上一交易日」口径 ——
+ *     · 日历口径 `resolveTargetTradeDate()`（工作日 + 不在 `raw_holidays` 休市黑名单）
+ *     · 数据口径 `resolveLatestQuoteDate()`（最近**有行情**的那天）
+ *   两者在「行情管道停摆 / 标的停牌」时会分叉，而 Dashboard 的日涨跌需要的是
+ *   「**紧邻上一根 K 线**的收盘价」—— 那正是 rn = 2，无需另立日历口径。
+ *   ⚠️ 实测（2026-10-20，本机真库）：`v_stock_qfq` 的 (symbol, date) **无扇出** ——
+ *     5 只标的共 23974 行 = 23974 个不同 (symbol, date)；
+ *     `GROUP BY symbol, date HAVING COUNT(*) > 1` 返回 0 行
+ *     → rn = 2 就是真正的上一交易日收盘价，不是重复行。
+ *
+ * ⚠️ 只有 1 条日线的标的 → 无昨收 → `prevClose = null`（前端降级为「无对比」）。
+ * ⚠️ 停牌标的：rn 1 / rn 2 是它**自己**的最近两条，可能不是全市场最近两个交易日。
+ */
+export interface LatestAndPrevClose {
+  /** 最新一根 K 线的日期 */
+  date: string;
+  /** 最新一根 K 线的收盘价 */
+  close: number;
+  /** 上一根 K 线的日期（无上一根时为 null） */
+  prevDate: string | null;
+  /** 上一根 K 线的收盘价（无上一根时为 null） */
+  prevClose: number | null;
+}
+
+export async function batchGetLatestAndPrevClose(
+  symbols: string[],
+  period: AdjustPeriod = 'qfq',
+): Promise<Map<string, LatestAndPrevClose>> {
+  const bySymbol = new Map<string, LatestAndPrevClose>();
+  if (symbols.length === 0) return bySymbol;
+
+  const tableName = resolveTable(period);
+  const placeholders = symbols.map(() => '?').join(', ');
+
+  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number; rn: number }>(
+    `SELECT symbol, date, close, rn FROM (
+       SELECT symbol, date, close,
+              ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+       FROM ${tableName}
+       WHERE symbol IN (${placeholders})
+     ) WHERE rn <= 2`,
+    [...symbols],
+  );
+
+  // ⚠️ SQL 不保证行序（rn=2 可能先于 rn=1 返回）→ 先收集再定型
+  for (const row of rows) {
+    const d = toDateString(row.date);
+    const cur = bySymbol.get(row.symbol) ?? {
+      date: '',
+      close: 0,
+      prevDate: null,
+      prevClose: null,
+    };
+    if (row.rn === 1) {
+      cur.date = d;
+      cur.close = row.close;
+    } else if (row.rn === 2) {
+      cur.prevDate = d;
+      cur.prevClose = row.close;
+    }
+    bySymbol.set(row.symbol, cur);
+  }
+
+  return bySymbol;
+}
+
+/**
+ * 批量取标的**中文名称**（**1 次 IN 查询**，T67 Dashboard 持仓卡用）
+ *
+ * ── 数据源实测（2026-10-20，`/opt/invol/quotes.duckdb`）──
+ *   `DESCRIBE raw_symbol_name` → `(symbol VARCHAR, name VARCHAR, class VARCHAR)`
+ *   8726 行；`symbol` **无重复**（`GROUP BY symbol HAVING COUNT(*)>1` → 0 行）
+ *   → 单值键，IN 查询不会扇出成多行。
+ *   `name` 列**无 NULL / 空串**（实测 0 行）。
+ *
+ * ⚠️ **覆盖约 70%，缺失是常态**：全市场 12449 只（`raw_symbol_class` 行数），
+ *   `raw_symbol_name` 只有 8726 只 → **约 3700 只标的名查不到**。
+ *   ⇒ 调用方必须容忍「查不到」（`Map` 里没有该 key），前端回退显示代码。
+ *
+ * ⚠️ **symbol 格式与业务层 asset_code 完全一致**（`sh600000` / `sz000001` / `bj920000`）
+ *   —— 与 `raw_symbol_name.symbol` 精确匹配，无需转换。
+ */
+export async function batchGetSymbolNames(symbols: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const unique = Array.from(new Set(symbols.filter((s) => typeof s === 'string' && s.length > 0)));
+  if (unique.length === 0) return result;
+
+  // ⚠️ 只拼占位符（个数由数组长度决定），真实值一律走绑定参数 —— 禁止把代码拼进 SQL 文本
+  const placeholders = unique.map(() => '?').join(', ');
+  const rows = await queryDuckDB<{ symbol: string; name: string }>(
+    `SELECT symbol, name FROM raw_symbol_name WHERE symbol IN (${placeholders})`,
+    [...unique],
+  );
+
+  for (const row of rows) {
+    // 空名等同「没查到」→ 不进 Map（调用方取不到即为 null）
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    if (name.length > 0) result.set(row.symbol, name);
+  }
+
+  return result;
+}
+
+/**
  * DuckDB 的 DATE 列在不同驱动下可能是 string / number(epoch days) / {days: number}
  * 统一转成 YYYY-MM-DD 字符串
  */
