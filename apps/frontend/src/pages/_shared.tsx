@@ -101,18 +101,11 @@ export function Navbar() {
           退出登录
         </button>
       </header>
-      {/* 全局合规声明 */}
-      <div
-        style={{
-          background: COLORS.bgDisclaimer,
-          color: COLORS.textDisclaimer,
-          fontSize: 12,
-          textAlign: 'center',
-          padding: '4px 0',
-        }}
-      >
-        本工具不构成投资建议，数据仅供参考
-      </div>
+      {/*
+        T95：全局合规声明已从 Navbar 下方**搬到 App.tsx 的 `<footer>`**
+        （`components/ComplianceFooter.tsx`）—— PRD §5.9 要求「全站所有页面顶部或底部常驻」，
+        页脚是更规范的位置，且能同时覆盖未登录的登录页。
+      */}
       {/* G10a 移动端底部 TabBar（<768px 显示，桌面隐藏） */}
       <MobileTabBar isAdmin={isAdmin} />
     </>

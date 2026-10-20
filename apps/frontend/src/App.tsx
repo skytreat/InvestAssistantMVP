@@ -11,6 +11,7 @@ import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import { useUserStore } from './store/user';
 import { Navbar } from './pages/_shared';
+import ComplianceFooter from './components/ComplianceFooter';
 import { MAX_WIDTH, TYPO } from './theme/tokens';
 
 export default function App() {
@@ -25,9 +26,16 @@ export default function App() {
    */
   if (!token) {
     return (
-      <main>
-        <Login />
-      </main>
+      <>
+        <main>
+          <Login />
+        </main>
+        {/*
+          T95：合规声明「全站所有页面顶部或底部常驻」（PRD §5.9）——
+          **登录页也在「全站」内**，故未登录分支同样渲染。
+        */}
+        <ComplianceFooter />
+      </>
     );
   }
 
@@ -55,10 +63,10 @@ export default function App() {
         </Routes>
       </main>
       {/*
-        T63：`<footer>` 占位（当前为空）。
-        T95 会把「隐私声明 / 插件安全承诺 / 合规声明」等内容搬进这里。
+        T95：全局合规声明常驻（PRD §5.9，逐字文案见 `components/ComplianceFooter.tsx`）。
+        ⚠️ 「隐私声明（设置页）」与「插件安全承诺（设置页插件区）」属 T76 ⑥，尚未落地。
       */}
-      <footer />
+      <ComplianceFooter />
     </div>
   );
 }

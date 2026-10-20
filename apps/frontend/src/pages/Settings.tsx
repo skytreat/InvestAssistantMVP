@@ -353,9 +353,14 @@ export default function Settings() {
           <div>InvestAssistant MVP — 个人股票管理 + 策略信号系统</div>
           <div>行情数据：通达信本地日线（DuckDB 行情层，只读）</div>
           <div>数据校验：每日 C1-C12 三层防线，WARN 自动补跑</div>
-          <div style={{ color: COLORS.textDisclaimer, marginTop: 8 }}>
-            本工具不构成投资建议，所有数据仅供参考
-          </div>
+          {/*
+            T95：此处原有的合规声明文案是全局合规声明的**重复**，
+            且与 PRD §5.9 的逐字原文不一致（多了一个限定词）→ 已删除。
+            全局合规声明统一由 App.tsx 的 `<footer>`（`components/ComplianceFooter.tsx`）渲染，
+            文案逐字取自 PRD §5.9。
+            ⚠️ PRD §5.9 的「隐私声明常驻（注册页 + 设置页）」与「插件安全承诺（设置页插件区）」
+            属 T76 ⑥，尚未落地 —— 不要在此处替代。
+          */}
         </div>
       </div>
     </div>
