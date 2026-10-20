@@ -76,7 +76,7 @@ interface HistoryPoint {
 }
 
 /** 按周期取每期最后一个快照（收益率曲线终点用） */
-function bucketByPeriod(rows: HistoryPoint[], period: CurvePeriod): HistoryPoint[] {
+export function bucketByPeriod(rows: HistoryPoint[], period: CurvePeriod): HistoryPoint[] {
   const months = PERIOD_MONTHS[period];
   const bucket = new Map<string, HistoryPoint>();
   for (const r of rows) {

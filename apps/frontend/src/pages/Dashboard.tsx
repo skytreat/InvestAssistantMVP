@@ -71,7 +71,7 @@ const LEVEL_COLOR: Record<string, string> = {
 };
 
 /** A 股 ETF 判定：sh51xxxx / sh56xxxx / sh58xxxx / sz15xxxx / sz16xxxx */
-function isEtf(code: string): boolean {
+export function isEtf(code: string): boolean {
   return /^(sh5[168]|sz1[56])/.test(code);
 }
 
@@ -90,7 +90,7 @@ function fmtPct(n: number | null | undefined): string {
  *
  * MVP 不引第三方图表库：conic-gradient 直接画，股票 / ETF 两段配色。
  */
-function DonutChart({ stock, etf }: { stock: number; etf: number }) {
+export function DonutChart({ stock, etf }: { stock: number; etf: number }) {
   const total = stock + etf;
   if (total <= 0) {
     return <div style={{ color: '#9ca3af', fontSize: 14 }}>暂无持仓资产</div>;
