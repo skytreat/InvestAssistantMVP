@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
-import { batchGetLatestClose } from '../services/marketData.js';
+import { batchGetLatestAndPrevClose, type LatestAndPrevClose } from '../services/marketData.js';
+import { getLatestSignalsByAssets, type SignalRow } from '../services/todaySignals.js';
 import { writeSystemLog } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
@@ -393,6 +394,15 @@ export async function registerTradeRoutes(app: FastifyInstance) {
   });
 
   // 查询全部持仓（T33：带现价 / 市值 / 盈亏 / 仓位占比，供仪表盘持仓卡使用）
+  //
+  // ── T67 enrich（**只加不改**，既有字段的路径 / 方法 / 响应形状全部不变）──
+  //   每个 position 新增 2 个字段：
+  //   - `prevClose: number | null` —— **昨收**（该标的上一根日线的收盘价），
+  //     供「总资产变化（对比昨日）」用；无行情 / 无上一根 → null。
+  //   - `signal: { plugin_id, direction, label, trade_date } | null` —— 该标的的
+  //     **最新一条**信号（建议 A）；无信号 → null。
+  //   ⚠️ 降级：DuckDB 不可用 → prevClose 全为 null；信号查询失败 → signal 全为 null。
+  //     **任何一种降级都不得让整条接口 500**。
   app.get('/api/holding', async (request, reply) => {
     try {
       const user = (request as any).user;
@@ -401,21 +411,33 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         return reply.send(ok([]));
       }
 
-      // 1 次 IN 查询拿全量最新价（AGENTS.md DuckDB 硬约束：禁止逐标的循环查）
-      let latest: Map<string, { date: string; close: number }> = new Map();
+      // 1 次 IN 查询拿全量最新价 + 昨收（AGENTS.md DuckDB 硬约束：禁止逐标的循环查）
+      let quotes: Map<string, LatestAndPrevClose> = new Map();
       let priceDate: string | null = null;
       try {
-        latest = await batchGetLatestClose(positions.map((p) => p.asset_code));
-        const dates = new Set([...latest.values()].map((v) => v.date));
+        quotes = await batchGetLatestAndPrevClose(positions.map((p) => p.asset_code));
+        const dates = new Set([...quotes.values()].map((v) => v.date));
         priceDate = dates.size === 1 ? [...dates][0] : null;
       } catch (err: any) {
         // DuckDB 不可用不阻塞持仓展示，前端降级为"无现价"
-        app.log.warn({ err }, '持仓现价查询失败，降级为无现价');
+        app.log.warn({ err }, '持仓现价/昨收查询失败，降级为无现价');
+      }
+
+      // 1 次 IN 查询拿全部持仓标的的最新信号（T67 建议 A；同样禁止逐标的循环查）
+      let signals: Map<string, SignalRow> = new Map();
+      try {
+        signals = await getLatestSignalsByAssets(
+          user.sub,
+          positions.map((p) => p.asset_code),
+        );
+      } catch (err: any) {
+        // 信号查询失败不阻塞持仓展示，前端降级为"无信号标记"
+        app.log.warn({ err }, '持仓信号查询失败，降级为无信号标记');
       }
 
       // 市值合计 → 每只标的的仓位占比
       const enriched = positions.map((p) => {
-        const quote = latest.get(p.asset_code);
+        const quote = quotes.get(p.asset_code);
         const currentPrice = quote?.close ?? null;
         const marketValue = currentPrice !== null ? currentPrice * p.totalQuantity : null;
         const unrealizedPnl = marketValue !== null ? marketValue - p.totalCostBasis : null;
@@ -428,6 +450,11 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           marketValue,
           unrealizedPnl,
           unrealizedYield,
+          // ── T67 enrich（**只加不改**：既有字段的路径/方法/形状全部不变）──
+          /** 昨收 = 该标的上一根日线的收盘价（对比昨日涨跌）；无行情/无上一根 → null */
+          prevClose: quote?.prevClose ?? null,
+          /** 该标的的最新一条信号；无信号 → null */
+          signal: signals.get(p.asset_code) ?? null,
         };
       });
 

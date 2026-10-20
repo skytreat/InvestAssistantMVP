@@ -1401,16 +1401,18 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/trade` | GET | 是 | 分页查询；支持 trade_type / date_range / symbol / reviewed 筛选 |
 | `/api/trade/:id` | PATCH | 是 | 仅复盘 4 字段可编辑；trade_type 不可变 |
 | `/api/trade/:id/soft-delete` | POST | 是 | 软删除（is_deleted=1）；已删除记录默认不返回 |
-| `/api/holding` | GET | 是 | 实时聚合；返回每只持仓的移动加权成本 + 盈亏 + 收益率 + 仓位占比 |
+| `/api/holding` | GET | 是 | 实时聚合；返回每只持仓的移动加权成本 + 盈亏 + 收益率 + 仓位占比 + **昨收 `prevClose`**（`number \| null`，该标的上一根日线收盘价）+ **最新信号 `signal`**（`{plugin_id, direction, label, trade_date} \| null`）（T67 加字段，**只增不改**；行情/信号不可用时降级为 null，接口不 500）|
 | `/api/quote/:symbol/kline` | GET | 是 | 前复权日线 OHLCV；支持 date_range + 不复权/前复权/后复权切换 |
 | `/api/strategy/plugins` | GET | 是 | 内置 + 自定义插件列表（含 enabled 状态）|
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
 | `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选 |
+| `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |
 | `/api/stockscan` | POST | 是 | 筛选插件执行；返回 ≤100 条；支持分页 |
 | `/api/review/yield` | GET | 是 | 双口径收益统计；支持 date_range + granularity（monthly/quarterly/yearly）|
 | `/api/candidate` | POST | 是 | 手动加标的；基准价自动取当日收盘价 |
 | `/api/candidate/:id/migrate` | POST | 是 | 迁移自选；支持 base/current 两种价格模式 |
+| `/api/ex-dividend/imports` | GET | 是 | 除权自动导入记录（**当前用户**，普通用户可读）；支持 `date`（YYYY-MM-DD 精确日）/ `days`（近 N 天，默认 1）；返回 `{ from, to, items[], summary{total,dividendCount,bonusCount} }` |
 | `/api/admin/datacheck/result` | GET | 是（仅 admin）| 12 项校验结果（含详情 JSON）|
 | `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发行情更新 + 校验 + 信号 + 除权 + 备份（串行）|
 | `/api/admin/system-log` | GET | 是（仅 admin）| 分页 + 日期过滤 + 类型过滤 |
