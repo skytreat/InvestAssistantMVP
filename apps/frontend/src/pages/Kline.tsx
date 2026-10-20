@@ -4,25 +4,43 @@ import { api } from '../api/client';
 import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
+import KlineParamPanel from '../components/KlineParamPanel';
 import { MOBILE_TABBAR_HEIGHT, useIsMobile } from './_shared';
 import {
   buildChartBars,
   parseMetricsJson,
+  periodUnit,
   type ChartBar,
   type KlinePeriod,
   type RawBar,
   type SignalMarker,
 } from '../indicators/chartBars';
+import {
+  DEFAULT_INDICATOR_PARAMS,
+  cloneIndicatorParams,
+  type IndicatorParams,
+} from '../indicators/chartParams';
 import type { SubIndicatorKind } from '../components/KlineChart';
 
 /**
- * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标）
+ * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
  *
  * ## 本页负责的事
  *
  * 1. **取数**：`GET /api/quote/:symbol/kline?days=&fq=`（🔴 真实路由，见下方「两个必修 bug」）
  * 2. **算指标**（前端）：`buildChartBars` 把 MA/MACD/RSI/KDJ 算好并灌进每根 K 线
  * 3. **画图**：`KlineChart` 组件（`React.lazy` 按需加载，klinecharts 独立 chunk）
+ *
+ * ## 🔴 T71：指标参数实时生效（零网络请求）
+ *
+ * ```
+ * 参数面板改参数 ──▶ setParams ──▶ useMemo 重算 bars（复用已加载的原始日线）
+ *                                    └─▶ KlineChart 收到新 bars
+ *                                         └─▶ overrideIndicator 重算指标 + 重绘（**不取数**）
+ * ```
+ *
+ * ⇒ **取数只由「标的 / 复权 / 天数 / 周期」触发**；改参数**不发任何请求**
+ *    （PRD §5.2「零网络请求」+ §6.3「重绘 ≤ 300ms」）。
  *
  * ## 🔴 两个必修 bug（T70 前 Wave 3 agent 实测发现）
  *
@@ -146,12 +164,18 @@ export default function Kline() {
   const [period, setPeriod] = useState<KlinePeriod>('day');
   const [showMa, setShowMa] = useState(true);
   const [subIndicator, setSubIndicator] = useState<SubIndicatorKind>('macd');
+  /** 🔴 T71：指标参数（改参数 → 即时重绘，**零网络请求**）*/
+  const [params, setParams] = useState<IndicatorParams>(() => cloneIndicatorParams(DEFAULT_INDICATOR_PARAMS));
 
   /** 移动端：图表更矮 + 底部给固定 TabBar 留出空间（旧实现遗留的老坑）*/
   const isMobile = useIsMobile();
 
-  const [bars, setBars] = useState<ChartBar[]>([]);
-  const [rawCount, setRawCount] = useState(0);
+  /** 后端下发的**原始日线**（指标由前端算 —— T71 改参数时基于它重算，不再取数）*/
+  const [rawBars, setRawBars] = useState<RawBar[]>([]);
+  /** 信号标记 */
+  const [signals, setSignals] = useState<SignalMarker[]>([]);
+  /** 取数次数（每次成功加载 +1）—— 参与数据指纹，保证新数据一定重新灌进图表 */
+  const [loadSeq, setLoadSeq] = useState(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -180,12 +204,12 @@ export default function Kline() {
         const body = res.data;
         if (!isOkEnvelope(body) || !body.data) {
           setErr(body.message ?? '加载失败');
-          setBars([]);
-          setRawCount(0);
+          setRawBars([]);
+          setSignals([]);
           return;
         }
 
-        const rawBars = Array.isArray(body.data.klines) ? body.data.klines : [];
+        const raw = Array.isArray(body.data.klines) ? body.data.klines : [];
         const klineSignals = Array.isArray(body.data.signals) ? body.data.signals : [];
 
         // 信号明细（`metrics_json`）：K 线接口不返回 ⇒ 单独取一次（失败则降级为无明细）
@@ -204,7 +228,7 @@ export default function Kline() {
           // 明细取不到不影响主流程 —— 标记仍显示方向 / 强度
         }
 
-        const signals: SignalMarker[] = klineSignals.map((s) => ({
+        const signalMarkers: SignalMarker[] = klineSignals.map((s) => ({
           trade_date: s.trade_date,
           direction: s.direction,
           label: s.label,
@@ -213,12 +237,15 @@ export default function Kline() {
           metrics: metricsByKey.get(`${s.trade_date}|${s.plugin_id}`) ?? null,
         }));
 
-        setRawCount(rawBars.length);
-        setBars(buildChartBars(rawBars, period, signals));
+        // 🔴 T71：这里只存**原始日线 + 信号**，指标由前端按当前参数算
+        //    （`bars` 是 `useMemo` 派生值 ⇒ 改参数不需要重新取数）
+        setRawBars(raw);
+        setSignals(signalMarkers);
+        setLoadSeq((n) => n + 1);
       } catch (e) {
         setErr('请求失败: ' + extractErrorMessageOrErrorMessage(e));
-        setBars([]);
-        setRawCount(0);
+        setRawBars([]);
+        setSignals([]);
       } finally {
         setLoading(false);
       }
@@ -230,6 +257,27 @@ export default function Kline() {
   useEffect(() => {
     void load(symbol, fq, days);
   }, [load, symbol, fq, days]);
+
+  /**
+   * 🔴 T71：指标 + 周期聚合的**派生值**
+   *
+   * 参数一变 → 这里重算 → 新的 `bars` 传给图表 → 图表只重算指标、**不取数**。
+   */
+  const bars = useMemo<ChartBar[]>(
+    () => buildChartBars(rawBars, period, signals, params),
+    [rawBars, period, signals, params],
+  );
+
+  /**
+   * 原始数据指纹（T71）
+   *
+   * ⚠️ **只有它变了才重新取数**（`resetData`）；
+   *    指标参数变了但它没变 ⇒ 图表**不碰数据加载器** ⇒ 零网络请求。
+   */
+  const dataSignature = useMemo(
+    () => [symbol, fq, days, period, loadSeq, rawBars.length].join('|'),
+    [symbol, fq, days, period, loadSeq, rawBars.length],
+  );
 
   /** 提交输入框里的代码 */
   const applySymbol = useCallback(() => {
@@ -356,7 +404,8 @@ export default function Kline() {
             onChange={(e) => setShowMa(e.target.checked)}
           />
           <label htmlFor="kline-checkbox-ma" style={{ fontSize: TYPO.bodySize }}>
-            显示 MA(5/10/20/60)
+            {/* ⚠️ 标签里带**当前周期**（周期可编辑 —— T71），默认即 MA(5/10/20/60) */}
+            显示 MA({params.ma.periods.join('/')})
           </label>
         </div>
         <button
@@ -382,10 +431,19 @@ export default function Kline() {
         {bars.length > 0 && (
           <span style={{ color: COLORS.textTertiary, fontSize: TYPO.smallSize }}>
             {bars.length} 根K线 · {rangeText}
-            {rawCount !== bars.length ? `（原始日线 ${rawCount} 根）` : ''}
+            {rawBars.length !== bars.length ? `（原始日线 ${rawBars.length} 根）` : ''}
           </span>
         )}
       </div>
+
+      {/* 🔴 T71：指标参数面板 —— 改参数即时重绘，**零网络请求** */}
+      <KlineParamPanel
+        params={params}
+        unit={periodUnit(period)}
+        barCount={bars.length}
+        onChange={setParams}
+        onReset={() => setParams(cloneIndicatorParams(DEFAULT_INDICATOR_PARAMS))}
+      />
 
       {/* 副图 Tab（MACD / RSI / KDJ）—— 桌面端与移动端都可切换（F-K5）*/}
       <div
@@ -429,6 +487,8 @@ export default function Kline() {
             symbol={symbol}
             period={period}
             bars={bars}
+            dataSignature={dataSignature}
+            params={params}
             showMa={showMa}
             subIndicator={subIndicator}
             height={isMobile ? 420 : 560}

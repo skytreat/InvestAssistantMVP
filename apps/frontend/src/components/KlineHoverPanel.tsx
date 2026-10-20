@@ -1,5 +1,6 @@
 import { COLORS, TYPO } from '../theme/tokens';
 import { formatIndicator, type ChartBar } from '../indicators/chartBars';
+import { DEFAULT_MA_PERIODS } from '../indicators/chartParams';
 import type { SubIndicatorKind } from './KlineChart';
 
 /**
@@ -29,6 +30,12 @@ export interface KlineHoverPanelProps {
   showMa: boolean;
   /** 当前副图类型（决定显示 MACD / RSI / KDJ 哪一行）*/
   subIndicator: SubIndicatorKind;
+  /**
+   * MA 四条线的**当前周期**（T71：周期可编辑 ⇒ 标签必须跟着变）
+   *
+   * 缺省用默认周期（5/10/20/60）。
+   */
+  maPeriods?: readonly number[];
 }
 
 /** 格式化成交量（万 / 亿）*/
@@ -54,8 +61,15 @@ export function formatMetrics(metrics: Record<string, unknown> | null): string {
     .join('  ');
 }
 
-export default function KlineHoverPanel({ bar, showMa, subIndicator }: KlineHoverPanelProps) {
+export default function KlineHoverPanel({
+  bar,
+  showMa,
+  subIndicator,
+  maPeriods = DEFAULT_MA_PERIODS,
+}: KlineHoverPanelProps) {
   if (!bar) return null;
+
+  const maValues = [bar.ma1, bar.ma2, bar.ma3, bar.ma4];
 
   return (
     <div
@@ -83,8 +97,7 @@ export default function KlineHoverPanel({ bar, showMa, subIndicator }: KlineHove
       <div>量 {formatVolume(bar.volume)}</div>
       {showMa && (
         <div>
-          MA5 {formatIndicator(bar.ma5)} MA10 {formatIndicator(bar.ma10)} MA20 {formatIndicator(bar.ma20)}{' '}
-          MA60 {formatIndicator(bar.ma60)}
+          {maPeriods.map((period, i) => `MA${period} ${formatIndicator(maValues[i] ?? NaN)}`).join(' ')}
         </div>
       )}
       {subIndicator === 'macd' && (

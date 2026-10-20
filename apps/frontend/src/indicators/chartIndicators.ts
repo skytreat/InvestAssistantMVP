@@ -30,20 +30,26 @@
  * （既不进 y 轴范围，也不画线段）—— 这正是历史缺陷 I-23 的正解。
  */
 
-import type { DeepPartial, IndicatorTemplate, KLineData } from 'klinecharts';
+import type { DeepPartial, IndicatorFigure, IndicatorTemplate, KLineData } from 'klinecharts';
 import { COLORS } from '../theme/tokens';
 import type { ChartBar } from './chartBars';
+import { MA_FIELD_KEYS } from './chartParams';
 
 /* ------------------------------------------------------------------ *
  * 结果类型
  * ------------------------------------------------------------------ */
 
-/** MA(5/10/20/60) 主图叠加 */
+/**
+ * MA（4 条线）主图叠加
+ *
+ * ⚠️ 字段名是**线序号**（`ma1`~`ma4`）而不是周期 —— 周期可编辑（T71），
+ *    写死成 `ma5` 会在周期被改后变成谎言。周期见 `IndicatorParams.ma.periods`。
+ */
 export interface MaIndicatorResult {
-  ma5: number;
-  ma10: number;
-  ma20: number;
-  ma60: number;
+  ma1: number;
+  ma2: number;
+  ma3: number;
+  ma4: number;
 }
 
 /** MACD(12,26,9) */
@@ -79,100 +85,244 @@ export interface VolIndicatorResult {
  * ------------------------------------------------------------------ */
 
 /**
- * MA(5/10/20/60) —— **主图叠加**（`series: 'price'`）
+ * MA 四条线 —— **主图叠加**（`series: 'price'`）
  *
  * ⚠️ 主图叠加的指标必须 `paneId: 'candle_pane'`（见 `KlineChart.tsx` 的创建处）。
  */
-export const MA_INDICATOR: IndicatorTemplate<MaIndicatorResult> = {
-  name: 'APP_MA',
-  shortName: 'MA',
-  series: 'price',
-  precision: 2,
-  shouldOhlc: false,
-  figures: [
-    { key: 'ma5', title: 'MA5: ', type: 'line' },
-    { key: 'ma10', title: 'MA10: ', type: 'line' },
-    { key: 'ma20', title: 'MA20: ', type: 'line' },
-    { key: 'ma60', title: 'MA60: ', type: 'line' },
-  ],
-  calc: (dataList: KLineData[]) =>
-    dataList.map((bar) => {
-      const b = bar as unknown as ChartBar;
-      return {
-        ma5: b.ma5,
-        ma10: b.ma10,
-        ma20: b.ma20,
-        ma60: b.ma60,
-      };
-    }),
-};
 
-/** MACD(12,26,9) —— 副图 */
-export const MACD_INDICATOR: IndicatorTemplate<MacdIndicatorResult> = {
-  name: 'APP_MACD',
-  shortName: 'MACD',
-  series: 'normal',
-  precision: 4,
-  figures: [
-    { key: 'dif', title: 'DIF: ', type: 'line' },
-    { key: 'dea', title: 'DEA: ', type: 'line' },
-    {
-      key: 'macd',
-      title: 'MACD: ',
-      type: 'bar',
-      baseValue: 0,
-      // 正柱红 / 负柱绿（A 股口径，与蜡烛同色系）
-      // ⚠️ 不给这个回调的话柱子会全灰（默认取 `noChangeColor`）
-      styles: ({ data, indicator, defaultStyles }) => {
-        const current = data.current as unknown as ChartBar | null;
-        const prev = data.prev as unknown as ChartBar | null;
-        const value = current && Number.isFinite(current.macd) ? current.macd : 0;
-        const prevValue = prev && Number.isFinite(prev.macd) ? prev.macd : value;
-        const upColor = indicator.styles?.bars?.[0]?.upColor ?? defaultStyles?.bars?.[0]?.upColor;
-        const downColor = indicator.styles?.bars?.[0]?.downColor ?? defaultStyles?.bars?.[0]?.downColor;
-        const color = value > 0 ? upColor : value < 0 ? downColor : COLORS.chartText;
-        return { style: prevValue < value ? 'stroke' : 'fill', color, borderColor: color };
+/**
+ * 取值来源（**bars 提供者**）
+ *
+ * 指标值由页面算好后灌在 K 线的扩展字段里（`chartBars.buildChartBars`）。
+ * 图表里的指标要读到**最新**那份值 ⇒ 需要一个能拿到最新 bars 的函数。
+ *
+ * ⚠️ **为什么不能直接读图表自己的数据列表**：
+ *    图表的数据列表只在 `resetData`（换标的 / 换复权 / 换周期）时刷新；
+ *    改指标参数时我们**刻意不重新取数**（PRD §5.2「零网络请求」）⇒
+ *    数据列表里挂的还是**旧**的指标字段。
+ *    ⇒ 模板必须绑定一个「最新 bars」提供者，否则会出现
+ *    「参数改了但后来新建的指标（切副图 Tab）显示旧值」的缺陷。
+ */
+export type BarsProvider = () => readonly ChartBar[];
+
+/** 取值来源的缺省实现：直接用图表数据列表自带的那份（standalone / 单测场景）*/
+function barsFromDataList(dataList: KLineData[]): readonly ChartBar[] {
+  return dataList as unknown as ChartBar[];
+}
+
+/**
+ * MA 的 figure 定义（标题里带**当前周期** —— 周期可编辑，故要能随参数重建）
+ *
+ * ⚠️ 泛型 `D` 只为同时满足两处类型：
+ * - 指标模板要求 `IndicatorFigure<MaIndicatorResult>[]`；
+ * - `chart.overrideIndicator` 的入参是 `IndicatorCreate`（默认泛型 `unknown`）⇒ 要求 `IndicatorFigure<unknown>[]`。
+ *
+ * klinecharts 的泛型在 `attrs`/`styles` 回调上是**不变**的（参数逆变），
+ * 而本函数产出的对象**根本没有** `attrs`/`styles` ⇒ 这里的转换是安全的。
+ */
+export function maFigures<D = MaIndicatorResult>(periods: readonly number[]): IndicatorFigure<D>[] {
+  const figures = periods.slice(0, MA_FIELD_KEYS.length).map((period, i) => ({
+    key: MA_FIELD_KEYS[i],
+    title: `MA${period}: `,
+    type: 'line',
+  }));
+  return figures as IndicatorFigure<D>[];
+}
+
+/** 从 K 线数组里取 MA 值（**字段搬运**，数值由 `chartBars.buildChartBars` 算好）*/
+export function calcMa(dataList: KLineData[], bars: readonly ChartBar[]): MaIndicatorResult[] {
+  return dataList.map((bar, i) => {
+    const b = bars[i] ?? (bar as unknown as ChartBar);
+    return { ma1: b.ma1, ma2: b.ma2, ma3: b.ma3, ma4: b.ma4 };
+  });
+}
+
+/**
+ * MA 指标模板（周期可编辑 ⇒ 按周期重建；figure 标题里带周期）
+ *
+ * @param getBars 最新 bars 的提供者（缺省 = 图表数据列表自带的那份）
+ */
+export function createMaIndicator(
+  periods: readonly number[],
+  getBars?: BarsProvider,
+): IndicatorTemplate<MaIndicatorResult> {
+  return {
+    name: 'APP_MA',
+    shortName: `MA(${periods.join('/')})`,
+    series: 'price',
+    precision: 2,
+    shouldOhlc: false,
+    figures: maFigures(periods),
+    calc: (dataList: KLineData[]) => calcMa(dataList, getBars ? getBars() : barsFromDataList(dataList)),
+  };
+}
+
+/** MA 指标模板（默认周期 5/10/20/60）*/
+export const MA_INDICATOR: IndicatorTemplate<MaIndicatorResult> = createMaIndicator([5, 10, 20, 60]);
+
+/** 从 K 线数组里取 MACD 三线值（字段搬运）*/
+export function calcMacd(dataList: KLineData[], bars: readonly ChartBar[]): MacdIndicatorResult[] {
+  return dataList.map((bar, i) => {
+    const b = bars[i] ?? (bar as unknown as ChartBar);
+    return { dif: b.dif, dea: b.dea, macd: b.macd };
+  });
+}
+
+/**
+ * MACD 指标模板（副图）
+ *
+ * ⚠️ MACD 的**参数**（fast/slow/signal）不体现在 figure 上（标题恒为 `DIF/DEA/MACD`），
+ *    但**数值**随参数变 ⇒ 取值来源必须绑定「最新 bars」（见 {@link BarsProvider}）。
+ */
+export function createMacdIndicator(getBars?: BarsProvider): IndicatorTemplate<MacdIndicatorResult> {
+  return {
+    name: 'APP_MACD',
+    shortName: 'MACD',
+    series: 'normal',
+    precision: 4,
+    figures: [
+      { key: 'dif', title: 'DIF: ', type: 'line' },
+      { key: 'dea', title: 'DEA: ', type: 'line' },
+      {
+        key: 'macd',
+        title: 'MACD: ',
+        type: 'bar',
+        baseValue: 0,
+        // 正柱红 / 负柱绿（A 股口径，与蜡烛同色系）
+        // ⚠️ 不给这个回调的话柱子会全灰（默认取 `noChangeColor`）
+        styles: ({ data, indicator, defaultStyles }) => {
+          const current = data.current as unknown as ChartBar | null;
+          const prev = data.prev as unknown as ChartBar | null;
+          const value = current && Number.isFinite(current.macd) ? current.macd : 0;
+          const prevValue = prev && Number.isFinite(prev.macd) ? prev.macd : value;
+          const upColor = indicator.styles?.bars?.[0]?.upColor ?? defaultStyles?.bars?.[0]?.upColor;
+          const downColor = indicator.styles?.bars?.[0]?.downColor ?? defaultStyles?.bars?.[0]?.downColor;
+          const color = value > 0 ? upColor : value < 0 ? downColor : COLORS.chartText;
+          return { style: prevValue < value ? 'stroke' : 'fill', color, borderColor: color };
+        },
       },
-    },
-  ],
-  calc: (dataList: KLineData[]) =>
-    dataList.map((bar) => {
-      const b = bar as unknown as ChartBar;
-      return { dif: b.dif, dea: b.dea, macd: b.macd };
-    }),
-};
+    ],
+    calc: (dataList: KLineData[]) => calcMacd(dataList, getBars ? getBars() : barsFromDataList(dataList)),
+  };
+}
 
-/** RSI(14) —— 副图 */
-export const RSI_INDICATOR: IndicatorTemplate<RsiIndicatorResult> = {
-  name: 'APP_RSI',
-  shortName: 'RSI',
-  series: 'normal',
-  precision: 2,
-  figures: [{ key: 'rsi', title: 'RSI: ', type: 'line' }],
-  calc: (dataList: KLineData[]) =>
-    dataList.map((bar) => {
-      const b = bar as unknown as ChartBar;
-      return { rsi: b.rsi };
-    }),
-};
+/** MACD 指标模板（默认：取图表数据列表自带的那份）*/
+export const MACD_INDICATOR: IndicatorTemplate<MacdIndicatorResult> = createMacdIndicator();
 
-/** KDJ(9,3,3) —— 副图（**A 股口径**，前端手写实现）*/
-export const KDJ_INDICATOR: IndicatorTemplate<KdjIndicatorResult> = {
-  name: 'APP_KDJ',
-  shortName: 'KDJ',
-  series: 'normal',
-  precision: 2,
-  figures: [
-    { key: 'k', title: 'K: ', type: 'line' },
-    { key: 'd', title: 'D: ', type: 'line' },
-    { key: 'j', title: 'J: ', type: 'line' },
-  ],
-  calc: (dataList: KLineData[]) =>
-    dataList.map((bar) => {
-      const b = bar as unknown as ChartBar;
-      return { k: b.k, d: b.d, j: b.j };
-    }),
-};
+/** 从 K 线数组里取 RSI 值（字段搬运）*/
+export function calcRsi(dataList: KLineData[], bars: readonly ChartBar[]): RsiIndicatorResult[] {
+  return dataList.map((bar, i) => {
+    const b = bars[i] ?? (bar as unknown as ChartBar);
+    return { rsi: b.rsi };
+  });
+}
+
+/** RSI 超买参考线颜色（红 = 涨过头）*/
+export const RSI_OVERBOUGHT_COLOR = COLORS.candleUp;
+/** RSI 超卖参考线颜色（绿 = 跌过头）*/
+export const RSI_OVERSOLD_COLOR = COLORS.candleDown;
+/** RSI 参考线的虚线样式 */
+export const RSI_THRESHOLD_DASH = [4, 4];
+
+/**
+ * 画 RSI 的超买 / 超卖参考线
+ *
+ * ⚠️ 阈值是**闭包捕获**的 ⇒ 阈值改了必须用新的 `draw` 重建指标（T71）。
+ *
+ * @returns 恒为 `false` —— 不拦截库的默认绘制
+ */
+export function drawRsiThresholds(
+  ctx: CanvasRenderingContext2D,
+  chart: { getVisibleRange: () => { from: number; to: number } },
+  xAxis: { convertToPixel: (index: number) => number },
+  yAxis: { convertToPixel: (value: number) => number },
+  overbought: number,
+  oversold: number,
+): boolean {
+  const visible = chart.getVisibleRange();
+  const x1 = xAxis.convertToPixel(visible.from);
+  const x2 = xAxis.convertToPixel(visible.to);
+  if (!Number.isFinite(x1) || !Number.isFinite(x2)) return false;
+
+  const lines: Array<{ value: number; color: string }> = [
+    { value: overbought, color: RSI_OVERBOUGHT_COLOR },
+    { value: oversold, color: RSI_OVERSOLD_COLOR },
+  ];
+
+  ctx.save();
+  ctx.setLineDash(RSI_THRESHOLD_DASH);
+  ctx.lineWidth = 1;
+  for (const line of lines) {
+    const y = yAxis.convertToPixel(line.value);
+    if (!Number.isFinite(y)) continue;
+    ctx.strokeStyle = line.color;
+    ctx.beginPath();
+    ctx.moveTo(x1, y);
+    ctx.lineTo(x2, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+  return false;
+}
+
+/**
+ * RSI 指标模板（阈值可编辑 ⇒ 需要按阈值重建）
+ *
+ * `minValue: 0` / `maxValue: 100` —— RSI 取值域固定 0~100，
+ * 固定住 y 轴才能保证超买/超卖参考线**始终可见**（否则线会跑到画布外）。
+ */
+export function createRsiIndicator(
+  period: number,
+  overbought: number,
+  oversold: number,
+  getBars?: BarsProvider,
+): IndicatorTemplate<RsiIndicatorResult> {
+  return {
+    name: 'APP_RSI',
+    shortName: `RSI(${period})`,
+    series: 'normal',
+    precision: 2,
+    minValue: 0,
+    maxValue: 100,
+    figures: [{ key: 'rsi', title: 'RSI: ', type: 'line' }],
+    calc: (dataList: KLineData[]) => calcRsi(dataList, getBars ? getBars() : barsFromDataList(dataList)),
+    draw: ({ ctx, chart, xAxis, yAxis }) => drawRsiThresholds(ctx, chart, xAxis, yAxis, overbought, oversold),
+  };
+}
+
+/** RSI 指标模板（默认周期 14 / 超买 70 / 超卖 30）*/
+export const RSI_INDICATOR: IndicatorTemplate<RsiIndicatorResult> = createRsiIndicator(14, 70, 30);
+
+/** 从 K 线数组里取 KDJ 三线值（字段搬运）*/
+export function calcKdj(dataList: KLineData[], bars: readonly ChartBar[]): KdjIndicatorResult[] {
+  return dataList.map((bar, i) => {
+    const b = bars[i] ?? (bar as unknown as ChartBar);
+    return { k: b.k, d: b.d, j: b.j };
+  });
+}
+
+/**
+ * KDJ 指标模板（副图，**A 股口径**，前端手写实现）
+ *
+ * ⚠️ 数值随 N/M1/M2 变 ⇒ 取值来源绑定「最新 bars」（见 {@link BarsProvider}）。
+ */
+export function createKdjIndicator(getBars?: BarsProvider): IndicatorTemplate<KdjIndicatorResult> {
+  return {
+    name: 'APP_KDJ',
+    shortName: 'KDJ',
+    series: 'normal',
+    precision: 2,
+    figures: [
+      { key: 'k', title: 'K: ', type: 'line' },
+      { key: 'd', title: 'D: ', type: 'line' },
+      { key: 'j', title: 'J: ', type: 'line' },
+    ],
+    calc: (dataList: KLineData[]) => calcKdj(dataList, getBars ? getBars() : barsFromDataList(dataList)),
+  };
+}
+
+/** KDJ 指标模板（默认：取图表数据列表自带的那份）*/
+export const KDJ_INDICATOR: IndicatorTemplate<KdjIndicatorResult> = createKdjIndicator();
 
 /** 成交量 —— 副图（原始字段，无需计算）*/
 export const VOL_INDICATOR: IndicatorTemplate<VolIndicatorResult> = {

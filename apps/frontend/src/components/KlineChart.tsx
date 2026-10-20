@@ -1,5 +1,5 @@
 /**
- * K 线图组件（T70 · 接入 `klinecharts@10.1.0`）
+ * K 线图组件（T70 · 接入 `klinecharts@10.1.0`；T71 · 指标参数实时生效）
  *
  * ## 为什么单独一个组件
  *
@@ -19,6 +19,23 @@
  *
  * 🔴 **库不参与任何计算**（SDD §2.5）—— 绝不使用 klinecharts 的内置指标。
  *
+ * ## T71：改参数 → 即时重绘，**零网络请求**
+ *
+ * 两条路径**严格分开**：
+ *
+ * | 变化 | 动作 | 取数 |
+ * |---|---|---|
+ * | **原始数据变了**（换标的 / 换复权 / 换周期 / 重新加载）| `chart.resetData()` | 内存 loader（`getBars`）|
+ * | **只有指标参数变了**（MA 周期 / MACD / RSI / KDJ）| `chart.overrideIndicator({ calc, figures, draw })` | **完全不取数** |
+ *
+ * ⇒ 改参数时**不会**再次调用数据加载器，更不会发任何网络请求
+ *    （PRD §5.2「零网络请求」+ §6.3「重绘 ≤ 300ms」）。
+ *
+ * ⚠️ **为什么 `overrideIndicator` 里要传一个「新函数」**：
+ *    klinecharts 的默认 `shouldUpdate` 用 `prev.calc !== current.calc` 判断是否重算，
+ *    传同一个函数引用会被判定为「没变」⇒ **不重算**。
+ *    故每次都新建闭包（闭包里读 `barsRef.current` = 最新算好的 bars）。
+ *
  * ## 交互
  *
  * - 十字光标：库内置（`subscribeAction('onCrosshairChange')`）
@@ -27,10 +44,11 @@
  * - 响应式：`ResizeObserver` + `window.resize` → `chart.resize()`
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Chart, KLineData } from 'klinecharts';
 import { COLORS, TYPO } from '../theme/tokens';
 import { PERIOD_TO_KLINECHARTS, type ChartBar, type KlinePeriod } from '../indicators/chartBars';
+import type { IndicatorParams } from '../indicators/chartParams';
 import KlineHoverPanel from './KlineHoverPanel';
 import {
   CHART_STYLES,
@@ -46,6 +64,16 @@ import {
   SIGNAL_INDICATOR,
   VOL_BAR_STYLES,
   VOL_INDICATOR,
+  calcKdj,
+  calcMacd,
+  calcMa,
+  calcRsi,
+  createKdjIndicator,
+  createMacdIndicator,
+  createMaIndicator,
+  createRsiIndicator,
+  drawRsiThresholds,
+  maFigures,
 } from '../indicators/chartIndicators';
 
 /** klinecharts 的主图（蜡烛图）pane id */
@@ -75,7 +103,16 @@ export interface KlineChartProps {
   period: KlinePeriod;
   /** 已加工的 K 线（含指标字段 + 信号标记）*/
   bars: ChartBar[];
-  /** 主图是否叠加 MA(5/10/20/60) */
+  /**
+   * 原始数据指纹（T71）
+   *
+   * ⚠️ **只有它变了才重新取数**（`resetData`）；参数变了但它没变 ⇒ **不取数**，
+   *    只重算指标（`overrideIndicator`）⇒ 零网络请求。
+   */
+  dataSignature: string;
+  /** 指标参数（T71：改参数即时重绘）*/
+  params: IndicatorParams;
+  /** 主图是否叠加 MA(4 条) */
   showMa: boolean;
   /** 副图类型 */
   subIndicator: SubIndicatorKind;
@@ -90,12 +127,27 @@ export interface KlineChartProps {
 /** klinecharts 运行时模块（动态 import 的结果）*/
 type KlineChartsModule = typeof import('klinecharts');
 
-/** 注册全部自定义指标（幂等 —— 重复注册只是覆盖同名模板）*/
-function registerCustomIndicators(kc: KlineChartsModule): void {
-  kc.registerIndicator(MA_INDICATOR);
-  kc.registerIndicator(MACD_INDICATOR);
-  kc.registerIndicator(RSI_INDICATOR);
-  kc.registerIndicator(KDJ_INDICATOR);
+/**
+ * 注册全部自定义指标（幂等 —— 重复注册只是覆盖同名模板）
+ *
+ * ⚠️ MA / RSI 的模板**带参数**（周期 / 阈值）⇒ 参数变了要重新注册，
+ *    否则后续 `createIndicator`（例如切副图 Tab）会拿到旧参数的模板。
+ *
+ * ⚠️ 模板的取值来源绑定 `getBars`（**最新**的 bars）——
+ *    改参数时我们**不重新取数**（PRD §5.2「零网络请求」），
+ *    图表内部的数据列表里挂的还是旧指标字段 ⇒ 只能从 `getBars` 取最新值。
+ */
+function registerCustomIndicators(
+  kc: KlineChartsModule,
+  params: IndicatorParams,
+  getBars: () => readonly ChartBar[],
+): void {
+  kc.registerIndicator(createMaIndicator(params.ma.periods, getBars));
+  kc.registerIndicator(createMacdIndicator(getBars));
+  kc.registerIndicator(
+    createRsiIndicator(params.rsi.period, params.rsi.overbought, params.rsi.oversold, getBars),
+  );
+  kc.registerIndicator(createKdjIndicator(getBars));
   kc.registerIndicator(VOL_INDICATOR);
   // 🔴 信号标记也必须注册 —— 未注册的名字 `createIndicator` 会静默返回 null
   kc.registerIndicator(SIGNAL_INDICATOR);
@@ -117,6 +169,8 @@ export default function KlineChart({
   symbol,
   period,
   bars,
+  dataSignature,
+  params,
   showMa,
   subIndicator,
   height = 560,
@@ -129,6 +183,16 @@ export default function KlineChart({
   /** 最新数据（数据加载器的闭包读它，避免每次数据变化都重建 loader）*/
   const barsRef = useRef<ChartBar[]>(bars);
   barsRef.current = bars;
+  /** 最新 bars 的提供者（指标模板绑定它 ⇒ 改参数时能读到**新**值）*/
+  const getBars = useCallback(() => barsRef.current, []);
+  /** 最新参数（指标闭包读它）*/
+  const paramsRef = useRef<IndicatorParams>(params);
+  paramsRef.current = params;
+  /** 最新数据指纹（渲染期同步，避免闭包拿到过期值）*/
+  const signatureRef = useRef(dataSignature);
+  signatureRef.current = dataSignature;
+  /** 图表里当前装着的**原始数据**的指纹 —— 与它不同才需要重新取数 */
+  const loadedSignatureRef = useRef<string | null>(null);
 
   /** 当前 hover 的 K 线下标 */
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -153,7 +217,7 @@ export default function KlineChart({
         const container = containerRef.current;
         if (!container) return;
 
-        registerCustomIndicators(kc);
+        registerCustomIndicators(kc, paramsRef.current, getBars);
 
         const chart = kc.init(container, { styles: CHART_STYLES, locale: 'zh-CN' });
         if (!chart) throw new Error('klinecharts init 未返回实例');
@@ -183,6 +247,8 @@ export default function KlineChart({
         chart.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
         chart.setPeriod({ type: PERIOD_TO_KLINECHARTS[period], span: 1 });
         chart.resetData();
+        // 图表里装的就是当前这份原始数据 ⇒ 记下指纹（之后只有指纹变了才重新取数）
+        loadedSignatureRef.current = signatureRef.current;
 
         // 主图叠加 MA（`series: 'price'` + `paneId: candle_pane` ⇒ 画在蜡烛图上）
         ensureIndicator(
@@ -306,14 +372,73 @@ export default function KlineChart({
     chart.setSymbol({ ticker: symbol, pricePrecision: 2, volumePrecision: 0 });
     chart.setPeriod({ type: PERIOD_TO_KLINECHARTS[period], span: 1 });
     chart.resetData();
+    loadedSignatureRef.current = signatureRef.current;
   }, [symbol, period, ready]);
 
-  /* ---------------- 数据变化 → 重新灌值 ---------------- */
+  /**
+   * 🔴 T71：数据变化 vs 参数变化 —— **两条路径严格分开**
+   *
+   * - **原始数据变了**（`dataSignature` 变了）→ `chart.resetData()`
+   *   ⇒ 重新走一次内存数据加载器（`getBars`）—— 这是「换标的 / 换复权 / 换周期」。
+   * - **只有指标参数变了**（`dataSignature` 没变）→ **不取数**，
+   *   只用 `chart.overrideIndicator(...)` 覆盖各指标的 `calc` / `figures` / `draw`
+   *   ⇒ 库在微任务里重算并重绘。
+   *
+   * ⇒ **改参数不会再次调用数据加载器，更不会发网络请求**（PRD §5.2「零网络请求」）。
+   */
+  const applyIndicatorParams = useCallback(
+    (chart: Chart, next: IndicatorParams) => {
+      // ① 重新注册带参数的模板（MA 周期 / RSI 阈值）—— 后续 `createIndicator` 用新参数
+      const kc = kcRef.current;
+      if (kc) {
+        kc.registerIndicator(createMaIndicator(next.ma.periods, getBars));
+        kc.registerIndicator(createMacdIndicator(getBars));
+        kc.registerIndicator(
+          createRsiIndicator(next.rsi.period, next.rsi.overbought, next.rsi.oversold, getBars),
+        );
+        kc.registerIndicator(createKdjIndicator(getBars));
+      }
+
+      // ② 覆盖已存在的指标 ⇒ 重算 + 重绘
+      //    ⚠️ 每次都新建闭包：klinecharts 用 `prev.calc !== current.calc` 判断是否重算，
+      //       传同一个函数引用会被判成「没变」⇒ 不重算。
+      chart.overrideIndicator({
+        name: MA_INDICATOR.name,
+        calc: (dataList: KLineData[]) => calcMa(dataList, barsRef.current),
+        figures: maFigures(next.ma.periods),
+      });
+      chart.overrideIndicator({
+        name: MACD_INDICATOR.name,
+        calc: (dataList: KLineData[]) => calcMacd(dataList, barsRef.current),
+      });
+      chart.overrideIndicator({
+        name: RSI_INDICATOR.name,
+        calc: (dataList: KLineData[]) => calcRsi(dataList, barsRef.current),
+        draw: ({ ctx, chart: c, xAxis, yAxis }) =>
+          drawRsiThresholds(ctx, c, xAxis, yAxis, next.rsi.overbought, next.rsi.oversold),
+      });
+      chart.overrideIndicator({
+        name: KDJ_INDICATOR.name,
+        calc: (dataList: KLineData[]) => calcKdj(dataList, barsRef.current),
+      });
+    },
+    [getBars],
+  );
+
+  /* ---------------- 数据变化 → 重新灌值；参数变化 → 只重算指标 ---------------- */
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !ready) return;
-    chart.resetData();
-  }, [bars, ready]);
+
+    // ① 原始数据变了 ⇒ 重新取数（内存 loader）
+    if (loadedSignatureRef.current !== dataSignature) {
+      loadedSignatureRef.current = dataSignature;
+      chart.resetData();
+    }
+
+    // ② 参数可能也变了 ⇒ 重算指标（**不碰数据加载器** ⇒ 零网络请求）
+    applyIndicatorParams(chart, params);
+  }, [bars, dataSignature, params, ready, applyIndicatorParams]);
 
   /* ---------------- MA 显隐（F-K3） ---------------- */
   useEffect(() => {
@@ -407,7 +532,12 @@ export default function KlineChart({
       )}
 
       {/* 十字光标 hover 悬浮窗：当日 OHLCV + 指标值 + 当日信号（F-K6 / F-K8）*/}
-      <KlineHoverPanel bar={hovered} showMa={showMa} subIndicator={subIndicator} />
+      <KlineHoverPanel
+        bar={hovered}
+        showMa={showMa}
+        subIndicator={subIndicator}
+        maPeriods={params.ma.periods}
+      />
     </div>
   );
 }

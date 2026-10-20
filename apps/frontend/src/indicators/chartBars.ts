@@ -7,8 +7,9 @@
  * klinecharts 能直接消费的 **KLineData**：
  *
  * 1. **周期聚合**（F-K7）：日线 → 周线 / 月线（PRD §5.2「周/月基于日线聚合」）。
- * 2. **前端算指标**（SDD §2.5「只画不算」）：MA(5/10/20/60) / MACD / RSI / KDJ
+ * 2. **前端算指标**（SDD §2.5「只画不算」）：MA(4 条，周期可编辑) / MACD / RSI / KDJ
  *    全部由**前端**计算后**灌进每根 K 线**（`KLineData` 允许挂任意扩展字段）。
+ *    指标参数见 `chartParams.ts`（T71：参数实时生效，零网络请求）。
  * 3. **信号标记**：把后端信号按 `trade_date` 对齐到 K 线上（`signal` 字段）。
  *
  * ## 🔴 为什么指标在前端算（而不是用后端下发的 `indicators`）
@@ -41,6 +42,7 @@
 
 import { calculateKDJ } from './kdj';
 import { calculateMACD, calculateRSI, calculateSMA } from './technical';
+import { DEFAULT_INDICATOR_PARAMS, type IndicatorParams } from './chartParams';
 
 /** 后端 `klines[]` 的原始形状 */
 export interface RawBar {
@@ -83,10 +85,17 @@ export interface SignalMarker {
 export interface ChartBar extends RawBar {
   /** 毫秒时间戳（本地时区当日 00:00）*/
   timestamp: number;
-  ma5: number;
-  ma10: number;
-  ma20: number;
-  ma60: number;
+  /**
+   * MA 第 1~4 条线的值
+   *
+   * ⚠️ 字段名按**线序号**而非周期命名 —— MA 周期可编辑（T71），
+   *    字段名若写死成 `ma5` 会在用户把周期改成 7 之后变成谎言。
+   *    周期见 `IndicatorParams.ma.periods`（与下标一一对应）。
+   */
+  ma1: number;
+  ma2: number;
+  ma3: number;
+  ma4: number;
   dif: number;
   dea: number;
   macd: number;
@@ -98,8 +107,10 @@ export interface ChartBar extends RawBar {
   signal: SignalMarker | null;
 }
 
-/** MA 周期（PRD §5.2：MA(5/10/20/60)）*/
-export const MA_PERIODS = [5, 10, 20, 60] as const;
+/** 图表周期 → 参数面板里 K 线根数的单位（PRD §5.2「日 K / 周 K / 月 K」）*/
+export function periodUnit(period: KlinePeriod): string {
+  return period === 'day' ? '日' : period === 'week' ? '周' : '月';
+}
 
 /* ------------------------------------------------------------------ *
  * 周期聚合（F-K7）
@@ -195,13 +206,16 @@ export function toTimestamp(date: string): number {
  * 计算全部图表指标并灌进每根 K 线
  *
  * ⚠️ **MACD 的特例**：`technical.ts` 的 `calculateMACD` 在
- *    `closes.length < slowPeriod + signalPeriod`（= 35）时返回**三个空数组**
+ *    `closes.length < slowPeriod + signalPeriod`（默认 = 35）时返回**三个空数组**
  *    （core 的既有对外契约）→ 此处补 NaN，避免出现 `undefined`。
+ *
+ * @param params 指标参数（T71）；缺省用默认参数（PRD §5.2 的 MA(5/10/20/60) 等）
  */
 export function buildChartBars(
   bars: RawBar[],
   period: KlinePeriod,
   signals: SignalMarker[] = [],
+  params: IndicatorParams = DEFAULT_INDICATOR_PARAMS,
 ): ChartBar[] {
   const aggregated = aggregateBars(bars, period);
 
@@ -209,13 +223,11 @@ export function buildChartBars(
   const highs = aggregated.map((b) => b.high);
   const lows = aggregated.map((b) => b.low);
 
-  const ma5 = calculateSMA(closes, 5);
-  const ma10 = calculateSMA(closes, 10);
-  const ma20 = calculateSMA(closes, 20);
-  const ma60 = calculateSMA(closes, 60);
-  const macd = calculateMACD(closes);
-  const rsi = calculateRSI(closes);
-  const kdj = calculateKDJ(highs, lows, closes);
+  // MA：4 条线，每条一个周期（周期可编辑 —— T71）
+  const maLines = params.ma.periods.map((p) => calculateSMA(closes, p));
+  const macd = calculateMACD(closes, params.macd.fast, params.macd.slow, params.macd.signal);
+  const rsi = calculateRSI(closes, params.rsi.period);
+  const kdj = calculateKDJ(highs, lows, closes, params.kdj.n, params.kdj.m1, params.kdj.m2);
 
   // 信号按交易日建索引（同一交易日可能有多条信号 → 取第一条「买入优先」）
   const signalByDate = new Map<string, SignalMarker>();
@@ -226,10 +238,10 @@ export function buildChartBars(
   return aggregated.map((bar, i) => ({
     ...bar,
     timestamp: toTimestamp(bar.date),
-    ma5: ma5[i] ?? NaN,
-    ma10: ma10[i] ?? NaN,
-    ma20: ma20[i] ?? NaN,
-    ma60: ma60[i] ?? NaN,
+    ma1: maLines[0]?.[i] ?? NaN,
+    ma2: maLines[1]?.[i] ?? NaN,
+    ma3: maLines[2]?.[i] ?? NaN,
+    ma4: maLines[3]?.[i] ?? NaN,
     dif: macd.dif[i] ?? NaN,
     dea: macd.dea[i] ?? NaN,
     macd: macd.macd[i] ?? NaN,

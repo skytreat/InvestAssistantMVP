@@ -442,10 +442,11 @@ describe('T70 · 指标灌值逐位相等（klinecharts v10 round-trip）', () =
     expect(ma.result.length).toBe(bars.length);
     for (let i = 0; i < bars.length; i++) {
       // 🔒 零容差：`Object.is` 语义（NaN 与 NaN 也相等）
-      expect(Object.is(ma.result[i].ma5, expectedMa5[i]), `MA5[${i}]`).toBe(true);
-      expect(Object.is(ma.result[i].ma10, expectedMa10[i]), `MA10[${i}]`).toBe(true);
-      expect(Object.is(ma.result[i].ma20, expectedMa20[i]), `MA20[${i}]`).toBe(true);
-      expect(Object.is(ma.result[i].ma60, expectedMa60[i]), `MA60[${i}]`).toBe(true);
+      // ⚠️ MA 的字段名是**线序号**（`ma1`~`ma4`）而不是周期 —— 周期可编辑（T71）
+      expect(Object.is(ma.result[i].ma1, expectedMa5[i]), `MA5[${i}]`).toBe(true);
+      expect(Object.is(ma.result[i].ma2, expectedMa10[i]), `MA10[${i}]`).toBe(true);
+      expect(Object.is(ma.result[i].ma3, expectedMa20[i]), `MA20[${i}]`).toBe(true);
+      expect(Object.is(ma.result[i].ma4, expectedMa60[i]), `MA60[${i}]`).toBe(true);
       expect(Object.is(macd.result[i].dif, expectedMacd.dif[i]), `DIF[${i}]`).toBe(true);
       expect(Object.is(macd.result[i].dea, expectedMacd.dea[i]), `DEA[${i}]`).toBe(true);
       expect(Object.is(macd.result[i].macd, expectedMacd.macd[i]), `MACD[${i}]`).toBe(true);
