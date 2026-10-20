@@ -12,6 +12,7 @@ import NotFound from './pages/NotFound';
 import { useUserStore } from './store/user';
 import { Navbar } from './pages/_shared';
 import ComplianceFooter from './components/ComplianceFooter';
+import AdminGuard from './components/AdminGuard';
 import { MAX_WIDTH, TYPO } from './theme/tokens';
 
 export default function App() {
@@ -57,7 +58,15 @@ export default function App() {
           <Route path="/stockscan" element={<StockScan />} />
           <Route path="/review" element={<Review />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/admin" element={<Admin />} />
+          {/* T98：管理员路由受 AdminGuard 保护 —— 非 admin 不挂载 <Admin />，故不发 admin 请求 */}
+          <Route
+            path="/admin"
+            element={
+              <AdminGuard>
+                <Admin />
+              </AdminGuard>
+            }
+          />
           {/* 未知路由显示 404 页，不再静默跳回仪表盘（拼错的路径本该显式报错） */}
           <Route path="*" element={<NotFound />} />
         </Routes>

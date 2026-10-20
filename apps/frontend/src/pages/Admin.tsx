@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { extractErrorMessage, extractErrorMessageOrString } from '../api/errors';
-import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
@@ -67,8 +66,6 @@ const LOG_TYPE_LABEL: Record<string, string> = {
 };
 
 export default function Admin() {
-  const { role } = useUserStore();
-
   const [datacheckLoading, setDatacheckLoading] = useState(false);
   const [datacheckResult, setDatacheckResult] = useState<DatacheckResult | null>(null);
   const [datacheckError, setDatacheckError] = useState<string | null>(null);
@@ -94,15 +91,6 @@ export default function Admin() {
   const [rerunLoading, setRerunLoading] = useState(false);
   const [rerunMsg, setRerunMsg] = useState<string | null>(null);
   const [rerunErr, setRerunErr] = useState<string | null>(null);
-
-  if (role !== 'admin') {
-    return (
-      <div style={pageContainerStyle}>
-        <h1 style={titleStyle}>管理员面板</h1>
-        <div style={{ ...cardStyle, color: COLORS.danger }}>无权限</div>
-      </div>
-    );
-  }
 
   const fetchLogs = async (p: number) => {
     setLogLoading(true);
@@ -134,12 +122,10 @@ export default function Admin() {
     }
   };
 
-  // ⚠️ 说明：非 admin 角色在上面的 `if (role !== 'admin')` 已提前 return，导致本 useEffect
-  // 成为**条件调用**（role 在运行期由 admin 变为 user 时会触发 React 的 hook 数量错误）。
-  // 正解是把面板主体拆成子组件（`role !== 'admin'` 时不渲染子组件 → hook 数量恒定），
-  // 但那会改变组件结构与状态挂载点，**不属于本次「只改类型、不改运行时行为」的清理范围**，
-  // 故此处显式豁免并登记为待办（见本次交付说明「发现但未修的问题」）。
-  // eslint-disable-next-line react-hooks/rules-of-hooks
+  // 拉取系统日志与最近校验结果。
+  // ⚠️ T98：本组件**必须**让所有 hook 无条件调用 —— 权限判定已上移到 `components/AdminGuard.tsx`
+  //（非 admin 时 Admin 根本不挂载，其 useEffect 不会跑 → 既保证 I-12「不发 admin 请求」，
+  //  又消除了「条件调用 hook」导致的 React hook 数量错误）。
   useEffect(() => {
     fetchLogs(page);
     fetchCheckSummary();

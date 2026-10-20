@@ -821,6 +821,29 @@ export const router = createBrowserRouter([
 
 #### 2.12.3 状态管理方案
 
+> ⚠️ **MVP 实现范围收窄（2026-10-20，T98 登记）**
+>
+> 本节下文的「**决策**：Zustand（全局状态）+ React Query（服务端数据缓存）」是**原始决策记录，予以保留**；
+> 但 **MVP 实际实现范围已收窄 —— React Query 未被引入**。
+>
+> - **MVP 实现范围**：仅 **Zustand**（全局状态，`apps/frontend/src/store/user.ts`）
+>   + **`api/client`**（axios 实例，`apps/frontend/src/api/client.ts`）。
+> - **React Query 移出 MVP 范围**，理由：
+>   1. **当前数据规模不需要缓存层** —— 持仓 ≤ 数十条、信号 ≤ 50 条/页、复盘列表分页；
+>      页面组件内「`useState` + `useEffect` 拉取 + `useState` 保存页码」即可满足（现有页面即如此）。
+>   2. **`api/client.ts` 的请求/响应拦截器已承担 token 注入与 401 处理**
+>      （请求拦截器注入 `Authorization: Bearer`；响应拦截器遇 401 登出并跳 `/login`），
+>      无需 React Query 的全局缓存失效机制。
+> - **若将来引入 React Query，必须同时评估以下两点（不可直接叠加）**：
+>   1. **401 处理重复** —— `api/client.ts` 的响应拦截器已做「登出 + 跳 `/login`」，
+>      与 React Query 的 `onError` / 重试策略会**双重触发**（登出两次、跳两次）。
+>   2. **token 持久化 vs 缓存失效** —— `useUserStore` 使用 zustand `persist`（token 落 localStorage），
+>      而 React Query 缓存默认驻留内存；**登出或切换账号后必须显式 `queryClient.clear()`**，
+>      否则会出现「A 的缓存数据展示给 B」的越权风险。
+> - ⚠️ 这是**对 §2.12.3 原「决策」的 MVP 范围收窄**，**不是推翻**该决策 ——
+>   方向未变（Zustand 仍是全局状态方案），仅把 React Query 这一层延后到出现真实缓存/失效需求时再引入。
+>   引入时需同步更新本节。
+
 **决策**：Zustand（全局状态）+ React Query（服务端数据缓存）
 
 | 维度 | 方案 A：Zustand + React Query（**推荐**）| 方案 B：纯 Zustand | 方案 C：Redux Toolkit |
