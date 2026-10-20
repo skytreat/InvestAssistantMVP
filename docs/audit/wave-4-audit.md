@@ -253,7 +253,18 @@ effect cleanup `clearTimeout` ⇒ 连续改多个控件**只发一次**。
 
 ---
 
-## 10. 验证汇总
+## 10. CI 实跑记录
+
+**PR**：#22 `feat(Wave 4): TradeInput + Review 重写 —— T68/T69 + 3 个 P0 修复（G4 6/6 PASS）`
+
+| Run | run id | Stage 2 | build-and-test | 结论 |
+|---|---|---|---|---|
+| #1 | `39458672254` | pass | pass | ✅ success |
+| #2 | 见 commit | | | |
+
+---
+
+## 11. 验证汇总
 
 | 检查 | 结果 |
 |---|---|
