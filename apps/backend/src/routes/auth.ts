@@ -245,11 +245,14 @@ export async function registerAuthRoutes(app: FastifyInstance) {
         created = createUser();
       } catch (err) {
         if (err instanceof RegisterRejected) {
-          return reply.code(err.outcome.status).send({
-            success: false,
-            error: err.outcome.error,
-            message: err.outcome.message,
-          });
+          // 🔴 必须走 `fail()` —— 不能手写信封。
+          //   原实现手写 `{ success, error, message }`：**缺 `code` / `data` / `timestamp`**，
+          //   与 SDD §4.2 的统一 envelope 不符（前端 `resolveErrorMessage` 读 `code`，
+          //   缺了就得回落到 `error` 字段 —— 能显示，但不是契约形状）。
+          //   T64 新增的 `tests/unit/t64-public-routes.test.ts` 断言 `code` / `data === null` / `success === false`。
+          return reply
+            .code(err.outcome.status)
+            .send(fail(err.outcome.status, err.outcome.error, err.outcome.message));
         }
         throw err;
       }
