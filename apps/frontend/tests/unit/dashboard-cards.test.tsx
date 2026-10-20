@@ -656,12 +656,26 @@ describe('卡片操作按钮 · 【买入】【卖出】', () => {
     expect(screen.getAllByRole('button', { name: '卖出' })).toHaveLength(3);
   });
 
-  it('未接入交易回调时按钮为 disabled 占位（卡 4 负责接上）', async () => {
+  it('未接入 onTrade 时（组件级）【买入】【卖出】为 disabled 占位', () => {
+    // ⚠️ 这条契约在**组件级**断言 —— Dashboard 级已经接上了 `onTrade`（批次 5 接线），
+    //    Dashboard 级不再是「未接入」状态。
+    render(<PositionCard position={DEFAULT_POSITIONS[0]} assetType="stock" />);
+
+    expect(screen.getByRole('button', { name: '买入' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '卖出' })).toBeDisabled();
+  });
+
+  it('批次 5 接线后：Dashboard 里的【买入】【卖出】不再是 disabled 占位', async () => {
+    // 卡 4 已把 Dashboard 接到 `TradeFormModal` → 按钮必须可点
+    // （「看得见但点不动」是最差体验，故这里锁死「接线已完成」这个状态）。
     renderWithRouter(<Dashboard />);
     await screen.findByText('总盈亏');
 
     for (const btn of screen.getAllByRole('button', { name: '买入' })) {
-      expect(btn).toBeDisabled();
+      expect(btn).not.toBeDisabled();
+    }
+    for (const btn of screen.getAllByRole('button', { name: '卖出' })) {
+      expect(btn).not.toBeDisabled();
     }
   });
 

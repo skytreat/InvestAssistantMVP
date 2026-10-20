@@ -1,6 +1,6 @@
 import React from 'react';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
-import { SignalBadge } from './SignalBadge';
+import SignalMiniMenu, { type SignalTradeDraft } from './SignalMiniMenu';
 import { WeightBar } from './WeightBar';
 import { fmt, fmtPct, type Position, type TradeSide } from './positionDomain';
 
@@ -17,6 +17,18 @@ import { fmt, fmtPct, type Position, type TradeSide } from './positionDomain';
  * 卡 3 不碰后端、卡 4/6/7 都要复用本组件（接入交易弹窗 / 详情弹窗 / 信号菜单），
  * 故本组件**不 import 任何页面层模块** —— 依赖方向只有 `pages → components`。
  *
+ * ## 信号标记为什么走 `SignalMiniMenu`（批次 5 接线后的形态）
+ *
+ * 批次 3 交付卡 7 时，本卡片渲染的是**裸的 `SignalBadge`**（只能看，不能点）；
+ * 批次 5 接线后改为渲染 `SignalMiniMenu` —— 它内部把 `SignalBadge` 当触发器，
+ * 于是「建议 A（看得见信号）」与「建议 E（点信号 → 一键下单）」在**同一个位置**闭环。
+ *
+ * ⚠️ **无信号时依旧没有任何触发点** —— `SignalMiniMenu` 内部直接返回
+ *    `SignalBadge signal={null}`（`· 持有` 占位），符合卡 7 A5「hover 不出浮层」。
+ *
+ * ⚠️ **未传 `onSignalTrade` 时，Mini-Menu 里的操作按钮是 disabled 占位**
+ *    （沿用卡 7 的既有约定，见 `SignalMiniMenu.tsx` 的 `menuItems`）。
+ *
  * ## 窄屏不溢出（G3.5）
  *
  * 卡片根节点带 `minWidth: 0` —— CSS Grid 子项默认 `min-width: auto`，
@@ -32,6 +44,17 @@ export interface PositionCardProps {
   onTrade?: (assetCode: string, side: TradeSide) => void;
   /** 标的详情回调（卡 6 接入详情弹窗）；**未接入时名称不可点击** */
   onOpenDetail?: (assetCode: string) => void;
+  /**
+   * 信号 → 交易 一键链路回调（卡 7 接入 `SignalMiniMenu`）
+   *
+   * ⚠️ **未接入时 Mini-Menu 里的操作按钮是 disabled 占位**（沿用卡 7 的既有约定）——
+   *    「看得见信号但点不动」比「没有入口」更糟，故显式禁用而不是静默隐藏。
+   *
+   * 回调产出的是一份**已预填的交易草稿**（代码 / 方向 / 数量 / 现价 / 理由），
+   * 由**父级**（`pages/Dashboard.tsx`）拿去渲染 `TradeFormModal` ——
+   * 弹窗**不能**渲染在 Mini-Menu 内部（菜单在鼠标移出时会卸载 → 弹窗被误关）。
+   */
+  onSignalTrade?: (draft: SignalTradeDraft) => void;
   /** 最新行情交易日（`summary.priceDate`）—— 信号过期判据（裁决 D-5）*/
   priceDate?: string | null;
 }
@@ -44,7 +67,14 @@ const cellStyle: React.CSSProperties = {
   minWidth: 0,
 };
 
-export function PositionCard({ position, assetType, onTrade, onOpenDetail, priceDate }: PositionCardProps) {
+export function PositionCard({
+  position,
+  assetType,
+  onTrade,
+  onOpenDetail,
+  onSignalTrade,
+  priceDate,
+}: PositionCardProps) {
   const { asset_code: code } = position;
 
   const labelStyle: React.CSSProperties = {
@@ -162,7 +192,13 @@ export function PositionCard({ position, assetType, onTrade, onOpenDetail, price
           </div>
           <div style={{ marginTop: 2 }}>{nameNode}</div>
         </div>
-        <SignalBadge signal={position.signal} priceDate={priceDate} />
+        {/*
+          信号标记（建议 A）+ **信号 → 交易 一键链路**（建议 E / 卡 7）
+          ⚠️ 这里**必须**用 `SignalMiniMenu` 而不是裸的 `SignalBadge`：
+             `SignalMiniMenu` 内部自己渲染 `SignalBadge` 作为触发器，
+             「无信号」时退化成 `· 持有` 占位（**不给任何触发点**，卡 7 A5）。
+        */}
+        <SignalMiniMenu position={position} priceDate={priceDate} onTrade={onSignalTrade} />
       </header>
 
       {/* ── 指标：现价 / 持仓数量 / 移动加权成本 / 盈亏 / 收益率 ── */}
