@@ -457,3 +457,328 @@ describe('Trade · 交易类型白名单（≡ DDL CHECK）', () => {
     expect(Number(rows[0].quantity)).toBe(50);
   });
 });
+
+/**
+ * 🔴 SDD §12.5 F2 用例：`create_trade_all_types`
+ *
+ * ## ⚠️ SDD §12.5 F2 的描述**有误**（已登记为偏差，不擅自改 SDD）
+ *
+ * SDD §12.5 F2 原文写的是「买入/卖出/送转/派息/配股/增发/拆股」——
+ * 与**实际实现的 7 种完全对不上**（`sell` 已被 DEC-2 移除，`add` 反而是合法类型）。
+ *
+ * 实际 7 种（Requirements §5.1 + DDL CHECK + `routes/trade.ts` 的 `TRADE_TYPES` 三方一致）：
+ *
+ * | trade_type | 中文   | 触发方式         | 操作理由                     |
+ * |------------|--------|------------------|------------------------------|
+ * | `buy`      | 买入   | 用户手动         | **用户填写**（必填）         |
+ * | `add`      | 加仓   | 用户手动         | **用户填写**（必填）         |
+ * | `reduce`   | 减仓   | 用户手动         | **用户填写**（必填）         |
+ * | `clear`    | 清仓   | 用户手动         | **用户填写**（必填）         |
+ * | `dividend` | 分红   | 系统导入 / 人工补| **系统固化**                 |
+ * | `bonus`    | 送股   | 系统导入 / 人工补| **系统固化**                 |
+ * | `transfer` | 转增   | 系统导入 / 人工补| **系统固化**                 |
+ *
+ * ## 本用例覆盖的硬约束
+ *
+ * - `trade_time` **必填**（T87）且与「同日同标的同类型」构成**部分唯一索引** ⇒
+ *   7 种类型必须用**各自不同的 trade_time**（否则撞 UNIQUE → 409 TRADE_DUPLICATE）。
+ * - `reduce` / `clear` 必须**先有持仓**（否则 409 HOLDING_INSUFFICIENT）⇒ 先造一笔 `buy` 底仓。
+ * - `buy` / `add` / `reduce` / `clear` 缺 `trade_reason` ⇒ 400 TRADE_REASON_REQUIRED。
+ * - `dividend` / `bonus` / `transfer` 不传 `trade_reason` ⇒ 理由由**后端固化**。
+ *
+ * ## ⚠️ 理由前缀的**已知口径偏差**（取证用，不擅自改实现）
+ *
+ * Requirements §5.2 规定「分红/送股/转增（用户手动补充）」的理由格式为
+ * 「**人工补充** - {除权日} {类型}」，而 `routes/trade.ts:279` 的后端兜底固化文案是
+ * 「**自动导入** - {日期} {trade_type}」。
+ * 本用例断言的是**实测行为**（后端兜底分支），并另加一条用例覆盖前端实际会传的
+ * 「人工补充 - ...」文案（客户端显式传理由时后端原样保留）。
+ */
+describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐一可写）', () => {
+  /** 7 种类型的用例表：每种一个独立标的 + 独立成交时刻（避开部分唯一索引） */
+  const G5_TYPES = [
+    {
+      type: 'buy',
+      label: '买入',
+      code: 'szG5BUY',
+      tradeTime: '10:01:01',
+      quantity: 100,
+      price: 10,
+      fee: 5,
+      seed: false,
+      reason: 'G5 建仓',
+      /** 动作后的持仓数量（当前实现口径） */
+      expectQty: 100,
+    },
+    {
+      type: 'add',
+      label: '加仓',
+      code: 'szG5ADD',
+      tradeTime: '10:01:02',
+      quantity: 100,
+      price: 12,
+      fee: 5,
+      seed: true,
+      reason: 'G5 加仓',
+      expectQty: 200,
+    },
+    {
+      type: 'reduce',
+      label: '减仓',
+      code: 'szG5RED',
+      tradeTime: '10:01:03',
+      quantity: 30,
+      price: 11,
+      fee: 2,
+      seed: true,
+      reason: 'G5 减仓',
+      expectQty: 70,
+    },
+    {
+      type: 'clear',
+      label: '清仓',
+      code: 'szG5CLR',
+      tradeTime: '10:01:04',
+      quantity: 100,
+      price: 11,
+      fee: 2,
+      seed: true,
+      reason: 'G5 清仓',
+      expectQty: 0,
+    },
+    {
+      type: 'dividend',
+      label: '分红',
+      code: 'szG5DIV',
+      tradeTime: '10:01:05',
+      quantity: 100,
+      price: 0.5,
+      fee: 0,
+      seed: true,
+      reason: null,
+      /** 分红**不改变**持仓数量与成本（Requirements §5.3） */
+      expectQty: 100,
+    },
+    {
+      type: 'bonus',
+      label: '送股',
+      code: 'szG5BON',
+      tradeTime: '10:01:06',
+      quantity: 10,
+      price: 0,
+      fee: 0,
+      seed: true,
+      reason: null,
+      /** ⚠️ 当前实现口径：送转**不计入**移动加权（与 Requirements §5.3 / SDD §12.3 A5 存在偏差，取证用） */
+      expectQty: 100,
+    },
+    {
+      type: 'transfer',
+      label: '转增',
+      code: 'szG5TRF',
+      tradeTime: '10:01:07',
+      quantity: 10,
+      price: 0,
+      fee: 0,
+      seed: true,
+      reason: null,
+      /** ⚠️ 同 bonus：当前实现口径（偏差取证用） */
+      expectQty: 100,
+    },
+  ] as const;
+
+  /** 清掉某标的的历史记录（每个用例独立，避免 UNIQUE / 持仓状态互撞） */
+  function wipeAsset(code: string): void {
+    bundle.db.db
+      .prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')
+      .run(bundle.userId, code);
+  }
+
+  /** 造一笔 `buy` 底仓（供 加仓 / 减仓 / 清仓 / 分红 / 送股 / 转增 用） */
+  async function seedHolding(code: string, quantity = 100, price = 10): Promise<void> {
+    wipeAsset(code);
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/trade',
+      headers: authHeaders(),
+      payload: {
+        asset_code: code,
+        trade_type: 'buy',
+        trade_date: TRADE_DATE,
+        trade_time: '10:00:00',
+        quantity,
+        price,
+        fee: 0,
+        trade_reason: 'G5 建底仓',
+      },
+    });
+    expect(res.statusCode, `${code} 建底仓应成功`).toBe(201);
+  }
+
+  /** POST /api/trade 后按 asset_code + trade_type（可选再按成交时刻）把落库记录查回来 */
+  async function fetchRow(code: string, tradeType: string, tradeTime?: string): Promise<any> {
+    const list = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/trade?asset_code=${code}&trade_type=${tradeType}`,
+      headers: authHeaders(),
+    });
+    expect(list.statusCode).toBe(200);
+    const rows = JSON.parse(list.body).data as any[];
+    const matched = rows.filter((r) => r.trade_type === tradeType);
+    return tradeTime === undefined ? matched[0] : matched.find((r) => r.trade_time === tradeTime);
+  }
+
+  it('create_trade_all_types: 7 种类型逐一创建成功（201 + 载荷正确 + 落库可查回）', async () => {
+    for (const c of G5_TYPES) {
+      if (c.seed) {
+        await seedHolding(c.code, 100, 10);
+      } else {
+        wipeAsset(c.code);
+      }
+
+      const payload: Record<string, unknown> = {
+        asset_code: c.code,
+        trade_type: c.type,
+        trade_date: TRADE_DATE,
+        trade_time: c.tradeTime,
+        quantity: c.quantity,
+        price: c.price,
+        fee: c.fee,
+      };
+      // 买入类必须给理由；分红/送股/转增**不给**理由 ⇒ 走系统固化分支
+      if (c.reason) payload.trade_reason = c.reason;
+
+      const res = await bundle.app.inject({
+        method: 'POST',
+        url: '/api/trade',
+        headers: authHeaders(),
+        payload,
+      });
+
+      // ① 状态码 + 统一 envelope
+      expect(res.statusCode, `${c.type}（${c.label}）应创建成功`).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe(0);
+      expect(body.success).toBe(true);
+
+      // ② 载荷正确：trade_id / position / hold_rel 三件套齐全
+      expect(body.data.trade_id, `${c.type} 必须返回 trade_id`).toBeGreaterThan(0);
+      expect(body.data.position, `${c.type} 必须返回持仓快照`).toBeDefined();
+      expect(typeof body.data.position.totalQuantity).toBe('number');
+      expect(typeof body.data.position.avgCost).toBe('number');
+      expect(body.data.hold_rel, `${c.type} 必须返回 hold 关系同步结果`).toBeDefined();
+
+      // ③ 落库后能查回，且字段逐项正确
+      const row = await fetchRow(c.code, c.type);
+      expect(row, `${c.type} 必须落库`).toBeDefined();
+      expect(row.asset_code).toBe(c.code);
+      expect(row.trade_type).toBe(c.type);
+      expect(row.trade_date).toBe(TRADE_DATE);
+      expect(row.trade_time).toBe(c.tradeTime);
+      expect(Number(row.quantity)).toBe(c.quantity);
+      expect(Number(row.price)).toBe(c.price);
+      expect(Number(row.fee)).toBe(c.fee);
+      expect(row.is_deleted).toBe(0);
+
+      // ④ 理由口径：用户填的**原样保留**；系统类的**由后端固化**
+      if (c.reason) {
+        expect(row.trade_reason, `${c.type} 的理由必须是用户填写的原文`).toBe(c.reason);
+      } else {
+        // 实测后端固化文案：自动导入 - {trade_date} {trade_type}（routes/trade.ts:279）
+        expect(row.trade_reason, `${c.type} 的理由必须由系统固化`).toBe(`自动导入 - ${TRADE_DATE} ${c.type}`);
+      }
+
+      // ⑤ 持仓快照的数量口径（⚠️ 送股/转增为「当前实现口径」，偏差见文件头说明）
+      expect(body.data.position.totalQuantity, `${c.type}（${c.label}）后的持仓数量`).toBe(c.expectQty);
+    }
+  });
+
+  it('create_trade_all_types: 买入/加仓/减仓/清仓 缺 trade_reason → 400 TRADE_REASON_REQUIRED 且不落库', async () => {
+    for (const type of ['buy', 'add', 'reduce', 'clear'] as const) {
+      const code = `szG5NR${type}`;
+      // 卖出类先给足底仓 ⇒ 若不是「缺理由」先被拦，失败原因唯一
+      await seedHolding(code, 100, 10);
+
+      const res = await bundle.app.inject({
+        method: 'POST',
+        url: '/api/trade',
+        headers: authHeaders(),
+        payload: {
+          asset_code: code,
+          trade_type: type,
+          trade_date: TRADE_DATE,
+          trade_time: '10:02:00',
+          quantity: 10,
+          price: 11,
+          fee: 0,
+          // ⚠️ 故意不传 trade_reason
+        },
+      });
+
+      expect(res.statusCode, `${type} 缺理由应 400`).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.error).toBe('TRADE_REASON_REQUIRED');
+      expect(body.code).toBe('TRADE_REASON_REQUIRED');
+      expect(body.success).toBe(false);
+      expect(body.data).toBeNull();
+
+      // 未落库（按**成交时刻**定位，避免误命中底仓那笔 buy）
+      const row = await fetchRow(code, type, '10:02:00');
+      expect(row, `${type} 缺理由不得落库`).toBeUndefined();
+    }
+  });
+
+  it('create_trade_all_types: 分红/送股/转增 客户端显式传理由 → 后端原样保留（前端「人工补充 - {除权日} {类型}」口径）', async () => {
+    const code = 'szG5MAN';
+    await seedHolding(code, 100, 10);
+    const reason = `人工补充 - ${TRADE_DATE} 分红`;
+
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/trade',
+      headers: authHeaders(),
+      payload: {
+        asset_code: code,
+        trade_type: 'dividend',
+        trade_date: TRADE_DATE,
+        trade_time: '10:03:00',
+        quantity: 100,
+        price: 0.5,
+        fee: 0,
+        trade_reason: reason,
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const row = await fetchRow(code, 'dividend');
+    expect(row).toBeDefined();
+    expect(row.trade_reason, '客户端显式传的理由必须原样保留').toBe(reason);
+  });
+
+  it('create_trade_all_types: 7 种类型之外的 trade_type → 400 PARAM_INVALID（不落库、不 500）', async () => {
+    const code = 'szG5BAD';
+    wipeAsset(code);
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/trade',
+      headers: authHeaders(),
+      payload: {
+        asset_code: code,
+        trade_type: 'sell', // SDD §12.5 F2 原文里的「卖出」已不是合法类型（DEC-2 移除）
+        trade_date: TRADE_DATE,
+        trade_time: '10:04:00',
+        quantity: 10,
+        price: 11,
+        trade_reason: '非法类型',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('PARAM_INVALID');
+    // 不得外泄底层 SQLite 报错
+    expect(res.body).not.toMatch(/CHECK constraint failed/i);
+    expect(res.body).not.toMatch(/SQLITE_CONSTRAINT/i);
+    const row = await fetchRow(code, 'sell');
+    expect(row, '非法类型不得落库').toBeUndefined();
+  });
+});

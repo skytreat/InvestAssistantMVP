@@ -16,10 +16,12 @@ import type { TestAppBundle } from './_helpers.js';
  *   `POST /api/candidate` 需**查行情库**来固化基准价（T50 语义）→ 无库时返回 503。
  *   → 依赖真实行情库的用例在 CI 无库时跳过。
  */
-import { marketDataAvailable } from '../_marketData.js';
+import { marketDataUsableFor } from '../_marketData.js';
 
 /** 真实行情库是否可用（顶层 await 判定一次） */
-const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+// 🔴 2026-10-21 **两层开关**：本文件用例全是**数值型**断言（价格 / 昨收 / 落库口径），
+//    迷你库（真库的逐位一致子集）即可满足 → 用 `numeric` 能力守卫。
+const MARKET_DATA_AVAILABLE = await marketDataUsableFor('numeric');
 
 const WATCH_USER = 'int_watch_user';
 

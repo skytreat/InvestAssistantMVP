@@ -1,428 +1,288 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
-import { useIsMobile, MOBILE_BREAKPOINT } from './_shared';
+import Spinner from '../components/Spinner';
+import KlineParamPanel from '../components/KlineParamPanel';
+import { MOBILE_TABBAR_HEIGHT, useIsMobile } from './_shared';
+import {
+  buildChartBars,
+  parseMetricsJson,
+  periodUnit,
+  type ChartBar,
+  type KlinePeriod,
+  type RawBar,
+  type SignalMarker,
+} from '../indicators/chartBars';
+import {
+  DEFAULT_INDICATOR_PARAMS,
+  cloneIndicatorParams,
+  type IndicatorParams,
+} from '../indicators/chartParams';
+import type { SubIndicatorKind } from '../components/KlineChart';
 
-interface KlineBar {
-  date: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  amount: number;
-}
+/**
+ * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
+ *
+ * ## 本页负责的事
+ *
+ * 1. **取数**：`GET /api/quote/:symbol/kline?days=&fq=`（🔴 真实路由，见下方「两个必修 bug」）
+ * 2. **算指标**（前端）：`buildChartBars` 把 MA/MACD/RSI/KDJ 算好并灌进每根 K 线
+ * 3. **画图**：`KlineChart` 组件（`React.lazy` 按需加载，klinecharts 独立 chunk）
+ *
+ * ## 🔴 T71：指标参数实时生效（零网络请求）
+ *
+ * ```
+ * 参数面板改参数 ──▶ setParams ──▶ useMemo 重算 bars（复用已加载的原始日线）
+ *                                    └─▶ KlineChart 收到新 bars
+ *                                         └─▶ overrideIndicator 重算指标 + 重绘（**不取数**）
+ * ```
+ *
+ * ⇒ **取数只由「标的 / 复权 / 天数 / 周期」触发**；改参数**不发任何请求**
+ *    （PRD §5.2「零网络请求」+ §6.3「重绘 ≤ 300ms」）。
+ *
+ * ## 🔴 两个必修 bug（T70 前 Wave 3 agent 实测发现）
+ *
+ * | # | 现象 | 根因 | 修法 |
+ * |---|---|---|---|
+ * | 1 | **K 线页必然「加载失败」** | 旧代码请求 `/kline/${symbol}` —— **该路由不存在**（真实路由是 `GET /api/quote/:symbol/kline`） | 本文件改为 `/quote/${symbol}/kline`（`api` 实例的 `baseURL` 是 `/api`）|
+ * | 2 | 从「标的详情 Modal」的 `/kline?symbol=xxx` 跳过来**仍显示默认 sh600000** | 旧代码**不读 `?symbol=`** | 本文件用 `useSearchParams()` 消费 `?symbol=` |
+ *
+ * ## 🔴 T73：信号指标明细**随 K 线一起下发**（省一次网络往返）
+ *
+ * ```
+ * GET /api/quote/:symbol/kline
+ *   └─ data.signals[] 每项带 metrics_json（原始 JSON 字符串 | null）
+ *        └─▶ parseMetricsJson ──▶ SignalMarker.metrics ──▶ hover 面板的「指标明细」行
+ * ```
+ *
+ * ⚠️ **T70 时代**因为后端不下发 `metrics_json`，本页额外请求了一次
+ *    `GET /api/signal?asset_code=&page_size=200` 来补明细 ⇒ **两次往返**。
+ *    后端补齐下发后，本次补取**已删除**（本页**只发一次** K 线请求）。
+ *
+ * ## 复权口径（F-K1）
+ *
+ * 后端白名单是**四值** `qfq | bfq | hfq | raw`（`routes/kline.ts`），
+ * 本页按 PRD §5.2「用户可切换不复权/前复权/后复权」暴露 **3 个选项**：
+ *
+ * | 选项 | 参数 | 后端视图（stock / etf）|
+ * |---|---|---|
+ * | 前复权 | `qfq` | `v_stock_qfq` / `v_etf_qfq` |
+ * | 后复权 | `hfq` | `v_stock_hfq` / `v_etf_hfq` |
+ * | 不复权 | `bfq` | `v_stock_bfq` / `v_etf_bfq` |
+ *
+ * ⚠️ 第四个白名单值 `raw`（`raw_kline_daily`）与 `bfq` 等价，**本页不用它** ——
+ *    `bfq` 走 `v_*` 视图族，ETF/指数才能正确路由到 `v_etf_*`（F-K10 回归点）。
+ */
 
-interface Indicators {
-  macd: { dif: number[]; dea: number[]; macd: number[] };
-  rsi: number[];
-  ma5: number[];
-  ma10: number[];
-  ma20: number[];
-}
+/** 🔴 图表组件按需加载 —— klinecharts 单独成 chunk，首屏不下载（SDD §2.12.5）*/
+const KlineChart = lazy(() => import('../components/KlineChart'));
 
+/** 默认标的 */
+const DEFAULT_SYMBOL = 'sh600000';
+
+/** 复权口径选项（后端白名单 qfq | bfq | hfq | raw 的其中三个）*/
+const FQ_OPTIONS: ReadonlyArray<{ value: 'qfq' | 'hfq' | 'bfq'; label: string }> = [
+  { value: 'qfq', label: '前复权' },
+  { value: 'hfq', label: '后复权' },
+  { value: 'bfq', label: '不复权' },
+];
+
+/** 时间范围（回溯天数）*/
+const DAY_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 60, label: '近60日' },
+  { value: 120, label: '近120日' },
+  { value: 250, label: '近1年' },
+  { value: 500, label: '近500日' },
+];
+
+/** K 线周期（日 / 周 / 月）*/
+const PERIOD_OPTIONS: ReadonlyArray<{ value: KlinePeriod; label: string }> = [
+  { value: 'day', label: '日K' },
+  { value: 'week', label: '周K' },
+  { value: 'month', label: '月K' },
+];
+
+/** 副图类型（MACD / RSI / KDJ）*/
+const SUB_OPTIONS: ReadonlyArray<{ value: SubIndicatorKind; label: string }> = [
+  { value: 'macd', label: 'MACD' },
+  { value: 'rsi', label: 'RSI' },
+  { value: 'kdj', label: 'KDJ' },
+];
+
+/** 后端 K 线接口的响应体（envelope 内层）*/
 interface KlineApiResponse {
-  success: boolean;
+  code?: number | string;
+  success?: boolean;
+  message?: string;
   data?: {
     symbol: string;
     fq: string;
-    klines: KlineBar[];
-    indicators: Indicators | null;
+    symbolClass?: string;
+    klines?: RawBar[];
     signals?: Array<{
       trade_date: string;
       direction: string;
       label: string;
       strength: number | null;
       plugin_id: string;
+      metrics_json?: string | null;
     }>;
   };
-  error?: string;
-  message?: string;
 }
 
-/** F5 K 线图页面（SDD 验收项）*/
-
-/** 桌面端画布基准宽度（实际渲染宽度跟随容器，G10b） */
-const CANVAS_WIDTH = 1000;
-const MOBILE_CANVAS_WIDTH = 360;
-const MAIN_HEIGHT = 400;
-const MACD_HEIGHT = 160;
-const RSI_HEIGHT = 160;
-
-function setupCanvas(canvas: HTMLCanvasElement, cssWidth: number, cssHeight: number) {
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = cssWidth * dpr;
-  canvas.height = cssHeight * dpr;
-  canvas.style.width = `${cssWidth}px`;
-  canvas.style.height = `${cssHeight}px`;
-  const ctx = canvas.getContext('2d')!;
-  ctx.scale(dpr, dpr);
-  return ctx;
+/**
+ * 判断 envelope 是否成功
+ *
+ * ⚠️ `success` 是 T89a 的**过渡字段**（T89b 会删）。故优先看 `code === 0`，
+ *    `code` 不存在时回落到 `success === true` —— 两种形态都能判对。
+ */
+function isOkEnvelope(body: { code?: number | string; success?: boolean }): boolean {
+  if (typeof body.code === 'number') return body.code === 0;
+  if (typeof body.code === 'string') return body.code === '0';
+  return body.success === true;
 }
 
-function drawMain(
-  canvas: HTMLCanvasElement,
-  klines: KlineBar[],
-  indicators: Indicators,
-  signals: Array<{ trade_date: string; direction: string; label: string; plugin_id?: string }> | undefined,
-  width: number,
-) {
-  const W = width;
-  const H = MAIN_HEIGHT;
-  const ctx = setupCanvas(canvas, W, H);
-  const pad = { top: 20, right: 60, bottom: 30, left: 10 };
-  const chartW = W - pad.left - pad.right;
-  const chartH = H - pad.top - pad.bottom;
-  const barW = chartW / klines.length;
-
-  ctx.fillStyle = COLORS.chartBg;
-  ctx.fillRect(0, 0, W, H);
-
-  const allValues: number[] = [];
-  klines.forEach((k) => {
-    allValues.push(k.high, k.low);
-  });
-  [indicators.ma5, indicators.ma10, indicators.ma20].forEach((ma) => {
-    ma.forEach((v) => {
-      if (!isNaN(v)) allValues.push(v);
-    });
-  });
-  const max = Math.max(...allValues);
-  const min = Math.min(...allValues);
-  const range = max - min || 1;
-
-  ctx.strokeStyle = COLORS.chartGrid;
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 5; i++) {
-    const y = pad.top + (chartH / 5) * i;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(W - pad.right, y);
-    ctx.stroke();
-    const price = max - (range / 5) * i;
-    ctx.fillStyle = COLORS.chartText;
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(price.toFixed(2), W - pad.right + 4, y + 4);
-  }
-
-  const dateStep = Math.max(1, Math.floor(klines.length / 8));
-  ctx.fillStyle = COLORS.chartText;
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'center';
-  klines.forEach((k, i) => {
-    if (i % dateStep !== 0) return;
-    const x = pad.left + i * barW + barW / 2;
-    ctx.fillText(k.date.slice(5), x, H - pad.bottom + 16);
-  });
-
-  klines.forEach((k, i) => {
-    const x = pad.left + i * barW + barW / 2;
-    const yHigh = pad.top + ((max - k.high) / range) * chartH;
-    const yLow = pad.top + ((max - k.low) / range) * chartH;
-    const yOpen = pad.top + ((max - k.open) / range) * chartH;
-    const yClose = pad.top + ((max - k.close) / range) * chartH;
-    const color = k.close >= k.open ? COLORS.candleUp : COLORS.candleDown;
-
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, yHigh);
-    ctx.lineTo(x, yLow);
-    ctx.stroke();
-
-    const top = Math.min(yOpen, yClose);
-    const bot = Math.max(yOpen, yClose);
-    const bodyH = Math.max(1, bot - top);
-    ctx.fillStyle = color;
-    ctx.fillRect(x - barW * 0.35, top, barW * 0.7, bodyH);
-  });
-
-  const drawMA = (ma: number[], color: string) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    let started = false;
-    ma.forEach((v, i) => {
-      if (isNaN(v)) return;
-      const x = pad.left + i * barW + barW / 2;
-      const y = pad.top + ((max - v) / range) * chartH;
-      if (!started) {
-        ctx.moveTo(x, y);
-        started = true;
-      } else {
-        ctx.lineTo(x, y);
-      }
-    });
-    ctx.stroke();
-  };
-  drawMA(indicators.ma5, COLORS.ma5);
-  drawMA(indicators.ma10, COLORS.ma10);
-  drawMA(indicators.ma20, COLORS.ma20);
-
-  const drawLegend = (label: string, value: string, x: number, y: number, color: string) => {
-    ctx.fillStyle = COLORS.chartText;
-    ctx.font = '12px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(label, x, y);
-    ctx.fillStyle = color;
-    ctx.fillText(value, x + 20, y);
-  };
-  drawLegend(
-    'MA5',
-    indicators.ma5[indicators.ma5.length - 1]?.toFixed(2) ?? '--',
-    pad.left + 4,
-    pad.top - 6,
-    COLORS.ma5,
-  );
-  drawLegend(
-    'MA10',
-    indicators.ma10[indicators.ma10.length - 1]?.toFixed(2) ?? '--',
-    pad.left + 100,
-    pad.top - 6,
-    COLORS.ma10,
-  );
-  drawLegend(
-    'MA20',
-    indicators.ma20[indicators.ma20.length - 1]?.toFixed(2) ?? '--',
-    pad.left + 210,
-    pad.top - 6,
-    COLORS.ma20,
-  );
-
-  // 绘制策略信号标记（买入绿▲ / 卖出红▼）
-  if (signals && signals.length > 0) {
-    const dateIndex = new Map<string, number>();
-    klines.forEach((k, i) => dateIndex.set(k.date, i));
-    ctx.font = '14px sans-serif';
-    for (const sig of signals) {
-      const idx = dateIndex.get(sig.trade_date);
-      if (idx === undefined) continue;
-      const x = pad.left + idx * barW + barW / 2;
-      const yHigh = pad.top + ((max - klines[idx].high) / range) * chartH;
-      const color =
-        sig.direction === 'buy'
-          ? COLORS.success
-          : sig.direction === 'sell'
-            ? COLORS.danger
-            : COLORS.textSecondary;
-      ctx.fillStyle = color;
-      ctx.textAlign = 'center';
-      ctx.fillText(sig.direction === 'buy' ? '▲' : sig.direction === 'sell' ? '▼' : '●', x, yHigh - 6);
-      ctx.font = '9px sans-serif';
-      ctx.fillStyle = COLORS.chartLabel;
-      ctx.fillText(sig.plugin_id ?? '', x, yHigh - 18);
-      ctx.font = '14px sans-serif';
-    }
-  }
-}
-
-function drawMACD(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators, width: number) {
-  const W = width;
-  const H = MACD_HEIGHT;
-  const ctx = setupCanvas(canvas, W, H);
-  const pad = { top: 10, right: 60, bottom: 12, left: 10 };
-  const chartW = W - pad.left - pad.right;
-  const chartH = H - pad.top - pad.bottom;
-  const barW = chartW / _klines.length;
-
-  ctx.fillStyle = COLORS.chartBg;
-  ctx.fillRect(0, 0, W, H);
-
-  const { dif, dea, macd } = indicators.macd;
-  const all: number[] = [];
-  dif.forEach((v) => !isNaN(v) && all.push(v));
-  dea.forEach((v) => !isNaN(v) && all.push(v));
-  macd.forEach((v) => !isNaN(v) && all.push(v));
-  const maxAbs = Math.max(...all.map(Math.abs), 0.0001);
-  const zeroY = pad.top + chartH / 2;
-
-  ctx.strokeStyle = COLORS.chartAxis;
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.moveTo(pad.left, zeroY);
-  ctx.lineTo(W - pad.right, zeroY);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  macd.forEach((v, i) => {
-    if (isNaN(v)) return;
-    const x = pad.left + i * barW + barW / 2;
-    const h = (v / maxAbs) * (chartH / 2 - 4);
-    ctx.fillStyle = v >= 0 ? COLORS.macdBarPos : COLORS.macdBarNeg;
-    ctx.fillRect(x - barW * 0.4, zeroY - h, barW * 0.8, Math.abs(h) || 1);
-  });
-
-  const drawLine = (vals: number[], color: string) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    let started = false;
-    vals.forEach((v, i) => {
-      if (isNaN(v)) return;
-      const x = pad.left + i * barW + barW / 2;
-      const y = zeroY - (v / maxAbs) * (chartH / 2 - 4);
-      if (!started) {
-        ctx.moveTo(x, y);
-        started = true;
-      } else {
-        ctx.lineTo(x, y);
-      }
-    });
-    ctx.stroke();
-  };
-  drawLine(dif, COLORS.difLine);
-  drawLine(dea, COLORS.deaLine);
-
-  ctx.fillStyle = COLORS.chartLabel;
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('MACD(12,26,9)', pad.left + 4, pad.top + 4);
-  ctx.fillStyle = COLORS.difLine;
-  ctx.fillText(`DIF ${dif[dif.length - 1]?.toFixed(4) ?? '--'}`, pad.left + 100, pad.top + 4);
-  ctx.fillStyle = COLORS.deaLine;
-  ctx.fillText(`DEA ${dea[dea.length - 1]?.toFixed(4) ?? '--'}`, pad.left + 220, pad.top + 4);
-}
-
-function drawRSI(canvas: HTMLCanvasElement, _klines: KlineBar[], indicators: Indicators, width: number) {
-  const W = width;
-  const H = RSI_HEIGHT;
-  const ctx = setupCanvas(canvas, W, H);
-  const pad = { top: 10, right: 60, bottom: 12, left: 10 };
-  const chartW = W - pad.left - pad.right;
-  const chartH = H - pad.top - pad.bottom;
-  const barW = chartW / _klines.length;
-
-  ctx.fillStyle = COLORS.chartBg;
-  ctx.fillRect(0, 0, W, H);
-
-  [30, 50, 70].forEach((level) => {
-    const y = pad.top + ((100 - level) / 100) * chartH;
-    ctx.strokeStyle = level === 50 ? COLORS.chartAxisStrong : COLORS.chartAxis;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(W - pad.right, y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = COLORS.textTertiary;
-    ctx.font = '10px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(String(level), W - pad.right + 4, y + 4);
-  });
-
-  const rsi = indicators.rsi;
-  ctx.strokeStyle = COLORS.rsiLine;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  let started = false;
-  rsi.forEach((v, i) => {
-    if (isNaN(v)) return;
-    const x = pad.left + i * barW + barW / 2;
-    const y = pad.top + ((100 - v) / 100) * chartH;
-    if (!started) {
-      ctx.moveTo(x, y);
-      started = true;
-    } else {
-      ctx.lineTo(x, y);
-    }
-  });
-  ctx.stroke();
-  ctx.lineWidth = 1;
-
-  ctx.fillStyle = COLORS.chartLabel;
-  ctx.font = '11px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('RSI(14)', pad.left + 4, pad.top + 4);
-  const lastRSI = rsi[rsi.length - 1];
-  ctx.fillStyle = COLORS.rsiLine;
-  ctx.fillText(`${isNaN(lastRSI) ? '--' : lastRSI.toFixed(2)}`, pad.left + 70, pad.top + 4);
+/** 周/月 K 需要更多的日线才能聚合成足够的柱子 */
+function fetchDaysFor(days: number, period: KlinePeriod): number {
+  const factor = period === 'day' ? 1 : period === 'week' ? 5 : 21;
+  return Math.min(500, Math.max(10, days * factor));
 }
 
 export default function Kline() {
-  const [symbol, setSymbol] = useState('sh600000');
-  const [fq, setFq] = useState<'qfq' | 'raw'>('qfq');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlSymbol = searchParams.get('symbol') ?? '';
+
+  const [symbolInput, setSymbolInput] = useState(urlSymbol || DEFAULT_SYMBOL);
+  const [symbol, setSymbol] = useState(urlSymbol || DEFAULT_SYMBOL);
+  const [fq, setFq] = useState<'qfq' | 'hfq' | 'bfq'>('qfq');
   const [days, setDays] = useState(120);
-  const [klines, setKlines] = useState<KlineBar[]>([]);
-  const [indicators, setIndicators] = useState<Indicators | null>(null);
-  const [signals, setSignals] = useState<
-    Array<{
-      trade_date: string;
-      direction: string;
-      label: string;
-      strength: number | null;
-      plugin_id: string;
-    }>
-  >([]);
+  const [period, setPeriod] = useState<KlinePeriod>('day');
+  const [showMa, setShowMa] = useState(true);
+  const [subIndicator, setSubIndicator] = useState<SubIndicatorKind>('macd');
+  /** 🔴 T71：指标参数（改参数 → 即时重绘，**零网络请求**）*/
+  const [params, setParams] = useState<IndicatorParams>(() => cloneIndicatorParams(DEFAULT_INDICATOR_PARAMS));
+
+  /** 移动端：图表更矮 + 底部给固定 TabBar 留出空间（旧实现遗留的老坑）*/
+  const isMobile = useIsMobile();
+
+  /** 后端下发的**原始日线**（指标由前端算 —— T71 改参数时基于它重算，不再取数）*/
+  const [rawBars, setRawBars] = useState<RawBar[]>([]);
+  /** 信号标记 */
+  const [signals, setSignals] = useState<SignalMarker[]>([]);
+  /** 取数次数（每次成功加载 +1）—— 参与数据指纹，保证新数据一定重新灌进图表 */
+  const [loadSeq, setLoadSeq] = useState(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  /** G10b 移动端副图 Tab 切换（桌面端两个副图并排，不用这个） */
-  const [subTab, setSubTab] = useState<'macd' | 'rsi'>('macd');
-  const isMobile = useIsMobile();
+  /**
+   * URL 里的 `?symbol=` 变化（从标的详情 Modal 跳进来）→ 同步到输入框与当前标的
+   *
+   * ⚠️ 这就是「必修 bug ②」的修复点：旧实现完全不读 query，
+   *    导致 `/kline?symbol=sh600519` 仍然显示默认的 sh600000。
+   */
+  useEffect(() => {
+    if (!urlSymbol) return;
+    setSymbolInput(urlSymbol);
+    setSymbol(urlSymbol);
+  }, [urlSymbol]);
 
-  const mainRef = useRef<HTMLCanvasElement>(null);
-  const macdRef = useRef<HTMLCanvasElement>(null);
-  const rsiRef = useRef<HTMLCanvasElement>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  /** 取数：K 线（**含信号指标明细** `metrics_json` —— T73 起随 K 线一并下发）*/
+  const load = useCallback(
+    async (target: string, fqParam: 'qfq' | 'hfq' | 'bfq', dayCount: number) => {
+      if (!target) return;
+      setLoading(true);
+      setErr(null);
+      try {
+        const res = await api.get<KlineApiResponse>(`/quote/${target}/kline`, {
+          params: { days: fetchDaysFor(dayCount, period), fq: fqParam },
+        });
+        const body = res.data;
+        if (!isOkEnvelope(body) || !body.data) {
+          setErr(body.message ?? '加载失败');
+          setRawBars([]);
+          setSignals([]);
+          return;
+        }
 
-  /** 画布宽度跟随容器，避免移动端横向溢出（G10b） */
-  const canvasWidth = useCallback(() => {
-    const el = wrapRef.current;
-    if (!el) return isMobile ? MOBILE_CANVAS_WIDTH : CANVAS_WIDTH;
-    const w = el.clientWidth;
-    if (w <= 0) return isMobile ? MOBILE_CANVAS_WIDTH : CANVAS_WIDTH;
-    return Math.floor(Math.min(w, CANVAS_WIDTH));
-  }, [isMobile]);
+        const raw = Array.isArray(body.data.klines) ? body.data.klines : [];
+        const klineSignals = Array.isArray(body.data.signals) ? body.data.signals : [];
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const res = await api.get<KlineApiResponse>(`/kline/${symbol}`, { params: { days, fq } });
-      const body = res.data;
-      if (body.success && body.data) {
-        setKlines(body.data.klines);
-        setIndicators(body.data.indicators);
-        setSignals(body.data.signals ?? []);
-      } else {
-        setErr(body.message ?? '加载失败');
-        setKlines([]);
-        setIndicators(null);
+        // 🔴 T73：信号指标明细（`metrics_json`）**由 K 线接口一并下发**
+        //    ⇒ 不再单独请求 `/api/signal` 补取（省一次网络往返）。
+        //
+        //    ⚠️ 后端下发的是**原始 JSON 字符串**（`string | null`）；
+        //       无指标时是**库的 NULL**（不是字符串 `'null'`）⇒ 交给 `parseMetricsJson` 统一处理
+        //       （字符串 / 对象 / 脏数据都吃，解析失败一律降级为 `null`，不炸整页）。
+        const signalMarkers: SignalMarker[] = klineSignals.map((s) => ({
+          trade_date: s.trade_date,
+          direction: s.direction,
+          label: s.label,
+          strength: s.strength ?? null,
+          plugin_id: s.plugin_id,
+          metrics: parseMetricsJson(s.metrics_json),
+        }));
+
+        // 🔴 T71：这里只存**原始日线 + 信号**，指标由前端按当前参数算
+        //    （`bars` 是 `useMemo` 派生值 ⇒ 改参数不需要重新取数）
+        setRawBars(raw);
+        setSignals(signalMarkers);
+        setLoadSeq((n) => n + 1);
+      } catch (e) {
+        setErr('请求失败: ' + extractErrorMessageOrErrorMessage(e));
+        setRawBars([]);
+        setSignals([]);
+      } finally {
+        setLoading(false);
       }
-    } catch (e) {
-      setErr('请求失败: ' + extractErrorMessageOrErrorMessage(e));
-      setKlines([]);
-      setIndicators(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [symbol, days, fq]);
+    },
+    [period],
+  );
 
-  const redraw = useCallback(() => {
-    if (klines.length === 0 || !indicators) return;
-    const w = canvasWidth();
-    if (mainRef.current) drawMain(mainRef.current, klines, indicators, signals, w);
-    // 移动端只画当前 Tab 的副图，桌面端两个都画
-    if (macdRef.current && (!isMobile || subTab === 'macd')) drawMACD(macdRef.current, klines, indicators, w);
-    if (rsiRef.current && (!isMobile || subTab === 'rsi')) drawRSI(rsiRef.current, klines, indicators, w);
-  }, [klines, indicators, signals, canvasWidth, isMobile, subTab]);
-
+  // 标的 / 复权 / 天数 / 周期变化 → 重新取数并重算指标
   useEffect(() => {
-    redraw();
-  }, [redraw]);
+    void load(symbol, fq, days);
+  }, [load, symbol, fq, days]);
 
-  // 窗口尺寸变化（旋转屏幕 / 拖窗口）重画
-  useEffect(() => {
-    const onResize = () => redraw();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [redraw]);
+  /**
+   * 🔴 T71：指标 + 周期聚合的**派生值**
+   *
+   * 参数一变 → 这里重算 → 新的 `bars` 传给图表 → 图表只重算指标、**不取数**。
+   */
+  const bars = useMemo<ChartBar[]>(
+    () => buildChartBars(rawBars, period, signals, params),
+    [rawBars, period, signals, params],
+  );
+
+  /**
+   * 原始数据指纹（T71）
+   *
+   * ⚠️ **只有它变了才重新取数**（`resetData`）；
+   *    指标参数变了但它没变 ⇒ 图表**不碰数据加载器** ⇒ 零网络请求。
+   */
+  const dataSignature = useMemo(
+    () => [symbol, fq, days, period, loadSeq, rawBars.length].join('|'),
+    [symbol, fq, days, period, loadSeq, rawBars.length],
+  );
+
+  /** 提交输入框里的代码 */
+  const applySymbol = useCallback(() => {
+    const next = symbolInput.trim().toLowerCase();
+    if (!next) return;
+    setSymbol(next);
+    // 把标的写回 URL —— 便于分享 / 刷新保持
+    setSearchParams({ symbol: next }, { replace: true });
+  }, [symbolInput, setSearchParams]);
+
+  const rangeText = useMemo(() => {
+    if (bars.length === 0) return '';
+    return `${bars[0].date} ~ ${bars[bars.length - 1].date}`;
+  }, [bars]);
 
   return (
     <div style={{ fontFamily: TYPO.fontFamily }}>
-      <h2 style={{ margin: '0 0 16px 0' }}>K 线图（日线）</h2>
+      <h2 style={{ margin: '0 0 16px 0' }}>K 线图</h2>
 
       <div
         style={{
@@ -434,11 +294,7 @@ export default function Kline() {
         }}
       >
         {/*
-          T63：原先 `<label>` 是**包住式**（label 内嵌 input/select）。
-          此处统一改为「兄弟」结构 —— `<label htmlFor>` + 控件 `id`，
-          便于读屏软件与自动化测试按「标签文本」定位控件。
-          ⚠️ 每一对「标签 + 控件」仍包在一个 `<div>` 里 → 与改前一样各自是一个 flex item，
-          故 **flex gap 造成的间距变化为零**，视觉与改前完全一致。
+          T63：`<label htmlFor>` + 控件 `id` 的「兄弟」结构（便于读屏与自动化按标签定位）。
         */}
         <div>
           <label htmlFor="kline-input-symbol" style={{ fontSize: TYPO.bodySize }}>
@@ -446,8 +302,11 @@ export default function Kline() {
           </label>
           <input
             id="kline-input-symbol"
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value)}
+            value={symbolInput}
+            onChange={(e) => setSymbolInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') applySymbol();
+            }}
             placeholder="如 sh600000"
             style={{
               padding: '4px 8px',
@@ -465,7 +324,7 @@ export default function Kline() {
           <select
             id="kline-select-fq"
             value={fq}
-            onChange={(e) => setFq(e.target.value as 'qfq' | 'raw')}
+            onChange={(e) => setFq(e.target.value as 'qfq' | 'hfq' | 'bfq')}
             style={{
               marginLeft: SPACING.gapTight,
               padding: '4px 8px',
@@ -473,16 +332,41 @@ export default function Kline() {
               borderRadius: RADIUS.sm,
             }}
           >
-            <option value="qfq">前复权</option>
-            <option value="raw">不复权</option>
+            {FQ_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
           </select>
         </div>
         <div>
           <label htmlFor="kline-select-period" style={{ fontSize: TYPO.bodySize }}>
-            周期：
+            K线周期：
           </label>
           <select
             id="kline-select-period"
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as KlinePeriod)}
+            style={{
+              marginLeft: SPACING.gapTight,
+              padding: '4px 8px',
+              border: `1px solid ${COLORS.borderMedium}`,
+              borderRadius: RADIUS.sm,
+            }}
+          >
+            {PERIOD_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="kline-select-days" style={{ fontSize: TYPO.bodySize }}>
+            时间范围：
+          </label>
+          <select
+            id="kline-select-days"
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
             style={{
@@ -492,14 +376,27 @@ export default function Kline() {
               borderRadius: RADIUS.sm,
             }}
           >
-            <option value={60}>近60日</option>
-            <option value={120}>近120日</option>
-            <option value={250}>近1年</option>
-            <option value={500}>近500日</option>
+            {DAY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
           </select>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input
+            id="kline-checkbox-ma"
+            type="checkbox"
+            checked={showMa}
+            onChange={(e) => setShowMa(e.target.checked)}
+          />
+          <label htmlFor="kline-checkbox-ma" style={{ fontSize: TYPO.bodySize }}>
+            {/* ⚠️ 标签里带**当前周期**（周期可编辑 —— T71），默认即 MA(5/10/20/60) */}
+            显示 MA({params.ma.periods.join('/')})
+          </label>
+        </div>
         <button
-          onClick={load}
+          onClick={applySymbol}
           disabled={loading}
           aria-busy={loading}
           style={{
@@ -513,70 +410,83 @@ export default function Kline() {
         >
           {loading ? '加载中...' : '加载'}
         </button>
-        {err && <span style={{ color: COLORS.danger, fontSize: TYPO.smallSize }}>{err}</span>}
-        {klines.length > 0 && (
+        {err && (
+          <span data-testid="kline-error" style={{ color: COLORS.danger, fontSize: TYPO.smallSize }}>
+            {err}
+          </span>
+        )}
+        {bars.length > 0 && (
           <span style={{ color: COLORS.textTertiary, fontSize: TYPO.smallSize }}>
-            {klines.length} 根K线 · {klines[0].date} ~ {klines[klines.length - 1].date}
+            {bars.length} 根K线 · {rangeText}
+            {rawBars.length !== bars.length ? `（原始日线 ${rawBars.length} 根）` : ''}
           </span>
         )}
       </div>
 
-      {/* G10b 移动端副图 Tab 切换（PRD §5.8#6 手机端布局） */}
-      {isMobile && (
-        <div style={{ display: 'flex', gap: SPACING.gapBase, marginBottom: SPACING.gapBase }}>
-          {(
-            [
-              ['macd', 'MACD'],
-              ['rsi', 'RSI'],
-            ] as ['macd' | 'rsi', string][]
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => setSubTab(k)}
-              style={{
-                flex: 1,
-                padding: '6px 0',
-                fontSize: TYPO.smallSize,
-                border: `1px solid ${subTab === k ? COLORS.brand : COLORS.borderMedium}`,
-                borderRadius: RADIUS.sm,
-                background: subTab === k ? COLORS.brand : COLORS.cardBg,
-                color: subTab === k ? COLORS.cardBg : COLORS.textSecondary,
-                cursor: 'pointer',
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* 🔴 T71：指标参数面板 —— 改参数即时重绘，**零网络请求** */}
+      <KlineParamPanel
+        params={params}
+        unit={periodUnit(period)}
+        barCount={bars.length}
+        onChange={setParams}
+        onReset={() => setParams(cloneIndicatorParams(DEFAULT_INDICATOR_PARAMS))}
+      />
 
-      <div ref={wrapRef} style={{ width: '100%', overflow: 'hidden' }}>
-        <canvas
-          ref={mainRef}
-          style={{ border: `1px solid ${COLORS.chartBorder}`, display: 'block', maxWidth: '100%' }}
-        />
-        <div style={{ height: 6 }} />
-        {(!isMobile || subTab === 'macd') && (
-          <canvas
-            ref={macdRef}
-            style={{ border: `1px solid ${COLORS.chartBorder}`, display: 'block', maxWidth: '100%' }}
-          />
-        )}
-        <div style={{ height: 6 }} />
-        {(!isMobile || subTab === 'rsi') && (
-          <canvas
-            ref={rsiRef}
-            style={{ border: `1px solid ${COLORS.chartBorder}`, display: 'block', maxWidth: '100%' }}
-          />
-        )}
-        <div style={{ height: MOBILE_BREAKPOINT > 0 && isMobile ? 80 : 0 }} />
+      {/* 副图 Tab（MACD / RSI / KDJ）—— 桌面端与移动端都可切换（F-K5）*/}
+      <div
+        role="tablist"
+        aria-label="副图指标"
+        style={{ display: 'flex', gap: SPACING.gapBase, marginBottom: SPACING.gapBase }}
+      >
+        {SUB_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            role="tab"
+            aria-selected={subIndicator === opt.value}
+            data-testid={`kline-sub-tab-${opt.value}`}
+            onClick={() => setSubIndicator(opt.value)}
+            style={{
+              padding: '6px 16px',
+              fontSize: TYPO.smallSize,
+              border: `1px solid ${subIndicator === opt.value ? COLORS.brand : COLORS.borderMedium}`,
+              borderRadius: RADIUS.sm,
+              background: subIndicator === opt.value ? COLORS.brand : COLORS.cardBg,
+              color: subIndicator === opt.value ? COLORS.cardBg : COLORS.textSecondary,
+              cursor: 'pointer',
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
 
-      {klines.length === 0 && !loading && !err && (
-        <div style={{ color: COLORS.textFaint, padding: 40, textAlign: 'center' }}>
-          输入股票代码后点击「加载」获取K线数据
-        </div>
+      {bars.length === 0 ? (
+        loading ? (
+          <Spinner label="加载 K 线..." />
+        ) : (
+          <div style={{ color: COLORS.textFaint, padding: 40, textAlign: 'center' }}>
+            {err ? '暂无 K 线数据' : '输入股票代码后点击「加载」获取K线数据'}
+          </div>
+        )
+      ) : (
+        <Suspense fallback={<Spinner label="加载图表..." />}>
+          <KlineChart
+            symbol={symbol}
+            period={period}
+            bars={bars}
+            dataSignature={dataSignature}
+            params={params}
+            showMa={showMa}
+            subIndicator={subIndicator}
+            height={isMobile ? 420 : 560}
+            mainHeight={isMobile ? 250 : 380}
+            subHeight={isMobile ? 110 : 140}
+          />
+        </Suspense>
       )}
+
+      {/* 移动端底部 TabBar 是 `position: fixed` → 页面末尾留出它的高度，避免遮住图表 */}
+      {isMobile && <div style={{ height: MOBILE_TABBAR_HEIGHT }} />}
     </div>
   );
 }

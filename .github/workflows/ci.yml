@@ -92,21 +92,23 @@ jobs:
 
       # Backend unit tests — 带 coverage；--pool=forks + singleFork 保证 ConfigStore 单例隔离
       - name: Run backend unit tests
-        run: npx vitest run apps/backend/tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
+        # 🔴 必须带 --config（在仓库根跑时根目录没有 vitest config ⇒ setupFiles 不加载 ⇒
+        #    env 守卫失效 + coverage.include 相对仓库根解析 ⇒ 后端覆盖率一直是 0%）。
+        run: npx vitest run --config apps/backend/vitest.config.ts tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
 
       # 顺序敏感守卫（T81 / F-Q11）：打乱顺序连跑 2 次，两次结果必须一致且全绿。
       # 用例之间若存在隐式顺序依赖（env 泄漏 / ConfigStore 单例 / DuckDB 单例残留），
       # 靠固定顺序侥幸通过的用例会在这里被随机顺序打出来。
       - name: Shuffle guard - backend unit tests (seed 1)
         run: >
-          npx vitest run apps/backend/tests/unit
+          npx vitest run --config apps/backend/vitest.config.ts tests/unit
           --pool=forks --poolOptions.forks.singleFork=true
           --sequence.shuffle --sequence.seed=1
           --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed1.json
 
       - name: Shuffle guard - backend unit tests (seed 2)
         run: >
-          npx vitest run apps/backend/tests/unit
+          npx vitest run --config apps/backend/vitest.config.ts tests/unit
           --pool=forks --poolOptions.forks.singleFork=true
           --sequence.shuffle --sequence.seed=2
           --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed2.json
@@ -137,11 +139,11 @@ jobs:
 
       # Backend integration tests — 同上 fork 策略
       - name: Run backend integration tests
-        run: npx vitest run apps/backend/tests/integration --pool=forks --poolOptions.forks.singleFork=true
+        run: npx vitest run --config apps/backend/vitest.config.ts tests/integration --pool=forks --poolOptions.forks.singleFork=true
 
       # Smoke tests — 只跑 m1；m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行
       - name: Run smoke tests (m1 only)
-        run: npx vitest run apps/backend/tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
+        run: npx vitest run --config apps/backend/vitest.config.ts tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
 
       # Frontend tests (T61) — jsdom 环境，不依赖后端与行情库
       - name: Run frontend tests

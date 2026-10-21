@@ -1,4 +1,4 @@
-import { queryDuckDB } from '../db/duckdb.js';
+import { queryDuckDB, queryDuckDBColumnar } from '../db/duckdb.js';
 import type { DailyKline } from '@invest/core';
 
 /** 带 symbol 的原始行（DuckDB SELECT 出来的结构） */
@@ -135,11 +135,129 @@ export async function batchGetDailyRange(
 }
 
 /**
- * 按 view 分组的批量区间取日线（**每个 view 1 次 IN 查询**）
+ * 前复权（qfq）视图 → **复权价保留的小数位**
+ *
+ * ⚠️ **来自 tdx2db 视图 DDL 的实测**（`docs/tdx2db_schema_dump.sql`，2026-10-21 解析）：
+ *   v_stock_qfq → `round(..., 2)`；v_etf_qfq → `round(..., 3)` —— **两者不同！**
+ *   （v_stock_hfq = 2 / v_etf_hfq = 3；bfq 视图不取整）
+ *   抄成同一个值会让 ETF 的复权价与 K 线页差 1e-3 → 指标与信号口径漂移。
+ *
+ * 🔴 本表是「视图口径」的**唯一副本** —— 改动前必须先核对 tdx2db 的视图 DDL，
+ *   并让 `tests/unit/t55-stockscan-filter.test.ts` 的「复权口径与视图逐条一致」用例保持绿。
+ */
+const QFQ_ROUND_DIGITS: Readonly<Record<string, number>> = {
+  v_stock_qfq: 2,
+  v_etf_qfq: 3,
+};
+
+/**
+ * 构造「显式前复权」SQL（口径等价于 `v_stock_qfq` / `v_etf_qfq`，但少两个无用 JOIN）
+ *
+ * 🔴 **为什么不用视图**（2026-10-21 实测，1.24GB 真库，5000 标的 × 120 天 = 392405 行）：
+ *   视图 DDL 里有两个**本查询一个字段都用不到**的 JOIN：
+ *     · `INNER JOIN raw_symbol_class`（品种过滤 —— 调用方的候选池已按品种过滤过）
+ *     · `LEFT JOIN raw_basic_daily`（**1800 万行**，顺序扫描 + 哈希连接，实测 ~0.4s）
+ *   DuckDB 不会消除它们（LEFT JOIN 右表可能重复行 → 无法证明行数不变）。
+ *   EXPLAIN ANALYZE 实测：走视图 SQL ~2.0s → 显式写法 ~1.6s。
+ *
+ * ⚠️ **口径必须与视图逐条一致**（复权公式 + 取整位数）：
+ *   视图公式 = `round(原价 * COALESCE(hfq_factor,1) / COALESCE(latest_hfq,1), N)`，
+ *   其中 `latest_hfq = argmax(hfq_factor, date)`（按 symbol 分组，取**全表**最新一条）。
+ *   → 由 `tests/unit/t55-stockscan-filter.test.ts` 的「复权口径与视图逐条一致」用例守住
+ *     （真实行情库本地跑；CI 无行情库时 skip）。
+ *
+ * @param view 视图名（必须是 QFQ_ROUND_DIGITS 里的白名单项 —— 决定取整位数）
+ */
+function buildQfqRangeSql(view: string, symbolCount: number): string {
+  const digits = QFQ_ROUND_DIGITS[view];
+  if (digits === undefined) {
+    // 白名单外的视图 → 绝不用「猜一个位数」糊弄过去（口径漂移风险）
+    throw new Error(`batchGetDailyRangeByView: 不支持的前复权视图 "${view}"`);
+  }
+  const placeholders = Array.from({ length: symbolCount }, () => '?').join(', ');
+  return `
+    WITH latest_factors AS (
+      SELECT symbol, argmax(hfq_factor, date) AS latest_hfq
+        FROM raw_adjust_factor
+       GROUP BY symbol
+    )
+    SELECT s.symbol AS symbol, s.date AS date,
+           round(s.open  * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), ${digits}) AS open,
+           round(s.high  * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), ${digits}) AS high,
+           round(s.low   * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), ${digits}) AS low,
+           round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), ${digits}) AS "close",
+           s.volume AS volume, s.amount AS amount
+      FROM raw_kline_daily s
+      LEFT JOIN raw_adjust_factor f ON s.symbol = f.symbol AND s.date = f.date
+      LEFT JOIN latest_factors lf ON s.symbol = lf.symbol
+     WHERE s.date BETWEEN ? AND ? AND s.symbol IN (${placeholders})
+     ORDER BY s.symbol, s.date ASC`;
+}
+
+/**
+ * 取「全市场最新交易日的若干只股票」的快照（`/api/market/latest` 用）。
+ *
+ * 🔴 **2026-10-20 性能改造（T60c）**：原实现是
+ * `SELECT symbol, date, close FROM v_stock_qfq ORDER BY date DESC LIMIT 5`
+ * —— 为拿 **5 行**物化整个复权视图（4 个 JOIN × 2800 万行）⇒ **实测 12.18s**。
+ * 且该端点在 `PUBLIC_ROUTES`（**免鉴权**）⇒ 是可被反复调用烧 CPU 的面。
+ *
+ * 现改为：**基表 + MAX(date) 过滤 + 显式前复权**（不物化视图）。
+ * 口径与 `v_stock_qfq` **逐条一致**：
+ *   - `INNER JOIN raw_symbol_class … "class" = 'stock'`（视图里就是这个过滤）
+ *   - `round(close * COALESCE(hfq_factor,1) / COALESCE(latest_hfq,1), 2)`（位数取自 `QFQ_ROUND_DIGITS`）
+ *   - `latest_hfq = argmax(hfq_factor, date)`（按 symbol 分组，取**全表**最新一条）
+ *
+ * @param limit 取几条（默认 5，与原实现一致）
+ */
+export async function getLatestMarketSnapshot(
+  limit = 5,
+): Promise<Array<{ symbol: string; date: string; close: number }>> {
+  const digits = QFQ_ROUND_DIGITS['v_stock_qfq'];
+  if (digits === undefined) throw new Error('getLatestMarketSnapshot: 缺少 v_stock_qfq 的取整位数');
+  // ⚠️ `f2`（因子表按 date 预过滤）是**性能关键**（2026-10-20 实测）：
+  //   不预过滤时，`LEFT JOIN raw_adjust_factor` 会对 **2150 万行**建哈希表
+  //   ⇒ 实测 **7.19s**；预过滤后（zone map 命中，只剩当日的 ~5500 行）⇒ **0.66s**。
+  //   ⚠️ **口径不变**：视图的 join 条件是 `(symbol, date)`，而本查询的 `s.date` 恒为最大交易日
+  //   ⇒ 预过滤掉的行**本来就用不上**（该 symbol 在最大交易日若无因子行，
+  //   视图的 LEFT JOIN 同样给 NULL → `COALESCE(…,1)` 同值）。
+  const sql = `
+    WITH latest_factors AS (
+      SELECT symbol, argmax(hfq_factor, date) AS latest_hfq
+        FROM raw_adjust_factor
+       GROUP BY symbol
+    ),
+    md AS (SELECT MAX(date) AS d FROM raw_kline_daily),
+    f2 AS (SELECT * FROM raw_adjust_factor WHERE date = (SELECT d FROM md))
+    SELECT s.symbol AS symbol, s.date AS date,
+           round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), ${digits}) AS "close"
+      FROM raw_kline_daily s
+      INNER JOIN raw_symbol_class sc ON sc.symbol = s.symbol AND sc."class" = 'stock'
+      LEFT  JOIN f2 f ON s.symbol = f.symbol AND s.date = f.date
+      LEFT  JOIN latest_factors lf ON s.symbol = lf.symbol
+     WHERE s.date = (SELECT d FROM md)
+     ORDER BY s.date DESC
+     LIMIT ?`;
+  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(sql, [limit]);
+  return rows.map((r) => ({ symbol: r.symbol, date: toDateString(r.date), close: r.close }));
+}
+
+/**
+ * 批量区间取日线（按 view 分组，每 view 1 次 IN 查询）
  *
  * 🔴 T85b ①：选股路径的候选可能来自多个 view（`v_stock_qfq` / `v_etf_qfq`），
- *   而 {@link batchGetDailyRange} 只支持单 view。��这里按 view 分组各发 1 条
+ *   而 {@link batchGetDailyRange} 只支持单 view。这里按 view 分组各发 1 条
  *   IN 查询 —— 总量 = view 数（≤2），**不是 symbol 数**。
+ *
+ * 🔴 **2026-10-20 性能改造（选股 ≤3s 的关键一步）**：本函数原先走
+ *   {@link queryDuckDB}（行主序对象数组）——「5000 标的 × 120 天」= **372635 行**，
+ *   实测「行对象化」单步就要 ~1.1s（比 DuckDB 执行 SQL 还慢），整条选股链路因此 ~8s。
+ *   现改为 {@link queryDuckDBColumnar}（列主序）+ **按 symbol 连续段分组**建 Map，
+ *   同一查询实测 ~2.1s。**返回结构与口径完全不变**（symbol → 按日期升序的日线）。
+ *
+ * 🔴 **2026-10-21 再优化**：改走 {@link buildQfqRangeSql} 的显式前复权 SQL，
+ *   省掉视图里两个用不上的 JOIN（实测 SQL 2.0s → 1.6s）。
+ *   口径由 t55 的「复权口径与视图逐条一致」用例守住。
  *
  * @param symbolsByView view 名 → 该 view 下的 symbol 列表
  */
@@ -151,22 +269,43 @@ export async function batchGetDailyRangeByView(
   const result = new Map<string, DailyKline[]>();
   for (const [view, symbols] of symbolsByView) {
     if (symbols.length === 0) continue;
-    const placeholders = symbols.map(() => '?').join(', ');
-    const rows = await queryDuckDB<DailyKlineRow>(
-      `SELECT symbol, date, open, high, low, close, volume, amount
-       FROM ${view}
-       WHERE date BETWEEN ? AND ? AND symbol IN (${placeholders})
-       ORDER BY symbol, date ASC`,
-      [fromDate, toDate, ...symbols],
-    );
-    for (const row of rows) {
-      const { symbol, date: d, open, high, low, close, volume, amount } = row;
-      const list = result.get(symbol);
-      if (list) {
-        list.push({ date: d, open, high, low, close, volume, amount });
-      } else {
-        result.set(symbol, [{ date: d, open, high, low, close, volume, amount }]);
+    const res = await queryDuckDBColumnar(buildQfqRangeSql(view, symbols.length), [
+      fromDate,
+      toDate,
+      ...symbols,
+    ]);
+
+    const symCol = res.column('symbol');
+    const dateCol = res.column('date');
+    const openCol = res.column('open');
+    const highCol = res.column('high');
+    const lowCol = res.column('low');
+    const closeCol = res.column('close');
+    const volCol = res.column('volume');
+    const amtCol = res.column('amount');
+
+    // ⚠️ SQL 已 `ORDER BY symbol, date ASC` → 同一 symbol 的行**连续**，
+    //   故按「连续段」分组，避免每行一次 Map.get/set（实测省 ~500ms）。
+    const total = symCol.length;
+    let i = 0;
+    while (i < total) {
+      const symbol = symCol[i] as string;
+      const list: DailyKline[] = [];
+      while (i < total && symCol[i] === symbol) {
+        list.push({
+          date: dateCol[i] as string,
+          open: openCol[i] as number,
+          high: highCol[i] as number,
+          low: lowCol[i] as number,
+          close: closeCol[i] as number,
+          volume: Number(volCol[i]),
+          amount: amtCol[i] as number,
+        });
+        i++;
       }
+      const existing = result.get(symbol);
+      if (existing) existing.push(...list);
+      else result.set(symbol, list);
     }
   }
   return result;

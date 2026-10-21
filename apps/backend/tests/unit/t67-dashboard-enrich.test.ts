@@ -35,10 +35,15 @@ import os from 'node:os';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { JwtPayload } from '../../src/services/auth.js';
-import { marketDataAvailable } from '../_marketData.js';
+import { marketDataTier } from '../_marketData.js';
 
 /** 真实行情库是否可用（顶层 await 判定一次） */
-const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+// 🔴 2026-10-21 **两层开关**：本文件用例全是**数值型**断言（价格 / 昨收 / 落库口径），
+//    迷你库（真库的逐位一致子集）即可满足 → 用 `numeric` 能力守卫。
+// ⚠️ 本文件**不需要** `MARKET_DATA_AVAILABLE` 守卫（主体用例用 mock 行情）；
+//   只有「**真实行情库**交叉验证」那两个 describe 需要，用的是
+//   `marketDataTier() === 'full'`（**不是** `MARKET_DATA_AVAILABLE`：
+//   迷你库也是行情库、数值型能力为 true，但**真库专属**的断言在迷你库上不成立）。
 
 // ── SQLite 隔离（必须在 import ConfigStore 之前设置）──
 const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-t67-'));
@@ -743,7 +748,11 @@ describe('T67-⑧ 信号查询降级', () => {
 // ══════════════════════════════════════════════════════════
 
 describe('T67-⑨ 真实行情库交叉验证', () => {
-  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
+  // 🔴 **必须是 full 档专属**（2026-10-20 实测修正）：
+  //   这两个 describe 验的是「**真实行情库**上的行为」（prevClose 与 latest 差一根 K 线、
+  //   `sh600001` 无名是常态）—— 迷你库是**真库的子集**，历史深度与标的覆盖都不同
+  //   ⇒ 在迷你库上跑这些断言没有意义（实测 mini 档下「倒数第二条」断言红）。
+  const itReal = marketDataTier() === 'full' ? it : it.skip;
 
   itReal('真库上 prevClose 仍是「倒数第二条」且与 latest 差一根 K 线', async () => {
     H.useReal.value = true;
@@ -888,7 +897,11 @@ describe('T67-⑩ /api/holding enrich —— name（中文名）+ industry（契
 // ══════════════════════════════════════════════════════════
 
 describe('T67-⑪ 真实行情库 —— name 的命中与缺失', () => {
-  const itReal = MARKET_DATA_AVAILABLE ? it : it.skip;
+  // 🔴 **必须是 full 档专属**（2026-10-20 实测修正）：
+  //   这两个 describe 验的是「**真实行情库**上的行为」（prevClose 与 latest 差一根 K 线、
+  //   `sh600001` 无名是常态）—— 迷你库是**真库的子集**，历史深度与标的覆盖都不同
+  //   ⇒ 在迷你库上跑这些断言没有意义（实测 mini 档下「倒数第二条」断言红）。
+  const itReal = marketDataTier() === 'full' ? it : it.skip;
 
   // ⚠️ 真实库上 `/api/holding` 会触发 `v_stock_qfq` 的全量扫描（实测约 3s/次）
   //   → 合并成**一次**调用，避免多开 DuckDB 实例（文件锁 + page cache 驱逐）

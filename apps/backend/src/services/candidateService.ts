@@ -36,7 +36,15 @@ import { batchGetLatestClose } from './marketData.js';
 export const MAX_BATCH_CANDIDATES = 100;
 
 /** 标���代码格式：sh600000 / sz000001（与 `watch.ts:65` 的现网校验保持一致） */
-export const ASSET_CODE_RE = /^(sh|sz)\d{6}$/;
+/**
+ * 标的代码格式校验。
+ *
+ * ⚠️ **必须接受 `bj` 前缀**（2026-10-20 实测）：真实行情库的 symbol 前缀有**三种** ——
+ * `sh` 5958 只 / `sz` 5876 只 / **`bj` 615 只（北交所）**。
+ * 旧正则 `/^(sh|sz)\d{6}$/` 把全部 615 只北交所标的挡在门外
+ * ⇒ **候选池无法添加北交所标的**（且会打乱 t85b 的信号标的域：北交所持仓被 `SKIP`）。
+ */
+export const ASSET_CODE_RE = /^(sh|sz|bj)\d{6}$/;
 
 /** `candidate_reason` 入库长度上限（TEXT 无长度约束，防御性截断防线） */
 export const MAX_REASON_LENGTH = 1000;

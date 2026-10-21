@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DuckDBInstance } from '@duckdb/node-api';
+import { DuckDBInstance, DuckDBTypeId } from '@duckdb/node-api';
 
 /**
  * DuckDB 只读连接模块
@@ -31,7 +31,26 @@ import { DuckDBInstance } from '@duckdb/node-api';
 
 // 路径解析：env 优先（绝对路径），否则从模块位置向上定位项目根
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve(__dirname, '../../../../data/quotes.duckdb');
+
+/**
+ * 解析 DuckDB 行情库路径。
+ *
+ * 🔴 **必须惰性求值（连接时读 env），不能在模块加载时快照**（2026-10-20 实测教训）：
+ * 模块级 `const DUCKDB_PATH = process.env.DUCKDB_PATH ?? …` 在 **import 时**求值，
+ * 而测试侧的档位切换（`tests/_marketData.ts` 的 `resolveMarketData()`）是在
+ * **测试文件 import 之后**才把 `process.env.DUCKDB_PATH` 指向迷你库
+ * ⇒ 快照拿到的是**切换前**的路径（真库）。
+ *
+ * 实测后果（`MARKET_DATA_MODE=mini` 仍慢）：
+ *   `smoke-m3`「SQLite 热备份」**31.4s**（备份的仍是 1.24GB 真库）
+ *   `smoke-m1`「健康检查」**18.5s**（检查的仍是真库）
+ *   ⇒ 迷你库档只快了 4%（244.7s → 234.6s），**慢用例根本没被优化到**。
+ *
+ * ⇒ 改为函数，**每次连接时读 env** ⇒ 谁最后设置 env 谁生效（测试档位切换即靠这个）。
+ */
+export function resolveDuckDBPath(): string {
+  return process.env.DUCKDB_PATH ?? path.resolve(__dirname, '../../../../data/quotes.duckdb');
+}
 const MAX_RETRY = 2;
 const RETRY_DELAY_MS = 200;
 
@@ -59,7 +78,7 @@ function singleton(): DuckDBSingleton {
 async function getInstance(): Promise<DuckDBInstance> {
   const s = singleton();
   if (!s.promise) {
-    s.promise = DuckDBInstance.create(DUCKDB_PATH).catch((err) => {
+    s.promise = DuckDBInstance.create(resolveDuckDBPath()).catch((err) => {
       // 创建失败必须清空缓存，否则会永久缓存一个 rejected promise
       s.promise = null;
       throw err;
@@ -135,6 +154,67 @@ function normalizeValue(value: unknown): unknown {
   return value;
 }
 
+/**
+ * 整列归一化（列主序路径专用）
+ *
+ * 与逐格 {@link normalizeValue} 口径完全一致，区别只在 DATE 走**记忆化**：
+ * 同一批结果里日期高度重复（实测 372635 行日线只有 ~9000 个不同日期），
+ * 逐格转换要为每行 new Date + toISOString（实测 ~1.1s），记忆化后只剩一次查表。
+ *
+ * ⚠️ **按列类型短路**：VARCHAR / DOUBLE / BOOLEAN 等列的驱动返回值本就是 JS 原生类型，
+ *   无需遍历整列（实测 372635 行的 VARCHAR 列遍历一次 ~30ms，8 列就是 ~250ms）。
+ *   只有 BIGINT（→ number）与 DATE/TIMESTAMP（→ 'YYYY-MM-DD'）需要真正转换。
+ */
+function normalizeColumn(
+  values: unknown[],
+  dateCache: Map<number, string>,
+  needsConversion: boolean,
+): unknown[] {
+  if (!needsConversion) return values;
+
+  const out = new Array<unknown>(values.length);
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (typeof v === 'bigint') {
+      out[i] = Number(v);
+    } else if (v instanceof Date) {
+      out[i] = v.toISOString().slice(0, 10);
+    } else if (v !== null && typeof v === 'object') {
+      const days = (v as DuckDBDateLike).days;
+      if (typeof days === 'number') {
+        let s = dateCache.get(days);
+        if (s === undefined) {
+          s = epochDaysToDateString(days);
+          dateCache.set(days, s);
+        }
+        out[i] = s;
+      } else {
+        out[i] = v;
+      }
+    } else {
+      out[i] = v;
+    }
+  }
+  return out;
+}
+
+/** 列主序查询结果 */
+export interface DuckDBColumnarResult {
+  /** 列名（与 columns 的下标一一对应） */
+  names: string[];
+  /**
+   * 取**归一化后**的某一列（按列名）
+   *
+   * ⚠️ 归一化是**惰性 + 记忆化**的：首次取该列时计算并缓存。
+   *   实测选股路径一次要取 372635 行 × 8 列 —— 若一次性把所有列都归一化，
+   *   单这一步就要 ~250ms；而实际只有 `date`（需 epoch→字符串）与 `volume`（bigint→number）
+   *   两列需要转换，其余列是原始 string / number。
+   */
+  column(name: string): unknown[];
+  /** 取**归一化后**的某一列（按下标） */
+  columnAt(index: number): unknown[];
+}
+
 export async function duckdbHealthCheck(): Promise<void> {
   let lastErr: unknown = null;
 
@@ -189,6 +269,87 @@ export async function queryDuckDB<T = Record<string, unknown>>(
         });
         return obj as T;
       });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_RETRY) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      }
+    } finally {
+      // P0-9：必须确定性关闭 connection，否则句柄泄漏
+      safeCloseConn(conn);
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * 列主序查询出口（选股路径的性能关键）
+ *
+ * 🔴 **为什么需要它**（2026-10-20 实测，`/opt/invol/quotes.duckdb` 1.24GB 真库）：
+ *   选股要一次性取回「5000 标的 × 120 天」= **372635 行**日线。
+ *   {@link queryDuckDB} 返回**行主序对象数组** —— 每行都要 new 一个 8 属性的对象，
+ *   实测「行对象化」这一步单独就要 **~1.1s**，比 DuckDB 执行 SQL 本身还慢。
+ *   列主序只造 8 个列数组（每列 372635 个元素），JS 侧省掉 37 万次对象分配。
+ *   实测同一查询：行主序 ~3.8s vs 列主序 ~2.1s。
+ *
+ * ⚠️ **归一化口径与 {@link queryDuckDB} 完全一致**（bigint → number、DATE → 'YYYY-MM-DD'），
+ *   区别只在 DATE 走记忆化（见 {@link normalizeColumn}）。
+ *
+ * ⚠️ 返回的是**列数组**，调用方按列名取用；行序 = DuckDB 返回序（SQL 里 ORDER BY 决定）。
+ */
+export async function queryDuckDBColumnar(sql: string, params?: unknown[]): Promise<DuckDBColumnarResult> {
+  let lastErr: unknown = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+    let conn: Awaited<ReturnType<typeof openConnection>> | null = null;
+    try {
+      conn = await openConnection();
+      const reader = await conn.streamAndReadAll(sql, (params ?? []) as any);
+      await reader.readAll();
+      const names = reader.columnNames();
+      const rawColumns = reader.getColumns();
+
+      // ⚠️ 哪些列需要真正转换？只有 BIGINT（→ number）与 DATE/TIMESTAMP（→ 'YYYY-MM-DD'）。
+      //   其余列（VARCHAR / DOUBLE / BOOLEAN）驱动直接给 JS 原生值，遍历整列纯属浪费。
+      const needsConversion = names.map((_, idx) => {
+        const typeId = reader.columnTypeId(idx);
+        return (
+          typeId === DuckDBTypeId.BIGINT ||
+          typeId === DuckDBTypeId.UBIGINT ||
+          typeId === DuckDBTypeId.DATE ||
+          typeId === DuckDBTypeId.TIMESTAMP ||
+          typeId === DuckDBTypeId.TIMESTAMP_S ||
+          typeId === DuckDBTypeId.TIMESTAMP_MS ||
+          typeId === DuckDBTypeId.TIMESTAMP_NS
+        );
+      });
+
+      // 归一化缓存：列下标 → 归一化后的列（惰性计算，只算一次）
+      const normalizedCache = new Map<number, unknown[]>();
+      const dateCache = new Map<number, string>();
+      const normalizeAt = (index: number): unknown[] => {
+        const cached = normalizedCache.get(index);
+        if (cached) return cached;
+        const normalized = normalizeColumn(rawColumns[index], dateCache, needsConversion[index]);
+        normalizedCache.set(index, normalized);
+        return normalized;
+      };
+
+      const indexByName = new Map<string, number>();
+      names.forEach((n, idx) => indexByName.set(n, idx));
+
+      return {
+        names,
+        column: (name: string): unknown[] => {
+          const idx = indexByName.get(name);
+          if (idx === undefined) {
+            throw new Error(`queryDuckDBColumnar: 结果里没有列 "${name}"（实际列：${names.join(', ')}）`);
+          }
+          return normalizeAt(idx);
+        },
+        columnAt: (index: number): unknown[] => normalizeAt(index),
+      };
     } catch (err) {
       lastErr = err;
       if (attempt < MAX_RETRY) {

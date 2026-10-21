@@ -6,6 +6,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   test: {
+    /**
+     * 🔴 **必须显式指定 `root` 与 `include`**（2026-10-21 实测踩坑）：
+     *
+     * ① `setupFiles` 的 env 守卫**从未在 CI 上生效** ——
+     *    CI 的命令是 `npx vitest run apps/backend/tests/unit --coverage`（**在仓库根跑**），
+     *    根目录**没有** vitest config ⇒ 走 vitest 默认配置 ⇒ **不带 `setupFiles`**
+     *    ⇒ `tests/setup.ts` 的两级 env 基线守卫**完全没跑**
+     *    ⇒ 测试文件顶层写的 `DUCKDB_PATH` 等**在同进程的后续文件里泄漏**
+     *    ⇒ 行情库档位被误判（详见 `_marketData.ts` 的 `resolveMarketData`）。
+     *
+     * ② `coverage.include` 里的 src 路径相对 **cwd** 解析 ——
+     *    在仓库根跑时匹配的是 `<repo>/src/`（**不存在**）⇒ **后端覆盖率一直是 0%**。
+     *
+     * ⇒ 显式 `root: __dirname` 后，`include` / `coverage.include` / `setupFiles`
+     *    都相对 `apps/backend/` 解析 ⇒ **任何 cwd 下都正确**。
+     */
+    root: __dirname,
+    include: ['tests/**/*.test.ts'],
     globals: true,
     testTimeout: 15000,
     setupFiles: [path.resolve(__dirname, 'tests/setup.ts')],

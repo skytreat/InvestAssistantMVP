@@ -9,7 +9,9 @@
  *   - 非 admin 走 admin 路由 → 403 FORBIDDEN
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import crypto from 'node:crypto';
 import { createTestApp, makeUserToken, ADMIN_USER, ADMIN_PASS, cleanupIntegrationTest } from './_helpers.js';
+import { verifyToken } from '../../src/services/auth.js';
 import type { TestAppBundle } from './_helpers.js';
 
 let bundle: TestAppBundle;
@@ -86,6 +88,105 @@ describe('Auth · login', () => {
       payload: { username: ADMIN_USER },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+/**
+ * 🔴 SDD §12.5 F1 用例：`login_success` / `login_wrong_password`
+ *
+ * ## 为什么要新增（而不是改名）
+ *
+ * T91 的验收口径是「SDD §12.5 的每个用例名在全仓可 grep 到」。
+ * 本文件里**已有**行为等价的用例（「login 成功 → 200 + token + user」「密码错 → 401」），
+ * 但**用例名不是** SDD §12.5 的 `login_success` / `login_wrong_password`。
+ *
+ * ⇒ 按 AGENTS.md「注释不是规格」「加覆盖 ≠ 降标准」的原则：
+ *   **保留**既有用例（它们带更细的行为标注），**新增**两个与 SDD §12.5 一一对应的用例名，
+ *   并把断言加严到「token 可验签解出载荷」+「refresh token 落库只存哈希」。
+ */
+describe('Auth · SDD §12.5 F1（login_success / login_wrong_password）', () => {
+  it('login_success: 正确密码 → 200 + access token（可验签解出 sub/username/role）+ refresh_token 存在', async () => {
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: ADMIN_USER, password: ADMIN_PASS },
+    });
+
+    // ① HTTP 状态 + 统一 envelope（SDD §4.2）
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe(0);
+    expect(body.success).toBe(true);
+    expect(body.data).not.toBeNull();
+
+    // ② access token：3 段 JWT，且能**真实验签**解出载荷（不只是 split('.') 看段数）
+    const token: string = body.data.token;
+    expect(typeof token).toBe('string');
+    expect(token.split('.').length).toBe(3);
+    const payload = verifyToken(token);
+    expect(payload, 'access token 必须能被 verifyToken 验签通过').not.toBeNull();
+    expect(payload!.sub).toBe(bundle.userId);
+    expect(payload!.username).toBe(ADMIN_USER);
+    expect(payload!.role).toBe('admin');
+    expect(payload!.exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+
+    // ③ refresh token：存在、非空、到期时间在未来（30d，SDD S4）
+    const refreshToken: string = body.data.refresh_token;
+    expect(typeof refreshToken).toBe('string');
+    expect(refreshToken.length).toBeGreaterThan(0);
+    expect(typeof body.data.refresh_token_expires_at).toBe('number');
+    expect(body.data.refresh_token_expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+
+    // ④ 用户信息随会话下发
+    expect(body.data.user.id).toBe(bundle.userId);
+    expect(body.data.user.username).toBe(ADMIN_USER);
+    expect(body.data.user.role).toBe('admin');
+
+    // ⑤ 安全硬约束：refresh token **只落哈希**（AGENTS.md「禁止 token 明文日志 / 存储」）
+    const row = bundle.db.db
+      .prepare('SELECT refresh_token_hash FROM user_account WHERE id = ?')
+      .get(bundle.userId) as { refresh_token_hash: string | null };
+    expect(row.refresh_token_hash, 'refresh token 必须落库（否则 refresh 接口不可用）').toBeTruthy();
+    expect(row.refresh_token_hash, 'refresh token 不得明文落库').not.toBe(refreshToken);
+    expect(row.refresh_token_hash).toBe(
+      crypto.createHash('sha256').update(refreshToken, 'utf-8').digest('hex'),
+    );
+  });
+
+  it('login_wrong_password: 密码错误 → 401 UNAUTHORIZED + 不签发任何 token + data === null', async () => {
+    // 登录前先记下库里已有的 refresh token 哈希（用于证明「密码错不会签发会话」）
+    const before = bundle.db.db
+      .prepare('SELECT refresh_token_hash, refresh_token_expires_at FROM user_account WHERE id = ?')
+      .get(bundle.userId) as { refresh_token_hash: string | null; refresh_token_expires_at: number | null };
+
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: ADMIN_USER, password: 'definitely-not-the-password' },
+    });
+
+    // ① 状态码 401 + 统一错误码（实测 routes/auth.ts:182 → fail(401, 'UNAUTHORIZED', ...)）
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe('UNAUTHORIZED');
+    expect(body.error).toBe('UNAUTHORIZED');
+    expect(body.success).toBe(false);
+
+    // ② 错误响应**不含任何数据**（data === null，SDD §4.2 错误体）
+    expect(body.data).toBeNull();
+
+    // ③ 不返回 token（access / refresh 都不能出现）
+    expect(body.token).toBeUndefined();
+    expect(body.refresh_token).toBeUndefined();
+    expect(body.data?.token).toBeUndefined();
+    expect(body.data?.refresh_token).toBeUndefined();
+
+    // ④ 不签发会话：库里的 refresh token 哈希/到期时间**未被改写**
+    const after = bundle.db.db
+      .prepare('SELECT refresh_token_hash, refresh_token_expires_at FROM user_account WHERE id = ?')
+      .get(bundle.userId) as { refresh_token_hash: string | null; refresh_token_expires_at: number | null };
+    expect(after.refresh_token_hash).toBe(before.refresh_token_hash);
+    expect(after.refresh_token_expires_at).toBe(before.refresh_token_expires_at);
   });
 });
 

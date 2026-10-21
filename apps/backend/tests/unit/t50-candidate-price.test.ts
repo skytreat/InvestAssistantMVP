@@ -28,10 +28,12 @@ import type { JwtPayload } from '../../src/services/auth.js';
  *   → 下面这些用例**需要真实行情库**，无库时跳过（与 `smoke-m1` 的既有做法一致：
  *     「m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行」）。
  */
-import { marketDataAvailable } from '../_marketData.js';
+import { marketDataUsableFor } from '../_marketData.js';
 
 /** 真实行情库是否可用（顶层 await 判定一次） */
-const MARKET_DATA_AVAILABLE = await marketDataAvailable();
+// 🔴 2026-10-21 **两层开关**：本文件用例全是**数值型**断言（价格 / 昨收 / 落库口径），
+//    迷你库（真库的逐位一致子集）即可满足 → 用 `numeric` 能力守卫。
+const MARKET_DATA_AVAILABLE = await marketDataUsableFor('numeric');
 
 // ── 隔离 SQLite（必须在 import ConfigStore 之前设置）──
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invest-t50-'));

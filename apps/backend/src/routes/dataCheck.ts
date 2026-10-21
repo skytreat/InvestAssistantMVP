@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { queryDuckDB } from '../db/duckdb.js';
+
 import { resolveTargetTradeDate } from '../services/marketData.js';
+import { getLatestMarketSnapshot } from '../services/marketData.js';
 import { ok, fail } from '../lib/envelope.js';
 
 /**
@@ -54,9 +55,11 @@ export async function registerDataCheckRoutes(app: FastifyInstance) {
   // 行情最新几行
   app.get('/api/market/latest', async (request, reply) => {
     try {
-      const rows = await queryDuckDB(
-        'SELECT symbol, date, close FROM v_stock_qfq ORDER BY date DESC LIMIT 5',
-      );
+      // 🔴 T60c：原为 `SELECT … FROM v_stock_qfq ORDER BY date DESC LIMIT 5`
+      //   —— 为拿 5 行物化整个复权视图（2800 万行 × 4 JOIN）⇒ **实测 12.18s**。
+      //   且本端点在 PUBLIC_ROUTES（免鉴权）⇒ 可被反复调用烧 CPU。
+      //   现走基表 + MAX(date) + 显式前复权（口径逐条一致，见 marketData.ts 的注释）。
+      const rows = await getLatestMarketSnapshot(5);
       return reply.send(ok(rows));
     } catch (err) {
       return reply

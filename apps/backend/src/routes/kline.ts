@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { queryDuckDB } from '../db/duckdb.js';
 import {
   calculateMACD,
@@ -10,6 +10,7 @@ import {
   MACD_DEFAULT_SIGNAL_PERIOD,
 } from '@invest/core';
 import { ConfigStore } from '../config/configStore.js';
+import type { JwtPayload } from '../services/auth.js';
 import { ok, fail } from '../lib/envelope.js';
 
 /**
@@ -25,8 +26,38 @@ import { ok, fail } from '../lib/envelope.js';
  * days: 取最近 N 条日线，默认 120，范围 [10, 500]
  *
  * 返回：klines（**升序** OHLCV）+ indicators（后端算好 MA5/10/20/60 + MACD / RSI）
- *      + signals（该标的近 20 条信号，**升序**，与 klines 同方向）
+ *      + signals（**当前用户**该标的近 20 条信号，**升序**，与 klines 同方向）
+ *
+ * ⚠️ **`signals[]` 按 `user_id` 隔离**（P1 越权修复）：
+ *   本路由原先只按 `asset_code` 过滤信号 ⇒ **多用户部署时会下发别人的信号**
+ *   （连别人的 `metrics_json` 指标明细一起）⇒ 越权读取。
+ *   现补 `AND user_id = ?`，`user_id` **取自 JWT（`request.user.sub`）**，
+ *   **绝不信请求参数**（伪造 `?user_id=` 无效）。
+ *
+ * ⚠️ **信号集合口径 = 「最近 20 条，按 trade_date 升序排列」**：
+ *   与 `GET /api/signal`（`routes/signal.ts`）**同口径** —— 两个端点用同一套
+ *   「窗口取最近 N 条 + 输出升序 + `created_at / id` 确定性 tie-break」的 SQL 形状，
+ *   故同一用户 + 同一标的 + 同一条数时返回**完全相同的行集合**。
+ *
+ * ⚠️ **信号指标明细 `metrics_json`**（信号指标明细）：
+ *   - **形态 = 原始 JSON 文本**（SQLite TEXT 列，由 `signalService.serializeMetrics` 写入），
+ *     与 `GET /api/signal`（`SELECT *`）的下发形态**逐字节一致** ⇒ 两个端点口径统一。
+ *   - 为何下发**文本**而非解析后的对象：解析属于**展示层**职责，
+ *     前端已有 `parseMetricsJson()`（`apps/frontend/src/indicators/chartBars.ts`），
+ *     两端共用同一套解析口径；后端解析反而会让两个端点的字段类型**分叉**，
+ *     且遇到历史脏数据（非 JSON 文本）时会把整个端点打成 500。
+ *   - **收益**：K 线页 hover tooltip 展示指标明细（F-K8 / T70 ③）**不再需要**额外发
+ *     `GET /api/signal?asset_code=` 补取 ⇒ 少一次网络往返（PRD §5.2「零网络请求」）。
  */
+
+/**
+ * 带鉴权载荷的 request
+ *
+ * 全局 `onRequest` 钩子（`routes/index.ts`）把 JWT payload 挂在 `request.user` 上。
+ * 本路由**不在**公共路由白名单内 ⇒ 钩子必然已注入 user。
+ * 但类型上 request.user 是可选的，故这里显式声明并在 handler 里**fail closed**。
+ */
+type AuthedRequest = FastifyRequest & { user: JwtPayload };
 
 interface KlineRow {
   date: string;
@@ -69,6 +100,12 @@ const FQ_VIEWS_BY_CLASS: Record<string, Record<Fq, string>> = {
   },
 };
 
+/**
+ * 信号窗口条数（**最近 N 条**，输出按 trade_date 升序）
+ *
+ * ⚠️ 与 `GET /api/signal` 的默认 `page_size=20` **同值** ⇒ 两个端点
+ *    「同一用户 + 同一标的」时返回**同一个行集合**。
+ */
 const SIGNAL_LIMIT = 20;
 
 /** query 参数的取值范围；与 pluginEngine 的 paramSchema 保持同口径 */
@@ -97,6 +134,19 @@ function parseBoundedInt(raw: unknown, min: number, max: number): number | null 
 export async function registerKlineRoutes(app: FastifyInstance) {
   app.get('/api/quote/:symbol/kline', async (request, reply) => {
     const { symbol } = request.params as { symbol: string };
+
+    /**
+     * 🔴 **fail closed**：`user_id` 只从 JWT 取（`request.user.sub`），
+     *    **绝不信请求参数**（伪造 `?user_id=` 无效）。
+     *    全局 `onRequest` 钩子（`routes/index.ts`）对本路由必然已注入 user，
+     *    这里的分支只是**类型收窄 + 防御性兜底** ——
+     *    万一钩子被移除，也必须「拒绝服务」而不是「退化成不带 user 过滤的越权查询」。
+     */
+    const user = (request as AuthedRequest).user;
+    if (!user) {
+      return reply.code(401).send(fail(401, 'UNAUTHORIZED', '缺少 Authorization: Bearer <jwt>'));
+    }
+
     const query = request.query as {
       days?: number;
       fq?: string;
@@ -108,7 +158,12 @@ export async function registerKlineRoutes(app: FastifyInstance) {
     const { days = 120, fq = DEFAULT_FQ } = query;
 
     // symbol 基本校验
-    if (!/^(sh|sz)\d{6}$/.test(symbol)) {
+    // ⚠️ **必须接受 `bj` 前缀**（2026-10-20 实测）：
+    //   真实行情库的 symbol 前缀有**三种** —— `sh` 5958 只 / `sz` 5876 只 / **`bj` 615 只（北交所）**。
+    //   旧正则 `/^(sh|sz)\d{6}$/` 把全部 615 只北交所标的挡在门外 ⇒ **K 线页对北交所完全不可用**（400）。
+    //   ⚠️ 北交所标的的 class 是 `stock` ⇒ 放行后走 `v_stock_*` 视图即可取到数据。
+    //   （实施计划 T70 卡里写的 `bd000` 是笔误 —— 库里的真实前缀是 `bj`。）
+    if (!/^(sh|sz|bj)\d{6}$/.test(symbol)) {
       return reply.code(400).send(fail(400, 'SYMBOL_NOT_FOUND', 'symbol 格式应为 sh600000 / sz000001'));
     }
 
@@ -190,7 +245,9 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       const klines = rows.reverse();
 
       if (klines.length === 0) {
-        return reply.send(ok({ symbol, fq, symbolClass, klines: [], indicators: null }));
+        // ⚠️ **形状一致性**：无论有没有 klines，响应里**必须有 `signals` 键**
+        //    （空集合时为 `[]`）⇒ 前端不必写 `Array.isArray(body.data.signals)` 兜底。
+        return reply.send(ok({ symbol, fq, symbolClass, klines: [], indicators: null, signals: [] }));
       }
 
       const closes = klines.map((k) => k.close);
@@ -199,26 +256,35 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       const macdResult = calculateMACD(closes, macdFast, macdSlow, macdSignal);
       const rsiResult = calculateRSI(closes, rsiPeriod);
 
-      // 查询该标的的近 N 条策略信号：先取最近 20 条，再按 trade_date 升序返回（与 klines 同序）
+      // 查询**当前用户**该标的的近 N 条策略信号：先取最近 20 条，再按 trade_date 升序返回（与 klines 同序）
+      //
+      // ⚠️ `metrics_json` 是 **SQLite TEXT 列**（原始 JSON 文本）⇒ 原样下发，**不在后端解析**。
+      //    与 `GET /api/signal`（`SELECT *`）同形态 ⇒ 两个端点口径统一（前端同一个 parseMetricsJson 即可）。
+      // 🔴 `user_id = ?` —— **必须按用户隔离**（P1 越权修复）：参数绑定 JWT 的 `sub`，
+      //    **绝不信请求参数**（伪造 `?user_id=` 无效）。
+      // ⚠️ 窗口取「最近 N 条」（内层 DESC）+ 输出「升序」（外层 ASC），
+      //    `created_at / id` 作确定性 tie-break ⇒ 与 `GET /api/signal` 的窗口口径**逐条一致**。
       const db = ConfigStore.getInstance().db;
       const signals = db
         .prepare(
-          `SELECT trade_date, direction, label, strength, plugin_id
-         FROM (
-           SELECT trade_date, direction, label, strength, plugin_id
-           FROM user_strategy_signal
-           WHERE asset_code = ? AND is_deleted = 0
-           ORDER BY trade_date DESC
-           LIMIT ${SIGNAL_LIMIT}
-         )
-         ORDER BY trade_date ASC`,
+          `SELECT trade_date, direction, label, strength, plugin_id, metrics_json
+           FROM (
+             SELECT trade_date, direction, label, strength, plugin_id, metrics_json, created_at, id
+             FROM user_strategy_signal
+             WHERE user_id = ? AND asset_code = ? AND is_deleted = 0
+             ORDER BY trade_date DESC, created_at DESC, id DESC
+             LIMIT ?
+           )
+           ORDER BY trade_date ASC, created_at ASC, id ASC`,
         )
-        .all(symbol) as Array<{
+        .all(user.sub, symbol, SIGNAL_LIMIT) as Array<{
         trade_date: string;
         direction: string;
         label: string;
         strength: number | null;
         plugin_id: string;
+        /** 原始 JSON 文本；无指标时为 null（库里的 NULL，不是字符串 'null'）*/
+        metrics_json: string | null;
       }>;
 
       return reply.send(
