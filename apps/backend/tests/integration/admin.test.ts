@@ -6,6 +6,7 @@
  *   - POST /api/admin/run-signal → 200 + stats
  *   - GET /api/admin/system-log 分页 + filter
  *   - 非 admin → 403 FORBIDDEN（已在 auth.test.ts 覆盖，这里可以轻量）
+ *   - **G7.4 · 全部 admin 端点逐端点 403**（普通用户 → 403 FORBIDDEN + 零副作用）
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
@@ -16,6 +17,7 @@ import type { TestAppBundle } from './_helpers.js';
 
 let bundle: TestAppBundle;
 let userToken: string; // role=user（非 admin）—— 用来断言 admin 端点对普通用户 403
+let normalUserId = 0; // 普通用户 id —— 用于 PATCH /api/admin/role/:userId 的越权探测
 const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
 const DUCKDB_EXISTS = fs.existsSync(DUCKDB_PATH);
 
@@ -31,6 +33,7 @@ beforeAll(async () => {
   const row = bundle.db.db.prepare('SELECT id FROM user_account WHERE username = ?').get('int_normal') as {
     id: number;
   };
+  normalUserId = row.id;
   userToken = makeUserToken(row.id, 'int_normal');
 });
 
@@ -285,5 +288,192 @@ describe('Admin · 系统日志降级记录（Wave 7 · 卡 1 · I-13）', () =>
     expect(emptyBody.success).toBe(true);
     expect(emptyBody.data.exists).toBe(false);
     expect(emptyBody.data.lines).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// G7.4 · 管理员二次鉴权：**全部** admin 端点对普通用户一律 403
+//
+// 通过标准：「逐端点参数化 → 普通用户 token → 403 + code=FORBIDDEN + 零副作用」
+//
+// ⚠️ **端点清单是实测枚举**（2026-10-21），不是照抄旧文档：
+//   `src/routes/admin.ts` 10 个 + `src/routes/dataCheck.ts` 1 个 = 11 个 `/api/admin/**`。
+//   ⚠️ 端点清单与源码漂移 ⇒ 本用例会漏检 ⇒ **改 admin 路由时必须同步改这里**。
+//
+// ⚠️ **为什么要断言「零副作用」**：
+//   光断言 403 只能证明「返回了 403」，不能证明「鉴权发生在副作用之前」。
+//   若某个端点把 role 校验写在副作用**之后**（如先跑备份/先改角色/先落日志再 403），
+//   响应仍是 403，但破坏已经造成 —— 这正是本用例要抓的**危险端点**。
+//   ⇒ 每次请求前后对比「副作用快照」，一旦有变化即判定该端点鉴权顺序危险。
+// ===========================================================================
+
+interface AdminEndpointCase {
+  method: 'GET' | 'POST' | 'PATCH';
+  /** 路由路径（与源码里的字面量逐字一致，`:userId` 保持原样 ⇒ 可与源码做**精确集合比对**） */
+  path: string;
+  /** 实际请求路径；PATCH 的 :userId 在 beforeAll 后才确定 ⇒ 用函数延迟求值 */
+  url: string | (() => string);
+  /** 请求体（破坏性端点也带完整参数 ⇒ 证明它们是「本会成功」的请求被鉴权拦下） */
+  payload?: Record<string, unknown>;
+}
+
+const ADMIN_ENDPOINTS: AdminEndpointCase[] = [
+  // —— src/routes/admin.ts ——
+  { method: 'GET', path: '/api/admin/system-log', url: '/api/admin/system-log' },
+  {
+    method: 'GET',
+    path: '/api/admin/system-log/fallback',
+    url: '/api/admin/system-log/fallback',
+  },
+  { method: 'GET', path: '/api/admin/backups', url: '/api/admin/backups' },
+  { method: 'GET', path: '/api/admin/users', url: '/api/admin/users' },
+  {
+    method: 'PATCH',
+    path: '/api/admin/role/:userId',
+    // 目标 = 普通用户自己 ⇒ 若鉴权缺失，这一刀会把他升成 admin（最危险的越权）
+    url: () => `/api/admin/role/${normalUserId}`,
+    payload: { role: 'admin' },
+  },
+  {
+    method: 'POST',
+    path: '/api/admin/rerun-quotes',
+    url: '/api/admin/rerun-quotes',
+    payload: { reason: 'G7.4 越权探测' },
+  },
+  { method: 'POST', path: '/api/admin/backup', url: '/api/admin/backup', payload: {} },
+  {
+    method: 'POST',
+    path: '/api/admin/backup/:file/restore',
+    // confirm:true ⇒ 若鉴权在确认检查之后，会真的执行恢复 ⇒ 这里是最强的一档探测
+    url: '/api/admin/backup/business.db.2000-01-01/restore',
+    payload: { confirm: true },
+  },
+  { method: 'POST', path: '/api/admin/run-signal', url: '/api/admin/run-signal', payload: {} },
+  {
+    method: 'POST',
+    path: '/api/admin/datacheck/trigger',
+    url: '/api/admin/datacheck/trigger',
+    payload: {},
+  },
+  // —— src/routes/dataCheck.ts ——
+  { method: 'GET', path: '/api/admin/datacheck/result', url: '/api/admin/datacheck/result' },
+];
+
+/** 备份目录（取 backup 服务里的**同一个**常量，避免两处各算一遍 env 口径不一） */
+let backupDirCache: string | null = null;
+async function getBackupDir(): Promise<string> {
+  if (backupDirCache === null) {
+    const mod = await import('../../src/services/backup.js');
+    backupDirCache = mod.BACKUP_DIR;
+  }
+  return backupDirCache;
+}
+
+/** 副作用快照：请求前后必须**完全一致**（证明鉴权发生在副作用之前） */
+function snapshotSideEffects(backupDir: string) {
+  const countLog = (logType: string): number =>
+    (
+      bundle.db.db.prepare('SELECT COUNT(*) AS c FROM system_log WHERE log_type = ?').get(logType) as {
+        c: number;
+      }
+    ).c;
+  const roleRow = bundle.db.db.prepare('SELECT role FROM user_account WHERE id = ?').get(normalUserId) as {
+    role: string;
+  };
+  return {
+    // 手动触发类端点（trigger_manual）与备份类端点（backup）都会留痕
+    triggerManualLogs: countLog('trigger_manual'),
+    backupLogs: countLog('backup'),
+    // 普通用户的角色（PATCH /role 越权后会变）
+    normalUserRole: roleRow.role,
+    // 备份目录里的文件（POST /backup 越权后会多出产物）
+    backupFiles: fs.existsSync(backupDir) ? fs.readdirSync(backupDir).sort() : [],
+  };
+}
+
+describe('G7.4 · admin 端点逐端点 403（普通用户 · 管理员二次鉴权）', () => {
+  /** 探测开始时刻（用于「本次探测有没有产出新备份文件」的时间窗判定） */
+  let probeStartMs = 0;
+
+  beforeAll(() => {
+    probeStartMs = Date.now();
+  });
+
+  // 端点清单的完整性守卫：源码若新增/改名 admin 端点，这里必须同步
+  it('清单与源码里的 /api/admin/** 端点**精确集合一致**（漂移即红）', async () => {
+    const src = [
+      fs.readFileSync(new URL('../../src/routes/admin.ts', import.meta.url), 'utf8'),
+      fs.readFileSync(new URL('../../src/routes/dataCheck.ts', import.meta.url), 'utf8'),
+    ].join('\n');
+    // 从源码字面量里抽出「方法 + 路径」
+    const declared = new Set(
+      [...src.matchAll(/app\.(get|post|patch|put|delete)\(\s*'(\/api\/admin\/[^']*)'/g)].map(
+        (m) => `${m[1].toUpperCase()} ${m[2]}`,
+      ),
+    );
+    const covered = new Set(ADMIN_ENDPOINTS.map((e) => `${e.method} ${e.path}`));
+
+    // ① 源码里每个端点都必须被清单覆盖（**精确比对**，不用 includes —— 否则
+    //    '/api/admin/system-log' 会被 '/api/admin/system-log/fallback' 误配）
+    for (const d of declared) {
+      expect(covered.has(d), `源码里的 admin 端点 ${d} 未被 G7.4 清单覆盖`).toBe(true);
+    }
+    // ② 清单里也不能有源码已删掉的端点（避免清单腐化）
+    for (const c of covered) {
+      expect(declared.has(c), `G7.4 清单里的 ${c} 在源码中已不存在`).toBe(true);
+    }
+    // ③ 数量兜底（源码新增端点时这两条会先红）
+    expect(declared.size).toBe(11);
+    expect(covered.size).toBe(11);
+  });
+
+  it.each(ADMIN_ENDPOINTS)('$method $path → 普通用户 403 FORBIDDEN 且零副作用', async (ep) => {
+    const backupDir = await getBackupDir();
+    const before = snapshotSideEffects(backupDir);
+
+    const url = typeof ep.url === 'function' ? ep.url() : ep.url;
+    const res = await bundle.app.inject({
+      method: ep.method,
+      url,
+      headers: { authorization: `Bearer ${userToken}` },
+      ...(ep.payload ? { payload: ep.payload } : {}),
+    });
+
+    expect(res.statusCode, `${ep.method} ${ep.path} 必须 403`).toBe(403);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe('FORBIDDEN');
+    expect(body.error).toBe('FORBIDDEN');
+    expect(body.success).toBe(false);
+    expect(body.data).toBeNull();
+    expect(typeof body.message).toBe('string');
+    expect(body.message.length).toBeGreaterThan(0);
+
+    // 🔴 副作用快照必须完全一致 —— 不一致即说明该端点「先副作用、后鉴权」
+    expect(snapshotSideEffects(backupDir), `${ep.method} ${ep.path} 产生了副作用（鉴权顺序危险）`).toEqual(
+      before,
+    );
+  });
+
+  it('越权探测后：普通用户角色未被提升，且探测窗口内没有新的备份产物', async () => {
+    const backupDir = await getBackupDir();
+
+    // ① 普通用户角色没被提升（PATCH /api/admin/role/:userId 的越权收益为零）
+    const role = bundle.db.db.prepare('SELECT role FROM user_account WHERE id = ?').get(normalUserId) as {
+      role: string;
+    };
+    expect(role.role).toBe('user');
+
+    // ② 探测窗口内**没有**新产出/被改写的备份文件
+    //    ⚠️ 不能断言「目录里没有 business.db.*」—— 目录里可能有**历史遗留**的真实备份
+    //    （cron 每天 17:05 产出），那是正常数据，不是本用例造的。
+    const fresh: string[] = [];
+    if (fs.existsSync(backupDir)) {
+      for (const name of fs.readdirSync(backupDir)) {
+        const full = path.join(backupDir, name);
+        const stat = fs.statSync(full);
+        if (stat.isFile() && stat.mtimeMs >= probeStartMs) fresh.push(name);
+      }
+    }
+    expect(fresh, '越权探测不得产出任何备份文件').toEqual([]);
   });
 });

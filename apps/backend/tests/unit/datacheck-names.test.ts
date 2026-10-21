@@ -106,8 +106,8 @@ function insertCheckLog(
   message: string,
   detail?: string,
 ): void {
-  ConfigStore.getInstance().db
-    .prepare(
+  ConfigStore.getInstance()
+    .db.prepare(
       `INSERT INTO system_log (log_date, log_type, level, check_item, message, detail)
        VALUES (?, 'datacheck', ?, ?, ?, ?)`,
     )
