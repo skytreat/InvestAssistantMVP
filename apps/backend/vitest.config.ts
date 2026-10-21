@@ -24,6 +24,22 @@ export default defineConfig({
      */
     root: __dirname,
     include: ['tests/**/*.test.ts'],
+    /**
+     * ⚠️ **排除 PE2 性能门槛用例**（2026-10-21 实测）：
+     *   `tests/integration/scan5000.test.ts` 测「全市场条件选股 ≤ 3s」（SDD §12.5 F7 / G6.4）。
+     *   它**必须独占运行**：与全量套件同进程跑时耗时 **10082ms**、单独跑 **2942ms**
+     *   ⇒ 根因是 `src/db/duckdb.ts` 的**进程内单例 DuckDB** 的内部缓冲被前面几十个测试驱逐
+     *   ⇒ 性能门槛在受控环境外测没有意义。
+     * ⇒ 门禁 G6.4 的判据方式：**`npm run test:pe2 -w @invest/backend`**（见 `vitest.pe2.config.ts`）。
+     */
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/cypress/**',
+      '**/.{idea,git,cache,output,temp}/**',
+      '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,eslint,prettier}.config.*',
+      'tests/integration/scan5000.test.ts',
+    ],
     globals: true,
     testTimeout: 15000,
     setupFiles: [path.resolve(__dirname, 'tests/setup.ts')],

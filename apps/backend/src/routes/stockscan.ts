@@ -71,6 +71,30 @@ export interface StockScanResult {
   symbol: string;
   /** 证券名称（raw_symbol_name.name，无名称记录时为 null） */
   name: string | null;
+  /**
+   * 现价（T73 · F-S5）—— **tradeDate 当天的前复权收盘价**
+   *
+   * ⚠️ **口径 = 前复权价**，与候选池页（`batchGetLatestClose(..., 'qfq')`）、
+   *    K 线页、Dashboard 持仓卡**完全一致** ⇒ 同一只标的在各处显示同一个「现价」，
+   *    不会因复权口径不同出现两个价（项目铁律：口径漂移 = 缺陷）。
+   * 无行情时为 null。
+   */
+  close: number | null;
+  /**
+   * 当日涨跌幅（T73 · F-S5，单位 %）—— `(现价 - 上一根K线收盘价) / 上一根K线收盘价 * 100`
+   *
+   * ⚠️ 「上一根 K 线」= 该标的自己日线序列的**倒数第二根**（与 Dashboard 的
+   *    `batchGetLatestAndPrevClose` 同款口径），不用交易日历 ——
+   *    停牌标的的上一根可能是多天前的那根，这是「相邻上一根」而非「上一个交易日」。
+   * 无上一根 / 上一根收盘价为 0 时为 null。
+   */
+  changePct: number | null;
+  /**
+   * 当日成交额（T73 · F-S5，单位 **元**，不复权）
+   *
+   * ⚠️ 单位与 `min_amount`（公共过滤）**同为元** —— 成交额不受复权因子影响。
+   */
+  amount: number | null;
   score: number;
   signalType: PluginSignal['signalType'];
   details?: string;
@@ -106,6 +130,49 @@ export interface StockScanResponse {
 
 /** 市值单位换算：接口层用「亿元」，DuckDB raw_basic_daily.totalmv 存「元」 */
 const YI = 100_000_000;
+
+/**
+ * 从预取日线里取「现价 / 上一根收盘价 / 当日成交额」（T73 · F-S5）
+ *
+ * ⚠️ **纯内存计算，不额外查 DuckDB** —— 预取结果（`batchGetDailyRangeByView`）
+ *    里已经含 tradeDate 那根 K 线与它前面那根，再查一次就是重复 IO。
+ *
+ * ⚠️ 日线序列按 `date ASC` 排序（`buildQfqRangeSql` 的 `ORDER BY symbol, date ASC`），
+ *    故「tradeDate 那根的下标 - 1」就是**紧邻的上一根**。
+ *
+ * @param klines 该标的的日线（按日期升序）
+ * @param tradeDate 选股交易日
+ */
+export function extractQuote(
+  klines: DailyKline[] | undefined,
+  tradeDate: string,
+): { close: number | null; prevClose: number | null; amount: number | null } {
+  const empty = { close: null, prevClose: null, amount: null };
+  if (!klines || klines.length === 0) return empty;
+
+  let idx = -1;
+  for (let i = 0; i < klines.length; i++) {
+    if (klines[i].date === tradeDate) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return empty;
+
+  const cur = klines[idx];
+  const prev = idx > 0 ? klines[idx - 1] : null;
+  return {
+    close: typeof cur.close === 'number' ? cur.close : null,
+    prevClose: prev && typeof prev.close === 'number' ? prev.close : null,
+    amount: typeof cur.amount === 'number' ? cur.amount : null,
+  };
+}
+
+/** 涨跌幅（%）：`(现价 - 上一根收盘价) / 上一根收盘价 * 100`；缺上一根（或为 0）→ null */
+export function computeChangePct(close: number | null, prevClose: number | null): number | null {
+  if (close === null || prevClose === null || prevClose === 0) return null;
+  return ((close - prevClose) / prevClose) * 100;
+}
 
 /** 全选股候选池上限（A 股全市场 ~5561，留余量；MVP 性能硬约束 ≤3s） */
 const POOL_LIMIT = 5000;
@@ -164,8 +231,10 @@ export function parseScanFilters(body: ParsedBody):
     Number.isFinite(body.min_amount) && (body.min_amount ?? 0) > 0
       ? Math.floor(body.min_amount as number)
       : 0;
+  // ⚠️ 上限 **100**（PRD §5.6「结果 ≤100 条」；实施计划 F-S3）：
+  //   原为 500 ⇒ 前端虽然强制 100，但**直接打 API 仍可要 500 条** ⇒ 契约与 PRD 不符。
   const maxResults = Math.min(
-    500,
+    100,
     Math.max(1, Math.floor(Number.isFinite(body.max_results) ? (body.max_results as number) : 100)),
   );
 
@@ -453,6 +522,17 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         }
       }
 
+      // T73 · F-S5：现价 / 涨跌幅 / 成交额 —— **从同一份预取结果里取，不额外查库**
+      //   （预取已经含 tradeDate 那根与它前面那根；再查一次就是重复 IO，
+      //     而 PE2「选股 ≤3s」对每次额外查询都很敏感）。
+      const quoteBySymbol = new Map<
+        string,
+        { close: number | null; prevClose: number | null; amount: number | null }
+      >();
+      for (const [symbol, klines] of prefetchKlines) {
+        quoteBySymbol.set(symbol, extractQuote(klines, tradeDate));
+      }
+
       const passResults: StockScanResult[] = [];
       let scannedCount = 0;
       let timeoutCount = 0;
@@ -488,11 +568,20 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
             }
 
             // SUCCESS / SKIP：只收集非 HOLD 的信号
+            const quote = quoteBySymbol.get(stock.symbol) ?? {
+              close: null,
+              prevClose: null,
+              amount: null,
+            };
             for (const sig of execResult.signals) {
               if (sig.signalType === 'HOLD') continue;
               passResults.push({
                 symbol: stock.symbol,
                 name: nameBySymbol.get(stock.symbol) ?? null,
+                // T73 · F-S5：结果表补「现价 / 涨跌幅 / 成交额」
+                close: quote.close,
+                changePct: computeChangePct(quote.close, quote.prevClose),
+                amount: quote.amount,
                 score: sig.strength ?? 0,
                 signalType: sig.signalType,
                 details: sig.detail,
