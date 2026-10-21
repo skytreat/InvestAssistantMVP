@@ -21,6 +21,10 @@
 | [ADR-006](ADR-006-engineering-gates-and-wave-acceptance.md) | 工程门槛暂缓项与验收分层 | B-5、B-6 | T86、T86b、§12.7 Gate |
 | [ADR-007](ADR-007-route-contract-and-candidate-migration.md) | 路由契约与候选池迁移语义 | B-7、B-12、I-1 | T90、T92 |
 | [ADR-008](ADR-008-test-market-data-strategy.md) | 测试行情库策略 —— 迷你 DuckDB + 三档切换 + 两层开关 + 视图使用约束 | Wave 5 实施期性能诊断 | T60b、T60 剩余项、视图物化反模式修复 |
+| [ADR-009](ADR-009-broker-fact-layer-separation.md) | 券商流水事实层与业务记录层分离（三维度：进交易/进事实层/参与收益） | V3 §2.4.3 | T103-T110 |
+| [ADR-010](ADR-010-cross-file-dedup-and-time-backfill.md) | 跨文件去重 + 成交时间回填（三级降级匹配） | V3 §2.9.4-2.9.5 | T105 |
+| [ADR-011](ADR-011-fund-check-line-level-only.md) | 资金校验只做行内自洽，不做账户级闭合 | V3 §2.9.3 | T106 |
+| [ADR-012](ADR-012-cash-like-asset-modeling.md) | 现金类资产建模（逆回购为债权、货币 ETF 不按百分比计收益） | V3 §3.5 | T101/T108/T113 |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 

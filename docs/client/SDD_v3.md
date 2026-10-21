@@ -27,8 +27,9 @@
 | V1 位置 | V1 契约 | V3 改为 | 理由 |
 |---|---|---|---|
 | `SDD.md` §4 API | 无导入 / 对账 / 补录路由 | 新增 §9 的 11 个端点 | Requirements §2 |
-| `SDD.md` §4 | `GET /api/symbols/search` 支持裸 6 位匹配 | 增强：返回名称 + 拼音首字母 + 分类（§9.4） | Requirements §1 |
+| `SDD.md` §4 | `GET /api/symbols/search` 支持裸 6 位匹配（Wave 6 已建 `symbolSearch.ts`） | 增强：返回名称 + 拼音首字母 + 分类（§9.4） | Requirements §1 |
 | `SDD.md` §5 插件引擎 | 4 个内置插件、单一 `category` | V3 不改插件引擎；**新增**现金类资产分类维度（§2） | Requirements §3.5 |
+| `SDD.md` §4 | `GET /api/review/*`（Wave 4 已建 `review.ts`） | 扩展：交易对视图 + 新字段（§9.7） | Requirements §6 |
 | `SDD.md` §6 数据模型 | `user_trade_record` 单一来源 | 新增事实层三表（§11.1），业务层加券商维度（§11.2，DDL 待定稿） | Requirements §2.4.3 |
 | `SDD.md` §9/§10/§11 测试映射 | 无 V3 用例 | 新增 §12 映射 | Requirements §9 |
 | `packages/core` 公开类型 | `CoreTrade.direction: 'buy' \| 'sell'` | 扩展支持送股 / 分红（§8） | Requirements §3.6 |
@@ -779,7 +780,7 @@ transfer         -> 忽略（转托管不改变总持仓）
 
 | 场景 | 门槛 | 依据 |
 |---|---|---|
-| 标的联想响应 | p95 < 100ms | 高频操作，须走业务层快照 |
+| 标的联想响应 | p95 < 100ms | 高频操作，须走业务层快照（Wave 4 的 `SymbolAutocomplete` 已在用） |
 | 单文件解析（≤700 行） | < 3s | 实测样本最大 671 行 |
 | 全量导入（6 文件 1627 行） | < 30s | 含去重、回填、校验 |
 | 跨文件去重 + 回填 | < 5s / 千行 | |
