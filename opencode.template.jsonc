@@ -32,8 +32,18 @@
   "permission": {
     "bash": "ask",
     "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
     "edit": "allow",
-    "glob": "allow"
+    // external_directory 默认是 ask（唯一两个非 allow 的默认值之一）→ 显式放行工作目录外的路径，
+    // 否则读 /opt/invol、/proc 等会反复弹窗并中断 sub-agent 任务
+    "external_directory": {
+      "/proc/**": "allow",
+      "/sys/**": "allow",
+      "/opt/invol/**": "allow",
+      "$HOME/**": "allow",
+      "/tmp/**": "allow"
+    }
   },
   "agent": {
     "context": {

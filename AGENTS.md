@@ -248,6 +248,30 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 > ⚠️ **把 CORS/HTTPS/性能测试写进 `integration/` 会得到假绿** —— `inject()` 完全绕过 `@fastify/cors` 的 Origin 处理与 socket 层，测了等于没测。这是 T60 补齐项。
 
+### 🔴 测试行情库的三档与三层能力（2026-10-20 实测，ADR-008）
+
+**跑测试前先确认 `MARKET_DATA_MODE`** —— 选错档位会得到**假绿**（断言静默跳过）或**假红**（真库上的规模/性能断言在迷你库上必然失败）。
+
+| 档 | `MARKET_DATA_MODE` | 行情库 | 何时用 |
+|---|---|---|---|
+| `auto`（默认）| `DUCKDB_PATH` 有值 → `full`；否则 → `mini` | — | 日常 |
+| `mini` | 迷你库（真库的**逐位一致子集**）| `data/quotes.mini.duckdb` | 日常开发 |
+| `ci` | 现生成迷你库 | `$TMPDIR/invest-mini-market/` | CI |
+| `full` | **真库** 1.24GB | `/opt/invol/quotes.duckdb` | 门禁前 / 性能基准 / 发布前 |
+
+**三层能力**（一个开关混用会让规模断言**假装通过**）：
+
+| 能力 | 迷你库 | 真库 | 典型用例 |
+|---|---|---|---|
+| `numeric` 数值型 | ✅ 可跑 | ✅ | 基准价 == 最新前复权收盘价；指标与 golden 逐位相等 |
+| `scale` 规模型 | ❌ **必须真库** | ✅ | 候选池数量断言 |
+| `performance` 性能型 | ❌ **必须真库** | ✅ | `scan_5000_target` ≤ 3s；PE1‑PE6 |
+
+⚠️ **迷你库数值可信、规模不可信**（迷你库 stock 104 只 vs 真库 5561 只）⇒ **规模/性能类断言绝不能用迷你库的结果冒充**。
+⚠️ **真库档的查询会物化 2800 万行**（视图是实时计算的）⇒ `/api/market/latest` 曾达 12.18s、批量取价 3.38s
+⇒ **跑测试前先停掉占用 DuckDB 的后端进程**（文件锁会让 12+ 用例误报 `Could not set lock on file`）。
+⚠️ 生成器与规格见 `docs/client/SDD.md` §12.1.1；决策与代价见 `docs/adr/ADR-008-test-market-data-strategy.md`。
+
 **交付单元：一个 Wave = 一个 PR（2026-10-17 用户决策，替代「里程碑每阶段一 PR」）**
 
 Wave 1-8 合计 52 个任务 / ~64 人天，**人工逐任务 review 不现实**，故改为按 Wave 交付：

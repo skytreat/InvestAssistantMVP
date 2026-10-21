@@ -2792,18 +2792,18 @@ sequenceDiagram
 | # | 原始需求 §9 验收项 | SDD 指定测试载体 | 状态 |
 |---|--------------------|------------------|------|
 | F1 | 用户可注册/登录，JWT 鉴权 | `apps/backend/tests/unit/auth.test.ts` · `apps/backend/tests/integration/auth.test.ts` → `login_success` / `login_wrong_password` | ❌ 待建（文件在，用例名未落地） |
-| F2 | 支持 7 种交易类型录入（买入/卖出/送转/派息/配股/增发/拆股） | `apps/backend/tests/integration/trade.test.ts` → `create_trade_all_types` | ❌ 待建（文件在，用例名未落地） |
+| F2 | 支持 7 种交易类型录入（**买入/加仓/减仓/清仓/分红/送股/转增**） | `apps/backend/tests/integration/trade.test.ts` → `create_trade_all_types` | ❌ 待建（文件在，用例名未落地） |
 | F3 | 持仓实时聚合查询正确（移动加权成本） | `apps/backend/tests/unit/holding.test.ts` → `avg_cost_calc_5_scenarios` | ✅ 已有 |
 | F4 | 双口径收益率切换正确 | `apps/backend/tests/unit/holding.test.ts` → `yield_caliber_switch` | ✅ 已有 |
 | F5 | K 线图 + 副图指标渲染正确 | `apps/frontend` → `frontend.test.tsx` → `kline_render` | ❌ 待建（前端 0 测试，随 T61 交付） |
 | F6 | 策略插件信号生成 + 状态机（有→有不写信号，有→无只清除） | `packages/core/tests/plugin.test.ts` → `state_machine_4_paths`（§12.5 原文写作 `state machine_4_paths`，以实施计划 T91 的下划线写法为准） | ✅ 已有 |
-| F7 | 全市场条件选股 ≤ 3s | `apps/backend/tests/integration` → `scan_5000_target` | ❌ 待建 |
+| F7 | 全市场条件选股 ≤ 3s | `apps/backend/tests/integration/scan5000.test.ts` → `scan_5000_target` | ✅ 已有（2026-10-21 落地；**规模型门槛 → 必须真库**，迷你库/CI 下可见地 skip） |
 | F8 | 每日 5 段自动化正确触发（17:00/17:01/17:02/17:03/17:05） | `apps/backend/tests/integration` → `cron_sequence_trigger` | ❌ 待建 |
 | F9 | 除权事件自动导入 + 候选池迁移 | `apps/backend/tests/integration` → `corporate_action_import` | ❌ 待建 |
 | F10 | SQLite 业务层备份恢复可用 | `apps/backend/tests/integration` → `backup_restore_sqlite` | ❌ 待建（`unit/backup.test.ts` 只覆盖备份侧，恢复侧 `restoreSQLiteBackup` 无用例） |
 | F11 | DuckDB 行情层备份恢复可用 | `apps/backend/tests/unit/backup.test.ts` → `backup_restore_duckdb` | ✅ 已有 |
 | PE1 | 首屏加载 ≤ 1.5s | Lighthouse Chrome DevTools（真机实测） | ❌ 待实测（需部署机） |
-| PE2 | 选股 ≤ 3s（5000+ 标的） | `apps/backend/tests/integration` → `scan_5000_target` | ❌ 待建 |
+| PE2 | 选股 ≤ 3s（5000+ 标的） | `apps/backend/tests/integration/scan5000.test.ts` → `scan_5000_target` | ✅ 已有（与 F7 同一用例；**真库实测 2026-10-21：客户端 2.23s / 服务端 2.21s ≤ 3.0s**） |
 | PE3 | K 线首渲染 ≤ 500ms | Chrome Performance Profiler（真机实测） | ❌ 待实测（需部署机） |
 | PE4 | API 单请求 P99 ≤ 200ms | autocannon（真机实测） | ❌ 待实测（需部署机） |
 | PE5 | SQLite WAL 模式 ≤ 10 并发读写 | SQLite 并发压测脚本 | ❌ 待建 |
@@ -2816,8 +2816,8 @@ sequenceDiagram
 | SE6 | admin API 路由二次角色校验 | `apps/backend/tests/integration/auth.test.ts` → `admin_role_guard` | ❌ 待建（文件在，用例名未落地） |
 | CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a`（部署机实测） | ❌ 待实测（需部署机） |
 
-> **统计（2026-10-19）**：24 项中 **✅ 已有 7 项**（F3 / F4 / F6 / F11 / PE6 / SE2 / SE5）、
-> **❌ 17 项**（12 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
+> **统计（2026-10-21 更新）**：24 项中 **✅ 已有 9 项**（F3 / F4 / F6 / **F7** / F11 / **PE2** / PE6 / SE2 / SE5）、
+> **❌ 15 项**（10 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
 > 剩余 ❌ 项的用例名落地前，实施计划 §12.1 G1.9（每个指定用例名全仓可 grep）**不能判 PASS**。
 
 ### 12.2 覆盖率目标
@@ -2977,7 +2977,7 @@ afterEach(async () => {
 | # | 原始需求 §9 | 对应测试 Case | 通过标准 |
 |---|------------|--------------|---------|
 | F1 | 用户可注册/登录，JWT 鉴权 | auth.test.ts → `login_success` / `login_wrong_password` | 200 + Token 返回 / 401 |
-| F2 | 支持 7 种交易类型录入（买入/卖出/送转/派息/配股/增发/拆股）| trade.test.ts → `create_trade_all_types` | 每种类型 201，CHECK 约束拦截非法值 400 |
+| F2 | 支持 7 种交易类型录入（**买入/加仓/减仓/清仓/分红/送股/转增**）| trade.test.ts → `create_trade_all_types` | 每种类型 201，CHECK 约束拦截非法值 400 |
 | F3 | 持仓实时聚合查询正确（移动加权成本）| holding.test.ts → `avg_cost_calc_5_scenarios` | 与手写计算器对比，误差 < 0.001 元 |
 | F4 | 双口径收益率切换正确 | holding.test.ts → `yield_caliber_switch` | 价格收益率 / 复权收益率独立可查 |
 | F5 | K 线图 + 副图指标渲染正确 | `frontend.test.tsx` → `kline_render` | Canvas 绘制无异常，副图 MACD/RSI 覆盖层正确 |
@@ -3015,6 +3015,81 @@ afterEach(async () => {
 | # | 原始需求 §9 | 对应测试 Case | 通过标准 |
 |---|------------|--------------|---------|
 | CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a /opt/invol/*.db` | 600 + owner=nobody:nogroup |
+
+### 12.5.1 测试行情库策略（迷你 DuckDB）
+
+> **决策与代价见 [ADR-008](../../adr/ADR-008-test-market-data-strategy.md)**。本节只给**契约**（规格），不复述决策理由。
+
+#### 为什么需要
+
+真实行情库 `v_stock_qfq` 等 6 个视图是**实时计算视图**，基表 `raw_kline_daily` 实测 **2800 万行 / 1.25 万只**。
+打视图的查询会物化全表 ⇒ 慢用例的耗时几乎全部来自它（实测后端套件 11 个文件占 89% 耗时）。
+同时 CI 只有 12KB 空壳行情库 ⇒ **行情相关用例长期 skip**。
+
+#### 迷你库规格
+
+| 项 | 值 | 实测 |
+|---|---|---|
+| 标的数 N | **250（总量）** = 必选 51 个（测试直接引用的标的）+ 按真库 class 真实比例补足 | 250（stock 124 / etf 57 / unknown 27 / block 23 / index 16 / bstock 3）|
+| class 比例 | stock 49.5% / etf 22.8% / unknown 10.9% / block 9.1% / index 6.4% / bstock 1.3% | 取自真库 `raw_symbol_class` |
+| 抽样确定性 | **FNV-1a 32bit hash** 排序取前 k（**非随机** ⇒ 可复现，无需固定 seed）| — |
+| 跨度 | **365 自然日** = **242 个交易日** —— ⚠️ **半年不够**：`tests/fixtures/golden/{kdj,macd,rsi}.json` 全部是 **221 根**（跨度 335 自然日），半年只有 119 个交易日 | 242 |
+| 视图 | **6 张全部重建**，定义从真库 `duckdb_views()` 导出 | 6/6，**DDL 逐字一致** |
+| 体积 | ≤ 20MB | **迷你库 3.5MB** / **Parquet 1.5MB** |
+| 数值等价 | 迷你库是**真库的逐位一致子集** | **10 表行数全等、6 视图 34839 行 0 数值差异** |
+
+⚠️ **实现陷阱（2026-10-20 实测）**：
+- `WHERE view_name LIKE 'v\_%'` 在 DuckDB **返回 0** —— 反斜杠**不是** LIKE 的转义符 ⇒ 用 `starts_with(view_name,'v_')`
+- `raw_holidays` **没有 `symbol` 列** ⇒ 不能按 symbol 切片（可切：`raw_adjust_factor` / `raw_basic_daily` / `raw_symbol_name` / `raw_gbbq`）
+- **`round` 位数按视图不同**：`v_stock_qfq`=2、**`v_etf_qfq`=3**、`v_stock_hfq`=2、`v_etf_hfq`=3、**bfq 视图不取整** ⇒ 手抄定义必错
+
+#### 三档切换
+
+| 模式（env `MARKET_DATA_MODE`）| 档位 | 行情库来源 | 落地位置 | 行情用例 |
+|---|---|---|---|---|
+| `auto`（默认）| `DUCKDB_PATH` 有值 → `full`；否则 → `mini` | — | 日常 | 视档位 |
+| `mini` | 迷你库 | `data/quotes.mini.duckdb`（gitignored）| 日常开发 | 跑（数值型）|
+| `ci` | **现生成**迷你库 | `$TMPDIR/invest-mini-market/quotes.mini.duckdb` | CI | 跑（数值型）|
+| `full` | **真库** 1.24GB | `DUCKDB_PATH`（**显式**指定）| 门禁前 / 性能基准 / 发布前 | 跑（含 `scan_5000_target`）|
+
+#### 两层开关（数值可信 vs 规模真实）
+
+| 能力 | 语义 | 迷你库 | 真库 | 典型用例 |
+|---|---|---|---|---|
+| `numeric` 数值型 | 数值与真库一致 | ✅ | ✅ | 基准价 == 最新前复权收盘价；指标与 golden 逐位相等 |
+| `scale` 规模型 | 规模必须真实 | ❌ | ✅ | 候选池数量断言（迷你库 stock 104 只 vs 真库 5561 只）|
+| `performance` 性能型 | 耗时必须真实 | ❌ | ✅ | `scan_5000_target` ≤ 3s；PE1-PE6 |
+
+⚠️ 迷你库是**真库切片** ⇒ 数值可信、**规模不可信**。三类用例的可跑性不同 ⇒ **必须用三个独立能力开关**，不得混用。
+
+⚠️ **档位必须统一到「服务层」**（2026-10-20 实测教训）：
+`db/duckdb.ts` 的路径若在**模块加载时快照** `process.env.DUCKDB_PATH`，
+而档位切换发生在**测试文件 import 之后** ⇒ 快照拿到的是**切换前**的路径（真库）。
+实测 `MARKET_DATA_MODE=mini` 下 `smoke-m3` 备份仍耗时 **31.4s**（备份的真库）、
+`smoke-m1` 健康检查 **18.5s**（检查的真库）⇒ **迷你库档只快了 4%**（244.7s → 234.6s）。
+⇒ 路径必须**连接时惰性解析**（`resolveDuckDBPath()`），且档位解析要在**每个测试文件的统一入口**执行
+（`tests/setup.ts` 的 `beforeAll`）。
+⚠️ **但测试文件自己显式设了 `DUCKDB_PATH` 时必须尊重它**（如 `backup.test.ts` 指向自己的临时库）。
+⇒ 优先级：**文件显式设置 > 档位解析**。
+
+---
+
+#### 视图使用约束（数据访问契约）
+
+> 视图的物化成本是 O(全表 2800 万行 × 4 JOIN）。**能否下推谓词决定该查询该不该走视图。**
+
+| 查询形态 | 下推 | 契约 |
+|---|---|---|
+| **需要全量行集**（一次性导出 / 全量统计）| — | ✅ **就该用视图**（物化成本无法摊薄）|
+| **单标的历史序列**（`WHERE symbol = ?`）| ✅ 等值下推 | ✅ **可用视图**（实测 0.05s，与基表无差别）|
+| **多标的「最近 N 根」**（`WHERE symbol IN (…)`）| ❌ | ❌ **禁止走视图** ⇒ 改**基表 + `IN` 下推 + 手工复权因子**（实测 2.75s → 0.08s，**41x**）|
+| **全市场取「最新几行」**（无谓词）| ❌ | ❌ **禁止走视图** ⇒ 改**基表 + 日期过滤**（实测 12.18s → 0.16s，**76x**）|
+
+⚠️ **改写必须与视图逐位等价**：`round` 位数（见上）、`COALESCE(…,1)` 缺省值、`bfq` 不除 `latest_hfq`、`raw` 不套因子、
+`INNER JOIN raw_symbol_class` 的 `class` 过滤语义。**任何一项不一致都会让前复权数值漂移。**
+
+⚠️ **性能安全**：`/api/market/latest` 在 `PUBLIC_ROUTES`（免鉴权）⇒ 它是**可被反复调用烧 CPU 的面**，
+禁止实现成「物化全表取 5 行」。
 
 ### 12.6 CI/CD Pipeline 设计
 

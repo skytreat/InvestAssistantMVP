@@ -17,5 +17,10 @@ docs/
 # 里面有精确到小数位的期望值与 null 占位，任何重排都不得改动其字节。
 packages/core/tests/fixtures/
 
+# 🔴 迷你行情库夹具：**数据载体**（Parquet + 生成的 manifest.json），不是代码。
+# manifest.json 由 `scripts/make-mini-duckdb.mjs extract` 生成 → 每次重抽都会产生格式 diff，
+# 且 Prettier 的 JSON 重排对它毫无意义（与黄金数据集同理）。
+apps/backend/tests/fixtures/mini-market/
+
 # JSONC 带注释，Prettier 的 JSON 解析器会丢注释
 opencode.template.jsonc
