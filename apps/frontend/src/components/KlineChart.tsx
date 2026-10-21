@@ -223,6 +223,27 @@ export default function KlineChart({
         if (!chart) throw new Error('klinecharts init 未返回实例');
         chartRef.current = chart;
 
+        // 🔴 Wave 7 卡 6：修正**库注入**的图表容器的两个 a11y 缺陷（**不改库**）
+        //
+        // ① klinecharts 在 `_createContainer()` 里给自己的容器设了 `tabIndex = 1`
+        //    ⇒ 正数 tabindex 会**打断浏览器的自然 Tab 顺序**（axe 规则 `tabindex`：
+        //    「tabindex attribute values are not greater than 0」—— **serious**）。
+        // ② 该容器是**无 role 的裸 `<div>`** ⇒ 给它一个图形语义（`role="img"`）+
+        //    可访问名，读屏聚焦时能听到「K 线图，图像」而不是一个无名 group。
+        //
+        // ⚠️ **不修改 node_modules 里的库**，只在包装层修正它创建出来的 DOM 属性
+        //    （库不提供该选项，改库会让升级即丢）。
+        const libChartContainer = container.firstElementChild as HTMLElement | null;
+        if (libChartContainer) {
+          if (libChartContainer.hasAttribute('tabindex')) {
+            libChartContainer.setAttribute('tabindex', '0');
+          }
+          if (!libChartContainer.getAttribute('role')) {
+            libChartContainer.setAttribute('role', 'img');
+            libChartContainer.setAttribute('aria-label', 'K 线图');
+          }
+        }
+
         // 🔒 **仅开发模式**暴露图表实例（浏览器探针用）
         //
         // G5.6「K 线价格轴范围正确」需要在**真浏览器**里读主图 y 轴的 min/max 标注，
@@ -501,6 +522,12 @@ export default function KlineChart({
       <div
         ref={containerRef}
         data-testid="kline-chart-container"
+        // 🔴 `role="figure"` —— 裸 `<div>`（无 role）上挂 `aria-label` 会踩
+        //    axe 规则 `aria-prohibited-attr`（serious）：
+        //    「aria-label attribute cannot be used on "div" elements with no valid role attribute」。
+        //    `figure` 允许「作者提供的可访问名」，且**不会**把子节点整体设为 presentational
+        //    （不像 `role="img"`），故图表容器内部仍可保留自己的语义。
+        role="figure"
         aria-label="K 线图"
         style={{
           width: '100%',

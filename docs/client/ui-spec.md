@@ -21,25 +21,65 @@
 
 ux_v2 已完成全站颜色统计并给出建议 token 值，这是**唯一一份具体数值来源**，本 plan 的 T62 只写了「按建议值落地」而未内联数值。保全如下：
 
+> ⚠️ **本节是 token 数值的唯一权威**（`apps/frontend/src/theme/tokens.ts` 的文件头也这么写）。
+> **改任何 token 数值前先改本节**，再改代码 —— 顺序反了就会「代码与 spec 脱节」，
+> 届时「token 数值来自 spec」这条约定就只剩注释、没人核对了。
+>
+> 🔴 **Wave 7 卡 5（T76 ⑥）已改过一轮数值**（对比度收口）—— 本节已同步，
+> **历史值（`textMuted #9ca3af` / `textFaint #888888` / `info #3b82f6` 当正文色 / `success #16a34a` 当正文色）作废**。
+
+#### 1.1 「正文色档」与「徽章/图形档」的两档规则（Wave 7 卡 5 · 裁决 D-8）
+
+**同一语义色（绿 / 蓝 / 琥珀）必须拆成两档**，各司其职：
+
+| 档位 | 用途 | 取值 | 白底对比度 |
+|---|---|---|---|
+| **徽章/图形档**（饱和色） | **描边 / 色点 / 纯图形**；**深色画布**（K 线画布 `#1a1a2e`）上的标记 | `success #16a34a` / `info #3b82f6` / `warning #d97706` | 3.30 / 3.68 / 3.19 ❌ **不得承载白字** |
+| **正文色档**（加深色） | **白底（`cardBg #ffffff`）/ 浅灰底（`pageBg #f8fafc`）上的文字** | `textSuccess #15803d` / `textInfo #1d4ed8` / `textWarning #92400e` | 5.02 / 6.70 / 7.09 ✅（页面灰底 4.79 / 6.41 / 6.78 ✅）|
+
+🔴 **为什么必须分档**：
+
+1. 饱和色档在白底上**达不到 WCAG 1.4.3 的 4.5:1** ⇒ 当正文色用就是真缺陷
+   （Wave 7 前 `info` / `success` / `textMuted` / `textFaint` 四个 token 全部不合格，
+   是 `docs/audit/a11y-baseline.md` §4.1 记录的 serious 级 color-contrast）；
+2. 但 `success` 在**深色画布**（K 线图）上要的就是「亮绿」（5.18:1）⇒ **一刀切加深会把画布上的信号标记压到 3.40:1**。
+
+⇒ **两档并存**：浅底上的文字走「正文色档」；徽章走「浅底 + 深字」（`bgPill*` + `textPill*`）
+或「深底 + 白字」（底色取正文色档）；纯图形与深色画布走「饱和色档」。
+
+⚠️ **色相家族不变**：绿仍是绿 —— `success` 仍是「盈利绿 / 系统导入绿」，
+「红涨绿跌」由 `candleUp` / `candleDown` 单独承担，**不因对比度收口而改动**。
+
+#### 1.2 数值表
+
 ```ts
-// apps/frontend/src/theme/tokens.ts —— T62 落地依据（数值来自 ux_v2 §2.4）
+// apps/frontend/src/theme/tokens.ts —— 数值来源：本节（ux_v2 §2.4 原始建议 + Wave 7 卡 5 对比度收口）
 export const COLORS = {
   // Primary / Brand
   brand: '#2563eb', brandLink: '#1e40af', brandBg: '#eff6ff',
-  // Semantic
-  success: '#16a34a',   // 盈利绿 / 系统导入绿
-  danger:  '#dc2626',   // 亏损红 / 删除 / ERROR
-  warning: '#d97706',   // WARN
-  info:    '#3b82f6',
+  // ── Semantic · 徽章/图形档（饱和色；不得承载白字）──
+  success: '#16a34a',   // 盈利绿 / 系统导入绿（图形档；深色画布上的对比度 5.18:1）
+  danger:  '#dc2626',   // 亏损红 / 删除 / ERROR（4.83:1，白底正文也合格）
+  warning: '#d97706',   // WARN（图形档）
+  info:    '#3b82f6',   // 系统信号蓝（图形档）
   neutral: '#6b7280',
+  // ── Semantic · 正文色档（浅底上的文字；白底 + 页面灰底均 ≥ 4.5:1）──
+  textSuccess: '#15803d',  // 白底 5.02:1 / 页面灰底 4.79:1
+  textInfo:    '#1d4ed8',  // 白底 6.70:1 / 页面灰底 6.41:1
+  textWarning: '#92400e',  // 白底 7.09:1 / 页面灰底 6.78:1
   // Text hierarchy
   textPrimary: '#1f2937', textSecondary: '#4b5563',
-  textMuted: '#9ca3af',   textOnDark: '#e5e7eb',
+  textMuted: '#6b7280',    // 白底 4.83:1 / 页面灰底 4.62:1（原 #9ca3af 仅 2.54:1，作废）
+  textFaint: '#737373',    // 白底 4.74:1 / 页面灰底 4.53:1（原 #888888 仅 3.54:1，作废）
   // Backgrounds
   pageBg: '#f8fafc', cardBg: '#ffffff', headerBg: '#f9fafb',
-  tableStripe: '#fafbfc', tableHover: '#f1f5f9',
   // Borders
   borderLight: '#e5e7eb', borderMedium: '#d1d5db', borderFocus: '#2563eb',
+  // ── 四色徽标色板（浅底 + 深字，保证 ≥ 4.5:1；Wave 4 T69 引入）──
+  bgPillSuccess: '#dcfce7', textPillSuccess: '#166534', borderPillSuccess: '#86efac',
+  bgPillWarning: '#ffedd5', textPillWarning: '#9a3412', borderPillWarning: '#fdba74',
+  bgPillDanger:  '#fee2e2', textPillDanger:  '#991b1b', borderPillDanger:  '#fca5a5',
+  bgPillNeutral: '#f3f4f6', textPillNeutral: '#4b5563', borderPillNeutral: '#d1d5db',
   // Chart palette（Kline.tsx 专用）
   chartBg: '#1a1a2e', chartGrid: '#2d2d44', chartText: '#888888',
   candleUp:   '#ef4444',   // A 股红涨
@@ -56,12 +96,12 @@ export const SPACING = {
   gapTight: '4px', gapBase: '8px', gapRelaxed: '16px', gapLoose: '24px',
 } as const;
 
-export const RADIUS = { sm: '4px', base: '6px', md: '8px', lg: '12px' } as const;
+export const RADIUS = { sm: '4px', base: '6px', md: '8px' } as const;
 
 export const TYPO = {
   fontFamily: '"Noto Sans SC", "PingFang SC", system-ui, -apple-system, sans-serif',
   monoFamily: '"JetBrains Mono", "SF Mono", Consolas, monospace',
-  h1Size: '22px', h1Weight: '700',
+  h1Size: '24px', h1Weight: '700',
   h2Size: '18px', h2Weight: '600',
   cardTitleSize: '16px', cardTitleWeight: '600',
   bodySize: '14px', smallSize: '13px', captionSize: '11px',
@@ -71,6 +111,15 @@ export const MAX_WIDTH = 1200;
 ```
 
 **⚠️ 一处需修正的数值**：ux_v2 建议 `TYPO.h1Size: '22px'`，但现网 `titleStyle` 是 `24px`（`_shared.tsx`）。落地时**沿用 24px**（避免全站标题视觉突变），其余按上表。
+
+**⚠️ 本表是「建议落地值」，不是 `tokens.ts` 的逐行副本** —— `tokens.ts` 还有若干
+「现网已在用、但 §1 建议表未覆盖」的补充键（`accentPurple` / `textTertiary` /
+`borderSubtle` / `chartLabel` / `maskOverlay` / `shadowSoft` 等），
+它们**以 `tokens.ts` 为准**，本节不逐条复述（AGENTS.md 分层自检第 2 条：只引用，不复述）。
+
+**⚠️ 4 个键已从本表移除**（T66：`textOnDark` / `tableStripe` / `tableHover` / `RADIUS.lg`）
+—— 它们在本表里只是「建议值」，**全仓 0 引用**，T66 已作为死导出删除。
+⇒ 本表 = 「**在用的** token 数值」，不是历史建议值的全集。
 
 ### 2. 按钮变体（ux_v2 §2.3 问题 2-3/2-5）
 
@@ -108,6 +157,10 @@ T62 已列前四项；`focusRingStyle` 归 T63。
 
 > ⚠️ **`#fee2e2`/`#dbeafe` 两组在建议 token 表中原本缺失**，需 T62 补 `BG_SELECTED_DANGER` / `BG_SELECTED_PRIMARY`。
 
+> ⚠️ **本表是「T62 收敛前」的基线快照**（历史事实，保留供追溯）。
+> **当前生效的 token 数值一律看 §1** —— 其中 `#9ca3af` → `COLORS.textMuted` 一行已过时：
+> Wave 7 卡 5 把 `textMuted` 改成 `#6b7280`（见 §1.1 / §1.2）。
+
 ### 4. 可访问性明细（ux_v2 §5，本 plan F-A11~F-A18 的原始依据）
 
 | 方面 | 现状 | 修复建议 |
@@ -115,7 +168,7 @@ T62 已列前四项；`focusRingStyle` 归 T63。
 | Focus 样式 | 完全缺失 | 全局 `:focus-visible`（走 `global.css`，inline style 表达不了） |
 | 表单 label | 无 `htmlFor` | 所有 input/select 加 `id` + `<label htmlFor>` |
 | 表格 scope | `<th>` 无 scope | 加 `scope="col"` |
-| 颜色对比度 | `#16a34a` 白字 4.5:1 临界；`#6b7280` 白底 4.6:1 临界 | 升级为 `#15803d` / `#c81e1e` / `#4b5563`（P2，可选） |
+| 颜色对比度 | ~~`#16a34a` 白字 4.5:1 临界；`#6b7280` 白底 4.6:1 临界~~ | ✅ **Wave 7 卡 5 已落地**（数值见 §1.1「两档规则」/ §1.2）：正文色档 `textSuccess #15803d` / `textInfo #1d4ed8` / `textWarning #92400e` / `textMuted #6b7280` / `textFaint #737373` 对白底与页面灰底**均 ≥ 4.5:1**；饱和色档（`success` / `info` / `warning`）**只当徽章底 / 图形**用，不再承载白字 |
 | 语义标签 | 仅 2 个 `<nav>` | 引入 `<header>/<main>/<nav>/<footer>` |
 | aria-live | 缺失 | 动态内容区加 `aria-live="polite"` |
 | 焦点锁定 | Review 弹窗无 | Modal 打开时锁定焦点 |
