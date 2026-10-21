@@ -1427,11 +1427,17 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/candidate` | POST | 是 | 手动加标的；基准价自动取当日收盘价 |
 | `/api/candidate/:id/migrate` | POST | 是 | 迁移自选；支持 base/current 两种价格模式 |
 | `/api/ex-dividend/imports` | GET | 是 | 除权自动导入记录（**当前用户**，普通用户可读）；支持 `date`（YYYY-MM-DD 精确日）/ `days`（近 N 天，默认 1）；返回 `{ from, to, items[], summary{total,dividendCount,bonusCount} }` |
-| `/api/admin/datacheck/result` | GET | 是（仅 admin）| 12 项校验结果（含详情 JSON）|
-| `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发行情更新 + 校验 + 信号 + 除权 + 备份（串行）|
-| `/api/admin/system-log` | GET | 是（仅 admin）| 分页 + 日期过滤 + 类型过滤 |
-| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发备份 |
-| `/api/admin/role/:userId` | PATCH | 是（仅 admin）| 升级/降级角色 |
+| `/api/admin/datacheck/result` | GET | 是（仅 admin）| **最近一次 C1-C12 校验结果**（含详情 JSON）。<br>🔴 **admin 专属**：普通用户访问 → **403 `FORBIDDEN`**（此前无 role 校验，任何登录用户可读）。<br>**响应元素**：`{ checkId, name, result, message, detail }`。<br>**`name` = 12 个校验的中文名**，**唯一来源 = 后端 `services/validator.ts` 导出的 `CHECK_NAMES`**（逐字取自 §5.7 主表小节标题）—— **前端不得硬编码**。<br>**`result` 出库四态 = `PASS` / `WARN` / `ERROR` / `SKIP`**；⚠️ **落库**用的是 `system_log.level`（白名单 `INFO/WARN/ERROR/SKIP/SUCCESS`，**没有 `PASS`**）⇒ 落库 `SUCCESS`、**出库归一为 `PASS`**（两套词各自在自己的层内自洽）。<br>**「最近一次」的定位口径**：取 `log_type='datacheck'` 的全部 `log_date` → 只保留**真实日历日且 ≤ 今天**者 → 取最大者（🔴 **不用 `MAX(log_date)`** —— 越界日期会被 SQLite 的 `date()` 规范化通过，必须逐字段校验）。<br>**同 `checkId` 保留 `id` 最大的一条**（当天重跑时旧结果不得盖住新结果）。<br>**恒返回 12 条**（`{C1..C12}` 全集）：缺失项 → `result:'SKIP'` + `message:'未运行'` + `detail:null`（**不伪造 detail**）。<br>⚠️ **扩展校验（停牌/退市/ST/价差/成交量/滞后）不进 C 编号集合** —— 只认 `{C1..C12}`，其余编号一律丢弃 |
+| `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发 C1-C12 校验（body 可选 `{ trade_date }`，缺省取当前交易日）；响应 `{ trade_date, summaries[] }` |
+| `/api/admin/run-signal` | POST | 是（仅 admin）| 手动触发信号生成（body 可选 `{ trade_date }`，缺省取最近行情日）；按**当前用户的自选 ∪ 持仓**执行全部插件；响应 `{ stats, inserted, skipped, trade_date }` |
+| `/api/admin/rerun-quotes` | POST | 是（仅 admin）| 手动补跑行情更新（body 可选 `{ reason }`）。<br>🔴 **同步接口** —— 补跑跑完才返回，**没有「查任务状态」的轮询端点**；响应 `{ status, method, message, checks }`（`status` ∈ `SUCCESS` / `SKIP` / 其它失败态）。`status==='SUCCESS'` 时顺带重跑一次 C1-C12 并把结果放在 `checks` |
+| `/api/admin/system-log` | GET | 是（仅 admin）| `system_log` 分页查询（`SELECT *`，按 `id DESC`）。<br>**筛选参数**：`log_type`（等值）/ `level`（等值）/ **`start_date` + `end_date`（闭区间）** / `trade_date`（历史遗留的**单日等值**）。<br>⚠️ **日期过滤是区间**：`log_date` 为 `YYYY-MM-DD` 定长格式 ⇒ 直接字符串比较（`log_date BETWEEN ? AND ?`）；**只给一端** → 开区间（`>=` 或 `<=`）。<br>⚠️ `trade_date` **保留**（不破坏既有调用方），语义折算为「起止同一天」的区间，**与旧的 `log_date = ?` 完全等价**。<br>响应 `{ success, data: rows[], pagination: { page, pageSize, total, totalPages } }` |
+| `/api/admin/system-log/fallback` | GET | 是（仅 admin）| 读取**系统日志降级记录**（SQLite 不可用时写入的兜底文件，JSON Lines 格式）。<br>**响应**：`{ exists: boolean, lines: string[] }`（`lines` = 尾部 **200 行**）。<br>⚠️ **响应体不含文件绝对路径**（路径泄露 = 告诉攻击者去读哪个文件）。<br>⚠️ **文件不存在 → `exists:false` + `lines:[]`**（**正常空态**，不是错误）。<br>⚠️ **读失败 → 500 `INTERNAL_ERROR`，且不回传 fs 的原始错误**（fs 错误信息里含绝对路径）—— 服务端日志留痕，响应只给一句中文 |
+| `/api/admin/users` | GET | 是（仅 admin）| 用户列表（按 `id` 升序）；元素 = `{ id, username, role, created_at }`（`role` ∈ `admin` / `user`）|
+| `/api/admin/role/:userId` | PATCH | 是（仅 admin）| 升级/降级角色；body `{ role: 'admin' \| 'user' }`。<br>⚠️ **禁止降级自己** → 400 `PARAM_INVALID`；⚠️ **admin 只能有 1 人**（已有其它 admin 时升级 → 400 `PARAM_INVALID`）|
+| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**双库备份**（SQLite + DuckDB）；响应 `{ sqlite: { success, size }, duckdb: { success, size } }` |
+| `/api/admin/backups` | GET | 是（仅 admin）| 备份文件列表（按 `modified` **倒序**）；元素 = `{ name, size, modified }`。<br>⚠️ **`size` 的单位 = 字节**（`stat.size`）—— 前端只做可读化换算，**不得改单位口径**；`modified` = ISO 8601 字符串 |
+| `/api/admin/backup/:file/restore` | POST | 是（仅 admin）| 从备份恢复 SQLite 业务库（**破坏性操作**）。<br>🔴 **必须带 body `{ "confirm": true }`** —— 缺失 → **400 `CONFIRM_REQUIRED`**。<br>⚠️ **仅 `business.db.YYYY-MM-DD` 形态可恢复**（文件名白名单）；`*.parquet` 与 `*.pre-restore-*` 一律失败 → 400 `RESTORE_FAILED`。<br>⚠️ `:file` 需 **URL 编码**（服务端 `decodeURIComponent`）。<br>响应 `{ file, safetyBackup }`（恢复前的安全备份文件名）|
 
 ---
 

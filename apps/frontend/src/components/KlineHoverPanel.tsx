@@ -114,7 +114,7 @@ export default function KlineHoverPanel({
       )}
       {bar.signal && (
         <div data-testid="kline-hover-signal">
-          <span style={{ color: bar.signal.direction === 'buy' ? COLORS.success : COLORS.danger }}>
+          <span style={{ color: bar.signal.direction === 'buy' ? COLORS.textSuccess : COLORS.danger }}>
             {bar.signal.direction === 'buy' ? '▲' : '▼'} {signalDirectionText(bar.signal.direction)}
           </span>
           {bar.signal.label ? ` · ${bar.signal.label}` : ''}

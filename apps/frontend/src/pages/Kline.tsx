@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import { titleStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
 import KlineParamPanel from '../components/KlineParamPanel';
 import { MOBILE_TABBAR_HEIGHT, useIsMobile } from './_shared';
@@ -282,7 +283,12 @@ export default function Kline() {
 
   return (
     <div style={{ fontFamily: TYPO.fontFamily }}>
-      <h2 style={{ margin: '0 0 16px 0' }}>K 线图</h2>
+      {/*
+        T76 ⑦（Wave 7 卡 5）：整页标题必须是 **`<h1>`** ——
+        此前是 `<h2>`，真浏览器 axe 的 `page-has-heading-one`（moderate）会判本页无 h1。
+        样式沿用全站统一的 `titleStyle`（`theme/styles.ts`，24px/700）。
+      */}
+      <h1 style={titleStyle}>K 线图</h1>
 
       <div
         style={{

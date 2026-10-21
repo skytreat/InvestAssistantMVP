@@ -78,11 +78,18 @@ interface SystemLog {
   message: string;
 }
 
+/**
+ * 日志级别 → 颜色
+ *
+ * ⚠️ **走「正文色档」**（Wave 7 卡 5 · 裁决 D-9）：`COLORS.success` / `COLORS.warning`
+ *    是**饱和图形档**（白底只有 3.30 / 3.19），当正文用会被真浏览器 axe 判 color-contrast；
+ *    日志级别是**文字**，故一律用加深档 `textSuccess` / `textWarning`。
+ */
 const LEVEL_COLOR: Record<string, string> = {
   ERROR: COLORS.danger,
-  WARN: COLORS.warning,
+  WARN: COLORS.textWarning,
   SKIP: COLORS.textMuted,
-  SUCCESS: COLORS.success,
+  SUCCESS: COLORS.textSuccess,
   INFO: COLORS.brand,
 };
 
@@ -589,7 +596,7 @@ export default function Dashboard() {
                         fontWeight: 'bold',
                         color:
                           (caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
-                            ? COLORS.success
+                            ? COLORS.textSuccess
                             : COLORS.danger,
                       }}
                     >
@@ -609,7 +616,7 @@ export default function Dashboard() {
                           (caliber === 'price'
                             ? stat.total_assets_price_yield
                             : stat.total_assets_actual_yield) >= 0
-                            ? COLORS.success
+                            ? COLORS.textSuccess
                             : COLORS.danger,
                       }}
                     >
@@ -823,7 +830,7 @@ export default function Dashboard() {
                             style={{
                               color:
                                 s.direction === 'buy'
-                                  ? COLORS.success
+                                  ? COLORS.textSuccess
                                   : s.direction === 'sell'
                                     ? COLORS.danger
                                     : COLORS.textSecondary,

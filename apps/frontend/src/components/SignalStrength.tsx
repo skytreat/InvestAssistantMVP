@@ -68,8 +68,11 @@ export function SignalStrength({ value, label = '信号强度' }: SignalStrength
       data-testid="signal-strength"
       style={{ display: 'inline-flex', alignItems: 'center', gap: SPACING.gapTight }}
     >
-      {/* 星：颜色之外的第二重线索（纯装饰，读屏由百分比文本承担）*/}
-      <span aria-hidden="true" style={{ color: COLORS.warning, fontSize: TYPO.smallSize, letterSpacing: 1 }}>
+      {/* 星：颜色之外的第二重线索（纯装饰，读屏由百分比文本承担）；用正文色档保证浅底可读 */}
+      <span
+        aria-hidden="true"
+        style={{ color: COLORS.textWarning, fontSize: TYPO.smallSize, letterSpacing: 1 }}
+      >
         {'★'.repeat(filled)}
         {'☆'.repeat(STAR_COUNT - filled)}
       </span>

@@ -10,14 +10,15 @@ import Review from './pages/Review';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import { useUserStore } from './store/user';
-import { Navbar } from './pages/_shared';
+import { NAV_ITEMS, Navbar, useIsDesktop } from './pages/_shared';
 import ComplianceFooter from './components/ComplianceFooter';
 import AdminGuard from './components/AdminGuard';
 import SessionExpiredBanner from './components/SessionExpiredBanner';
+import SideNav from './components/SideNav';
 import Spinner from './components/Spinner';
 import TokenExpiryNotice from './components/TokenExpiryNotice';
 import { onSessionExpired } from './api/client';
-import { MAX_WIDTH, TYPO } from './theme/tokens';
+import { SPACING, TYPO } from './theme/tokens';
 
 /**
  * T66 · 路由级代码分割（SDD §2.12.5「Bundle 优化策略」）
@@ -89,7 +90,10 @@ function AdminRoute() {
  */
 function ProtectedShell({ expiredFrom }: { expiredFrom: string | null }) {
   const token = useUserStore((s) => s.token);
+  const role = useUserStore((s) => s.role);
   const location = useLocation();
+  /** 桌面（≥1024px）才渲染左侧导航栏（PRD §5.8 #7）*/
+  const isDesktop = useIsDesktop();
 
   // 「过期前所在的路径」优先于「当前路由路径」：
   // 会话过期是被动触发的，此刻路由可能还没跳走，用过期发生时的路径更贴近用户离开前的页面。
@@ -103,30 +107,52 @@ function ProtectedShell({ expiredFrom }: { expiredFrom: string | null }) {
   }
 
   return (
-    <div style={{ fontFamily: TYPO.fontFamily, maxWidth: MAX_WIDTH, margin: '0 auto', padding: 20 }}>
+    <div
+      className="page-container"
+      style={{
+        fontFamily: TYPO.fontFamily,
+        // T76 ④：容器改 fluid —— 宽度随视口变化（上限由内层页面容器的 MAX_WIDTH 承担）
+        width: '100%',
+        boxSizing: 'border-box',
+      }}
+    >
       {/*
         T63 语义化骨架：header → main → footer。
         ⚠️ `<header>` 由 `<Navbar />` 自身渲染（见 `pages/_shared.tsx`），
         此处**不再**套一层 `<header>` —— HTML 规范禁止 `<header>` 嵌套 `<header>`。
+        ⚠️ 断点 padding（≤768px → 12px）由 `styles/global.css` 的
+           `@media (max-width: 768px) { .page-container { ... } }` 承担 ——
+           inline style 表达不了 media query（ui-spec §5 决策 2）。
       */}
-      <Navbar />
-      {/* T64 · PRD §5.9：token 临近过期（剩余 < 1 天）时的轻量提示 */}
-      <TokenExpiryNotice />
-      <hr style={{ margin: '16px 0' }} />
-      <main>
-        {/*
-          T66 · `<Suspense>` 边界放在**路由出口处**（`<Outlet />` 外层），而不是 `<Routes>` 外层。
-          - **为什么放这里**：`<Outlet />` 正是「会渲染 lazy 组件的那一层」。
-            边界包住它 → 懒加载时**只替换主内容区**，导航栏 / 页脚保持在场（不整页闪烁）；
-            若放在 `<Routes>` 外层，则整个路由树（含 Navbar / 页脚）都会被 fallback 顶掉 → 整页闪一下。
-          - **为什么不会误伤普通页面**：`<Suspense>` **只有子组件真的 suspend 时才显示 fallback**。
-            除 Kline / Admin 外全是静态 import，**永远不会 suspend** → 普通页面零影响、零闪烁。
-          - **fallback 用 `<Spinner />`**（T65）：`role="status"` + `aria-live="polite"`，读屏可播报加载态。
-        */}
-        <React.Suspense fallback={<Spinner />}>
-          <Outlet />
-        </React.Suspense>
-      </main>
+      <Navbar showFlatNav={!isDesktop} />
+      {/*
+        T76 ①：桌面端「左侧导航 + 内容区」两栏布局。
+        ⚠️ **内容区必须 `minWidth: 0`** —— Flex 子项默认 `min-width: auto`（≈ min-content），
+           长表格会把内容区撑破、进而撑破文档（G7.7 的上游因子，与
+           `scrollableTableContainerStyle` 同一个坑）。
+      */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: SPACING.gapRelaxed }}>
+        {isDesktop && <SideNav items={NAV_ITEMS} isAdmin={role === 'admin'} />}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* T64 · PRD §5.9：token 临近过期（剩余 < 1 天）时的轻量提示 */}
+          <TokenExpiryNotice />
+          <hr style={{ margin: '16px 0' }} />
+          <main>
+            {/*
+              T66 · `<Suspense>` 边界放在**路由出口处**（`<Outlet />` 外层），而不是 `<Routes>` 外层。
+              - **为什么放这里**：`<Outlet />` 正是「会渲染 lazy 组件的那一层」。
+                边界包住它 → 懒加载时**只替换主内容区**，导航栏 / 页脚保持在场（不整页闪烁）；
+                若放在 `<Routes>` 外层，则整个路由树（含 Navbar / 页脚）都会被 fallback 顶掉 → 整页闪一下。
+              - **为什么不会误伤普通页面**：`<Suspense>` **只有子组件真的 suspend 时才显示 fallback**。
+                除 Kline / Admin 外全是静态 import，**永远不会 suspend** → 普通页面零影响、零闪烁。
+              - **fallback 用 `<Spinner />`**（T65）：`role="status"` + `aria-live="polite"`，读屏可播报加载态。
+            */}
+            <React.Suspense fallback={<Spinner />}>
+              <Outlet />
+            </React.Suspense>
+          </main>
+        </div>
+      </div>
 
       {/*
         T95：全局合规声明常驻（PRD §5.9，逐字文案见 `components/ComplianceFooter.tsx`）。

@@ -221,9 +221,9 @@ function signedPct(n: number | null): string {
   return `${n >= 0 ? '+' : ''}${(n * 100).toFixed(2)}%`;
 }
 
-/** 方向 → 颜色（涨绿跌灰，与 `SignalBadge` 同口径）*/
+/** 方向 → 颜色（涨绿跌灰，与 `SignalBadge` 同口径；绿走正文色档 `textSuccess`）*/
 function directionColor(direction: string): string {
-  if (direction === 'buy') return COLORS.success;
+  if (direction === 'buy') return COLORS.textSuccess;
   if (direction === 'sell') return COLORS.danger;
   return COLORS.textSecondary;
 }
@@ -697,7 +697,7 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                   style={{
                     fontSize: TYPO.bodySize,
                     fontWeight: TYPO.cardTitleWeight,
-                    color: assetChange.delta >= 0 ? COLORS.success : COLORS.danger,
+                    color: assetChange.delta >= 0 ? COLORS.textSuccess : COLORS.danger,
                   }}
                 >
                   {signed(assetChange.delta)}
@@ -705,7 +705,7 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                 <span
                   style={{
                     fontSize: TYPO.smallSize,
-                    color: assetChange.delta >= 0 ? COLORS.success : COLORS.danger,
+                    color: assetChange.delta >= 0 ? COLORS.textSuccess : COLORS.danger,
                   }}
                 >
                   （{signedPct(assetChange.pct)}）
@@ -729,7 +729,7 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                 <span
                   style={{
                     fontSize: TYPO.bodySize,
-                    color: COLORS.success,
+                    color: COLORS.textSuccess,
                     fontWeight: TYPO.cardTitleWeight,
                   }}
                 >

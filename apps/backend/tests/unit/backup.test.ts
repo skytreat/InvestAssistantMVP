@@ -6,6 +6,7 @@
  *   2. backupSQLite 成功路径：返回 { success: true, size } 且 writeSystemLog 调 INFO
  *   3. backupSQLite 失败降级：db.backup 抛错 → 返回 { success: false, error } 且 writeSystemLog 调 ERROR
  *   4. **backup_restore_duckdb**（SDD §12.5 F11）：真跑 DuckDB 备份 → 恢复 → COUNT(*) 一致
+ *   5. **backup_restore_sqlite**（SDD §12.5 F10）：真跑 SQLite 备份 → 破坏数据 → 恢复 → 逐行一致
  *
  * 关键：backup.ts 顶层有 `const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup')`
  *       必须在 backup.ts 被 evaluate 之前设好 env，因此用动态 import + top-level await 保证时序。
@@ -47,7 +48,7 @@ import * as loggerNs from '../../src/services/logger.js';
 
 // 动态 import backup.js —— 此时 env 已设，backup.ts 内 BACKUP_DIR 会正确读到 TEST_BACKUP_DIR
 const backupMod = await import('../../src/services/backup.js');
-const { backupSQLite, backupDuckDB, _deleteOldBackups } = backupMod;
+const { backupSQLite, backupDuckDB, _deleteOldBackups, restoreSQLiteBackup } = backupMod;
 
 // ================================================================
 
@@ -460,6 +461,216 @@ describe('backup_restore_duckdb — SDD §12.5 F11（DuckDB 行情层备份恢�
     // 被备份的确实是临时文件
     expect(process.env.DUCKDB_PATH).toBe(TEST_DUCKDB);
     expect(TEST_DUCKDB.startsWith(TMP_DIR)).toBe(true);
+  });
+});
+
+// ================================================================
+// F10 · backup_restore_sqlite（SDD §12.5 F10 —— SQLite 业务层备份恢复）
+//
+// 通过标准：「造库 → 备份 → 破坏数据 → 恢复 → 逐行一致」
+//
+// ⚠️ 隔离铁律：
+//   - 业务库是**临时目录里新建的一次性 SQLite**（RESTORE_DB），绝不动 data/business.db；
+//   - 备份目录是临时 BACKUP_DIR，不落仓库；
+//   - 恢复是**破坏性**操作（覆盖库文件 + 重建 ConfigStore 单例）⇒ 必须整套跑在临时库上。
+//   - 本用例**真跑** backupSQLite / restoreSQLiteBackup，不 mock（AGENTS.md「注释不是规格」的取证要求）。
+//
+// ⚠️ 为什么用**独立**的 RESTORE_DB（而不是复用 TEST_DB）：
+//   `restoreSQLiteBackup` 会**替换库文件**并重建 ConfigStore 单例 —— 若复用 TEST_DB，
+//   会污染同文件其它 describe（它们断言的是 TEST_DB 里的内容）；
+//   且 vitest 开了 sequence.shuffle，describe 顺序不固定 ⇒ 污染不可预测。
+// ================================================================
+
+/** F10 用：恢复场景的独立临时业务库 */
+const RESTORE_DB = path.join(TMP_DIR, 'restore-test.db');
+
+/** backupSQLite 产物的文件名形态（= restoreSQLiteBackup 的白名单正则） */
+const BACKUP_FILE_RE = /^business\.db\.\d{4}-\d{2}-\d{2}$/;
+
+/** 交易记录快照行（用于「逐行一致」比对） */
+interface TradeSnapshotRow {
+  id: number;
+  user_id: number;
+  asset_code: string;
+  trade_type: string;
+  trade_date: string;
+  trade_time: string;
+  quantity: number;
+  price: number;
+  fee: number;
+  remark: string | null;
+}
+
+/** 读取全部交易记录（按 id 排序，保证比对顺序稳定） */
+function readTradeRows(db: any): TradeSnapshotRow[] {
+  return db
+    .prepare(
+      `SELECT id, user_id, asset_code, trade_type, trade_date, trade_time,
+              quantity, price, fee, remark
+         FROM user_trade_record
+        ORDER BY id`,
+    )
+    .all() as TradeSnapshotRow[];
+}
+
+/**
+ * 只清理「白名单形态」的 SQLite 备份文件
+ *
+ * ⚠️ **不能**用 cleanupBackupDir()：那会把 DuckDB describe 的 parquet 产物一起删掉
+ *    （vitest 开了 sequence.shuffle，删除时机不可控）⇒ 只按文件名形态精确删。
+ */
+function cleanupSqliteBackupFiles(): void {
+  if (!fs.existsSync(TEST_BACKUP_DIR)) return;
+  for (const name of fs.readdirSync(TEST_BACKUP_DIR)) {
+    if (!BACKUP_FILE_RE.test(name)) continue;
+    try {
+      fs.unlinkSync(path.join(TEST_BACKUP_DIR, name));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+describe('backup_restore_sqlite — SDD §12.5 F10（SQLite 业务层备份恢复）', () => {
+  it('造库 → 备份 → 删改数据 → 恢复 → 逐行一致（COUNT(*) + 关键行内容）', async () => {
+    // ── 0. 隔离：切到临时业务库（绝不碰 data/business.db）
+    //    ⚠️ 必须在**用例体内**改 env：tests/setup.ts 的 afterEach 会把 env 还原成文件级基线，
+    //       若放在 beforeAll 里，同 describe 的第二个用例就会看到被还原后的路径。
+    const origSqlitePath = process.env.SQLITE_DB_PATH;
+    process.env.SQLITE_DB_PATH = RESTORE_DB;
+    ConfigStore.resetInstance();
+
+    try {
+      const db = ConfigStore.getInstance().db;
+
+      // ── 1. 造一个「有内容」的库
+      db.prepare('INSERT INTO user_account (username, password_hash, role) VALUES (?, ?, ?)').run(
+        'restore_admin',
+        'hash-for-restore-test',
+        'admin',
+      );
+      const userId = (
+        db.prepare('SELECT id FROM user_account WHERE username = ?').get('restore_admin') as {
+          id: number;
+        }
+      ).id;
+
+      const insertTrade = db.prepare(
+        `INSERT INTO user_trade_record
+           (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, remark)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertTrade.run(userId, 'sh600001', 'buy', '2026-10-20', '09:30:00', 1000, 10.5, 5.25, '备份基线-1');
+      insertTrade.run(userId, 'sh600002', 'add', '2026-10-20', '10:00:00', 2000, 20, 3, '备份基线-2');
+      insertTrade.run(userId, 'sh600003', 'dividend', '2026-10-20', '15:00:00', 0, 0, 0, '备份基线-3');
+
+      // 备份时点的快照（恢复后要逐行等于它）
+      const snapshot = readTradeRows(db);
+      expect(snapshot).toHaveLength(3);
+      const snapshotCount = (db.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number })
+        .c;
+      expect(snapshotCount).toBe(3);
+
+      // ── 2. 备份（真跑 better-sqlite3 的 db.backup 热备份）
+      cleanupSqliteBackupFiles();
+      const backupResult = await backupSQLite();
+      expect(backupResult.success, backupResult.error).toBe(true);
+      expect(typeof backupResult.size).toBe('number');
+
+      const backupFiles = fs.readdirSync(TEST_BACKUP_DIR).filter((name) => BACKUP_FILE_RE.test(name));
+      expect(backupFiles, '备份产物必须落在临时 BACKUP_DIR 且符合白名单形态').toHaveLength(1);
+      const backupFile = backupFiles[0];
+      const backupPath = path.join(TEST_BACKUP_DIR, backupFile);
+      expect(fs.statSync(backupPath).size).toBeGreaterThan(0);
+      // 隔离断言：被备份/被恢复的库都在临时目录里
+      expect(RESTORE_DB.startsWith(TMP_DIR)).toBe(true);
+
+      // ── 3. 破坏数据：改 1 行 + 删 2 行 + 插 1 行（行数也变了 ⇒ COUNT 断言有意义）
+      db.prepare('UPDATE user_trade_record SET price = ?, remark = ? WHERE asset_code = ?').run(
+        999.99,
+        '已被改坏',
+        'sh600001',
+      );
+      db.prepare('DELETE FROM user_trade_record WHERE asset_code IN (?, ?)').run('sh600002', 'sh600003');
+      insertTrade.run(userId, 'sh600009', 'buy', '2026-10-21', '09:35:00', 500, 33.3, 1.1, '恢复后应消失');
+
+      const damaged = readTradeRows(db);
+      expect(damaged).toHaveLength(2); // 3 - 2 + 1
+      expect(damaged).not.toEqual(snapshot); // 破坏确实生效（否则恢复断言是假绿）
+
+      // ── 4. 恢复（真跑 restoreSQLiteBackup —— 破坏性：覆盖库文件 + 重建 ConfigStore 单例）
+      const restoreResult = restoreSQLiteBackup(backupFile);
+      expect(restoreResult.success, restoreResult.error).toBe(true);
+      expect(restoreResult.safetyBackup).toMatch(/^business\.db\.\d{4}-\d{2}-\d{2}\.pre-restore-/);
+      expect(fs.existsSync(path.join(TEST_BACKUP_DIR, restoreResult.safetyBackup!))).toBe(true);
+
+      // ⚠️ 恢复后 ConfigStore 单例已被重建 ⇒ 必须重新取连接（旧句柄已关闭）
+      const restoredDb = ConfigStore.getInstance().db;
+
+      // ── 5. 断言：恢复后数据与备份时逐行一致
+      const restored = readTradeRows(restoredDb);
+      const restoredCount = (
+        restoredDb.prepare('SELECT COUNT(*) AS c FROM user_trade_record').get() as { c: number }
+      ).c;
+      expect(restoredCount).toBe(snapshotCount);
+      expect(restored).toHaveLength(snapshot.length);
+      expect(restored).toEqual(snapshot); // 逐行一致（含 id / price / fee / remark / trade_time）
+
+      // 关键行内容
+      const first = restored.find((r) => r.asset_code === 'sh600001');
+      expect(first).toBeDefined();
+      expect(first).toMatchObject({
+        trade_type: 'buy',
+        trade_date: '2026-10-20',
+        trade_time: '09:30:00',
+        quantity: 1000,
+        price: 10.5,
+        fee: 5.25,
+        remark: '备份基线-1',
+      });
+      // 被删掉的行回到了备份时的状态
+      expect(restored.find((r) => r.asset_code === 'sh600003')).toBeDefined();
+      // 破坏时插入的行不该存在
+      expect(restored.find((r) => r.asset_code === 'sh600009')).toBeUndefined();
+
+      // 用户表也一并恢复（restoreSQLiteBackup 本身校验过两张关键表存在）
+      const accountCount = (
+        restoredDb.prepare('SELECT COUNT(*) AS c FROM user_account').get() as { c: number }
+      ).c;
+      expect(accountCount).toBe(1);
+
+      // 恢复动作留痕（log_type='backup' + level='SUCCESS'）
+      const restoreLog = restoredDb
+        .prepare("SELECT COUNT(*) AS c FROM system_log WHERE log_type = 'backup' AND level = 'SUCCESS'")
+        .get() as { c: number };
+      expect(restoreLog.c).toBeGreaterThanOrEqual(1);
+    } finally {
+      // 还原 env + 关掉连接（把单例交还给下一个 describe）
+      if (origSqlitePath !== undefined) process.env.SQLITE_DB_PATH = origSqlitePath;
+      else delete process.env.SQLITE_DB_PATH;
+      ConfigStore.resetInstance();
+    }
+  }, 60_000);
+
+  it('白名单：非 business.db.YYYY-MM-DD 形态的文件名一律拒绝恢复（且不碰库文件）', () => {
+    const illegal = [
+      'business.db', // 缺日期
+      'business.db.20261021', // 日期没连字符
+      'business.db.2026-10-21.parquet', // 多余后缀
+      'v_stock_qfq.2026-10-21.parquet', // 不是 SQLite 备份产物
+      '../business.db.2020-01-01', // 路径穿越
+      '/etc/passwd', // 绝对路径
+    ];
+    for (const bad of illegal) {
+      const r = restoreSQLiteBackup(bad);
+      expect(r.success, `文件名 ${bad} 必须被拒绝`).toBe(false);
+      expect(r.error).toContain('文件名非法');
+    }
+
+    // 形态合法但文件不存在 → 报「不存在」（不是「非法」）
+    const missing = restoreSQLiteBackup('business.db.2000-01-01');
+    expect(missing.success).toBe(false);
+    expect(missing.error).toContain('备份文件不存在');
   });
 });
 
