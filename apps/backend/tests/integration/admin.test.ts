@@ -9,16 +9,29 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { createTestApp } from './_helpers.js';
+import { createTestApp, makeUserToken } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
 let bundle: TestAppBundle;
+let userToken: string; // role=user（非 admin）—— 用来断言 admin 端点对普通用户 403
 const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
 const DUCKDB_EXISTS = fs.existsSync(DUCKDB_PATH);
 
 beforeAll(async () => {
   bundle = await createTestApp();
+  // 造一个普通用户（直接 INSERT 绕开 seed 的 409），拿它的 token 测 403
+  const adminHash = bundle.db.db
+    .prepare('SELECT password_hash FROM user_account WHERE username = ?')
+    .get('int_admin') as { password_hash: string };
+  bundle.db.db
+    .prepare('INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, ?)')
+    .run('int_normal', adminHash.password_hash, 'user');
+  const row = bundle.db.db.prepare('SELECT id FROM user_account WHERE username = ?').get('int_normal') as {
+    id: number;
+  };
+  userToken = makeUserToken(row.id, 'int_normal');
 });
 
 afterAll(async () => {
@@ -134,5 +147,143 @@ describe('Admin · system-log 分页查询', () => {
     expect(body.pagination.pageSize).toBe(200); // min(200, 9999)
     // page=999 可能超过总行数 → data=[] 是合理的
     expect(Array.isArray(body.data)).toBe(true);
+  });
+});
+
+describe('Admin · system-log 日期区间过滤（Wave 7 · 卡 1 · 裁决 D-3）', () => {
+  // 区间过滤的判据：`system_log.log_date` 是 `YYYY-MM-DD` 定长格式 → 直接字符串比较
+  const RANGE_START = '2026-10-05';
+  const RANGE_END = '2026-10-15';
+
+  beforeAll(() => {
+    const insert = bundle.db.db.prepare(
+      "INSERT INTO system_log (log_date, log_type, level, message) VALUES (?, 'trade', 'INFO', ?)",
+    );
+    insert.run('2026-10-01', '区间过滤-之前');
+    insert.run('2026-10-10', '区间过滤-区间内');
+    insert.run('2026-10-21', '区间过滤-之后');
+  });
+
+  it('admin 日志区间过滤：start_date/end_date 只返回区间内行', async () => {
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/admin/system-log?start_date=${RANGE_START}&end_date=${RANGE_END}&page_size=200`,
+      headers: adminHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+
+    // 每一条都在区间内（闭区间）
+    for (const row of body.data) {
+      expect(row.log_date >= RANGE_START).toBe(true);
+      expect(row.log_date <= RANGE_END).toBe(true);
+    }
+
+    // 区间外的行不返回
+    const messages = body.data.map((r: { message: string }) => r.message);
+    expect(messages).toContain('区间过滤-区间内');
+    expect(messages).not.toContain('区间过滤-之前');
+    expect(messages).not.toContain('区间过滤-之后');
+  });
+
+  it('单日 trade_date 仍可用（历史参数语义不变：等值）', async () => {
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/admin/system-log?trade_date=2026-10-10&page_size=200',
+      headers: adminHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    for (const row of body.data) {
+      expect(row.log_date).toBe('2026-10-10');
+    }
+    const messages = body.data.map((r: { message: string }) => r.message);
+    expect(messages).toContain('区间过滤-区间内');
+    expect(messages).not.toContain('区间过滤-之前');
+    expect(messages).not.toContain('区间过滤-之后');
+  });
+
+  it('只给 start_date → 开区间（返回该日及之后）', async () => {
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/admin/system-log?start_date=2026-10-05&page_size=200',
+      headers: adminHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    for (const row of body.data) {
+      expect(row.log_date >= '2026-10-05').toBe(true);
+    }
+    const messages = body.data.map((r: { message: string }) => r.message);
+    expect(messages).toContain('区间过滤-区间内');
+    expect(messages).toContain('区间过滤-之后');
+    expect(messages).not.toContain('区间过滤-之前');
+  });
+});
+
+describe('Admin · 系统日志降级记录（Wave 7 · 卡 1 · I-13）', () => {
+  const tmpFile = path.join(os.tmpdir(), `invest-fallback-${process.pid}-${Date.now()}.log`);
+  const missingFile = path.join(os.tmpdir(), `invest-fallback-missing-${process.pid}.log`);
+  const origFallbackEnv = process.env.SYSTEM_LOG_FALLBACK_FILE;
+
+  afterAll(() => {
+    try {
+      fs.rmSync(tmpFile, { force: true });
+    } catch {
+      /* ignore */
+    }
+    if (origFallbackEnv === undefined) delete process.env.SYSTEM_LOG_FALLBACK_FILE;
+    else process.env.SYSTEM_LOG_FALLBACK_FILE = origFallbackEnv;
+  });
+
+  it('admin 降级日志端点：普通用户 403 / admin 返回 exists+lines', async () => {
+    // 1) 普通用户 → 403（G7.4「全部 admin 端点均 403」的一部分）
+    const forbidden = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/admin/system-log/fallback',
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(JSON.parse(forbidden.body).error).toBe('FORBIDDEN');
+
+    // 2) admin + 兜底文件存在 → exists=true + 逐行内容
+    fs.writeFileSync(
+      tmpFile,
+      '{"source":"invest-assistant","level":"ERROR","message":"降级第一行"}\n' +
+        '{"source":"invest-assistant","level":"WARN","message":"降级第二行"}\n',
+      'utf8',
+    );
+    process.env.SYSTEM_LOG_FALLBACK_FILE = tmpFile;
+
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/admin/system-log/fallback',
+      headers: adminHeaders(),
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.exists).toBe(true);
+    expect(body.data.lines).toHaveLength(2);
+    expect(body.data.lines[0]).toContain('降级第一行');
+    expect(body.data.lines[1]).toContain('降级第二行');
+
+    // ⚠️ 响应体**不含文件路径**（路径泄露 = 告诉攻击者去读哪个文件）
+    expect(res.body).not.toContain(tmpFile);
+    expect(res.body).not.toContain('SYSTEM_LOG_FALLBACK_FILE');
+
+    // 3) 兜底文件不存在 → 空态（exists:false / lines:[]），**不是错误**
+    process.env.SYSTEM_LOG_FALLBACK_FILE = missingFile;
+    const empty = await bundle.app.inject({
+      method: 'GET',
+      url: '/api/admin/system-log/fallback',
+      headers: adminHeaders(),
+    });
+    expect(empty.statusCode).toBe(200);
+    const emptyBody = JSON.parse(empty.body);
+    expect(emptyBody.success).toBe(true);
+    expect(emptyBody.data.exists).toBe(false);
+    expect(emptyBody.data.lines).toEqual([]);
   });
 });
