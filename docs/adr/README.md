@@ -21,10 +21,21 @@
 | [ADR-006](ADR-006-engineering-gates-and-wave-acceptance.md) | 工程门槛暂缓项与验收分层 | B-5、B-6 | T86、T86b、§12.7 Gate |
 | [ADR-007](ADR-007-route-contract-and-candidate-migration.md) | 路由契约与候选池迁移语义 | B-7、B-12、I-1 | T90、T92 |
 | [ADR-008](ADR-008-test-market-data-strategy.md) | 测试行情库策略 —— 迷你 DuckDB + 三档切换 + 两层开关 + 视图使用约束 | Wave 5 实施期性能诊断 | T60b、T60 剩余项、视图物化反模式修复 |
+| [ADR-009](ADR-009-co1-permission-target.md) | CO1 数据文件权限目标口径 —— 专用服务账号（`nobody` 作废） | T78 最终审计（Wave 8 收口） | 部署时验证项（`docs/deploy.md` §2） |
+| [ADR-010](ADR-010-dec7-frontend-core-adapter-copy.md) | DEC-6 / DEC-7 收口 —— 前端复制一份适配层，AGENTS.md 不修订 | T78 最终审计（Wave 8 收口） | 无新任务（Wave 5 已落地） |
+| [ADR-011](ADR-011-dec8-macd-warmup-drift.md) | DEC-8 收口 —— 接受 MACD warm-up 瞬态漂移，不做数据订正 | T78 最终审计（Wave 8 收口） | 无新任务（口径归档） |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 
 **实施期新增**：ADR-008 来自 Wave 5 实施期的性能诊断与 owner 裁决（非 §13.1 阻断项）。
+
+**Wave 8 收口新增（ADR-009 ~ ADR-011）** —— 来自 T78 最终审计（`docs/audit/fullstack-audit-v2.md`）：
+
+| ADR | 关闭的待办 | 结论一句话 |
+|---|---|---|
+| ADR-009 | A 组 **CO1** 口径冲突（SDD「owner=nobody」vs `deploy.md` §2「专用账号 `invol`」） | **`nobody` 作废**（全机共享账号 ⇒ 反而更不安全）⇒ 判据改为「600 + 专用服务账号」，CO1 判 PASS（部署时验证项） |
+| ADR-010 | §9.2 **DEC-6 / DEC-7** | 实测前端**零** `@invest/core` import ⇒ 实际走 (b)「复制适配层」⇒ **DEC-7 前提不成立 ⇒ AGENTS.md 不修订** |
+| ADR-011 | §9.2 **DEC-8** | **接受 MACD warm-up 瞬态漂移，不做数据订正**；复核条件：回放实测漂移 > 5 条 |
 
 ## 文档分层（各文档的职责边界）
 
