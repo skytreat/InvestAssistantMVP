@@ -394,6 +394,36 @@ jobs:
       - name: Run smoke tests (m1 only)
         run: npx vitest run --config apps/backend/vitest.config.ts tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
 
+      # ============================================================================
+      # HTTP 层验收套件的**可离线子集**（T60 交付 / G8.3）
+      #
+      # ⚠️ `tests/http/` 共 7 个 `.test.ts`，**只接进 3 个** —— 这 3 个
+      #    **不依赖真行情库 / caddy / 真浏览器**，可在 CI 离线跑：
+      #      · cors.test.ts              → CORS 白名单（evil.com 必拒 / 127.0.0.1:5173 必放行）
+      #                                       + 「确实调了 listen()」守卫
+      #      · pe5-sqlite-concurrency.test.ts → PE5（SQLite WAL 10 并发读写，无 SQLITE_BUSY）
+      #      · holding-nplus1.test.ts    → N+1 消除（查询次数不随标的数线性增长）
+      #
+      # 🔴 **不接进 CI 的 4 个文件（诚实 > 凑绿）**：
+      #      · pe1-pe3-browser.test.ts   → 要**真浏览器**（Chromium）
+      #      · pe2-scan.test.ts          → 要**真库规模**（≥5000 标的；迷你库只有 250 只）
+      #      · pe4-holding-p99.test.ts   → 要**真库规模**
+      #      · https-se1.test.ts 的 HTTP 层 → 要**caddy 可执行文件**
+      #
+      # ⚠️ **前置依赖（必须已提交）**：`apps/backend/tests/http/` +
+      #    `apps/backend/vitest.http.config.ts` —— 未提交时本步骤会因找不到配置文件而红
+      #    （见 `docs/audit/fullstack-audit-v2.md` §13 M-3b）
+      # ⚠️ **端口**：三个文件各自独占一段（51200 / 51280 / 51320 起）⇒ 与其它步骤不冲突
+      # ⚠️ **不使用 `--coverage`**：本步骤只做门禁判定，覆盖率口径由 `coverage-gate` job 负责
+      # ============================================================================
+      - name: Run HTTP layer tests (offline subset — cors / pe5 / nplus1)
+        working-directory: apps/backend
+        run: >
+          npx vitest run --config vitest.http.config.ts
+          tests/http/cors.test.ts
+          tests/http/pe5-sqlite-concurrency.test.ts
+          tests/http/holding-nplus1.test.ts
+
       # Frontend tests (T61) — jsdom 环境，不依赖后端与行情库
       - name: Run frontend tests
         run: npm run test -w @invest/frontend

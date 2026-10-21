@@ -330,6 +330,88 @@ export async function batchGetDailyRangeByView(
 }
 
 /**
+ * 🔴 **批量取价的收盘价表达式** —— **逐字对齐 `v_stock_*` 视图的定义**
+ *
+ * | 口径 | 视图定义（`docs/tdx2db_schema_dump.sql` 实测导出）|
+ * |---|---|
+ * | `qfq` | `round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), 2)` |
+ * | `hfq` | `round(s."close" * COALESCE(f.hfq_factor, 1), 2)`（**不除** latest_hfq）|
+ * | `bfq` | `s."close"`（**不取整**）|
+ *
+ * ⚠️ 三个口径的公式**互不相同** ⇒ 不可用同一段 SQL 糊弄过去。
+ */
+const BATCH_CLOSE_EXPR: Record<AdjustPeriod, string> = {
+  qfq: 'round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), 2)',
+  hfq: 'round(s."close" * COALESCE(f.hfq_factor, 1), 2)',
+  bfq: 's."close"',
+};
+
+/**
+ * 🔴 **批量取价 SQL 构造器：基表 + `symbol IN (…)` 谓词下推**
+ *
+ * ── 为什么不用 `v_stock_*` 视图（2026-10-21 真库实测，1.24GB / 2800 万行）──
+ *   `v_stock_qfq` 是**实时计算视图**：把 `raw_kline_daily`（2983 万行）
+ *   × `raw_adjust_factor`（2150 万行）× `raw_symbol_class` × `raw_basic_daily`
+ *   全量 JOIN 一遍，**`WHERE symbol IN (…)` 挡不住视图本身的物化**。
+ *   ⇒ 实测（30 只标的）：**视图口径 3.5–3.9s** ⇒ PE4 的 200ms 门槛**不可达**。
+ *   ⇒ 改基表 + 下推后：30 只 **≈ 41ms**；5000 只 14.4s → 11.6s（也不更慢）。
+ *
+ * ── 与视图**逐位等价**的三条依据 ──
+ *   ① 收盘价表达式逐字照抄视图定义（见 {@link BATCH_CLOSE_EXPR}）
+ *   ② `INNER JOIN raw_symbol_class … class = 'stock'` —— 与视图的品种过滤一致
+ *      （⇒ ETF / 指数 / 北交所分类的标的**仍然查不到价**，与改动前完全相同）
+ *   ③ `latest_factors` CTE 加上 `symbol IN (…)` 下推后，
+ *      **对 IN 列表内的标的取值完全相同**（argmax 是按 symbol 分组的，
+ *      加过滤只是不计算用不到的分组，不改变用到的分组的值）
+ *
+ * ⚠️ **谓词下推的规模效应（T60c 实测，本实现据此选型）**：
+ *   `latest_factors` CTE 不加 IN 时要扫全表 2150 万行（≈306ms），
+ *   加 IN 后只算 IN 列表内的 symbol（30 只 ≈ 11ms）。
+ *   ⇒ 对**小批量**（持仓卡 30 只）加 IN 显著更快；
+ *     对**大批量**（候选池 5000 只）加不加 IN 差别很小（11.6s vs 11.8s），
+ *     因为瓶颈已变成 `raw_kline_daily` 本身的扫描。
+ *
+ * @param symbols 标的代码列表
+ * @param maxRn 取每个 symbol 的最近几条（1 = 只要最新；2 = 最新 + 上一根）
+ */
+function buildBatchLatestCloseSql(
+  period: AdjustPeriod,
+  symbols: string[],
+  maxRn: number,
+): { sql: string; params: unknown[] } {
+  const placeholders = symbols.map(() => '?').join(', ');
+  // 只有 qfq 口径需要 `latest_factors`（分母）
+  const needLatestFactors = period === 'qfq';
+  const sql = `
+    SELECT symbol, date, close, rn FROM (
+      SELECT s.symbol AS symbol,
+             s.date AS date,
+             ${BATCH_CLOSE_EXPR[period]} AS close,
+             ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY s.date DESC) AS rn
+        FROM raw_kline_daily s
+        INNER JOIN raw_symbol_class sc ON sc.symbol = s.symbol AND sc."class" = 'stock'
+        LEFT JOIN raw_adjust_factor f ON s.symbol = f.symbol AND s.date = f.date
+        ${
+          needLatestFactors
+            ? `LEFT JOIN (SELECT symbol, argmax(hfq_factor, date) AS latest_hfq
+                            FROM raw_adjust_factor
+                           WHERE symbol IN (${placeholders})
+                           GROUP BY symbol) lf
+                 ON s.symbol = lf.symbol`
+            : ''
+        }
+       WHERE s.symbol IN (${placeholders})
+    ) WHERE rn <= ${maxRn}`;
+
+  // ⚠️ 参数顺序必须与 SQL 里的占位符出现顺序**严格一致**：
+  //   CTE 的 IN 列表在前（仅 qfq），主查询的 IN 列表在后。
+  const params: unknown[] = [];
+  if (needLatestFactors) params.push(...symbols);
+  params.push(...symbols);
+  return { sql, params };
+}
+
+/**
  * 批量取多个标的的最新收盘价（**1 次查询**，T33 仪表盘持仓卡用）
  *
  * 用窗口函数 ROW_NUMBER 取每个 symbol 最新一条，避免"先按日期定位再 IN 查"两次往返。
@@ -342,18 +424,9 @@ export async function batchGetLatestClose(
   const result = new Map<string, { date: string; close: number }>();
   if (symbols.length === 0) return result;
 
-  const tableName = resolveTable(period);
-  const placeholders = symbols.map(() => '?').join(', ');
+  const { sql, params } = buildBatchLatestCloseSql(period, symbols, 1);
 
-  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(
-    `SELECT symbol, date, close FROM (
-       SELECT symbol, date, close,
-              ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-       FROM ${tableName}
-       WHERE symbol IN (${placeholders})
-     ) WHERE rn = 1`,
-    [...symbols],
-  );
+  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(sql, params);
 
   for (const row of rows) {
     result.set(row.symbol, { date: toDateString(row.date), close: row.close });
@@ -365,10 +438,16 @@ export async function batchGetLatestClose(
 /**
  * 批量取多个标的的**最新收盘价 + 昨收**（**1 次查询**，T67 Dashboard 持仓卡用）
  *
- * 与 {@link batchGetLatestClose} 同源（同一张 view、同一个窗口函数），
+ * 与 {@link batchGetLatestClose} 同源（同一个 SQL 构造器、同一个窗口函数），
  * 只是把 `rn = 1` 放宽到 `rn <= 2` —— **一次扫描同时拿到「最新」与「上一交易日」**。
- * ⚠️ 不做成两个函数各查一次：`v_stock_qfq` 是实时计算视图（实测扫 5 只标的 ≈ 2.5s），
- *   两次查询 = 两次全量扫描 → `/api/holding` 首屏延迟翻倍。
+ * ⚠️ 不做成两个函数各查一次：两次查询 = 两次全量扫描 → `/api/holding` 首屏延迟翻倍。
+ *
+ * 🔴 **2026-10-21（Wave 8 / T60）**：本函数原先打的是 `v_stock_qfq` **视图** ——
+ *   视图是实时计算视图，`symbol IN (…)` 挡不住它把 2800 万行 × 4 JOIN 全量物化
+ *   ⇒ **实测 30 只标的 3.5–3.9s** ⇒ PE4 的 200ms 门槛**不可达**。
+ *   ⇒ 改为**基表 + 谓词下推**（见 {@link buildBatchLatestCloseSql}）：同样 30 只 ≈ 41ms。
+ *   ⇒ 口径**逐位不变**（等价性由 `tests/http/pe4-holding-p99.test.ts` 的
+ *     「EXCEPT ALL 双向差集 = 0」用例守住）。
  *
  * ── 昨收口径（**不用交易日历**）──
  *   昨收 = 该标的自己日线序列的**倒数第二条**（rn = 2）。
@@ -403,18 +482,11 @@ export async function batchGetLatestAndPrevClose(
   const bySymbol = new Map<string, LatestAndPrevClose>();
   if (symbols.length === 0) return bySymbol;
 
-  const tableName = resolveTable(period);
-  const placeholders = symbols.map(() => '?').join(', ');
+  // 🔴 基表 + `symbol IN (…)` 下推（不再是视图）—— 见 buildBatchLatestCloseSql 的实测依据：
+  //   30 只标的：视图口径 3.5–3.9s ⇒ PE4 的 200ms 门槛不可达；基表口径 ≈ 41ms。
+  const { sql, params } = buildBatchLatestCloseSql(period, symbols, 2);
 
-  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number; rn: number }>(
-    `SELECT symbol, date, close, rn FROM (
-       SELECT symbol, date, close,
-              ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-       FROM ${tableName}
-       WHERE symbol IN (${placeholders})
-     ) WHERE rn <= 2`,
-    [...symbols],
-  );
+  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number; rn: number }>(sql, params);
 
   // ⚠️ SQL 不保证行序（rn=2 可能先于 rn=1 返回）→ 先收集再定型
   for (const row of rows) {

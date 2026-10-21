@@ -107,6 +107,14 @@ const H = vi.hoisted(() => {
  * 假实现复刻两类查询的语义：
  *   ① `batchGetLatestAndPrevClose` 的窗口函数：按 symbol 分区、按 date 倒序编号 rn，取 rn <= 2；
  *   ② `batchGetSymbolNames` 的 IN 查询：`FROM raw_symbol_name WHERE symbol IN (...)`。
+ *
+ * 🔴 **2026-10-21（Wave 8 / T60）随实现调整**：批量取价从「打 `v_stock_qfq` **视图**」
+ *   改成「**基表 + `symbol IN (…)` 下推**」（T60c 卡片 ① 的补做；
+ *   视图口径实测 30 只标的 3.5–3.9s ⇒ PE4 的 200ms 门槛不可达）⇒
+ *   ① SQL 文本变了（窗口函数从 `PARTITION BY symbol` 变成 `PARTITION BY s.symbol`）
+ *   ② qfq 口径下 **CTE 与主查询各绑定一次**标的列表 ⇒ `params` 里同一批标的出现**两遍**
+ *   ⇒ 假实现改为：① 用「语义标记」识别查询（`ROW_NUMBER() OVER` + `raw_kline_daily`，
+ *     不再匹配脆弱的整段 SQL 文本）② 按**去重后**的标的集合造数（语义与改前完全一致）。
  */
 vi.mock('../../src/db/duckdb.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db/duckdb.js')>();
@@ -124,10 +132,12 @@ vi.mock('../../src/db/duckdb.js', async (importOriginal) => {
       }
       return rows;
     }
-    if (!sql.includes('PARTITION BY symbol ORDER BY date DESC')) {
+    // ① 批量取价（窗口函数）—— 用**语义标记**识别，不匹配整段 SQL 文本
+    if (!sql.includes('ROW_NUMBER() OVER') || !sql.includes('raw_kline_daily')) {
       throw new Error(`t67 测试：未预期的 DuckDB 查询 → ${sql.slice(0, 120)}`);
     }
-    const symbols = (params ?? []).map((p) => String(p));
+    // ⚠️ qfq 口径下同一批标的被绑定两次（CTE + 主查询）⇒ 去重
+    const symbols = Array.from(new Set((params ?? []).map((p) => String(p))));
     const rows: Array<Record<string, unknown>> = [];
     for (const symbol of symbols) {
       const list = [...(H.bars[symbol] ?? [])].sort((a, b) => (a.date < b.date ? 1 : -1));

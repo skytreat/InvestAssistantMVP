@@ -95,14 +95,66 @@ export function calcPosition(
 /**
  * 查所有有交易记录的标的 + 聚合持仓
  * 给 GET /api/positions 用
+ *
+ * 🔴 **T60（Wave 8）N+1 消除** —— 此前实现是
+ *   `codes.map((c) => calcPosition(userId, c.asset_code))`
+ * ⇒ **每个标的一次 SQLite 查询**（30 只持仓 = 1 次 DISTINCT + 30 次单标的查询 = 31 次），
+ *   查询次数随标的数**线性增长**（AGENTS.md「批量查询必须一次拿 100+ 标的」的同款反模式，
+ *   只是发生在 SQLite 侧而不是 DuckDB 侧）。
+ *
+ * ⇒ 改为：**1 次查询**取回该用户的全部交易记录 → 内存里按 `asset_code` 分组
+ *   → 每组喂给 core 的 `calculateMovingWeightedCost`（**纯函数，不碰 DB**）。
+ * ⇒ 查询次数恒为 **1**，与标的数无关（30 只持仓 = 1 次查询）。
+ *
+ * ── 口径等价性（必须逐位相同）──
+ * ① 分组用的 WHERE / ORDER BY 与 `calcPosition` 的单标的查询**逐字一致**
+ *    （`user_id = ? AND is_deleted = 0` + `ORDER BY trade_date ASC, trade_time ASC, id ASC`）；
+ *    `calcAllPositions` 从不传 `asOfDate`，故单标的查询里的 `(? IS NULL OR …)` 恒为真
+ *    ⇒ 两者取到的行集合与行序**完全相同**。
+ * ② **输出的标的集合不变**：旧实现先取 `DISTINCT asset_code`（含只有
+ *    dividend/bonus/transfer 的标的），再逐个算；新实现按「全部行」分组
+ *    ⇒ 只有分红记录的标的**仍会出现在结果里**（持仓量为 0），
+ *    若按「有买卖记录才建组」实现就会**悄悄丢掉这些标的**（返回数组变短）。
+ * ③ 计算口径不变：仍是 `calculateMovingWeightedCost(..., { strictOversell: false })`。
  */
 export function calcAllPositions(userId: number): Array<{ asset_code: string } & PositionResult> {
   const db = ConfigStore.getInstance().db;
-  const codes = db
-    .prepare('SELECT DISTINCT asset_code FROM user_trade_record WHERE user_id = ? AND is_deleted = 0')
-    .all(userId) as { asset_code: string }[];
 
-  return codes.map((c) => ({ asset_code: c.asset_code, ...calcPosition(userId, c.asset_code) }));
+  // 🔴 **1 次查询**（不再是 1 + N 次）
+  const rows = db
+    .prepare(
+      `SELECT id, user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted
+       FROM user_trade_record
+       WHERE user_id = ? AND is_deleted = 0
+       ORDER BY trade_date ASC, trade_time ASC, id ASC`,
+    )
+    .all(userId) as DbTradeRow[];
+
+  // 按 asset_code 分组（**保留只有分红类记录的标的**，见上方口径等价性 ②）
+  const grouped = new Map<string, DbTradeRow[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.asset_code);
+    if (list) list.push(row);
+    else grouped.set(row.asset_code, [row]);
+  }
+
+  const result: Array<{ asset_code: string } & PositionResult> = [];
+  for (const [assetCode, codeRows] of grouped) {
+    const coreTrades = codeRows.map(mapToCoreTrade).filter((t): t is CoreTrade => t !== null);
+    result.push({
+      asset_code: assetCode,
+      ...calculateMovingWeightedCost(coreTrades, { strictOversell: false }),
+    });
+  }
+
+  // 排序口径 = **asset_code 升序**（与重写前的 `SELECT DISTINCT asset_code` 的返回序一致：
+  // SQLite 的 DISTINCT 走 `idx_trade_asset (user_id, asset_code)` 索引 / 临时 B-tree，
+  // 两种路径都是**字节序升序**）⇒ 重写前后响应数组的**顺序逐项相同**。
+  // ⚠️ 用 `<` / `>` 而不是 `localeCompare` —— 后者是语言环境相关的排序，
+  //    与 SQLite 默认的 BINARY  collation 不等价。
+  result.sort((a, b) => (a.asset_code < b.asset_code ? -1 : a.asset_code > b.asset_code ? 1 : 0));
+
+  return result;
 }
 
 /**
