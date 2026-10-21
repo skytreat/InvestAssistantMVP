@@ -57,6 +57,9 @@
       ]
     }
   },
+  "instructions": [
+    "./subagent-orchestration.md"
+  ],
   "ui": {
     "showSkillLoadInfo": false
   }

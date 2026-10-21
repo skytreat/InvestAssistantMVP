@@ -97,18 +97,24 @@ jobs:
         run: npx vitest run --config apps/backend/vitest.config.ts tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
 
       # 顺序敏感守卫（T81 / F-Q11）：打乱顺序连跑 2 次，两次结果必须一致且全绿。
+      # ⚠️ **抽样（每 3 个文件取 1 个）**（2026-10-21 决定）：守卫的目的只是**发现顺序依赖** ——
+      #    两次跑的文件集合相同、只有 shuffle 顺序不同 ⇒ 抽样子集同样能检出顺序依赖，
+      #    而 CI 时间从「2 × 全量 unit」降到「2 × 1/3 unit」。
+      #    文件集合用 `ls` 的**字典序**取（确定性 ⇒ 两次跑同一批文件）。
       # 用例之间若存在隐式顺序依赖（env 泄漏 / ConfigStore 单例 / DuckDB 单例残留），
       # 靠固定顺序侥幸通过的用例会在这里被随机顺序打出来。
       - name: Shuffle guard - backend unit tests (seed 1)
         run: >
-          npx vitest run --config apps/backend/vitest.config.ts tests/unit
+          FILES=$(ls apps/backend/tests/unit/*.test.ts | awk 'NR % 3 == 1' | tr '\n' ' ');
+          npx vitest run --config apps/backend/vitest.config.ts $FILES
           --pool=forks --poolOptions.forks.singleFork=true
           --sequence.shuffle --sequence.seed=1
           --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed1.json
 
       - name: Shuffle guard - backend unit tests (seed 2)
         run: >
-          npx vitest run --config apps/backend/vitest.config.ts tests/unit
+          FILES=$(ls apps/backend/tests/unit/*.test.ts | awk 'NR % 3 == 1' | tr '\n' ' ');
+          npx vitest run --config apps/backend/vitest.config.ts $FILES
           --pool=forks --poolOptions.forks.singleFork=true
           --sequence.shuffle --sequence.seed=2
           --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed2.json

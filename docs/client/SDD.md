@@ -3031,7 +3031,10 @@ afterEach(async () => {
 
 | 项 | 值 | 实测 |
 |---|---|---|
-| 标的数 N | **250（总量）** = 必选 51 个（测试直接引用的标的）+ 按真库 class 真实比例补足 | 250（stock 124 / etf 57 / unknown 27 / block 23 / index 16 / bstock 3）|
+| **形态** | **固定切片快照**（真库在某个时点的切片，**不是**随真库滚动的视图、**不是**合成数据）| 已入库 |
+| **标的数 N** | **250（总量）** = 必选 51 个（测试直接引用的标的）+ 按真库 class 真实比例补足 | 250（**stock 124 / etf 57** / unknown 27 / block 23 / index 16 / bstock 3）|
+| **stock 与 etf 必须都有** | ✅ 两者都在切片里（**ETF 的 K 线走 `v_etf_*` 视图族，与 stock 路径不同 ⇒ 缺 etf 就测不到 ETF 分支**）| stock 124 + etf 57 |
+| **入库形态** | **Parquet 文件入库**（`apps/backend/tests/fixtures/mini-market/*.parquet`，12 个文件 / 1.6MB）+ **生成脚本现重建** `.duckdb` | `.duckdb` 本体**不入库**（gitignore，避免不可读的二进制 diff）|
 | class 比例 | stock 49.5% / etf 22.8% / unknown 10.9% / block 9.1% / index 6.4% / bstock 1.3% | 取自真库 `raw_symbol_class` |
 | 抽样确定性 | **FNV-1a 32bit hash** 排序取前 k（**非随机** ⇒ 可复现，无需固定 seed）| — |
 | 跨度 | **365 自然日** = **242 个交易日** —— ⚠️ **半年不够**：`tests/fixtures/golden/{kdj,macd,rsi}.json` 全部是 **221 根**（跨度 335 自然日），半年只有 119 个交易日 | 242 |
@@ -3043,6 +3046,22 @@ afterEach(async () => {
 - `WHERE view_name LIKE 'v\_%'` 在 DuckDB **返回 0** —— 反斜杠**不是** LIKE 的转义符 ⇒ 用 `starts_with(view_name,'v_')`
 - `raw_holidays` **没有 `symbol` 列** ⇒ 不能按 symbol 切片（可切：`raw_adjust_factor` / `raw_basic_daily` / `raw_symbol_name` / `raw_gbbq`）
 - **`round` 位数按视图不同**：`v_stock_qfq`=2、**`v_etf_qfq`=3**、`v_stock_hfq`=2、`v_etf_hfq`=3、**bfq 视图不取整** ⇒ 手抄定义必错
+
+#### 重建方式（CI 与本地一致）
+
+```bash
+# 由入库的 Parquet 重建迷你库（**不需要真库** —— CI 走这条）
+node scripts/make-mini-duckdb.mjs build \
+  --parquet apps/backend/tests/fixtures/mini-market \
+  --out data/quotes.mini.duckdb
+```
+⇒ **入库的是 Parquet（可读可 diff），`.duckdb` 每次现重建**（几秒）。
+⚠️ 重新切片的唯一入口是 `extract`（需要本机有真库）：
+```bash
+node scripts/make-mini-duckdb.mjs extract \
+  --source /opt/invol/quotes.duckdb \
+  --out apps/backend/tests/fixtures/mini-market
+```
 
 #### 三档切换
 
