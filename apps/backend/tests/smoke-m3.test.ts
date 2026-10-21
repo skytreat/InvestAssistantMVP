@@ -317,5 +317,5 @@ describe.sequential('M3 Scheduler + Backup', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       delete process.env.BACKUP_DIR;
     }
-  }, 120000);
+  }, 300000); // 同 smoke-m4：1.24GB parquet 导出，IO 争用下 120s 偏紧
 });

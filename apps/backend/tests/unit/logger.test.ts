@@ -22,7 +22,7 @@ const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 // 现在导入被测模块（ESM import 虽被提升，但 ConfigStore 构造是惰性的）
-import { writeSystemLog } from '../../src/services/logger.js';
+import { writeSystemLog, withSystemLogBuffer } from '../../src/services/logger.js';
 import { ConfigStore } from '../../src/config/configStore.js';
 
 /** 清理测试 db 及其 WAL / SHM 附属文件 */
@@ -245,6 +245,132 @@ describe('logger — writeSystemLog', () => {
       const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
       // username=ab 长度为 2，不变
       expect(row.message).toMatch(/ab/);
+    });
+
+    // ---------------------------------------------------------
+    // 🔴 批量缓冲路径的脱敏守卫（2026-10-21）
+    // ---------------------------------------------------------
+    describe('logger — 批量缓冲路径同样脱敏', () => {
+      it('缓冲作用域内写的日志：username 与金额**仍然脱敏**（缓冲不是脱敏旁路）', async () => {
+        vi.restoreAllMocks();
+        const db = ConfigStore.getInstance().db;
+        db.prepare('DELETE FROM system_log').run();
+
+        await withSystemLogBuffer(async () => {
+          writeSystemLog({
+            logType: 'plugin_execute',
+            level: 'SUCCESS',
+            message: 'user login username=admin123 amount=12345678',
+          });
+          writeSystemLog({
+            logType: 'plugin_execute',
+            level: 'SKIP',
+            message: 'plugin ok',
+            detail: 'username=bob_secret99 amount=99999999',
+          });
+        });
+
+        const rows = db.prepare('SELECT message, detail FROM system_log ORDER BY id ASC').all() as {
+          message: string;
+          detail: string | null;
+        }[];
+        expect(rows).toHaveLength(2);
+
+        // ① message：username 与金额都被脱敏
+        expect(rows[0].message).not.toMatch(/admin123/);
+        expect(rows[0].message).not.toMatch(/12345678/);
+        expect(rows[0].message).toMatch(/username=ad\*\*\*\*/);
+        expect(rows[0].message).toMatch(/\*\*\*\*/);
+
+        // ② detail：同样脱敏
+        expect(rows[1].detail).not.toMatch(/bob_secret99/);
+        expect(rows[1].detail).not.toMatch(/99999999/);
+        expect(rows[1].detail).toMatch(/username=bo\*\*\*\*/);
+      });
+
+      it('WARN / ERROR 在缓冲作用域内**立即落库**（不等到 flush）', async () => {
+        vi.restoreAllMocks();
+        const db = ConfigStore.getInstance().db;
+        db.prepare('DELETE FROM system_log').run();
+
+        const pending = withSystemLogBuffer(async () => {
+          writeSystemLog({ logType: 'datacheck', level: 'WARN', message: 'warn row' });
+          writeSystemLog({ logType: 'datacheck', level: 'ERROR', message: 'error row' });
+          // 此刻还没 flush：WARN/ERROR 必须已经落库
+          const mid = db.prepare('SELECT COUNT(*) AS c FROM system_log').get() as { c: number };
+          expect(mid.c).toBe(2);
+          writeSystemLog({ logType: 'datacheck', level: 'INFO', message: 'info row' });
+        });
+        await pending;
+
+        const rows = db.prepare('SELECT level FROM system_log ORDER BY id ASC').all() as {
+          level: string;
+        }[];
+        expect(rows.map((r) => r.level)).toEqual(['WARN', 'ERROR', 'INFO']);
+      });
+
+      it('缓冲作用域外的日志立即落库（cron 任务语义不变）', () => {
+        vi.restoreAllMocks();
+        const db = ConfigStore.getInstance().db;
+        db.prepare('DELETE FROM system_log').run();
+        writeSystemLog({ logType: 'startup', level: 'INFO', message: 'outside buffer' });
+        const count = db.prepare('SELECT COUNT(*) AS c FROM system_log').get() as { c: number };
+        expect(count.c).toBe(1);
+      });
+    });
+
+    // ---------------------------------------------------------
+    // 🔴 批量冲刷的**不丢日志**守卫（2026-10-21 补）
+    // ---------------------------------------------------------
+    describe('logger — 批量冲刷不丢日志', () => {
+      it('批量落库失败 → 降级逐条写入（不丢日志）', async () => {
+        vi.restoreAllMocks();
+        const db = ConfigStore.getInstance().db;
+        db.prepare('DELETE FROM system_log').run();
+
+        // 让批量写入抛错（模拟磁盘满 / DB 锁冲突）
+        const batchSpy = vi.spyOn(ConfigStore.prototype, 'writeLogBatch').mockImplementation(() => {
+          throw new Error('simulated batch failure');
+        });
+        const singleSpy = vi.spyOn(ConfigStore.prototype, 'writeLog').mockImplementation(() => {
+          /* 只计数，不真的落库 */
+        });
+
+        await withSystemLogBuffer(async () => {
+          writeSystemLog({ logType: 'plugin_execute', level: 'INFO', message: 'a' });
+          writeSystemLog({ logType: 'plugin_execute', level: 'SUCCESS', message: 'b' });
+        });
+
+        expect(batchSpy, '应先尝试批量落库').toHaveBeenCalledTimes(1);
+        // 🔴 关键断言：批量失败后**必须**逐条重写 —— 否则 5000 条日志全丢
+        expect(singleSpy, '批量失败后必须降级逐条写入').toHaveBeenCalledTimes(2);
+
+        vi.restoreAllMocks();
+      });
+
+      it('缓冲冲刷**之后**才到达的日志立即落库（不被静默丢弃）', async () => {
+        vi.restoreAllMocks();
+        const db = ConfigStore.getInstance().db;
+        db.prepare('DELETE FROM system_log').run();
+
+        // ⚠️ 复现「插件超时后仍在后台跑」的场景：
+        //   pluginEngine 的执行体是游离 async IIFE，超时后仍可能继续跑并写日志。
+        //   若不处理，这条日志会被 push 进**已冲刷**的缓冲数组 → 永远不落库 → 静默丢失。
+        await withSystemLogBuffer(async () => {
+          writeSystemLog({ logType: 'plugin_execute', level: 'INFO', message: 'in-buffer' });
+          setTimeout(() => {
+            writeSystemLog({ logType: 'plugin_execute', level: 'INFO', message: 'late-arrival' });
+          }, 0);
+        });
+        await new Promise((r) => setTimeout(r, 30));
+
+        const rows = db.prepare('SELECT message FROM system_log ORDER BY id ASC').all() as {
+          message: string;
+        }[];
+        const msgs = rows.map((r) => r.message);
+        expect(msgs, '缓冲内的日志应落库').toContain('in-buffer');
+        expect(msgs, '冲刷后迟到的日志**不得**被丢弃').toContain('late-arrival');
+      });
     });
   });
 });

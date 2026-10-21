@@ -153,7 +153,32 @@ let fileBaseline: EnvBaseline = processBaseline;
 
 // 文件级基线在「测试文件顶层代码跑完」之后抓 —— 顶层代码里写的临时库路径
 // 才是本文件自己的合法值。beforeAll 在 import 之后执行，正好满足这一点。
-beforeAll(() => {
+beforeAll(async () => {
+  // 🔴 行情库档位统一入口（2026-10-20 实测）：
+  //   `tests/_marketData.ts` 的 `resolveMarketData()` 会把 `process.env.DUCKDB_PATH`
+  //   指向当前档位的库（mini/ci → 迷你库；full → 真库）。
+  //   **必须在这里调用**（而不是只在用到行情库的测试文件里）：
+  //     ① 档位切换才有**统一入口** —— 不调它的文件（如 `smoke-m3`）会退回真库
+  //     ② `resolveMarketData()` 内部有 `_resolved` 缓存 ⇒ 进程内只解析一次
+  //   ⚠️ `db/duckdb.ts` 的路径已改为**连接时惰性解析**（`resolveDuckDBPath()`），
+  //      否则模块加载时的快照会拿到切换前的路径（真库）——
+  //      实测 `MARKET_DATA_MODE=mini` 下 `smoke-m3` 备份仍耗时 **31.4s**（备份的真库）。
+  // ⚠️ **测试文件自己显式设了 `DUCKDB_PATH` 时必须尊重它**（2026-10-20 实测踩坑）：
+  //   `tests/unit/backup.test.ts` 在顶层把 `DUCKDB_PATH` 指向自己 mkdtemp 出来的临时库，
+  //   断言「备份产物落在临时 BACKUP_DIR，且**不触碰真实行情库** data/quotes.duckdb」。
+  //   若这里无条件覆盖 ⇒ 该断言必红（备份的变成迷你库/真库，而不是它的临时库）。
+  // ⇒ 优先级：**文件显式设置 > 档位解析**。
+  const fileSetDuckDBPath = process.env.DUCKDB_PATH !== processBaseline.DUCKDB_PATH;
+  if (!fileSetDuckDBPath) {
+    try {
+      // 动态 import：避免与测试文件的顶层 await 产生循环依赖
+      const { resolveMarketData } = await import('./_marketData.js');
+      resolveMarketData();
+    } catch (err) {
+      // 解析失败不阻断测试（该文件的行情用例会因探测失败而 skip）
+      console.warn('[setup] 行情库档位解析失败：', (err as Error).message);
+    }
+  }
   fileBaseline = captureEnv();
 });
 

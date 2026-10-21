@@ -53,10 +53,16 @@ const FAKE_SYMBOLS: FakeSymbol[] = [
 
 function fakeKlines(symbol: string, slope: number, count: number): DailyKline[] {
   const out: DailyKline[] = [];
+  // ⚠️ 最后一根必须是 **tradeDate 当天**：
+  //   路由判定「该标的当日有无日线」的口径 = 预取结果里存在 date === tradeDate 的那根
+  //   （窗口已保证覆盖 tradeDate）。若假数据不含当天，扫描会把全部标的判为「无当日日线」
+  //   → total 恒为 0，用例变成假绿/假红。
+  const endMs = Date.parse(`${TRADE_DATE}T00:00:00Z`);
   for (let i = 0; i < count; i++) {
     const close = 10 + i * slope;
+    const date = new Date(endMs - (count - 1 - i) * 86_400_000).toISOString().slice(0, 10);
     out.push({
-      date: `2026-08-${String((i % 28) + 1).padStart(2, '0')}`,
+      date,
       open: close,
       high: close * 1.01,
       low: close * 0.99,
@@ -68,12 +74,20 @@ function fakeKlines(symbol: string, slope: number, count: number): DailyKline[] 
   return out;
 }
 
-const { queryDuckDBMock } = vi.hoisted(() => ({
+const { queryDuckDBMock, queryDuckDBColumnarMock } = vi.hoisted(() => ({
   queryDuckDBMock: vi.fn<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>>(),
+  queryDuckDBColumnarMock:
+    vi.fn<
+      (sql: string, params?: unknown[]) => Promise<{ names: string[]; column: (n: string) => unknown[] }>
+    >(),
 }));
 
 vi.mock('../../src/db/duckdb.js', () => ({
   queryDuckDB: queryDuckDBMock,
+  // ⚠️ 选股预取走**列主序**出口（`queryDuckDBColumnar`）——
+  //   行主序要为 39 万行各 new 一个 8 属性对象（实测 ~1.1s），列主序只造 8 个列数组。
+  //   mock 必须同时提供它，否则预取会拿到 undefined → 扫描路径整体崩。
+  queryDuckDBColumnar: queryDuckDBColumnarMock,
   closeDuckDBInstance: vi.fn(async () => {
     /* 测试不需要真实 instance */
   }),
@@ -112,20 +126,8 @@ function installDuckDBMock(): void {
           totalmv: 10_000_000_000,
         }));
       }
-      // 2b. 预取区间日线（T85b ①：按 view 分组的 1 次 IN 查询取整段区间）
-      //     形状 = 同时含 BETWEEN 与 IN ( → 必须排在下面两条分支之前
-      if (sql.includes('BETWEEN') && sql.includes('IN (')) {
-        const symbols = (params ?? []).slice(2).map((p) => String(p));
-        return symbols.flatMap((sym) => {
-          const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
-          // ⚠️ 必须带 symbol —— 真实 SQL 是 `SELECT symbol, date, ...`，
-          //    预取 map 以 symbol 为 key，缺了它缓存就永远 miss（会退化成逐只查库）
-          return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT).map((k) => ({
-            symbol: sym,
-            ...k,
-          })) as unknown as Record<string, unknown>[];
-        });
-      }
+      // 2b. 区间预取（T85b ①：按 view 分组的 1 次 IN 查询取整段区间）
+      //     ⚠️ 预取走**列主序**出口 queryDuckDBColumnar（见下方 mock），行主序分支不再命中。
       // 3. 批量 IN 取日线（loadCandidateDaily）
       if (sql.includes('IN (')) {
         const symbols = (params ?? []).slice(1).map((p) => String(p));
@@ -143,6 +145,44 @@ function installDuckDBMock(): void {
         return fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT) as unknown as Record<string, unknown>[];
       }
       return [];
+    },
+  );
+
+  // 列主序出口：选股预取（区间 + IN）走这里
+  queryDuckDBColumnarMock.mockImplementation(
+    async (
+      sql: string,
+      params?: unknown[],
+    ): Promise<{ names: string[]; column: (n: string) => unknown[] }> => {
+      const names = ['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount'];
+      // 预取 SQL 的参数序：[fromDate, toDate, ...symbols]
+      const symbols = (params ?? []).slice(2).map((p) => String(p));
+      const cols: Record<string, unknown[]> = {
+        symbol: [],
+        date: [],
+        open: [],
+        high: [],
+        low: [],
+        close: [],
+        volume: [],
+        amount: [],
+      };
+      // ⚠️ 必须**按 symbol 连续成段**返回（真实 SQL 是 `ORDER BY symbol, date ASC`，
+      //    列主序分组逻辑依赖「同一 symbol 的行连续」）
+      for (const sym of symbols) {
+        const fake = FAKE_SYMBOLS.find((s) => s.symbol === sym);
+        for (const k of fakeKlines(sym, fake?.slope ?? 0, BAR_COUNT)) {
+          cols.symbol.push(sym);
+          cols.date.push(k.date);
+          cols.open.push(k.open);
+          cols.high.push(k.high);
+          cols.low.push(k.low);
+          cols.close.push(k.close);
+          cols.volume.push(k.volume);
+          cols.amount.push(k.amount);
+        }
+      }
+      return { names, column: (n: string) => cols[n] ?? [] };
     },
   );
 }
@@ -210,7 +250,16 @@ describe('scan — 参数校验与候选池 SQL（纯函数）', () => {
     expect(sql).not.toContain('BK0001');
     expect(params).toContain('BK0001');
     expect(params).toContain(50 * 100_000_000);
-    expect(sql).toContain('FROM v_stock_qfq');
+    // ⚠️ 候选池走**基础表**（raw_kline_daily）而不是 qfq 视图 ——
+    //   池子要的 4 个字段（symbol/amount/name/totalmv）在视图里全是未复权原值，
+    //   走视图却要把 1800 万行日线与 2100 万行复权因子做哈希连接（实测 685ms → 289ms）。
+    //   口径等价性由 t55-stockscan-filter.test.ts 在**真实行情库**上核对。
+    expect(sql).toContain('FROM raw_kline_daily');
+    // 品种过滤仍然落到 raw_symbol_class（视图白名单的等价物）
+    expect(sql).toContain('raw_symbol_class');
+    expect(sql).toContain('sc."class" = \'stock\'');
+    // 视图名仍以「src_view 标记」形式出现在参数里（决定日线从哪张视图取）
+    expect(params[0]).toBe('v_stock_qfq');
   });
 });
 
@@ -336,8 +385,17 @@ describe('scan — 选股扫描路径', () => {
 // ===========================================================================
 
 describe('scan — DuckDB 查询次数', () => {
-  it('候选池 1 次 + 日线 IN 查询 2 次（单日批量 + 区间预取），查询数与标的数无关', async () => {
+  /** 汇总两个 DuckDB 出口的调用（行主序 + 列主序） */
+  function allCalls(): string[] {
+    return [
+      ...queryDuckDBMock.mock.calls.map((c) => String(c[0])),
+      ...queryDuckDBColumnarMock.mock.calls.map((c) => String(c[0])),
+    ];
+  }
+
+  it('候选池 1 次 + 日线 IN 查询 1 次（区间预取），查询数与标的数无关', async () => {
     queryDuckDBMock.mockClear();
+    queryDuckDBColumnarMock.mockClear();
 
     const res = await app.inject({
       method: 'POST',
@@ -346,13 +404,16 @@ describe('scan — DuckDB 查询次数', () => {
     });
     expect(res.statusCode).toBe(200);
 
-    const calls = queryDuckDBMock.mock.calls.map((c) => String(c[0]));
+    const calls = allCalls();
     const poolCalls = calls.filter((s) => s.includes('raw_symbol_name'));
     const batchCalls = calls.filter((s) => s.includes('IN ('));
 
     expect(poolCalls, '候选池查询应恰好 1 次').toHaveLength(1);
-    // 1 次单日批量（loadCandidateDaily）+ 1 次区间预取（T85b ①）= 2 次，**与候选数无关**
-    expect(batchCalls, '批量 IN 查询应恰好 2 次（单日 + 区间预取）').toHaveLength(2);
+    // 1 次区间预取（列主序出口）= 1 次，**与候选数无关**
+    // ⚠️ 2026-10-21：原先是 2 次（单日批量 loadCandidateDaily + 区间预取）——
+    //   路由只用到「该 symbol 当日有没有日线」这一个布尔信息，而预取结果里已包含
+    //   tradeDate 那根（窗口已保证覆盖 tradeDate）→ 冗余的单日查询已删除（实测省 ~1.1s）。
+    expect(batchCalls, '批量 IN 查询应恰好 1 次（区间预取）').toHaveLength(1);
   });
 
   it('✅ 偏差已消除（T85b ①）：插件逐标的执行**不再**各查 1 次区间行情', () => {
@@ -365,6 +426,7 @@ describe('scan — DuckDB 查询次数', () => {
     //   插件执行时命中内存 → 逐标的区间查询归零。
     //   本用例从「锁定偏差」升级为「**断言偏差已消除**」—— 防止回归。
     queryDuckDBMock.mockClear();
+    queryDuckDBColumnarMock.mockClear();
 
     return app
       .inject({
@@ -374,7 +436,7 @@ describe('scan — DuckDB 查询次数', () => {
       })
       .then((res) => {
         expect(res.statusCode).toBe(200);
-        const calls = queryDuckDBMock.mock.calls.map((c) => String(c[0]));
+        const calls = allCalls();
         const rangeCalls = calls.filter((s) => s.includes('BETWEEN'));
         // 唯一一次 BETWEEN 查询 = 区间预取本身，不再有「每标的一次」
         expect(rangeCalls, '逐标的区间查询应归零（只剩 1 次区间预取）').toHaveLength(1);

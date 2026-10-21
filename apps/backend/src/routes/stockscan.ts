@@ -14,7 +14,7 @@ import {
   type PluginSignal,
 } from '../services/pluginEngine.js';
 import { resolveLatestQuoteDate, batchGetDailyRangeByView } from '../services/marketData.js';
-import { writeSystemLog } from '../services/logger.js';
+import { writeSystemLog, withSystemLogBuffer } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
 
@@ -39,6 +39,23 @@ const KLINE_VIEWS_BY_ASSET_TYPE: Readonly<Record<ScanAssetType, readonly string[
   stock: ['v_stock_qfq'],
   etf: ['v_etf_qfq'],
   all: ['v_stock_qfq', 'v_etf_qfq'],
+};
+
+/**
+ * 品种 → `raw_symbol_class.class` 白名单（2026-10-20 新增：候选池查询改走基础表）
+ *
+ * ⚠️ 值同样来自**字面量白名单**（由 `KLINE_VIEWS_BY_ASSET_TYPE` 的键推导），
+ *   绝不可能来自请求体 —— 请求体的 asset_type 先过 ASSET_TYPES 校验。
+ *
+ * 📌 **为什么候选池可以改走基础表**（实测依据见 {@link buildPoolQuery} 注释）：
+ *   候选池只要 `symbol / amount / name / totalmv` —— 这 4 个字段在视图里**全是未复权原值**
+ *   （`amount` 来自 raw_kline_daily、`name` 来自 raw_symbol_name、`totalmv` 来自 raw_basic_daily），
+ *   走视图却要把 1800 万行 raw_kline_daily 与 2100 万行 raw_adjust_factor 做哈希连接，
+ *   外加一次 2100 万行的 `argmax` 聚合 —— 实测候选池查询 **685ms → 289ms**。
+ */
+const ASSET_CLASS_BY_VIEW: Readonly<Record<string, string>> = {
+  v_stock_qfq: 'stock',
+  v_etf_qfq: 'etf',
 };
 
 /** 单支候选（行情源 view + 标的基础信息） */
@@ -164,6 +181,20 @@ export function parseScanFilters(body: ParsedBody):
  *                                                 → totalmv 过滤；JOIN 条件含 date
  *   raw_tdx_blocks_member(stock_symbol, block_code) → 板块成分（**注意成分股列名是 stock_symbol，不是 symbol**）
  *
+ * 🔴 **2026-10-20 改为直查基础表（不再 FROM 视图）** —— PE2「选股 ≤3s」的关键一步之一：
+ *   候选池需要的 4 个字段（symbol / amount / name / totalmv）在 `v_stock_qfq` 里**全是未复权原值**，
+ *   而视图会把 1800 万行 raw_kline_daily 与 2100 万行 raw_adjust_factor 做哈希连接，
+ *   外加一次 2100 万行的 `argmax(hfq_factor, date)` 聚合（实测 ~300ms，与标的数无关）。
+ *   实测（同库同参数）：
+ *     · 走视图 `FROM v_stock_qfq`           → **685ms**
+ *     · 直查 `FROM raw_kline_daily` + class → **289ms**
+ *   **等价性已实测核对**（2026-10-20，`/opt/invol/quotes.duckdb`）：
+ *     两种写法返回的 5000 个 symbol 集合**完全一致**、amount 逐条相等、ETF 分支同样一致
+ *     （2026-10-21 复核：股票 5000/5000、ETF 2074/2074，symbol 集合、amount、name 逐条相等）。
+ *   ⚠️ 视图**仍用于取复权日线** —— 但预取走的是 `marketData.buildQfqRangeSql` 的
+ *     **显式前复权 SQL**（口径与视图逐条一致，由 t55 的「复权口径」用例守住），
+ *     目的是省掉视图里两个用不上的 JOIN（raw_symbol_class / raw_basic_daily）。
+ *
  * ⚠️ ST 标记：`raw_symbol_class` 实测**只有 (symbol, class) 两列，没有 is_st / is_listing**
  *   （SDD §3.3 那张表把 is_st/is_listing 列进去了，与实测不符）。
  *   故 `exclude_st` 改为按 `raw_symbol_name.name` 的 ST/*ST 前缀判定 —— 这是 A 股 ST 的实际标记方式，
@@ -177,6 +208,10 @@ export function parseScanFilters(body: ParsedBody):
  *
  * ⚠️ 市值 NULL 放行：`market_cap_max` 只过滤「已知且超限」的标的；
  *   实测 ETF 的 raw_basic_daily.totalmv 多为 0（非 NULL），故该过滤对 ETF 基本不起作用。
+ *
+ * 🔴 **2026-10-21：`market_cap_max` 未传时不再 JOIN raw_basic_daily**（实测省 ~120ms）
+ *   raw_basic_daily 有 1800 万行，而 totalmv 只服务于「按市值过滤」这一个条件；
+ *   不需要过滤时整段 JOIN 可以省掉，候选池口径不变（totalmv 恒为 NULL）。
  *
  * SQL 拼接边界：仅 `view`（字面量白名单）拼进标识符；所有用户输入一律走 `?` 预编译参数。
  */
@@ -200,6 +235,13 @@ export function buildPoolQuery(
     // 导致 k.date = ? 收到整数 → "Unimplemented type for cast (INTEGER -> DATE)"。
     const srcViewPlaceholder = bind(view);
 
+    // 品种过滤：class 值来自字面量白名单（ASSET_CLASS_BY_VIEW），**不是**用户输入
+    const assetClass = ASSET_CLASS_BY_VIEW[view];
+    if (assetClass === undefined) {
+      // 🔴 白名单外的视图 → 绝不用 'undefined' 拼进 SQL（会静默查不到任何标的）
+      throw new Error(`buildPoolQuery: 未登记品种的视图 "${view}"`);
+    }
+
     const conditions: string[] = [`k.date = ${bind(tradeDate)}`, `k.amount >= ${bind(filters.minAmount)}`];
     if (filters.excludeSt) {
       conditions.push(`COALESCE(n.name, '') NOT LIKE 'ST%'`, `COALESCE(n.name, '') NOT LIKE '*ST%'`);
@@ -212,15 +254,28 @@ export function buildPoolQuery(
       );
     }
 
+    // 🔴 2026-10-21：市值上限**没传**时**不 JOIN raw_basic_daily**（实测省 ~120ms）
+    //   raw_basic_daily 有 1800 万行，LEFT JOIN 它只为拿 totalmv；
+    //   而 totalmv 只在「按市值过滤」时才用得上 → 不需要过滤时整段 JOIN 可以省掉。
+    //   实测（同库同参数，5000 候选）：带 JOIN 343~364ms → 不带 JOIN 207~241ms。
+    //   ⚠️ 口径不变：不带 JOIN 时 totalmv 一律为 NULL（与「无市值记录」同义，见下方注释）。
+    const needTotalMv = filters.marketCapMaxYi !== null;
     if (filters.marketCapMaxYi !== null) {
       conditions.push(`(b.totalmv IS NULL OR b.totalmv <= ${bind(filters.marketCapMaxYi * YI)})`);
     }
 
     const sql = `
-      SELECT ${srcViewPlaceholder} AS src_view, k.symbol, k.amount, n.name, b.totalmv
-      FROM ${view} k
-      LEFT JOIN raw_symbol_name n ON n.symbol = k.symbol
-      LEFT JOIN raw_basic_daily b ON b.symbol = k.symbol AND b.date = k.date
+      SELECT ${srcViewPlaceholder} AS src_view, k.symbol, k.amount, n.name, ${
+        needTotalMv ? 'b.totalmv' : 'NULL'
+      } AS totalmv
+      FROM raw_kline_daily k
+      INNER JOIN raw_symbol_class sc ON sc.symbol = k.symbol AND sc."class" = '${assetClass}'
+      LEFT JOIN raw_symbol_name n ON n.symbol = k.symbol${
+        needTotalMv
+          ? `
+      LEFT JOIN raw_basic_daily b ON b.symbol = k.symbol AND b.date = k.date`
+          : ''
+      }
       WHERE ${conditions.join(' AND ')}`;
 
     return { sql, params };
@@ -238,6 +293,12 @@ export function buildPoolQuery(
  *
  * 按「产出该候选的 view」分组，每个 view 发一条大 IN 查询（asset_type=all 时最多 2 条，
  * 而非 2×5000 个占位符）。
+ *
+ * ⚠️ **选股路由已不再调用本函数**（2026-10-20，PE2 ≤3s 改造）：
+ *   路由原先用它取「tradeDate 当天的日线」，但只用到「该 symbol 当日有没有日线」
+ *   这一个布尔信息 —— 区间预取（`batchGetDailyRangeByView`）的结果里已经包含
+ *   tradeDate 那根，路由改为直接从预取里挑，**省掉一整轮查询**（实测 ~1.1s）。
+ *   本函数保留：它是「按 view 分组做单日批量查询」的通用能力，且有单测直接覆盖。
  */
 export async function loadCandidateDaily(
   rows: ScanCandidateRow[],
@@ -301,7 +362,10 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
   app.post('/api/stockscan', async (request, reply) => {
     const body = (request.body ?? {}) as ParsedBody;
 
-    const startTotal = Date.now();
+    // ⚠️ 用 hrtime（纳秒精度）而不是 Date.now()（毫秒精度）：
+    //   PE2/F7 的门槛是 3.0s，毫秒精度在边界上无法判定；hrtime 还能防系统时钟跳变。
+    const startTotal = process.hrtime.bigint();
+    const elapsedMs = (): number => Number(process.hrtime.bigint() - startTotal) / 1e6;
 
     try {
       // ---- 1. 参数解析 ----
@@ -347,10 +411,7 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         );
       }
 
-      // ---- 4. IN 查询拿全部候选日线（SDD §5.3 硬约束） ----
-      const klineMap = await loadCandidateDaily(stocks, tradeDate);
-
-      // ---- 5. 预取日线 + 构建共享 PluginContext + 逐标的执行 ----
+      // ---- 4. 预取区间日线 + 构建共享 PluginContext（SDD §5.3 硬约束） ----
       // 🔴 T85b ①：此前 ctx.getDailyKlines() **每只标的单独查一次 DuckDB**
       //   （5000 只 = 5000 次查询）→ 实测选股 15s+（PE2 要求 ≤3s）。
       //   改为：按 view 分组各 1 次 IN 查询**批量**取回区间日线灌进 context，
@@ -359,7 +420,12 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       const daysField = (plugin.paramSchema ?? []).find((f) => f.key === 'days');
       const scanDays = Math.max(1, Number(userParams.days ?? daysField?.default ?? 120));
       const prefetchEnd = new Date().toISOString().slice(0, 10);
-      const prefetchStart = new Date(Date.now() - scanDays * 86_400_000).toISOString().slice(0, 10);
+      const prefetchStartRaw = new Date(Date.now() - scanDays * 86_400_000).toISOString().slice(0, 10);
+      // ⚠️ 预取窗口**必须覆盖 tradeDate**（2026-10-20 新增）：
+      //   「当日有无日线」的判定改为从预取结果里挑 tradeDate 那根，
+      //   若窗口起点晚于 tradeDate（行情管道停摆超过 scanDays），
+      //   判定会失真（把有数据的标的误判为无数据）→ 故窗口起点取 min(窗口起点, tradeDate)。
+      const prefetchStart = prefetchStartRaw < tradeDate ? prefetchStartRaw : tradeDate;
       const symbolsByView = new Map<string, string[]>();
       for (const row of stocks) {
         const list = symbolsByView.get(row.src_view);
@@ -371,58 +437,80 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       // 复用同一个 ctx 实例（行情查询函数无状态）
       const ctx = buildPluginContext(prefetch);
 
+      // 🔴 2026-10-20：**去掉冗余的第 2 次 IN 查询**（loadCandidateDaily）
+      //   原实现先用 1 次单日 IN 查询取回 5000 根「当日日线」，但路由只用到
+      //   「该 symbol 当日有没有日线」这一个布尔信息 —— 而预取结果里已经包含
+      //   tradeDate 那根（窗口已保证覆盖 tradeDate），故直接从预取里挑即可。
+      //   实测省掉一整轮「视图 + 5000 参数 IN 查询」≈ **1.1s**（PE2 ≤3s 的关键一步）。
+      //   口径等价性：两者都取自同一张视图、同一 tradeDate、同一 symbol 集合。
+      const symbolsWithTradeDateKline = new Set<string>();
+      for (const [symbol, klines] of prefetchKlines) {
+        for (const k of klines) {
+          if (k.date === tradeDate) {
+            symbolsWithTradeDateKline.add(symbol);
+            break;
+          }
+        }
+      }
+
       const passResults: StockScanResult[] = [];
       let scannedCount = 0;
       let timeoutCount = 0;
       let errorCount = 0;
 
-      for (const stock of stocks) {
-        // 跳过 DuckDB 里没日线的（理论上 batchGetDaily 查的就是这批，但保险起见）
-        if (!klineMap.has(stock.symbol)) continue;
+      // 🔴 2026-10-20：批量缓冲日志（选股一次请求会产生 5000 条 plugin_execute 日志，
+      //   逐条 auto-commit 实测 ~1.0s）→ 缓冲后单事务落库（实测 ~20ms）。
+      //   WARN/ERROR 仍立即落库（诊断信息不能丢）。
+      //   ⚠️ 缓冲作用域 = 本次请求（AsyncLocalStorage），并发请求互不串台。
+      await withSystemLogBuffer(async () => {
+        for (const stock of stocks) {
+          // 跳过 DuckDB 里没日线的（理论上预取查的就是这批，但保险起见）
+          if (!symbolsWithTradeDateKline.has(stock.symbol)) continue;
 
-        scannedCount++;
+          scannedCount++;
 
-        try {
-          // 覆盖 symbol 参数（用户 params 里可能也传了 symbol，这里强制覆盖）
-          const perSymbolParams: Record<string, unknown> = {
-            ...userParams,
-            symbol: stock.symbol,
-          };
-
-          const execResult: PluginExecutionResult = await executePlugin(plugin, perSymbolParams, ctx);
-
-          if (execResult.status === 'TIMEOUT') {
-            timeoutCount++;
-            continue;
-          }
-          if (execResult.status === 'ERROR') {
-            errorCount++;
-            continue;
-          }
-
-          // SUCCESS / SKIP：只收集非 HOLD 的信号
-          for (const sig of execResult.signals) {
-            if (sig.signalType === 'HOLD') continue;
-            passResults.push({
+          try {
+            // 覆盖 symbol 参数（用户 params 里可能也传了 symbol，这里强制覆盖）
+            const perSymbolParams: Record<string, unknown> = {
+              ...userParams,
               symbol: stock.symbol,
-              name: nameBySymbol.get(stock.symbol) ?? null,
-              score: sig.strength ?? 0,
-              signalType: sig.signalType,
-              details: sig.detail,
-              pluginId: plugin.id,
-            });
+            };
+
+            const execResult: PluginExecutionResult = await executePlugin(plugin, perSymbolParams, ctx);
+
+            if (execResult.status === 'TIMEOUT') {
+              timeoutCount++;
+              continue;
+            }
+            if (execResult.status === 'ERROR') {
+              errorCount++;
+              continue;
+            }
+
+            // SUCCESS / SKIP：只收集非 HOLD 的信号
+            for (const sig of execResult.signals) {
+              if (sig.signalType === 'HOLD') continue;
+              passResults.push({
+                symbol: stock.symbol,
+                name: nameBySymbol.get(stock.symbol) ?? null,
+                score: sig.strength ?? 0,
+                signalType: sig.signalType,
+                details: sig.detail,
+                pluginId: plugin.id,
+              });
+            }
+          } catch {
+            // 单标的任何异常 → 跳过，不阻塞其他标的
+            errorCount++;
           }
-        } catch {
-          // 单标的任何异常 → 跳过，不阻塞其他标的
-          errorCount++;
         }
-      }
+      });
 
       // ---- 6. score 降序 + LIMIT ----
       passResults.sort((a, b) => b.score - a.score);
       const limited = passResults.slice(0, maxResults);
 
-      const totalMs = Date.now() - startTotal;
+      const totalMs = elapsedMs();
 
       writeSystemLog({
         logType: 'signal_generate',
@@ -432,13 +520,17 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       });
 
       return reply.send(
-        ok({
-          totalCandidates: scannedCount,
-          total: passResults.length,
-          results: limited,
-          tradeDate,
-          filters,
-        }),
+        ok(
+          {
+            totalCandidates: scannedCount,
+            total: passResults.length,
+            results: limited,
+            tradeDate,
+            filters,
+          },
+          // 顶层 timeMs：本次选股的服务端耗时（hrtime 计时，SDD §4.2 envelope 的扩展字段）
+          { timeMs: Math.round(totalMs) },
+        ),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

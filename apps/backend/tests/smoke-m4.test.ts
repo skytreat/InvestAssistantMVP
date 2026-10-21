@@ -488,7 +488,7 @@ describe('M4 · 备份与恢复', () => {
     });
     const files = fs.readdirSync(BACKUP_DIR).filter((f) => /^business\.db\.\d{4}-\d{2}-\d{2}$/.test(f));
     ctx.backupFile = files.sort().pop()!;
-  }, 120000);
+  }, 300000); // 1.24GB 库 COPY 成 parquet，IO 争用下 120s 偏紧（实测全量跑偶发超时）
 
   it('手动备份 → 生成 business.db.YYYY-MM-DD', () => {
     const res = backupRes;
