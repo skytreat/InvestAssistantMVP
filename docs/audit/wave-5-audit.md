@@ -116,7 +116,7 @@ node scripts/probe-kline-axis.mjs --api-base-url http://127.0.0.1:8081 \
 | **前端** | **508 passed + 1 todo**（27 文件）|
 | 前端覆盖率 | **73.9% → 82.6%**（T65/T70/T71/T72 新增用例贡献）|
 | `npm run lint` / `npm run typecheck` | exit 0 |
-| PR #23 CI | Stage 2 **pass 1m17s** · build-and-test **pass 4m26s** |
+| PR #23 CI | Stage 2 **pass** · build-and-test **pass**（run `39566406843` / `39575931079`，两次均 success）|
 
 ---
 
