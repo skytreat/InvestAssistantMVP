@@ -166,10 +166,46 @@ node scripts/probe-kline-axis.mjs --api-base-url http://127.0.0.1:8081 \
 ⇒ 正确写法 `chart.getYAxes({ paneId: 'candle_pane' })[0].getRange()`（`candle_pane` = 主图，其余是副图窗格）。
 ⚠️ 这也是探针反复失败的原因（表现为「eval 失败」而非「轴读不到」）。
 
-### 3.7 ⚠️ 探针改写 `/api/**` 过宽会把**前端源文件**也改写到后端
+### 3.7 🔴 CI 的后端测试命令**没走 backend 的 vitest config** ⇒ ① setupFiles 从未加载 ② **后端覆盖率一直是 0%**
+
+CI 的命令是 `npx vitest run apps/backend/tests/unit --coverage`（**在仓库根跑**），
+而**仓库根没有 vitest config** ⇒ 走 vitest 默认配置 ⇒ **不带 `setupFiles`**
+⇒ `tests/setup.ts` 的两级 env 基线守卫**完全没跑**（本地 `npm test` 走的是
+`vitest run apps/backend --config apps/backend/vitest.config.ts` ⇒ 守卫是生效的 ⇒ **本地与 CI 行为不一致**）。
+
+⚠️ 第二个后果更隐蔽：`coverage.include: ['src/**/*.ts']` 相对 **cwd** 解析
+⇒ 在仓库根跑时匹配的是 `<repo>/src/`（**不存在**）⇒ **后端覆盖率一直是 0%**
+（实测修复前 CI 的 coverage 报表里只有 `src/services/...` 这类**不存在的路径**，全 0%）。
+
+⇒ 修法：`apps/backend/vitest.config.ts` 显式加 `root: __dirname` + `include: ['tests/**/*.test.ts']`
+⇒ `include` / `coverage.include` / `setupFiles` 都相对 `apps/backend/` 解析 ⇒ **任何 cwd 下都正确**；
+CI 的 4 处后端命令改为带 `--config`。
+
+### 3.8 🔴 行情库**档位在同进程内跨文件泄漏** ⇒ 规模型用例在 CI 上不 skip
+
+`resolveMarketData()` 会把 `process.env.DUCKDB_PATH` **写成迷你库路径**
+（让 `src/db/duckdb.ts` 的惰性解析能拿到它）。
+⇒ **同进程内的下一个测试文件**（vitest 同进程跑多个文件）看到「DUCKDB_PATH 已设」
+⇒ `auto` 档被误判成 **full** ⇒ `marketDataSupports('scale')` 返回 true
+⇒ **规模型用例不再 skip**（迷你库只有 104 只 stock / 41 只 ETF）
+⇒ CI 红：`expected 104 to be greater than 3000`。
+
+⇒ 修法：`auto` 档判定时**排除「我们自己写进去的迷你库路径」**
+（是 ⇒ 仍按 mini 处理；不是 ⇒ 才是 full）。
+⚠️ 这与 3.7 是**叠加关系**：3.7 让 env 守卫在 CI 上生效（还原泄漏），3.8 从档位判定本身免疫。
+
+### 3.9 ⚠️ 探针改写 `/api/**` 过宽会把**前端源文件**也改写到后端
 `page.route('**/api/**')` + `slice(indexOf('/api/'))` 会把 `/src/api/client.ts` 也当成 API 路径
 ⇒ 后端返回 401 ⇒ 前端模块加载失败 ⇒ **白屏**（探针看到 `canvases=0`）。
 ⇒ 必须用**锚定开头**的正则 `^https?://[^/]+/api/`（与 `probe-overflow.mjs` / `a11y-check.mjs` 逐字同源）。
+
+> ⚠️ **3.7 / 3.8 是 CI 首次红**的根因 —— 两者叠加才触发：
+> 3.7 让 `setupFiles` 在 CI 上生效（env 守卫开始还原泄漏）**但 CI 命令同时改成了带 `--config`**；
+> 3.8 让档位判定本身免疫。
+> ⇒ **CI 复现验证**（仓库根 + 无 `.env.local` + 无迷你库 + 无 `DUCKDB_PATH`）：
+> 修复前 `42 files / 2 failed`（`expected 104 to be greater than 3000`）⇒
+> 修复后 **42 files / 557 passed + 5 skipped，exit 0**，且**后端 coverage 从 0% 变成真实值**
+> （`src/config 89.12%` / `src/db 89.34%` / `src/lib 100%`）。
 
 ---
 

@@ -162,8 +162,21 @@ export function resolveMarketData(): ResolvedMarketData {
       case 'auto':
       default: {
         // 有 DUCKDB_PATH → full（真库）；否则 → mini（现生成）
+        //
+        // 🔴 **必须排除「我们自己写进去的迷你库路径」**（2026-10-21 实测）：
+        //   `resolveMarketData()` 会把 `process.env.DUCKDB_PATH` 写成迷你库路径
+        //   （让 `src/db/duckdb.ts` 的惰性解析能拿到它）。
+        //   ⇒ **同进程内的下一个测试文件**（vitest 同进程跑多个文件）会看到
+        //      「DUCKDB_PATH 已设」⇒ auto 档被误判成 **full**
+        //      ⇒ `marketDataSupports('scale')` 返回 true
+        //      ⇒ **规模型用例不再 skip**（迷你库只有 104 只 stock / 41 只 ETF）
+        //      ⇒ CI 红：`expected 104 to be greater than 3000`。
+        //   ⇒ 判定「这个 DUCKDB_PATH 是不是我自己写的迷你库路径」——
+        //      是 ⇒ 仍按 mini 处理；不是 ⇒ 才是 full。
         const p = process.env.DUCKDB_PATH;
-        if (p) return { tier: 'full', path: p, mode };
+        if (p && p !== MINI_DB_PATH && p !== CI_MINI_DB_PATH) {
+          return { tier: 'full', path: p, mode };
+        }
         if (!fs.existsSync(MINI_DB_PATH)) buildMiniDb(MINI_DB_PATH);
         return fs.existsSync(MINI_DB_PATH)
           ? { tier: 'mini', path: MINI_DB_PATH, mode }
