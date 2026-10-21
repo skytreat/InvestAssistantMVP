@@ -3,35 +3,27 @@ import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
+import PluginParamForm, {
+  paramDefault,
+  validateParamValues,
+  type ParamField,
+} from '../components/PluginParamForm';
 import {
   pageContainerStyle,
   cardStyle,
   titleStyle,
   cardTitleStyle,
-  inputStyle,
   buttonStyle,
   errorStyle,
   successStyle,
-  labelStyle,
 } from './_shared';
 
-/** 后端 ParamField 契约（apps/backend/src/services/pluginEngine.ts） */
-interface ParamField {
-  key: string;
-  label: string;
-  type: 'number' | 'string' | 'boolean' | 'integer' | 'select';
-  default?: number | string | boolean;
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: string[];
-  unit?: string;
-  description?: string;
-  required?: boolean;
-  /** T85b ①：运行时注入字段（用户不可配置，表单不渲染） */
-  runtimeInjected?: boolean;
-}
-
+/**
+ * ⚠️ `ParamField`（后端 paramSchema 契约）与参数表单渲染器已抽到
+ *    `components/PluginParamForm.tsx`（T73 · F-S2）——
+ *    本页与 `pages/StockScan.tsx`（选股页）**共用同一个 schema 驱动渲染器**，
+ *    避免两份实现随时间漂移（控件类型映射 / 范围提示 / 必填标记）。
+ */
 interface PluginItem {
   id: string;
   name: string;
@@ -46,31 +38,6 @@ const CATEGORY_LABEL: Record<string, string> = {
   monitor: '监控信号',
   filter: '条件选股',
 };
-
-/** 参数默认值：用户没存过就用 schema 默认值 */
-function paramDefault(field: ParamField): unknown {
-  if (field.default !== undefined) return field.default;
-  if (field.type === 'boolean') return false;
-  if (field.type === 'number' || field.type === 'integer') return field.min ?? 0;
-  if (field.type === 'select') return field.options?.[0] ?? '';
-  return '';
-}
-
-/**
- * 生成控件 id（T63）
- *
- * 命名规则：`<页面>-<插件id>-<字段key>`，全部小写 kebab-case。
- * ⚠️ id 必须**页内唯一**：同一插件的多个参数各自一个字段 key，故天然不冲突；
- * 不同插件用 pluginId 隔离。
- */
-function fieldId(pluginId: string, fieldKey: string): string {
-  const sanitize = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
-  return `settings-${sanitize(pluginId)}-${sanitize(fieldKey)}`;
-}
 
 /**
  * 插件「启用 / 禁用」开关的 checkbox id（T63）
@@ -129,27 +96,12 @@ export default function Settings() {
   const save = async (p: PluginItem) => {
     const params = draft[p.id] ?? {};
     // 前端做一遍范围校验，后端 pluginEngine 仍会二次校验（防绕过）
-    for (const f of p.paramSchema ?? []) {
-      const v = params[f.key];
-      if (f.required && (v === '' || v === undefined || v === null)) {
-        setError(`插件「${p.name}」的「${f.label}」为必填`);
-        return;
-      }
-      if ((f.type === 'number' || f.type === 'integer') && v !== '' && v !== undefined && v !== null) {
-        const num = Number(v);
-        if (Number.isNaN(num)) {
-          setError(`插件「${p.name}」的「${f.label}」必须是数字`);
-          return;
-        }
-        if (f.min !== undefined && num < f.min) {
-          setError(`插件「${p.name}」的「${f.label}」不能小于 ${f.min}`);
-          return;
-        }
-        if (f.max !== undefined && num > f.max) {
-          setError(`插件「${p.name}」的「${f.label}」不能大于 ${f.max}`);
-          return;
-        }
-      }
+    // ⚠️ T73：校验规则已抽到 `components/PluginParamForm.tsx` 的 `validateParamValues`
+    //    （与选股页共用），错误文案与改动前逐字一致。
+    const issue = validateParamValues(p.paramSchema ?? [], params);
+    if (issue) {
+      setError(`插件「${p.name}」的「${issue.label}」${issue.message}`);
+      return;
     }
 
     setSaving(p.id);
@@ -176,78 +128,6 @@ export default function Settings() {
     } catch (err) {
       setError(extractErrorMessage(err, '操作失败'));
     }
-  };
-
-  const renderField = (p: PluginItem, f: ParamField) => {
-    const value = draft[p.id]?.[f.key] ?? '';
-    const set = (v: unknown) => setDraft((d) => ({ ...d, [p.id]: { ...d[p.id], [f.key]: v } }));
-    // T63：控件 id 与字段 label 的 htmlFor 一一对应（插件 id + 字段 key 保证唯一）
-    const controlId = fieldId(p.id, f.key);
-
-    return (
-      <div key={f.key} style={{ marginBottom: 12 }}>
-        <label htmlFor={controlId} style={{ ...labelStyle, display: 'block', minWidth: 0, marginBottom: 4 }}>
-          {f.label}
-          {f.required && <span style={{ color: COLORS.danger }}> *</span>}
-          {f.unit && <span style={{ color: COLORS.neutral, fontSize: 12 }}>（{f.unit}）</span>}
-        </label>
-        {f.type === 'boolean' && (
-          // 包住式 label（label 内含唯一的 checkbox）→ 天然关联，
-          // 故无需 htmlFor；此处保留包住式是为了不改「复选框在前、文字在后」的视觉顺序
-          <label style={{ fontSize: TYPO.bodySize }}>
-            <input
-              id={controlId}
-              type="checkbox"
-              checked={Boolean(value)}
-              onChange={(e) => set(e.target.checked)}
-            />{' '}
-            启用该选项
-          </label>
-        )}
-        {f.type === 'select' && (
-          <select
-            id={controlId}
-            style={{ ...inputStyle, width: '100%' }}
-            value={String(value)}
-            onChange={(e) => set(e.target.value)}
-          >
-            {(f.options ?? []).map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
-        )}
-        {(f.type === 'number' || f.type === 'integer') && (
-          <input
-            id={controlId}
-            type="number"
-            style={{ ...inputStyle, width: '100%' }}
-            value={value === '' || value === undefined ? '' : String(value)}
-            min={f.min}
-            max={f.max}
-            step={f.step ?? (f.type === 'integer' ? 1 : 'any')}
-            onChange={(e) => set(e.target.value === '' ? '' : Number(e.target.value))}
-          />
-        )}
-        {f.type === 'string' && (
-          <input
-            id={controlId}
-            style={{ ...inputStyle, width: '100%' }}
-            value={String(value)}
-            onChange={(e) => set(e.target.value)}
-          />
-        )}
-        {(f.min !== undefined || f.max !== undefined) && (
-          <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: 2 }}>
-            允许范围：{f.min ?? '-∞'} ~ {f.max ?? '+∞'}
-          </div>
-        )}
-        {f.description && (
-          <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: 2 }}>{f.description}</div>
-        )}
-      </div>
-    );
   };
 
   return (
@@ -328,9 +208,21 @@ export default function Settings() {
                     borderTop: `1px solid ${COLORS.borderSubtle}`,
                   }}
                 >
-                  {/* T85b ①：runtimeInjected 的参数（如 symbol）由后端运行时注入，
-                    不该作为用户可配置项出现在表单里 */}
-                  {(p.paramSchema ?? []).filter((f) => !f.runtimeInjected).map((f) => renderField(p, f))}
+                  {/*
+                    T73 · F-S2：参数表单改用共享的 schema 驱动渲染器
+                    `components/PluginParamForm.tsx`（与选股页共用）。
+                    ⚠️ `runtimeInjected` 的参数（如 symbol）由后端运行时注入，
+                    不该作为用户可配置项出现在表单里 —— 组件内部已按该标记过滤。
+                  */}
+                  <PluginParamForm
+                    pluginId={p.id}
+                    schema={p.paramSchema ?? []}
+                    values={draft[p.id] ?? {}}
+                    idPrefix="settings"
+                    onChange={(key, value) =>
+                      setDraft((d) => ({ ...d, [p.id]: { ...d[p.id], [key]: value } }))
+                    }
+                  />
                   <div style={{ display: 'flex', gap: SPACING.gapBase }}>
                     <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
                       {saving === p.id ? '保存中...' : '保存'}
