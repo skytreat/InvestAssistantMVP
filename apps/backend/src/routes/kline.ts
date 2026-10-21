@@ -158,7 +158,12 @@ export async function registerKlineRoutes(app: FastifyInstance) {
     const { days = 120, fq = DEFAULT_FQ } = query;
 
     // symbol 基本校验
-    if (!/^(sh|sz)\d{6}$/.test(symbol)) {
+    // ⚠️ **必须接受 `bj` 前缀**（2026-10-20 实测）：
+    //   真实行情库的 symbol 前缀有**三种** —— `sh` 5958 只 / `sz` 5876 只 / **`bj` 615 只（北交所）**。
+    //   旧正则 `/^(sh|sz)\d{6}$/` 把全部 615 只北交所标的挡在门外 ⇒ **K 线页对北交所完全不可用**（400）。
+    //   ⚠️ 北交所标的的 class 是 `stock` ⇒ 放行后走 `v_stock_*` 视图即可取到数据。
+    //   （实施计划 T70 卡里写的 `bd000` 是笔误 —— 库里的真实前缀是 `bj`。）
+    if (!/^(sh|sz|bj)\d{6}$/.test(symbol)) {
       return reply.code(400).send(fail(400, 'SYMBOL_NOT_FOUND', 'symbol 格式应为 sh600000 / sz000001'));
     }
 

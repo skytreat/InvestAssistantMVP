@@ -88,7 +88,7 @@ export async function backupDuckDB(): Promise<{ success: boolean; size?: number;
   try {
     _ensureBackupDir();
     // ⚠️ 必须复用 `db/duckdb.ts` 的解析器 —— 两处各读一遍 env 会在测试档位切换时口径不一
-  const duckdbPath = resolveDuckDBPath();
+    const duckdbPath = resolveDuckDBPath();
     const out = path.join(BACKUP_DIR, `v_stock_qfq.${_date()}.parquet`);
 
     const inst = await DuckDBInstance.create(duckdbPath);

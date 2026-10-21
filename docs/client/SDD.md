@@ -2791,14 +2791,14 @@ sequenceDiagram
 
 | # | 原始需求 §9 验收项 | SDD 指定测试载体 | 状态 |
 |---|--------------------|------------------|------|
-| F1 | 用户可注册/登录，JWT 鉴权 | `apps/backend/tests/unit/auth.test.ts` · `apps/backend/tests/integration/auth.test.ts` → `login_success` / `login_wrong_password` | ❌ 待建（文件在，用例名未落地） |
-| F2 | 支持 7 种交易类型录入（**买入/加仓/减仓/清仓/分红/送股/转增**） | `apps/backend/tests/integration/trade.test.ts` → `create_trade_all_types` | ❌ 待建（文件在，用例名未落地） |
+| F1 | 用户可注册/登录，JWT 鉴权 | `apps/backend/tests/integration/auth.test.ts` → `login_success` / `login_wrong_password` | ✅ 已有（2026-10-21 落地）|
+| F2 | 支持 7 种交易类型录入（**买入/加仓/减仓/清仓/分红/送股/转增**） | `apps/backend/tests/integration/trade.test.ts` → `create_trade_all_types` | ✅ 已有（2026-10-21 落地）|
 | F3 | 持仓实时聚合查询正确（移动加权成本） | `apps/backend/tests/unit/holding.test.ts` → `avg_cost_calc_5_scenarios` | ✅ 已有 |
 | F4 | 双口径收益率切换正确 | `apps/backend/tests/unit/holding.test.ts` → `yield_caliber_switch` | ✅ 已有 |
-| F5 | K 线图 + 副图指标渲染正确 | `apps/frontend` → `frontend.test.tsx` → `kline_render` | ❌ 待建（前端 0 测试，随 T61 交付） |
+| F5 | K 线图 + 副图指标渲染正确 | `apps/frontend/tests/unit/frontend.test.tsx` → `kline_render` + `kline-page.test.tsx` | ✅ 已有（2026-10-20 Wave 2 建 `kline_render`；2026-10-21 T70 补 `kline-page.test.tsx`）|
 | F6 | 策略插件信号生成 + 状态机（有→有不写信号，有→无只清除） | `packages/core/tests/plugin.test.ts` → `state_machine_4_paths`（§12.5 原文写作 `state machine_4_paths`，以实施计划 T91 的下划线写法为准） | ✅ 已有 |
 | F7 | 全市场条件选股 ≤ 3s | `apps/backend/tests/integration/scan5000.test.ts` → `scan_5000_target` | ✅ 已有（2026-10-21 落地；**规模型门槛 → 必须真库**，迷你库/CI 下可见地 skip） |
-| F8 | 每日 5 段自动化正确触发（17:00/17:01/17:02/17:03/17:05） | `apps/backend/tests/integration` → `cron_sequence_trigger` | ❌ 待建 |
+| F8 | 每日 5 段自动化正确触发（17:00/17:01/17:02/17:03/17:05） | `apps/backend/tests/integration/cronSequence.test.ts` → `cron_sequence_trigger` | ✅ 已有（2026-10-21 落地）|
 | F9 | 除权事件自动导入 + 候选池迁移 | `apps/backend/tests/integration` → `corporate_action_import` | ❌ 待建 |
 | F10 | SQLite 业务层备份恢复可用 | `apps/backend/tests/integration` → `backup_restore_sqlite` | ❌ 待建（`unit/backup.test.ts` 只覆盖备份侧，恢复侧 `restoreSQLiteBackup` 无用例） |
 | F11 | DuckDB 行情层备份恢复可用 | `apps/backend/tests/unit/backup.test.ts` → `backup_restore_duckdb` | ✅ 已有 |
@@ -2816,8 +2816,9 @@ sequenceDiagram
 | SE6 | admin API 路由二次角色校验 | `apps/backend/tests/integration/auth.test.ts` → `admin_role_guard` | ❌ 待建（文件在，用例名未落地） |
 | CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a`（部署机实测） | ❌ 待实测（需部署机） |
 
-> **统计（2026-10-21 更新）**：24 项中 **✅ 已有 9 项**（F3 / F4 / F6 / **F7** / F11 / **PE2** / PE6 / SE2 / SE5）、
-> **❌ 15 项**（10 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
+> **统计（2026-10-21 更新）**：24 项中 **✅ 已有 13 项**（**F1 / F2 / F3 / F4 / F5 / F6 / F7 / F8** / F11 / **PE2** / PE6 / SE2 / SE5）、
+> **❌ 11 项**（6 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
+> ⇒ **F1–F8 全部 PASS 载体已就位**（实施计划 G5.1 的判据）。
 > 剩余 ❌ 项的用例名落地前，实施计划 §12.1 G1.9（每个指定用例名全仓可 grep）**不能判 PASS**。
 
 ### 12.2 覆盖率目标

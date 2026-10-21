@@ -50,9 +50,8 @@ process.env.SQLITE_DB_PATH = path.join(TMP_DIR, 't55.db');
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { queryDuckDB, closeDuckDBInstance } = await import('../../src/db/duckdb.js');
-const { batchGetDailyRangeByView, getLatestMarketSnapshot } = await import(
-  '../../src/services/marketData.js',
-);
+const { batchGetDailyRangeByView, getLatestMarketSnapshot } =
+  await import('../../src/services/marketData.js');
 const { buildPoolQuery, loadCandidateDaily, parseScanFilters, registerStockScanRoutes } =
   await import('../../src/routes/stockscan.js');
 type AppliedScanFilters = import('../../src/routes/stockscan.js').AppliedScanFilters;
@@ -578,45 +577,47 @@ describe('T60c —— /api/market/latest 的新实现与视图口径逐条一致
   const itFull = marketDataTier() === 'full' ? it : it.skip;
 
   // ⚠️ 显式 timeout：oracle 查询要物化复权视图（真库实测 ≈11s）+ 另两次查询 ⇒ 默认 15s 不够
-  itFull('新实现与视图查询逐行一致（date / close / class）', async () => {
-    const { queryDuckDB } = await import('../../src/db/duckdb.js');
-    const { toDateString } = await import('../../src/services/marketData.js');
-    const newRows = await getLatestMarketSnapshot(5);
-    expect(newRows.length).toBe(5);
+  itFull(
+    '新实现与视图查询逐行一致（date / close / class）',
+    async () => {
+      const { queryDuckDB } = await import('../../src/db/duckdb.js');
+      const { toDateString } = await import('../../src/services/marketData.js');
+      const newRows = await getLatestMarketSnapshot(5);
+      expect(newRows.length).toBe(5);
 
-    // ⚠️ **不能假设新旧两条查询返回同一批 symbol**：
-    //   旧写法 `ORDER BY date DESC LIMIT 5` 在**同一日期**下的 tie-break 是任意的
-    //   （DuckDB 不保证同日期的行序）⇒ 新旧会各取到「最大交易日的 5 只」中的**不同**子集。
-    //   ⇒ 正确口径是：**用视图作 oracle，对新实现选出的那些 symbol 逐个比对 close 值**。
-    const symbols = newRows.map((r) => r.symbol);
-    const oracle = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(
-      `SELECT symbol, date, close FROM v_stock_qfq
+      // ⚠️ **不能假设新旧两条查询返回同一批 symbol**：
+      //   旧写法 `ORDER BY date DESC LIMIT 5` 在**同一日期**下的 tie-break 是任意的
+      //   （DuckDB 不保证同日期的行序）⇒ 新旧会各取到「最大交易日的 5 只」中的**不同**子集。
+      //   ⇒ 正确口径是：**用视图作 oracle，对新实现选出的那些 symbol 逐个比对 close 值**。
+      const symbols = newRows.map((r) => r.symbol);
+      const oracle = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(
+        `SELECT symbol, date, close FROM v_stock_qfq
         WHERE symbol IN (${symbols.map(() => '?').join(',')})
           AND date = (SELECT MAX(date) FROM v_stock_qfq)`,
-      symbols,
-    );
-    const oracleBySymbol = new Map(oracle.map((r) => [r.symbol, r.close]));
+        symbols,
+      );
+      const oracleBySymbol = new Map(oracle.map((r) => [r.symbol, r.close]));
 
-    // ① 逐 symbol：close 值与视图**完全相等**（零容差）
-    for (const r of newRows) {
-      expect(oracleBySymbol.has(r.symbol)).toBe(true);
-      expect(r.close).toBe(oracleBySymbol.get(r.symbol));
-    }
+      // ① 逐 symbol：close 值与视图**完全相等**（零容差）
+      for (const r of newRows) {
+        expect(oracleBySymbol.has(r.symbol)).toBe(true);
+        expect(r.close).toBe(oracleBySymbol.get(r.symbol));
+      }
 
-    // ② 全部 date 等于最大交易日
-    const maxDate = String(
-      (await queryDuckDB<{ d: unknown }>('SELECT MAX(date) AS d FROM v_stock_qfq'))[0].d,
-    );
-    for (const r of newRows) expect(r.date).toBe(toDateString(new Date(maxDate)));
+      // ② 全部 date 等于最大交易日
+      const maxDate = String(
+        (await queryDuckDB<{ d: unknown }>('SELECT MAX(date) AS d FROM v_stock_qfq'))[0].d,
+      );
+      for (const r of newRows) expect(r.date).toBe(toDateString(new Date(maxDate)));
 
-    // ③ 全部是 class='stock'（与视图的 INNER JOIN 一致）
-    const classes = await queryDuckDB<{ symbol: string; class: string }>(
-      `SELECT symbol, "class" FROM raw_symbol_class WHERE symbol IN (${symbols
-        .map(() => '?')
-        .join(',')})`,
-      symbols,
-    );
-    expect(classes.length).toBe(symbols.length);
-    for (const c of classes) expect(c.class).toBe('stock');
-  }, 120000);
+      // ③ 全部是 class='stock'（与视图的 INNER JOIN 一致）
+      const classes = await queryDuckDB<{ symbol: string; class: string }>(
+        `SELECT symbol, "class" FROM raw_symbol_class WHERE symbol IN (${symbols.map(() => '?').join(',')})`,
+        symbols,
+      );
+      expect(classes.length).toBe(symbols.length);
+      for (const c of classes) expect(c.class).toBe('stock');
+    },
+    120000,
+  );
 });

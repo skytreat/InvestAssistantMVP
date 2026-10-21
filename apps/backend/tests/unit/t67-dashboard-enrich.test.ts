@@ -35,12 +35,15 @@ import os from 'node:os';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { JwtPayload } from '../../src/services/auth.js';
-import { marketDataUsableFor, marketDataTier } from '../_marketData.js';
+import { marketDataTier } from '../_marketData.js';
 
 /** 真实行情库是否可用（顶层 await 判定一次） */
 // 🔴 2026-10-21 **两层开关**：本文件用例全是**数值型**断言（价格 / 昨收 / 落库口径），
 //    迷你库（真库的逐位一致子集）即可满足 → 用 `numeric` 能力守卫。
-const MARKET_DATA_AVAILABLE = await marketDataUsableFor('numeric');
+// ⚠️ 本文件**不需要** `MARKET_DATA_AVAILABLE` 守卫（主体用例用 mock 行情）；
+//   只有「**真实行情库**交叉验证」那两个 describe 需要，用的是
+//   `marketDataTier() === 'full'`（**不是** `MARKET_DATA_AVAILABLE`：
+//   迷你库也是行情库、数值型能力为 true，但**真库专属**的断言在迷你库上不成立）。
 
 // ── SQLite 隔离（必须在 import ConfigStore 之前设置）──
 const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-t67-'));
