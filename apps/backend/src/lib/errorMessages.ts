@@ -14,6 +14,7 @@ export const ERROR_MESSAGES: Record<string, string> = {
   TRADE_DUPLICATE: '该标的在该时刻已有同类型交易',
   DUPLICATE_IMPORT: '除权数据已导入，已跳过',
   SYMBOL_NOT_FOUND: '标的不存在',
+  USER_EXISTS: '用户名已存在',
   UNAUTHORIZED: '登录已失效，请重新登录',
   FORBIDDEN: '无权限执行该操作',
   INTERNAL_ERROR: '服务内部错误',

@@ -219,7 +219,9 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const existing = db.prepare('SELECT id FROM user_account WHERE username = ?').get(username);
       if (existing) {
-        return reply.code(409).send(fail(409, 'INTERNAL_ERROR', `用户 ${username} 已存在`));
+        // 🔴 `USER_EXISTS`（本波修复的缺陷 ③）：此前此处回的是 `INTERNAL_ERROR` ——
+        //   「服务内部错误」与「用户名重复」语义完全不对（前者是 500 级系统故障，后者是正常的 409 冲突）。
+        return reply.code(409).send(fail(409, 'USER_EXISTS', `用户 ${username} 已存在`));
       }
 
       // 角色裁决 + INSERT 放进同一个事务，避免「判定首用户」与「插入」之间的竞态
@@ -376,7 +378,8 @@ export async function registerAuthRoutes(app: FastifyInstance) {
 
       const existing = db.prepare('SELECT id FROM user_account WHERE username = ?').get(username);
       if (existing) {
-        return reply.code(409).send(fail(409, 'INTERNAL_ERROR', `用户 ${username} 已存在`));
+        // 🔴 `USER_EXISTS`（本波修复的缺陷 ③）：语义正确的 409 冲突码，不是 `INTERNAL_ERROR`。
+        return reply.code(409).send(fail(409, 'USER_EXISTS', `用户 ${username} 已存在`));
       }
       const role = requestedRole;
       const hash = hashPassword(password);

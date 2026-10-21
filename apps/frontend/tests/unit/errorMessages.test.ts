@@ -27,6 +27,7 @@ const BACKEND_ERROR_MESSAGES: Record<string, string> = {
   TRADE_DUPLICATE: '该标的在该时刻已有同类型交易',
   DUPLICATE_IMPORT: '除权数据已导入，已跳过',
   SYMBOL_NOT_FOUND: '标的不存在',
+  USER_EXISTS: '用户名已存在',
   UNAUTHORIZED: '登录已失效，请重新登录',
   FORBIDDEN: '无权限执行该操作',
   INTERNAL_ERROR: '服务内部错误',
@@ -52,16 +53,16 @@ const BACKEND_ERROR_MESSAGES: Record<string, string> = {
 };
 
 describe('T64 · 错误码表与后端一致', () => {
-  it('前端码表覆盖后端全部 24 个码（key 集合 ⊇ 后端）', () => {
+  it('前端码表覆盖后端全部 25 个码（key 集合 ⊇ 后端）', () => {
     const frontendKeys = Object.keys(ERROR_MESSAGES);
     for (const code of Object.keys(BACKEND_ERROR_MESSAGES)) {
       expect(frontendKeys, `前端码表缺少后端的 ${code}`).toContain(code);
     }
-    expect(Object.keys(BACKEND_ERROR_MESSAGES).length).toBe(24);
+    expect(Object.keys(BACKEND_ERROR_MESSAGES).length).toBe(25);
   });
 
-  it('前端码表恰好 24 个码（与后端表**完全一致**，不多不少）', () => {
-    expect(Object.keys(ERROR_MESSAGES).length).toBe(24);
+  it('前端码表恰好 25 个码（与后端表**完全一致**，不多不少）', () => {
+    expect(Object.keys(ERROR_MESSAGES).length).toBe(25);
     expect(Object.keys(ERROR_MESSAGES).sort()).toEqual(Object.keys(BACKEND_ERROR_MESSAGES).sort());
   });
 
@@ -86,6 +87,13 @@ describe('T64 · 错误码表与后端一致', () => {
     const hint = ERROR_MESSAGES.UNAUTHORIZED.hint ?? '';
     expect(hint).toContain('登录');
     expect(hint).toContain('返回');
+  });
+
+  it('USER_EXISTS：建号重名是业务冲突，不是「服务内部错误」', () => {
+    expect(ERROR_MESSAGES.USER_EXISTS.message).toBe('用户名已存在');
+    expect(ERROR_MESSAGES.USER_EXISTS.message).not.toContain('内部错误');
+    // 回落链可用：只给 code 也能翻出中文
+    expect(resolveErrorMessage({ code: 'USER_EXISTS' })).toBe('用户名已存在');
   });
 });
 

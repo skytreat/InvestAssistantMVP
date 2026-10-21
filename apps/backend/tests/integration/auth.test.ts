@@ -3,7 +3,7 @@
  *
  * 覆盖 SDD §12.4 auth 类：
  *   - login 200 / 401 密码错 / 401 用户不存在 / 400 缺字段
- *   - seed 201 新建 / 409 已存在
+ *   - seed 201 新建 / 409 USER_EXISTS
  *   - 无 token → 401 NO_TOKEN
  *   - 垃圾 token → 401 INVALID_TOKEN
  *   - 非 admin 走 admin 路由 → 403 FORBIDDEN
@@ -206,13 +206,23 @@ describe('Auth · seed', () => {
     expect(body.data.token.split('.').length).toBe(3);
   });
 
-  it('重复用户名 → 409', async () => {
+  it('重复用户名 → 409 USER_EXISTS（不是 INTERNAL_ERROR）', async () => {
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/auth/seed',
       payload: { username: ADMIN_USER, password: 'x', role: 'user' },
     });
     expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    // 🔴 建号重名是**业务冲突**，不是「服务内部错误」⇒ 必须是 USER_EXISTS（SDD §4.3）
+    expect(body.code).toBe('USER_EXISTS');
+    expect(body.error).toBe('USER_EXISTS');
+    expect(body.code).not.toBe('INTERNAL_ERROR');
+    // 仍是统一 envelope（SDD §4.2）
+    expect(body.data).toBeNull();
+    expect(typeof body.message).toBe('string');
+    expect(typeof body.timestamp).toBe('string');
+    expect('success' in body).toBe(false);
   });
 
   it('role 非法 → 400', async () => {

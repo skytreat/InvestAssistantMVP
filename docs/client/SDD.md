@@ -1401,6 +1401,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | 业务校验 | `TRADE_DUPLICATE` | 同标的 + 同类型 + 同日期 + **同时刻**已存在一笔**活记录**（见 §3.2 部分唯一索引） | 409 |
 | 业务校验 | `DUPLICATE_IMPORT` | 除权自动导入幂等冲突 | 200（跳过）|
 | 业务校验 | `SYMBOL_NOT_FOUND` | 标的不在自选/持仓（手动补充除权）| 404 |
+| 业务校验 | `USER_EXISTS` | 用户名已被占用（`POST /api/auth/register` / `POST /api/auth/seed` 建号重名）| 409 |
 | 权限 | `UNAUTHORIZED` | Token 无效或过期（缺失 / 无效 / 过期**统一用此码**，不再区分 `NO_TOKEN` / `INVALID_TOKEN`）| 401 |
 | 权限 | `FORBIDDEN` | admin API 普通用户访问 | 403 |
 | 系统 | `INTERNAL_ERROR` | 数据库异常、插件异常等 | 500 |
@@ -1411,6 +1412,12 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 > - `HOLDING_INSUFFICIENT` 统一为 **409**（§12.3 B1 原文写 400 系笔误，已同步修正）
 > - 新增 `TRADE_DUPLICATE`（§3.2 去重键落地所需）
 > - 统一响应 envelope 见 **§4.2**；**落地任务 T89a（Wave 1，加字段 + 错误码归一）/ T89b（Wave 8，删 `success`）** —— **两者均已落地**，现行契约即 §4.2
+>
+> **🆕 `USER_EXISTS`（Wave 8 缺陷修复 · 2026-10-21）**
+>
+> 建号重名是**正常的业务冲突**（409），此前误用 `INTERNAL_ERROR`（语义 =「服务内部错误」，
+> 对应 500 级系统故障）⇒ 现单列 `USER_EXISTS`。
+> ⚠️ 触发点有两处，**两处口径必须一致**：`POST /api/auth/register` 与 `POST /api/auth/seed`。
 
 ### 4.4 核心 API 路由清单
 
@@ -1430,6 +1437,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/quote/:symbol/kline` | GET | 是 | **K 线 + 指标 + 信号**（T53 落地 + **T70 配套补下发 `metrics_json`**）：`?days=120`（10~500，缺省 120）+ `?fq=qfq\|bfq\|hfq\|raw`（**四值白名单**，非法值 → **400 `PARAM_INVALID`**，**绝不静默回落 qfq**）+ `?rsi_period=14` / `?macd_fast=12` / `?macd_slow=26` / `?macd_signal=9`（越界 → 400 `PARAM_INVALID`）。返回 `{symbol, fq, symbolClass, klines[]（**升序** OHLCV）, indicators{macd, rsi, ma5/ma10/ma20/ma60, params}, signals[]}`。<br>🔴 **`signals[]` = **当前用户**该标的近 20 条信号（`user_id` **按 token 隔离**，**绝不信请求参数**；`is_deleted=1` 不下发）**，每项 = `trade_date` / `direction` / `label` / `strength` / `plugin_id` + **`metrics_json`（信号指标明细）**。<br>⚠️ **窗口口径 = 「最近 20 条，按 `trade_date` 升序排列」**（内层 `ORDER BY trade_date DESC` + `LIMIT 20` 取最近，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）—— 与 `GET /api/signal` 的分页窗口**完全同口径** ⇒ 同一用户 + 同一标的 + 同一条数时，两个端点返回**同一个行集合**（G5.5 的「signals 升序」= **页内行的排列方向**，与「取哪 N 条」不冲突）。<br>**`metrics_json` 的形态 = 原始 JSON 文本**（SQLite TEXT 列，由 `signalService.serializeMetrics` 写入；无明细时为 **`null`**，不是字符串 `'null'`）—— 与 `GET /api/signal`（`SELECT *`）**同形态、逐字节一致** ⇒ 两个端点口径统一，前端用**同一套** `parseMetricsJson` 解析即可。<br>**为何不下发解析后的对象**：解析属展示层职责；后端解析会让两个端点的字段类型分叉，且遇历史脏数据（非 JSON 文本）会把整个端点打成 500。<br>**收益**：K 线页信号标记 hover tooltip（PRD §5.2「策略信号标记：鼠标悬停显示方向 + 强度 + **指标明细**」）**无需**再发 `GET /api/signal?asset_code=` 补取 ⇒ **少一次网络往返**（PRD §5.2「参数实时生效 … **零网络请求**」）。<br>⚠️ **体积**：明细随 `SIGNAL_LIMIT=20` 天然封顶（内置插件产出的 metrics ≤ 7 键 / ≤ 200 字节）⇒ **实测**（120 根日线 + 20 条各带 6 键明细的信号）：整包响应 ≈ **20.3 KB**，摘掉 `metrics_json` 后 ≈ **17.9 KB** ⇒ 明细净增 ≈ **2.3 KB（+13%）** ⇒ **不需要**「只给最近 N 条带明细」的裁剪。<br>✅ **形状一致性**：`klines` 为空时该分支**同样返回 `signals: []`** ⇒ 响应里 `signals` 键**恒存在**（前端不必写 `Array.isArray(body.data.signals)` 兜底）|
 | `/api/strategy/plugins` | GET | 是 | 内置 + 自定义插件列表（含 enabled 状态）|
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
+| `/api/strategy/plugins/:id/toggle` | PUT | 是 | **启用 / 禁用**单个插件。body `{ enabled }`（接受 `true/false` / `1/0` / `'1'/'0'/'true'/'false'`，后端统一收口成 SQLite 的 `0/1`）；**无法识别的取值 → 400 `PARAM_INVALID`**（不是 500）。⚠️ **方法必须是 PUT** —— Fastify 不做方法回退，用 POST 会 404 |
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
 | `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
 | `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |

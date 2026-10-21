@@ -181,7 +181,8 @@ const ROUTE_CASES: RouteCase[] = [
   // ── 插件 / 策略 ──
   { method: 'GET', url: '/api/strategy/plugins' },
   { method: 'PUT', url: '/api/strategy/plugins/:id/config', payload: { enabled: true, params: {} } },
-  // ⚠️ `enabled` 必须传数字：better-sqlite3 **不能绑定 boolean**（传 true 会 500）
+  // ⚠️ `enabled` 传数字或布尔都行：后端已在**参数层**收口成 SQLite 的 0/1
+  //    （本波修复的缺陷 ② —— 原先传 boolean 会让 better-sqlite3 绑定失败 ⇒ 500 + 非 envelope 体）
   { method: 'PUT', url: '/api/strategy/plugins/:id/toggle', payload: { enabled: 1 } },
   { method: 'POST', url: '/api/strategy/reload' },
   { method: 'POST', url: '/api/strategy/plugins/reload' },
