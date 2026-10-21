@@ -30,7 +30,14 @@ export default defineConfig({
      *   它**必须独占运行**：与全量套件同进程跑时耗时 **10082ms**、单独跑 **2942ms**
      *   ⇒ 根因是 `src/db/duckdb.ts` 的**进程内单例 DuckDB** 的内部缓冲被前面几十个测试驱逐
      *   ⇒ 性能门槛在受控环境外测没有意义。
-     * ⇒ 门禁 G6.4 的判据方式：**`npm run test:pe2 -w @invest/backend`**（见 `vitest.pe2.config.ts`）。
+     *   ⇒ 门禁 G6.4 的判据方式：**`npm run test:pe2 -w @invest/backend`**（见 `vitest.pe2.config.ts`）。
+     *
+     * 🔴 **排除 `tests/http/`**（2026-10-21，Wave 8 / T60 新增）：
+     *   `tests/http/` 是「**真 listen**」的 HTTP 层验收套件（CORS / SE1 / PE1‑PE5 / N+1），
+     *   必须**独立运行**（自己的配置 + 自己的端口段 + 真浏览器 + 真行情库），
+     *   混进主套件会：① 抢 51200‑51999 端口 ② 抢 DuckDB 文件锁
+     *   ③ 让「性能门槛」在受污染的进程里测 ⇒ 数字不可信。
+     *   ⇒ 判据方式：**`npm run test:http -w @invest/backend`**（见 `vitest.http.config.ts`）。
      */
     exclude: [
       '**/node_modules/**',
@@ -39,6 +46,7 @@ export default defineConfig({
       '**/.{idea,git,cache,output,temp}/**',
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,eslint,prettier}.config.*',
       'tests/integration/scan5000.test.ts',
+      'tests/http/**',
     ],
     globals: true,
     testTimeout: 15000,

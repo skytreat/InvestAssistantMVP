@@ -12,7 +12,7 @@
  *
  * 🔒 **与后端表严格同步（T64）**
  *
- * 后端表 = `apps/backend/src/lib/errorMessages.ts`（24 个码）。本表**必须**与它
+ * 后端表 = `apps/backend/src/lib/errorMessages.ts`（25 个码）。本表**必须**与它
  * **逐码对齐**（key 集合相同 + 同一码的 `message` 逐字相同）——
  * 后端是「缺 message 时的默认文案」来源，前端是「message 缺失时的兜底」来源，
  * 两边文案不一致就会出现「同一错误码在两个入口显示不同话术」。
@@ -37,6 +37,7 @@ export const ERROR_MESSAGES: Record<string, ErrorMessage> = {
   TRADE_DUPLICATE: { message: '该标的在该时刻已有同类型交易', hint: '如需分笔录入，请修改成交时间' },
   DUPLICATE_IMPORT: { message: '除权数据已导入，已跳过' },
   SYMBOL_NOT_FOUND: { message: '标的不存在', hint: '请确认代码格式为 sh600000 / sz000001' },
+  USER_EXISTS: { message: '用户名已存在', hint: '请更换一个用户名后重试' },
   UNAUTHORIZED: {
     message: '登录已失效，请重新登录',
     // PRD §5.9「登录态过期提示」：过期后自动跳登录页并**保留当前页面路径**（登录后可返回原页面）

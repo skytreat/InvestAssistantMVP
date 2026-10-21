@@ -373,8 +373,8 @@ export async function registerTradeRoutes(app: FastifyInstance) {
    *   ADR-003 §「缓解措施（必做）」明确要求前端做**提交前预检** —— 本端点就是那个预检的数据源。
    *
    * ── 响应 ──
-   *   未占用：`{ code: 0, data: { taken: false }, timestamp, success: true }`
-   *   已占用：`{ code: 0, data: { taken: true, taken_at: "<ISO8601>" }, timestamp, success: true }`
+   *   未占用：`{ code: 0, data: { taken: false }, timestamp }`
+   *   已占用：`{ code: 0, data: { taken: true, taken_at: "<ISO8601>" }, timestamp }`
    *
    * 🔴 **参数缺失 / 非法 → 400 `PARAM_INVALID`，绝不返回 `taken:false`**：
    *   `taken:false` 的语义是「确定没被占用」。若把「查不了」也表达成 `taken:false`，

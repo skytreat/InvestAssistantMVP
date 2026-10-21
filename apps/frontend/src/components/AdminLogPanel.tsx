@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
@@ -200,7 +201,7 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
           params: buildParams(filters, page, pageSize),
         });
         if (cancelled) return;
-        if (res.data.success) {
+        if (isOkEnvelope(res.data)) {
           setLogs(Array.isArray(res.data.data) ? (res.data.data as LogRow[]) : []);
           setTotal(res.data.pagination?.total ?? 0);
         } else {
@@ -240,7 +241,7 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
     setFallbackError(null);
     try {
       const res = await api.get('/admin/system-log/fallback');
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         const data = (res.data.data ?? {}) as { exists?: boolean; lines?: string[] };
         setFallback({ exists: data.exists === true, lines: data.lines ?? [] });
       } else {

@@ -16,7 +16,7 @@
  *    依赖 App 外壳提供的 `<header>` / `<main>` / `<footer>`；
  *    只渲染页面组件会得到一堆「页面外没有 landmark」的**假违规**。
  * 2. mock 掉 `src/api/client`（**不是** mock axios）——
- *    页面拿到的仍是后端统一 envelope（`{ code, data, success }`），
+ *    页面拿到的仍是后端统一 envelope（`{ code, data, timestamp }`），
  *    渲染路径与线上一致。
  * 3. 对 `document.body` 跑 axe，断言 **0 条 critical**。
  *
@@ -70,7 +70,7 @@ vi.mock('../../src/api/client', () => ({
 
 /** 造一个后端统一 envelope 的成功响应 */
 function ok(data: unknown, extra?: Record<string, unknown>) {
-  return { data: { code: 0, data, timestamp: '2026-10-20T00:00:00.000Z', success: true, ...(extra ?? {}) } };
+  return { data: { code: 0, data, timestamp: '2026-10-20T00:00:00.000Z', ...(extra ?? {}) } };
 }
 
 /* ------------------------------------------------------------------ *

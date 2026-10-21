@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
@@ -86,7 +87,7 @@ export default function Settings() {
     setError(null);
     try {
       const res = await api.get('/strategy/plugins');
-      if (res.data.success) setPlugins(res.data.data ?? []);
+      if (isOkEnvelope(res.data)) setPlugins(res.data.data ?? []);
       else setError(res.data.message ?? '加载失败');
     } catch (err) {
       setError(extractErrorMessage(err, '加载失败'));
@@ -123,7 +124,9 @@ export default function Settings() {
     setSaving(p.id);
     setError(null);
     try {
-      await api.post(`/strategy/plugins/${p.id}/config`, { params });
+      // ⚠️ **必须用 PUT**（SDD §4.4）：后端只注册了 `PUT /api/strategy/plugins/:id/config`。
+      //   Fastify **不做方法回退** ⇒ 用 POST 会 404（按钮点了没反应）。
+      await api.put(`/strategy/plugins/${p.id}/config`, { params });
       setMsg(`已保存「${p.name}」参数`);
       setExpanded(null);
       await load();
@@ -138,7 +141,9 @@ export default function Settings() {
     const next = p.enabled ? 0 : 1;
     setError(null);
     try {
-      await api.post(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
+      // ⚠️ **必须用 PUT**（SDD §4.4）：后端只注册了 `PUT /api/strategy/plugins/:id/toggle`。
+      //   此前这里误用 POST ⇒ 设置页的「启用/禁用」开关**点了必然 404**。
+      await api.put(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
       setMsg(`已${next ? '启用' : '禁用'}「${p.name}」`);
       await load();
     } catch (err) {

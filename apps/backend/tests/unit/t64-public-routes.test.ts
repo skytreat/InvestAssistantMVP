@@ -91,12 +91,13 @@ describe('T64 —— register / refresh 的公开可达性（真实 registerRout
 
     const r = await post('/api/auth/register', { username: U.guest, password: 'pw-123456' });
     expect(r.status).toBe(403);
-    // 🔴 标准信封：code / message / data===null / timestamp / success===false（SDD §4.2）
-    expect(r.body.code).toBeTruthy();
+    // 🔴 标准信封：code / message / data===null / timestamp（SDD §4.2）
+    //    T89b 起响应体**不再有** `success` 键（成功判定统一看 `code === 0`）
+    expect(r.body.code).toBe('REGISTRATION_CLOSED');
     expect(r.body.message).toBeTruthy();
     expect(r.body.data).toBeNull();
     expect(r.body.timestamp).toBeTruthy();
-    expect(r.body.success).toBe(false);
+    expect('success' in r.body).toBe(false);
   });
 
   it('refresh：带有效 refresh_token → 换到新 token（**自动续期路径可达**）', async () => {

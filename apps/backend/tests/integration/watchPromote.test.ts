@@ -84,7 +84,7 @@ describe('Watch · 候选迁移到自选（G4 / T92：只打标记不建关联�
     const promo = await promote(CODE);
     expect(promo.statusCode).toBe(200);
     const body = JSON.parse(promo.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.from).toBe('candidate');
     expect(body.data.to).toBe('watch');
     // T92 验收点⑤：响应体含 autoCreated:false 与中文提示
@@ -182,7 +182,7 @@ describe('Positions · 现价 / 市值 enrich（T33）', () => {
     const res = await bundle.app.inject({ method: 'GET', url: '/api/holding', headers: authHeaders() });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
 
     const pos = body.data.find((p: any) => p.asset_code === CODE);
     expect(pos).toBeDefined();

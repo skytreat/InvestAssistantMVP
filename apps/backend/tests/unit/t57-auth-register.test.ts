@@ -196,7 +196,7 @@ describe('T57 — POST /api/auth/register 路由级越权用例', () => {
     resetUserTable();
     const { status, body } = await registerRaw(app, { username: 'alice_admin', password: 'pw-alice-1' });
     expect(status).toBe(201);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     const data = body.data as SessionShape;
     expect(data.user.role).toBe('admin');
     expect(typeof data.token).toBe('string');
@@ -267,7 +267,7 @@ describe('T57 — POST /api/auth/register 路由级越权用例', () => {
     expect(status).toBe(400);
     expect(body.error).toBe('PARAM_INVALID');
   });
-  it('重复用户名 → 409', async () => {
+  it('重复用户名 → 409 USER_EXISTS', async () => {
     const adminToken = tokenFor(1, 'alice_admin', 'admin');
     // T81：自带前置 —— 先建一个同名用户再重试，不依赖 bootstrap 用例跑过
     const seeded = await registerRaw(
@@ -276,12 +276,15 @@ describe('T57 — POST /api/auth/register 路由级越权用例', () => {
       adminToken,
     );
     expect(seeded.status).toBe(201);
-    const { status } = await registerRaw(
+    const { status, body } = await registerRaw(
       app,
       { username: 'dup_user_t57', password: 'pw-dup-1234' },
       adminToken,
     );
     expect(status).toBe(409);
+    // 🔴 建号重名是**业务冲突**（SDD §4.3 `USER_EXISTS`），不是 `INTERNAL_ERROR`
+    expect(body.code).toBe('USER_EXISTS');
+    expect(body.error).toBe('USER_EXISTS');
   });
   it('非法 role 值 → 400 PARAM_INVALID', async () => {
     const adminToken = tokenFor(1, 'alice_admin', 'admin');
@@ -315,7 +318,7 @@ describe('T57 — POST /api/auth/refresh 双 token + 轮换', () => {
     expect(row.refresh_token_expires_at).toBe(session.refresh_token_expires_at);
     const { status, body } = await refreshRaw(app, session.refresh_token);
     expect(status).toBe(200);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     const rotated = body.data as SessionShape; // 新 access token 有效（7d，由 services/auth.ts 签发）
     const payload = verifyToken(rotated.token);
     expect(payload).not.toBeNull();

@@ -538,7 +538,7 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.filters).toMatchObject({
       assetType: 'etf',
       excludeSt: true,

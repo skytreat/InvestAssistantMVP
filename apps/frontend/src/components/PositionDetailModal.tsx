@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle } from '../theme/styles';
@@ -66,8 +67,8 @@ interface TradeRow {
 
 /** `GET /api/trade` 的响应体（envelope）*/
 interface TradeListEnvelope {
-  success?: boolean;
-  code?: number;
+  /** 🔴 T89b：成功判定唯一口径 `code === 0`（后端已删 `success` 字段） */
+  code?: number | string;
   message?: string;
   data?: TradeRow[];
   pagination?: { page: number; limit: number; total: number; totalPages: number };
@@ -148,7 +149,7 @@ export function PositionDetailModal({
       .then((res) => {
         if (cancelled) return;
         const body = res.data;
-        if (typeof body.code === 'number' ? body.code === 0 : body.success === true) {
+        if (isOkEnvelope(body)) {
           setTrades(Array.isArray(body.data) ? body.data : []);
         } else {
           setTradesError(body.message ?? '交易记录加载失败');

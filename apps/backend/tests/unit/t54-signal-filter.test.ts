@@ -126,7 +126,7 @@ async function query(qs: string): Promise<{ rows: SignalRow[]; total: number }> 
     data: SignalRow[];
     pagination: { total: number };
   };
-  expect(body.success).toBe(true);
+  expect(body.code).toBe(0);
   return { rows: body.data, total: body.pagination.total };
 }
 
@@ -142,7 +142,7 @@ describe('T54 · asset_code 单标的过滤', () => {
     const res = await app.inject({ method: 'GET', url: '/api/signal?asset_code=sz999999' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data).toEqual([]);
     expect(body.pagination.total).toBe(0);
     expect(body.pagination.totalPages).toBe(0);
@@ -262,7 +262,7 @@ describe('T54 · 分页窗口 = 最近 N 条（页内升序）', () => {
       data: SignalRow[];
       pagination: { total: number };
     };
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     return { rows: body.data, total: body.pagination.total };
   }
 

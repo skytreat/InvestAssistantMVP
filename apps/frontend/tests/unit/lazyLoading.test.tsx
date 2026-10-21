@@ -118,8 +118,8 @@ beforeEach(() => {
   adminChunk.mockClear();
   getMock.mockClear();
   postMock.mockClear();
-  getMock.mockResolvedValue({ data: { code: 0, data: [], success: true } });
-  postMock.mockResolvedValue({ data: { code: 0, data: null, success: true } });
+  getMock.mockResolvedValue({ data: { code: 0, data: [] } });
+  postMock.mockResolvedValue({ data: { code: 0, data: null } });
 });
 
 /* ────────────────────────────── 用例 ────────────────────────────── */
@@ -229,12 +229,11 @@ describe('T66 · React.lazy 代码分割', () => {
         return {
           data: {
             code: 0,
-            success: true,
             data: { klines: [], indicators: null, signals: [] },
           },
         };
       }
-      return { data: { code: 0, data: [], success: true } };
+      return { data: { code: 0, data: [] } };
     });
 
     const { App, store } = await loadApp();

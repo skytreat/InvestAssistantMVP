@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
+import { resolveErrorMessage } from '../api/errorMessages';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
@@ -327,15 +329,22 @@ export default function TradeInput() {
     setLoading(true);
     try {
       const res = await api.post('/trade', payload);
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setResult(res.data.data as TradeResult);
       } else {
-        const errMsg = res.data.message ?? '请求失败';
-        setError(errMsg === 'HOLDING_INSUFFICIENT' ? '持仓不足' : errMsg);
+        // ⚠️ **不再拿中文文案去比错误码**（本波修复的缺陷 ④）：
+        //   T89a 起 `message` 载中文、`code` 载错误码 —— 拿 message 比 'HOLDING_INSUFFICIENT'
+        //   **恒为 false**（死代码）。且后端已给「持仓不足：无法sell sh600000」这种
+        //   **带标的与交易类型**的具体文案 ⇒ 覆盖成笼统的「持仓不足」反而丢信息。
+        //   口径：`resolveErrorMessage` = message 优先 → 缺 message 时按 code 查码表 → 兜底。
+        setError(resolveErrorMessage(res.data, '请求失败'));
       }
     } catch (err) {
-      const errMsg = extractErrorMessage(err);
-      setError(errMsg === 'HOLDING_INSUFFICIENT' ? '持仓不足' : errMsg);
+      // ⚠️ HTTP 409 的 HOLDING_INSUFFICIENT 走的是**异常**分支（axios 对 4xx 抛错），
+      //   不是上面的 else 分支。
+      //   `extractErrorMessage` 内置回落链：message →（缺）按 code 查码表 → 兜底，
+      //   ⇒ 错误码仍然是判定依据，只是经由码表而不是「中文文案 == 错误码」。
+      setError(extractErrorMessage(err));
     } finally {
       setLoading(false);
     }

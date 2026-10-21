@@ -58,7 +58,7 @@ describe('Admin · run-datacheck', () => {
     expect([200, 500]).toContain(res.statusCode);
     if (res.statusCode === 200) {
       const body = JSON.parse(res.body);
-      expect(body.success).toBe(true);
+      expect(body.code).toBe(0);
       expect(Array.isArray(body.data.summaries)).toBe(true);
       expect(body.data.summaries.length).toBeGreaterThan(0);
     }
@@ -86,7 +86,7 @@ describe('Admin · run-signal', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.stats).toBeDefined();
     expect(typeof body.data.stats.total).toBe('number');
     expect(typeof body.data.stats.success).toBe('number');
@@ -116,7 +116,7 @@ describe('Admin · system-log 分页查询', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(Array.isArray(body.data)).toBe(true);
     expect(body.pagination).toBeDefined();
     expect(body.pagination.page).toBe(1);
@@ -175,7 +175,7 @@ describe('Admin · system-log 日期区间过滤（Wave 7 · 卡 1 · 裁决 D-3
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
 
     // 每一条都在区间内（闭区间）
     for (const row of body.data) {
@@ -266,7 +266,7 @@ describe('Admin · 系统日志降级记录（Wave 7 · 卡 1 · I-13）', () =>
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.exists).toBe(true);
     expect(body.data.lines).toHaveLength(2);
     expect(body.data.lines[0]).toContain('降级第一行');
@@ -285,7 +285,7 @@ describe('Admin · 系统日志降级记录（Wave 7 · 卡 1 · I-13）', () =>
     });
     expect(empty.statusCode).toBe(200);
     const emptyBody = JSON.parse(empty.body);
-    expect(emptyBody.success).toBe(true);
+    expect(emptyBody.code).toBe(0);
     expect(emptyBody.data.exists).toBe(false);
     expect(emptyBody.data.lines).toEqual([]);
   });
@@ -443,7 +443,8 @@ describe('G7.4 · admin 端点逐端点 403（普通用户 · 管理员二次鉴
     const body = JSON.parse(res.body);
     expect(body.code).toBe('FORBIDDEN');
     expect(body.error).toBe('FORBIDDEN');
-    expect(body.success).toBe(false);
+    // 🔴 T89b：响应体**不再有** `success` 键
+    expect('success' in body).toBe(false);
     expect(body.data).toBeNull();
     expect(typeof body.message).toBe('string');
     expect(body.message.length).toBeGreaterThan(0);

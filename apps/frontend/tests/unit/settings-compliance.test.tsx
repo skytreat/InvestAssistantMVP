@@ -35,10 +35,10 @@ vi.mock('../../src/api/client', () => ({ api: { get: getMock, post: postMock } }
 
 beforeEach(() => {
   getMock.mockResolvedValue({
-    data: { code: 0, data: [], timestamp: '2026-10-21T00:00:00.000Z', success: true },
+    data: { code: 0, data: [], timestamp: '2026-10-21T00:00:00.000Z' },
   });
   postMock.mockResolvedValue({
-    data: { code: 0, data: null, timestamp: '2026-10-21T00:00:00.000Z', success: true },
+    data: { code: 0, data: null, timestamp: '2026-10-21T00:00:00.000Z' },
   });
 });
 

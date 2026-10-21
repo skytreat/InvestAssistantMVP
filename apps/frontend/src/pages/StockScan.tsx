@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessageOrString } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import PluginParamForm, {
@@ -360,7 +361,7 @@ export default function StockScan() {
         ...(marketCapMaxYi.trim() !== '' ? { market_cap_max: Number(marketCapMaxYi) } : {}),
         // ⚠️ 不传 industry_code：板块表 0 行 → 传了会把结果清空（见文件头说明）
       });
-      if (res.data?.success && res.data?.data) {
+      if (isOkEnvelope(res.data) && res.data?.data) {
         setResults((res.data.data.results ?? []) as ScanResult[]);
         setTotalCandidates(res.data.data.totalCandidates ?? 0);
         setTotalPass(res.data.data.total ?? 0);
@@ -383,7 +384,7 @@ export default function StockScan() {
     setActionError('');
     try {
       const res = await api.post('/candidate', { asset_code: symbol });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         markRow(symbol, 'candidate');
         setActionMsg(`${symbol} 已加入候选池`);
       } else {
@@ -408,7 +409,7 @@ export default function StockScan() {
     markRow(symbol, 'loading');
     try {
       const res = await api.post('/watch', { asset_code: symbol });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         markRow(symbol, 'watch');
         setActionMsg(`${symbol} 已加入自选`);
       } else {
@@ -441,7 +442,7 @@ export default function StockScan() {
     setBatchLoading(true);
     try {
       const res = await api.post('/candidates/batch', { asset_codes: codes });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         const data = (res.data.data ?? {}) as {
           added?: number;
           skipped?: number;

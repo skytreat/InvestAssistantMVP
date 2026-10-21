@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { cardStyle, cardTitleStyle } from '../theme/styles';
@@ -223,7 +224,7 @@ export default function DatacheckCards({ items, refreshKey }: DatacheckCardsProp
     setError(null);
     try {
       const res = await api.get('/admin/datacheck/result');
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         setRemote(Array.isArray(res.data.data) ? (res.data.data as DatacheckItem[]) : []);
       } else {
         setError(res.data?.message ?? '请求失败');

@@ -166,7 +166,7 @@ describe('M3 Trade + 持仓校验', () => {
     const res = snap.buy;
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.position.totalQuantity).toBe(100);
     expect(body.data.position.avgCost).toBeCloseTo((1000 + 1) / 100, 4);
   });
@@ -175,7 +175,7 @@ describe('M3 Trade + 持仓校验', () => {
     const res = snap.oversell;
     expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(body.code).toBe('HOLDING_INSUFFICIENT');
     expect(body.error).toBe('HOLDING_INSUFFICIENT');
   });
 
@@ -183,7 +183,7 @@ describe('M3 Trade + 持仓校验', () => {
     const res = snap.sell50;
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.position.totalQuantity).toBe(50);
   });
 
@@ -191,7 +191,7 @@ describe('M3 Trade + 持仓校验', () => {
     const res = snap.positions;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     const found = body.data.find((p: any) => p.asset_code === 'sh600000');
     expect(found).toBeDefined();
     expect(found.totalQuantity).toBe(50);

@@ -8,6 +8,249 @@ on:
 
 jobs:
   # ============================================================================
+  # Coverage Gate —— SDD §12.2（覆盖率目标）+ §12.6（CI 阻断点）
+  #
+  # 🔴 **这是 T86b 恢复的门禁**（SDD §12.2 的表 + §12.6 的「核心算法 + 插件引擎 <90% 阻断合入」）。
+  #    此前按 DEC-12 B-5 裁决**暂缓**（§12.4 E3 降为「frontend ≥60% / backend 不低于基线」，
+  #    `ci.yml` 无 gate 步骤）⇒ 覆盖率完全不受 CI 约束。T86b 已补齐测试存量并恢复本 job。
+  #
+  # 独立成 job（与 lint-and-typecheck 同理）：PR 页面上一眼可见红/绿，
+  #    且「覆盖率不达标」不会淹没在 build-and-test 的一堆步骤日志里。
+  #
+  # 🔴 **为什么自己跑 `npm run test:coverage` 而不是复用 build-and-test 的 coverage 产物**：
+  #    build-and-test 的后端 coverage 只覆盖 `tests/unit`（integration / smoke 分开跑、不带 coverage），
+  #    而 `npm run test:coverage` 覆盖 unit + integration + smoke ⇒ **两个口径的数字不同**。
+  #    ⇒ 门禁必须用**与本地 `npm run test:coverage` 完全一致**的口径，
+  #    否则会出现「本地全绿 / CI 全红」（AGENTS.md §CI 与本地不一致的三个陷阱 同类问题）。
+  #
+  # ⚠️ **v8 provider 的输出格式**（SDD §12.6 D14）：
+  #    `@vitest/coverage-v8` 输出 **v8 ICRCov**（`coverage-final.json`）——
+  #    **没有** Istanbul 的 `f.l.found` / `f.l.get` ⇒ 解析必须读 `.s`（语句执行次数）
+  #    与 `.b`（分支各路径执行次数）。
+  #    `packages/core` 的 vitest 配置只开了 `json` reporter（**没有** `json-summary`），
+  #    后端 / 前端开了 `json-summary` ⇒ 下面的脚本**两种格式都兼容**。
+  #
+  # 门槛（SDD §12.2 原值，T86b 恢复）：
+  #    核心算法层   行 ≥90% / 分支 ≥85%
+  #    插件引擎     行 ≥90% / 分支 ≥85%
+  #    C1-C12 校验  行 ≥85% / 分支 ≥80%
+  #    前端         行 ≥70% / 分支 ≥65%
+  # ============================================================================
+  coverage-gate:
+    runs-on: ubuntu-latest
+    name: Coverage Gate — SDD §12.2 / §12.6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      # ⚠️ 必须先 build core —— `apps/backend/tsconfig.json` 没有 paths 映射，
+      #    后端 tsc 走 `packages/core/dist`（gitignored）。
+      - name: Build core
+        run: npm run build -w @invest/core
+
+      # 与本地 `npm run test:coverage` 同一个脚本 ⇒ 门禁数字与本地一致
+      - name: Run coverage (backend unit+integration+smoke / core / frontend)
+        run: npm run test:coverage
+
+      - name: Coverage Gate (低于 SDD §12.2 门槛 → exit 1)
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const ROOT = process.cwd();
+
+          /**
+           * 读一个 workspace 的覆盖率。
+           * 优先 `coverage-summary.json`；没有则回退 `coverage-final.json`
+           * —— 后者是 @vitest/coverage-v8 的 **v8 ICRCov 格式**：
+           *    没有 Istanbul 的 `f.l.found` / `f.l.get`（SDD §12.6 D14），
+           *    必须读每个文件的 `.s`（语句执行次数）/ `.b`（分支各路径执行次数）。
+           */
+          function loadWorkspace(dir) {
+            const summaryPath = path.join(dir, 'coverage-summary.json');
+            if (fs.existsSync(summaryPath)) {
+              const raw = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+              const files = {};
+              for (const [k, v] of Object.entries(raw)) {
+                if (k === 'total') continue;
+                files[k] = { lines: v.lines, branches: v.branches };
+              }
+              return files;
+            }
+            const finalPath = path.join(dir, 'coverage-final.json');
+            if (!fs.existsSync(finalPath)) return null;
+            const cov = JSON.parse(fs.readFileSync(finalPath, 'utf8'));
+            const files = {};
+            for (const [p, c] of Object.entries(cov)) {
+              let st = 0, sh = 0, bt = 0, bh = 0;
+              for (const cnt of Object.values(c.s || {})) {
+                st += 1;
+                if (cnt > 0) sh += 1;
+              }
+              for (const arr of Object.values(c.b || {})) {
+                for (const cnt of arr) {
+                  bt += 1;
+                  if (cnt > 0) bh += 1;
+                }
+              }
+              files[p] = {
+                lines: { total: st, covered: sh, pct: st === 0 ? 100 : (sh / st) * 100 },
+                branches: { total: bt, covered: bh, pct: bt === 0 ? 100 : (bh / bt) * 100 },
+              };
+            }
+            return files;
+          }
+
+          const WORKSPACES = {
+            core: loadWorkspace(path.join(ROOT, 'packages/core/coverage')),
+            backend: loadWorkspace(path.join(ROOT, 'apps/backend/coverage')),
+            frontend: loadWorkspace(path.join(ROOT, 'apps/frontend/coverage')),
+          };
+
+          for (const [ws, files] of Object.entries(WORKSPACES)) {
+            if (!files) {
+              console.error(`FAIL  缺少覆盖率数据：${ws} —— 先跑 npm run test:coverage`);
+              process.exit(1);
+            }
+          }
+
+          const MODULES = [
+            {
+              label: '核心算法层（packages/core/src）',
+              min: { lines: 90, branches: 85 },
+              pick: (p) => p.includes('/packages/core/src/'),
+            },
+            {
+              label: '插件引擎（pluginEngine.ts + packages/core/src/indicators）',
+              min: { lines: 90, branches: 85 },
+              pick: (p) =>
+                p.includes('/apps/backend/src/services/pluginEngine.ts') ||
+                p.includes('/packages/core/src/indicators/'),
+            },
+            {
+              label: '数据校验引擎 C1-C12（validator.ts）',
+              min: { lines: 85, branches: 80 },
+              pick: (p) => p.includes('/apps/backend/src/services/validator.ts'),
+            },
+            {
+              label: '前端（apps/frontend/src）',
+              min: { lines: 70, branches: 65 },
+              pick: (p) => p.includes('/apps/frontend/src/'),
+            },
+          ];
+
+          let failed = 0;
+          for (const m of MODULES) {
+            let lt = 0, lc = 0, bt = 0, bc = 0, count = 0;
+            for (const files of Object.values(WORKSPACES)) {
+              for (const [p, v] of Object.entries(files)) {
+                const norm = p.replace(/\\/g, '/');
+                if (!m.pick(norm)) continue;
+                count += 1;
+                lt += v.lines.total;
+                lc += v.lines.covered;
+                bt += v.branches.total;
+                bc += v.branches.covered;
+              }
+            }
+            const linePct = lt === 0 ? 100 : (lc / lt) * 100;
+            const brPct = bt === 0 ? 100 : (bc / bt) * 100;
+            const okL = linePct >= m.min.lines;
+            const okB = brPct >= m.min.branches;
+            const ok = okL && okB && count > 0;
+            if (!ok) failed += 1;
+            console.log(`${ok ? 'PASS' : 'FAIL'}  ${m.label}`);
+            console.log(`      行覆盖   ${lc}/${lt} = ${linePct.toFixed(2)}%（门槛 >=${m.min.lines}%）${okL ? '' : '  <== 未达标'}`);
+            console.log(`      分支覆盖 ${bc}/${bt} = ${brPct.toFixed(2)}%（门槛 >=${m.min.branches}%）${okB ? '' : '  <== 未达标'}`);
+            if (count === 0) console.log('      <== 未匹配到任何文件（覆盖率数据缺失）');
+          }
+
+          if (failed > 0) {
+            console.error(`\n覆盖率 Gate 未通过：${failed} 个模块低于 SDD §12.2 门槛 —— 阻断合入`);
+            process.exit(1);
+          }
+          console.log('\n覆盖率 Gate 通过（SDD §12.2 / §12.6）');
+          NODE
+
+      # 🔴 反向验证（可选，手动触发）：在故意压低覆盖率的分支上跑，应失败
+      - name: Reverse check — coverage gate must fail when coverage drops below 90%
+        if: github.event_name == 'workflow_dispatch' || contains(github.head_ref, 'coverage-reverse-check')
+        run: |
+          set -e
+          # 往核心算法层塞一个**完全不被覆盖**的文件 ⇒ 核心算法覆盖率被压到 90% 以下
+          cat > packages/core/src/_coverage_reverse_probe.ts <<'PROBE'
+          export function uncoveredProbe01(): number { return 1; }
+          export function uncoveredProbe02(): number { return 2; }
+          export function uncoveredProbe03(): number { return 3; }
+          export function uncoveredProbe04(): number { return 4; }
+          export function uncoveredProbe05(): number { return 5; }
+          export function uncoveredProbe06(): number { return 6; }
+          export function uncoveredProbe07(): number { return 7; }
+          export function uncoveredProbe08(): number { return 8; }
+          export function uncoveredProbe09(): number { return 9; }
+          export function uncoveredProbe10(): number { return 10; }
+          export function uncoveredProbe11(): number { return 11; }
+          export function uncoveredProbe12(): number { return 12; }
+          export function uncoveredProbe13(): number { return 13; }
+          export function uncoveredProbe14(): number { return 14; }
+          export function uncoveredProbe15(): number { return 15; }
+          export function uncoveredProbe16(): number { return 16; }
+          export function uncoveredProbe17(): number { return 17; }
+          export function uncoveredProbe18(): number { return 18; }
+          export function uncoveredProbe19(): number { return 19; }
+          export function uncoveredProbe20(): number { return 20; }
+          export function uncoveredProbe21(): number { return 21; }
+          export function uncoveredProbe22(): number { return 22; }
+          export function uncoveredProbe23(): number { return 23; }
+          export function uncoveredProbe24(): number { return 24; }
+          export function uncoveredProbe25(): number { return 25; }
+          export function uncoveredProbe26(): number { return 26; }
+          export function uncoveredProbe27(): number { return 27; }
+          export function uncoveredProbe28(): number { return 28; }
+          export function uncoveredProbe29(): number { return 29; }
+          export function uncoveredProbe30(): number { return 30; }
+          PROBE
+          npx vitest run --config packages/core/vitest.config.ts --coverage
+          # ⚠️ **注意**：vitest 本身**不会**因覆盖率低而失败（测试全绿）——
+          #    真正判红的是上面的「Coverage Gate」步骤。
+          #    ⇒ 这里用**与 Gate 完全相同的口径**重算核心算法层行覆盖率，
+          #      断言它**跌破 90%**（= Gate 会判 FAIL ⇒ job 红）。
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cov = JSON.parse(
+            fs.readFileSync(path.join(process.cwd(), 'packages/core/coverage/coverage-final.json'), 'utf8'),
+          );
+          let total = 0;
+          let covered = 0;
+          for (const [p, c] of Object.entries(cov)) {
+            if (!p.replace(/\\/g, '/').includes('/packages/core/src/')) continue;
+            for (const cnt of Object.values(c.s || {})) {
+              total += 1;
+              if (cnt > 0) covered += 1;
+            }
+          }
+          const pct = total === 0 ? 100 : (covered / total) * 100;
+          console.log(`核心算法层行覆盖 ${covered}/${total} = ${pct.toFixed(2)}%（门槛 >=90%）`);
+          if (pct >= 90) {
+            console.error('REVERSE CHECK FAILED: 核心算法层覆盖率没有跌破 90% —— 反向验证不成立');
+            process.exit(1);
+          }
+          console.log('reverse check OK: 核心算法层覆盖率已跌破 90%（Coverage Gate 会判 FAIL ⇒ job 红）');
+          NODE
+
+  # ============================================================================
   # Stage 2 —— Lint + TypeScript Check（T86）
   #
   # 与 build-and-test **并行**跑，不是它的后继步骤 —— 「lint 不过就别跑测试」是浪费 CI 时间。
@@ -150,6 +393,36 @@ jobs:
       # Smoke tests — 只跑 m1；m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行
       - name: Run smoke tests (m1 only)
         run: npx vitest run --config apps/backend/vitest.config.ts tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
+
+      # ============================================================================
+      # HTTP 层验收套件的**可离线子集**（T60 交付 / G8.3）
+      #
+      # ⚠️ `tests/http/` 共 7 个 `.test.ts`，**只接进 3 个** —— 这 3 个
+      #    **不依赖真行情库 / caddy / 真浏览器**，可在 CI 离线跑：
+      #      · cors.test.ts              → CORS 白名单（evil.com 必拒 / 127.0.0.1:5173 必放行）
+      #                                       + 「确实调了 listen()」守卫
+      #      · pe5-sqlite-concurrency.test.ts → PE5（SQLite WAL 10 并发读写，无 SQLITE_BUSY）
+      #      · holding-nplus1.test.ts    → N+1 消除（查询次数不随标的数线性增长）
+      #
+      # 🔴 **不接进 CI 的 4 个文件（诚实 > 凑绿）**：
+      #      · pe1-pe3-browser.test.ts   → 要**真浏览器**（Chromium）
+      #      · pe2-scan.test.ts          → 要**真库规模**（≥5000 标的；迷你库只有 250 只）
+      #      · pe4-holding-p99.test.ts   → 要**真库规模**
+      #      · https-se1.test.ts 的 HTTP 层 → 要**caddy 可执行文件**
+      #
+      # ⚠️ **前置依赖（必须已提交）**：`apps/backend/tests/http/` +
+      #    `apps/backend/vitest.http.config.ts` —— 未提交时本步骤会因找不到配置文件而红
+      #    （见 `docs/audit/fullstack-audit-v2.md` §13 M-3b）
+      # ⚠️ **端口**：三个文件各自独占一段（51200 / 51280 / 51320 起）⇒ 与其它步骤不冲突
+      # ⚠️ **不使用 `--coverage`**：本步骤只做门禁判定，覆盖率口径由 `coverage-gate` job 负责
+      # ============================================================================
+      - name: Run HTTP layer tests (offline subset — cors / pe5 / nplus1)
+        working-directory: apps/backend
+        run: >
+          npx vitest run --config vitest.http.config.ts
+          tests/http/cors.test.ts
+          tests/http/pe5-sqlite-concurrency.test.ts
+          tests/http/holding-nplus1.test.ts
 
       # Frontend tests (T61) — jsdom 环境，不依赖后端与行情库
       - name: Run frontend tests

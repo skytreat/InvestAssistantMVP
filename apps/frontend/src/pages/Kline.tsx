@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { titleStyle } from '../theme/styles';
@@ -115,7 +116,6 @@ const SUB_OPTIONS: ReadonlyArray<{ value: SubIndicatorKind; label: string }> = [
 /** 后端 K 线接口的响应体（envelope 内层）*/
 interface KlineApiResponse {
   code?: number | string;
-  success?: boolean;
   message?: string;
   data?: {
     symbol: string;
@@ -131,18 +131,6 @@ interface KlineApiResponse {
       metrics_json?: string | null;
     }>;
   };
-}
-
-/**
- * 判断 envelope 是否成功
- *
- * ⚠️ `success` 是 T89a 的**过渡字段**（T89b 会删）。故优先看 `code === 0`，
- *    `code` 不存在时回落到 `success === true` —— 两种形态都能判对。
- */
-function isOkEnvelope(body: { code?: number | string; success?: boolean }): boolean {
-  if (typeof body.code === 'number') return body.code === 0;
-  if (typeof body.code === 'string') return body.code === '0';
-  return body.success === true;
 }
 
 /** 周/月 K 需要更多的日线才能聚合成足够的柱子 */

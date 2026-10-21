@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { useUserStore } from '../store/user';
@@ -58,8 +59,8 @@ export default function Login() {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { username, password });
-      // 兼容两种 envelope 判定：当前后端的 `success` 与 T89b 之后的 `code === 0`
-      const succeeded = res.data?.success === true || res.data?.code === 0;
+      // 🔴 T89b：后端已删 `success` 字段 —— 成功判定唯一口径是 `code === 0`
+      const succeeded = isOkEnvelope(res.data);
       const session = (res.data?.data ?? null) as SessionPayload | null;
       if (succeeded && session?.token) {
         login(

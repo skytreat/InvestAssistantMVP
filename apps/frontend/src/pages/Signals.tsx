@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
@@ -149,7 +150,7 @@ export default function Signals() {
       if (direction) params.direction = direction;
 
       const res = await api.get('/signal', { params });
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setRows((res.data.data ?? []) as SignalRow[]);
         // T72 ③：后端已经返回分页元信息（旧实现把它整个丢了）
         setTotalPages(res.data.pagination?.totalPages ?? 1);

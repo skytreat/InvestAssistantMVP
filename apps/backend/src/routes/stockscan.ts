@@ -112,7 +112,7 @@ export interface AppliedScanFilters {
   minAmount: number;
 }
 
-/** 选股响应体（T89a：统一 envelope，SDD §4.2） */
+/** 选股响应体（T89a：统一 envelope，SDD §4.2；T89b 起无 `success` 字段） */
 export interface StockScanResponse {
   code: number;
   data: {
@@ -123,7 +123,6 @@ export interface StockScanResponse {
     filters?: AppliedScanFilters;
   };
   timestamp: string;
-  success: boolean;
   timeMs?: number;
   error?: string;
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { buttonDisabledStyle, buttonStyle, errorStyle, successStyle } from '../theme/styles';
@@ -31,7 +32,8 @@ import ConfirmDialog from './ConfirmDialog';
 
 /** 后端统一 envelope 的最小形状（只取本组件读得到的字段） */
 interface ApiEnvelope<T> {
-  readonly success?: boolean;
+  /** 🔴 T89b：成功判定唯一口径 `code === 0`（后端已删 `success` 字段） */
+  readonly code?: number | string;
   readonly message?: string;
   readonly data?: T;
 }
@@ -144,7 +146,7 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
       setRerunProgress((p) => [...p, '补跑中']);
       const res = await api.post('/admin/rerun-quotes', { reason: '管理员手动触发' });
       const body = res.data as ApiEnvelope<RerunResult>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         const result = body.data ?? {};
         if (result.status === 'SUCCESS') {
           setRerunProgress((p) => [...p, `完成（通道：${result.method ?? '未知'}）`]);
@@ -178,7 +180,7 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
     try {
       const res = await api.post('/admin/datacheck/trigger');
       const body = res.data as ApiEnvelope<DatacheckResult>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         const count = body.data?.summaries?.length ?? 0;
         setDatacheckNotice(`校验完成：summaries 数量 = ${count}`);
         onChecksRefreshed?.();
@@ -201,7 +203,7 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
     try {
       const res = await api.post('/admin/run-signal');
       const body = res.data as ApiEnvelope<SignalRunResult>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         const stats = body.data?.stats ?? {};
         setSignalNotice(
           `生成完成：total=${stats.total ?? '-'} success=${stats.success ?? '-'} ` +
