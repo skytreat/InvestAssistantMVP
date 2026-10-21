@@ -5,6 +5,7 @@ import TradeInput from './pages/TradeInput';
 import Signals from './pages/Signals';
 import Login from './pages/Login';
 import StockScan from './pages/StockScan';
+import Candidates from './pages/Candidates';
 import Review from './pages/Review';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
@@ -179,6 +180,8 @@ export default function App() {
           <Route path="/signals" element={<Signals />} />
           <Route path="/kline" element={<Kline />} />
           <Route path="/stockscan" element={<StockScan />} />
+          {/* T74：候选池页（F-G3 · 候选池此前完全没有页面，后端路由也没被前端接上）*/}
+          <Route path="/candidates" element={<Candidates />} />
           <Route path="/review" element={<Review />} />
           <Route path="/settings" element={<Settings />} />
           {/* T98：管理员路由受 AdminGuard 保护 —— 非 admin 不挂载 <Admin />，故不发 admin 请求 */}

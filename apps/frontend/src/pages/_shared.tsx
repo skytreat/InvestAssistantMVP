@@ -58,7 +58,14 @@ const activeLinkStyle: React.CSSProperties = {
   fontWeight: 600,
 };
 
-/** 桌面端导航项（PRD §5.8 #7 左侧导航栏） */
+/**
+ * 桌面端导航项（PRD §5.8 #7 左侧导航栏）
+ *
+ * ⚠️ **T74 只加入口，不重排顺序** —— 导航按业务流程重排是 **T76** 的交付物
+ *    （ux_v2 §1-2：仪表盘 → 交易录入 → 条件选股 → K线 → 策略信号 → 复盘 → 候选池 → 设置 → 管理员）。
+ *    这里把「候选池」放在「交易复盘」与「设置」之间，与 PRD §5.8 #7 的相对次序一致，
+ *    T76 重排时改动最小。
+ */
 const DESKTOP_NAV: { to: string; label: string; adminOnly?: boolean }[] = [
   { to: '/', label: '仪表盘' },
   { to: '/trade', label: '交易录入' },
@@ -66,16 +73,23 @@ const DESKTOP_NAV: { to: string; label: string; adminOnly?: boolean }[] = [
   { to: '/kline', label: 'K线图' },
   { to: '/stockscan', label: '条件选股' },
   { to: '/review', label: '交易复盘' },
+  { to: '/candidates', label: '候选池' },
   { to: '/settings', label: '设置' },
   { to: '/admin', label: '管理员', adminOnly: true },
 ];
 
-/** 移动端底部 Tab（PRD §5.8 #6：持仓 / K线 / 选股 / 复盘 / 设置） */
+/**
+ * 移动端底部 Tab（PRD §5.8 #6：持仓 / K线 / 选股 / 复盘 / 设置）
+ *
+ * ⚠️ **T74 补「候选池」入口**（实施计划「移动端底部 Tab 栏 → 本计划只补候选池/设置入口」）：
+ *    「设置」此前已有，这里只补「候选池」，位置同样放在「复盘」与「设置」之间。
+ */
 const MOBILE_TAB: { to: string; label: string; icon: string; adminOnly?: boolean }[] = [
   { to: '/', label: '持仓', icon: '📊' },
   { to: '/kline', label: 'K线', icon: '📈' },
   { to: '/stockscan', label: '选股', icon: '🔍' },
   { to: '/review', label: '复盘', icon: '🧾' },
+  { to: '/candidates', label: '候选池', icon: '📋' },
   { to: '/settings', label: '设置', icon: '⚙️' },
 ];
 

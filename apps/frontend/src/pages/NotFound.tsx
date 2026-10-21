@@ -12,13 +12,14 @@ import { COLORS, RADIUS, TYPO } from '../theme/tokens';
  * T74 会新增 `/candidates` 路由；在此之前访问该路径将正确显示本页（而不是静默跳首页）。
  */
 
-/** 已知路由（用于提示最接近的入口；T74 新增候选池后需同步补 '/candidates'） */
+/** 已知路由（用于提示最接近的入口；T74 已新增候选池，故补上 '/candidates'） */
 const KNOWN_ROUTES: { to: string; label: string }[] = [
   { to: '/', label: '仪表盘' },
   { to: '/trade', label: '交易录入' },
   { to: '/signals', label: '策略信号' },
   { to: '/kline', label: 'K 线图' },
   { to: '/stockscan', label: '条件选股' },
+  { to: '/candidates', label: '候选池' },
   { to: '/review', label: '交易复盘' },
   { to: '/settings', label: '设置' },
 ];
