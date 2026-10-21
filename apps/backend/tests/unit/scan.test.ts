@@ -228,9 +228,10 @@ describe('scan — 参数校验与候选池 SQL（纯函数）', () => {
     });
   });
 
-  it('max_results 被夹到 [1, 500]，min_amount 负值归 0', () => {
+  it('max_results 被夹到 [1, 100]，min_amount 负值归 0', () => {
+    // ⚠️ 上限 100（PRD §5.6 / F-S3）—— 原为 500，与 PRD 不符（前端强制 100 但 API 仍可要 500）
     const tooBig = parseScanFilters({ max_results: 9999 });
-    expect(tooBig.ok && tooBig.value.maxResults).toBe(500);
+    expect(tooBig.ok && tooBig.value.maxResults).toBe(100);
     const tooSmall = parseScanFilters({ max_results: 0 });
     expect(tooSmall.ok && tooSmall.value.maxResults).toBe(1);
     const negAmount = parseScanFilters({ min_amount: -100 });
