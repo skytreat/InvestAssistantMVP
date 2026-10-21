@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { isFailedEnvelope } from '../api/envelope';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import EmptyState from './EmptyState';
 import Spinner from './Spinner';
@@ -78,7 +79,8 @@ const EMPTY_FOCUS = '今日暂无重点关注标的';
 
 /** 后端统一 envelope 的最小形状（只声明本组件读到的字段）*/
 interface ApiEnvelopeBase {
-  success?: boolean;
+  /** 🔴 T89b：成功判定唯一口径 `code === 0`（后端已删 `success` 字段） */
+  code?: number | string;
   message?: string;
 }
 
@@ -231,8 +233,10 @@ function directionColor(direction: string): string {
 /**
  * 取后端 envelope
  *
- * ⚠️ `success === false` 时**抛错** —— 与 `Dashboard.tsx` 的判定口径一致
+ * ⚠️ 后端**显式给了非 0 的 `code`** 时**抛错** —— 与 `Dashboard.tsx` 的判定口径一致
  *    （同一套 envelope，判定必须一致，否则「业务失败」会被当成「空数据」）。
+ *    ⚠️ 用 `isFailedEnvelope`（而非 `isOkEnvelope`）—— 前者只在「后端明确给了非 0 的 code」
+ *    时才判失败，缺 `code` 的响应体仍按原样放行（与 T89b 之前的 `success === false` 逐字等价）。
  */
 async function fetchEnvelope<E extends ApiEnvelopeBase>(
   url: string,
@@ -240,7 +244,7 @@ async function fetchEnvelope<E extends ApiEnvelopeBase>(
 ): Promise<E> {
   const res = params ? await api.get<E>(url, { params }) : await api.get<E>(url);
   const body = res.data;
-  if (body?.success === false) throw new Error(body?.message ?? '请求失败');
+  if (isFailedEnvelope(body)) throw new Error(body?.message ?? '请求失败');
   return body;
 }
 

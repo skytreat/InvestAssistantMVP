@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
@@ -398,7 +399,7 @@ export default function Dashboard() {
   const refreshPositions = async () => {
     try {
       const res = await api.get('/holding');
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setPositions(res.data.data ?? []);
         setPosSummary(res.data.summary ?? null);
         setPosError(null);
@@ -413,7 +414,7 @@ export default function Dashboard() {
       setPosLoading(true);
       try {
         const res = await api.get('/holding');
-        if (res.data.success) {
+        if (isOkEnvelope(res.data)) {
           setPositions(res.data.data ?? []);
           setPosSummary(res.data.summary ?? null);
         } else setPosError(res.data.message ?? '请求失败');
@@ -428,7 +429,7 @@ export default function Dashboard() {
       setStatLoading(true);
       try {
         const res = await api.get('/asset-stat/latest');
-        if (res.data.success) setStat(res.data.data ?? null);
+        if (isOkEnvelope(res.data)) setStat(res.data.data ?? null);
         else setStatError(res.data.message ?? '请求失败');
       } catch (err) {
         setStatError(extractErrorMessage(err));
@@ -441,7 +442,7 @@ export default function Dashboard() {
       setSigLoading(true);
       try {
         const res = await api.get('/signal', { params: { page_size: 5 } });
-        if (res.data.success) setSignals(res.data.data ?? []);
+        if (isOkEnvelope(res.data)) setSignals(res.data.data ?? []);
         else setSigError(res.data.message ?? '请求失败');
       } catch (err) {
         setSigError(extractErrorMessage(err));
@@ -455,7 +456,7 @@ export default function Dashboard() {
         setLogLoading(true);
         try {
           const res = await api.get('/admin/system-log', { params: { page_size: 5 } });
-          if (res.data.success) setLogs(res.data.data ?? []);
+          if (isOkEnvelope(res.data)) setLogs(res.data.data ?? []);
           else setLogError(res.data.message ?? '请求失败');
         } catch (err) {
           setLogError(extractErrorMessage(err));

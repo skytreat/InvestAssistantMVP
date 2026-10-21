@@ -1379,6 +1379,18 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 }
 ```
 
+> 🔴 **成功判定的唯一口径 = `code === 0`**（`code` 是数字 `0`，失败时是**字符串**错误码）。
+>
+> - ⚠️ **响应体**没有 `success` 字段 —— 它是 T89a 的**过渡期**产物，已于 **T89b（Wave 8）删除**。
+>   前端一律判 `code === 0`；后端任何响应体都不得再出现 `success` 键
+>   （契约测试 `apps/backend/tests/integration/envelopeContract.test.ts` 逐路由强制断言）。
+> - ⚠️ **错误体**额外带一个 `error` 字段（与 `code` 同值）—— 它是 `code` 的**同值副本**，
+>   供前端「`code` 缺失时按 `error` 兜底」的回落链使用（`apps/frontend/src/api/errors.ts` 的 `readErrorCode`）。
+>   **不是**独立的错误信息字段（错误信息一律在 `message`）。
+>
+> 例外：**`GET /api/health`** 是健康检查（前端 Vite proxy 轮询用），**刻意不走 envelope**
+> —— 返回 `{ status, timestamp, uptime, version }`。
+
 ### 4.3 错误码体系
 
 | 分类 | 错误码 | 触发场景 | HTTP |
@@ -1398,7 +1410,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 > **✅ 已裁决（2026-10-17，DEC-12 B-9/B-10）**：本表为错误码**唯一权威**。
 > - `HOLDING_INSUFFICIENT` 统一为 **409**（§12.3 B1 原文写 400 系笔误，已同步修正）
 > - 新增 `TRADE_DUPLICATE`（§3.2 去重键落地所需）
-> - 统一响应 envelope 见 **§4.2**；**落地任务 T89a（Wave 1，加字段 + 错误码归一）/ T89b（Wave 8，删 `success`）**
+> - 统一响应 envelope 见 **§4.2**；**落地任务 T89a（Wave 1，加字段 + 错误码归一）/ T89b（Wave 8，删 `success`）** —— **两者均已落地**，现行契约即 §4.2
 
 ### 4.4 核心 API 路由清单
 
@@ -1431,11 +1443,11 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发 C1-C12 校验（body 可选 `{ trade_date }`，缺省取当前交易日）；响应 `{ trade_date, summaries[] }` |
 | `/api/admin/run-signal` | POST | 是（仅 admin）| 手动触发信号生成（body 可选 `{ trade_date }`，缺省取最近行情日）；按**当前用户的自选 ∪ 持仓**执行全部插件；响应 `{ stats, inserted, skipped, trade_date }` |
 | `/api/admin/rerun-quotes` | POST | 是（仅 admin）| 手动补跑行情更新（body 可选 `{ reason }`）。<br>🔴 **同步接口** —— 补跑跑完才返回，**没有「查任务状态」的轮询端点**；响应 `{ status, method, message, checks }`（`status` ∈ `SUCCESS` / `SKIP` / 其它失败态）。`status==='SUCCESS'` 时顺带重跑一次 C1-C12 并把结果放在 `checks` |
-| `/api/admin/system-log` | GET | 是（仅 admin）| `system_log` 分页查询（`SELECT *`，按 `id DESC`）。<br>**筛选参数**：`log_type`（等值）/ `level`（等值）/ **`start_date` + `end_date`（闭区间）** / `trade_date`（历史遗留的**单日等值**）。<br>⚠️ **日期过滤是区间**：`log_date` 为 `YYYY-MM-DD` 定长格式 ⇒ 直接字符串比较（`log_date BETWEEN ? AND ?`）；**只给一端** → 开区间（`>=` 或 `<=`）。<br>⚠️ `trade_date` **保留**（不破坏既有调用方），语义折算为「起止同一天」的区间，**与旧的 `log_date = ?` 完全等价**。<br>响应 `{ success, data: rows[], pagination: { page, pageSize, total, totalPages } }` |
+| `/api/admin/system-log` | GET | 是（仅 admin）| `system_log` 分页查询（`SELECT *`，按 `id DESC`）。<br>**筛选参数**：`log_type`（等值）/ `level`（等值）/ **`start_date` + `end_date`（闭区间）** / `trade_date`（历史遗留的**单日等值**）。<br>⚠️ **日期过滤是区间**：`log_date` 为 `YYYY-MM-DD` 定长格式 ⇒ 直接字符串比较（`log_date BETWEEN ? AND ?`）；**只给一端** → 开区间（`>=` 或 `<=`）。<br>⚠️ `trade_date` **保留**（不破坏既有调用方），语义折算为「起止同一天」的区间，**与旧的 `log_date = ?` 完全等价**。<br>响应 `{ code: 0, data: rows[], timestamp, pagination: { page, pageSize, total, totalPages } }`（**无 `success` 键**）|
 | `/api/admin/system-log/fallback` | GET | 是（仅 admin）| 读取**系统日志降级记录**（SQLite 不可用时写入的兜底文件，JSON Lines 格式）。<br>**响应**：`{ exists: boolean, lines: string[] }`（`lines` = 尾部 **200 行**）。<br>⚠️ **响应体不含文件绝对路径**（路径泄露 = 告诉攻击者去读哪个文件）。<br>⚠️ **文件不存在 → `exists:false` + `lines:[]`**（**正常空态**，不是错误）。<br>⚠️ **读失败 → 500 `INTERNAL_ERROR`，且不回传 fs 的原始错误**（fs 错误信息里含绝对路径）—— 服务端日志留痕，响应只给一句中文 |
 | `/api/admin/users` | GET | 是（仅 admin）| 用户列表（按 `id` 升序）；元素 = `{ id, username, role, created_at }`（`role` ∈ `admin` / `user`）|
 | `/api/admin/role/:userId` | PATCH | 是（仅 admin）| 升级/降级角色；body `{ role: 'admin' \| 'user' }`。<br>⚠️ **禁止降级自己** → 400 `PARAM_INVALID`；⚠️ **admin 只能有 1 人**（已有其它 admin 时升级 → 400 `PARAM_INVALID`）|
-| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**双库备份**（SQLite + DuckDB）；响应 `{ sqlite: { success, size }, duckdb: { success, size } }` |
+| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**双库备份**（SQLite + DuckDB）；响应 `{ code: 0, data: { sqlite: { success, size }, duckdb: { success, size } }, timestamp }`<br>⚠️ **嵌套的 `success`** 是**备份服务自己的结果字段**（`services/backup.ts`），**不是** envelope 的 `success`（§4.2 已删）—— 语义不同，勿混淆 |
 | `/api/admin/backups` | GET | 是（仅 admin）| 备份文件列表（按 `modified` **倒序**）；元素 = `{ name, size, modified }`。<br>⚠️ **`size` 的单位 = 字节**（`stat.size`）—— 前端只做可读化换算，**不得改单位口径**；`modified` = ISO 8601 字符串 |
 | `/api/admin/backup/:file/restore` | POST | 是（仅 admin）| 从备份恢复 SQLite 业务库（**破坏性操作**）。<br>🔴 **必须带 body `{ "confirm": true }`** —— 缺失 → **400 `CONFIRM_REQUIRED`**。<br>⚠️ **仅 `business.db.YYYY-MM-DD` 形态可恢复**（文件名白名单）；`*.parquet` 与 `*.pre-restore-*` 一律失败 → 400 `RESTORE_FAILED`。<br>⚠️ `:file` 需 **URL 编码**（服务端 `decodeURIComponent`）。<br>响应 `{ file, safetyBackup }`（恢复前的安全备份文件名）|
 
@@ -2842,16 +2854,34 @@ sequenceDiagram
 
 **CI 门槛**：PR 合入 main 分支前，核心算法层 + 插件引擎覆盖率 **不能低于 90%**，否则阻断合入。
 
-> ⏸️ **已裁决（2026-10-17，DEC-12 B-5）：本表门槛与上述 CI 90% Gate 暂时冻结。**
+> ✅ **已恢复（2026-10-21，T86b 兑现 DEC-12 B-5 的「暂缓」裁决）**
 >
-> **理由**：前端当前 **0 测试**（无 vitest/jsdom/testing-library），全仓无 ESLint 配置，
-> 无测试基建的情况下设 90% 硬 Gate 会导致 CI 从第一天起就红，且诱导为凑数字写无意义测试。
+> **背景**：本表门槛与 90% CI Gate 曾于 2026-10-17 按 DEC-12 B-5 **暂时冻结**
+> （理由：前端当时 0 测试、全仓无 ESLint 配置 ⇒ 90% 硬 Gate 会让 CI 从第一天起就红，
+> 并诱导为凑数字写无意义测试）。**冻结 ≠ 取消** —— 实施计划 **T86b** 负责在测试存量到位后恢复。
 >
-> **过渡期实际执行值**（见实施计划 §12.4 E3）：`frontend ≥ 60%`（当前 0）；
-> `backend 不低于当前基线`（即暂不设硬门槛）。
+> **T86b 实测（`npm run test:coverage`，`MARKET_DATA_MODE=mini`，CI 同口径）**：
 >
-> **恢复义务**：由实施计划 **T86b**（Wave 8）负责 —— 测试存量到位后**必须把本表数值与 90% CI Gate 恢复**。在此之前，§12.6 的全局判定**不因覆盖率判 FAIL**。
-> ⚠️ 本条为**暂缓**而非取消；T86b 未完成前视为已登记偏差。
+> | 模块 | 行覆盖（实测 / 门槛） | 分支覆盖（实测 / 门槛） | 结论 |
+> |------|------|------|------|
+> | 核心算法层（`packages/core/src/`） | 246/248 = **99.19%** / ≥90% | 59/64 = **92.19%** / ≥85% | ✅ 达标 |
+> | 插件引擎（`pluginEngine.ts` + `packages/core/src/indicators/`） | 1074/1083 = **99.17%** / ≥90% | 328/342 = **95.91%** / ≥85% | ✅ 达标 |
+> | 数据校验引擎 C1-C12（`validator.ts`） | 640/666 = **96.10%** / ≥85% | 177/199 = **88.94%** / ≥80% | ✅ 达标 |
+> | 前端（`apps/frontend/src/`） | 10243/10905 = **93.93%** / ≥70% | 2230/2722 = **81.93%** / ≥65% | ✅ 达标 |
+>
+> ⚠️ **实测口径抖动**：分支覆盖率随 vitest 的 `sequence.shuffle` 顺序有 ±0.1 个百分点的波动
+> （同一份代码连跑两次的实测差异，如插件引擎 95.91% ↔ 95.92%、前端 81.93% ↔ 82.06%）
+> ⇒ **门槛必须留足余量**（本轮余量 ≥5 个百分点），否则 Gate 会因顺序抖动飘红。
+>
+> ⇒ **本表门槛全部恢复为生效状态**，CI 侧新增 `coverage-gate` job（**真阻断**：`exit 1`），
+> 见 §12.6「覆盖率阻断 Gate」。补齐过程新增
+> `apps/backend/tests/unit/pluginEngineCoverage.test.ts`（52 例）与
+> `apps/backend/tests/unit/validatorCoverage.test.ts`（6 例）。
+>
+> ⚠️ **口径说明**：实测口径 = 仓库脚本 `npm run test:coverage`
+> （后端 unit + integration + smoke、core、frontend）⇒ 与 CI `coverage-gate` job 完全一致，
+> 避免「本地全绿 / CI 全红」。
+
 
 ### 12.3 单元测试边界用例清单
 
@@ -3167,16 +3197,92 @@ jobs:
       - run: npx vitest run --coverage
       - name: Coverage Gate
         run: |
-          # coverage-v8 输出 JSON，提取核心模块覆盖率
-          CORE_COVERAGE=$(node -e "
-            const r = require('./coverage/coverage-final.json');
-            const core = Object.values(r).filter(f => f.path.includes('services/') || f.path.includes('algorithms/'));
-            const lines = core.reduce((s, f) => s + (f.l.found - f.l.get), 0);
-            const found = core.reduce((s, f) => s + f.l.found, 0);
-            console.log(Math.round((1 - lines/found) * 100));
-          ")
-          echo "Core algorithm coverage: ${CORE_COVERAGE}%"
-          if [ "${CORE_COVERAGE}" -lt 90 ]; then exit 1; fi
+          # 🔴 coverage-v8 输出的是 **v8 ICRCov**（`coverage-final.json`）——
+          #    **没有** Istanbul 的 `f.l.found` / `f.l.get`（见 §12.6 D14），
+          #    必须读每个文件的 `.s`（语句执行次数）/ `.b`（分支各路径执行次数）。
+          #    且覆盖率产物按 workspace 分目录落盘（不是仓库根的 ./coverage/）。
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const ROOT = process.cwd();
+
+          /** 优先 coverage-summary.json；没有则回退 coverage-final.json（v8 ICRCov） */
+          function loadWorkspace(dir) {
+            const summaryPath = path.join(dir, 'coverage-summary.json');
+            if (fs.existsSync(summaryPath)) {
+              const raw = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+              const files = {};
+              for (const [k, v] of Object.entries(raw)) {
+                if (k === 'total') continue;
+                files[k] = { lines: v.lines, branches: v.branches };
+              }
+              return files;
+            }
+            const finalPath = path.join(dir, 'coverage-final.json');
+            if (!fs.existsSync(finalPath)) return null;
+            const cov = JSON.parse(fs.readFileSync(finalPath, 'utf8'));
+            const files = {};
+            for (const [p, c] of Object.entries(cov)) {
+              let st = 0, sh = 0, bt = 0, bh = 0;
+              for (const cnt of Object.values(c.s || {})) { st += 1; if (cnt > 0) sh += 1; }
+              for (const arr of Object.values(c.b || {})) {
+                for (const cnt of arr) { bt += 1; if (cnt > 0) bh += 1; }
+              }
+              files[p] = {
+                lines: { total: st, covered: sh, pct: st === 0 ? 100 : (sh / st) * 100 },
+                branches: { total: bt, covered: bh, pct: bt === 0 ? 100 : (bh / bt) * 100 },
+              };
+            }
+            return files;
+          }
+
+          const WORKSPACES = {
+            core: loadWorkspace(path.join(ROOT, 'packages/core/coverage')),
+            backend: loadWorkspace(path.join(ROOT, 'apps/backend/coverage')),
+            frontend: loadWorkspace(path.join(ROOT, 'apps/frontend/coverage')),
+          };
+          for (const [ws, files] of Object.entries(WORKSPACES)) {
+            if (!files) { console.error(`FAIL 缺少覆盖率数据：${ws}`); process.exit(1); }
+          }
+
+          // 门槛 = §12.2 的表（核心算法 / 插件引擎 / C1-C12 / 前端）
+          const MODULES = [
+            { label: '核心算法层', min: { lines: 90, branches: 85 },
+              pick: (p) => p.includes('/packages/core/src/') },
+            { label: '插件引擎', min: { lines: 90, branches: 85 },
+              pick: (p) => p.includes('/apps/backend/src/services/pluginEngine.ts')
+                       || p.includes('/packages/core/src/indicators/') },
+            { label: 'C1-C12 校验', min: { lines: 85, branches: 80 },
+              pick: (p) => p.includes('/apps/backend/src/services/validator.ts') },
+            { label: '前端', min: { lines: 70, branches: 65 },
+              pick: (p) => p.includes('/apps/frontend/src/') },
+          ];
+
+          let failed = 0;
+          for (const m of MODULES) {
+            let lt = 0, lc = 0, bt = 0, bc = 0, count = 0;
+            for (const files of Object.values(WORKSPACES)) {
+              for (const [p, v] of Object.entries(files)) {
+                const norm = p.replace(/\\/g, '/');
+                if (!m.pick(norm)) continue;
+                count += 1;
+                lt += v.lines.total; lc += v.lines.covered;
+                bt += v.branches.total; bc += v.branches.covered;
+              }
+            }
+            const linePct = lt === 0 ? 100 : (lc / lt) * 100;
+            const brPct = bt === 0 ? 100 : (bc / bt) * 100;
+            const ok = count > 0 && linePct >= m.min.lines && brPct >= m.min.branches;
+            if (!ok) failed += 1;
+            console.log(`${ok ? 'PASS' : 'FAIL'}  ${m.label}`);
+            console.log(`      行覆盖   ${lc}/${lt} = ${linePct.toFixed(2)}%（门槛 >=${m.min.lines}%）`);
+            console.log(`      分支覆盖 ${bc}/${bt} = ${brPct.toFixed(2)}%（门槛 >=${m.min.branches}%）`);
+          }
+          if (failed > 0) {
+            console.error(`覆盖率 Gate 未通过：${failed} 个模块低于 §12.2 门槛 —— 阻断合入`);
+            process.exit(1);
+          }
+          NODE
 
       # Stage 4: Integration Test（需要临时 DuckDB + SQLite）
       - run: npm run test:integration
@@ -3200,6 +3306,20 @@ jobs:
 | 阻断点 | Lint 失败 / TypeScript 编译失败 / 覆盖率 Gate 不通过 / 集成测试失败 → 全部阻断 |
 | 健康检查 | 部署后 curl localhost:3000/health 验证，失败则 systemctl status 记录日志 |
 | 备份验证 | 每月第一个周五的 CI run 额外触发 `sudo systemctl start invest-backup.service`，验证备份链路通畅 |
+
+#### 覆盖率阻断 Gate（T86b 恢复，2026-10-21）
+
+| 项 | 规格 |
+|---|---|
+| **落地位置** | `.github/workflows/ci.yml` 的 **`coverage-gate` job**（与 `lint-and-typecheck` 同级，独立 job ⇒ PR 页面一眼可见红/绿） |
+| **数据来源** | job 内跑 **`npm run test:coverage`**（仓库根脚本）⇒ 后端 unit+integration+smoke / core / frontend 的覆盖率产物 |
+| **解析方式** | `packages/core/coverage/`、`apps/backend/coverage/`、`apps/frontend/coverage/` 三个目录；**优先 `coverage-summary.json`**，没有则回退 `coverage-final.json`（**v8 ICRCov**：读 `.s` / `.b` 的执行次数，**不是** Istanbul 的 `f.l.found` / `f.l.get` —— 见 §12.1 D14） |
+| **判定模块** | 核心算法层（`packages/core/src/`）、插件引擎（`pluginEngine.ts` + `packages/core/src/indicators/`）、C1-C12 校验（`validator.ts`）、前端（`apps/frontend/src/`） |
+| **阈值** | **§12.2 表原值**：核心算法 ≥90%/85%、插件引擎 ≥90%/85%、C1-C12 ≥85%/80%、前端 ≥70%/65%（行/分支） |
+| **阻断方式** | 任一模块低于阈值 ⇒ **`exit 1`**（真阻断，不是打印警告） |
+| **口径一致性** | 用仓库根脚本 ⇒ **与本地 `npm run test:coverage` 完全同口径** ⇒ 不会出现「本地全绿 / CI 全红」 |
+| **反向验证** | `workflow_dispatch` 或分支名含 `coverage-reverse-check` 时，往 `packages/core/src/` 塞一个完全不被覆盖的文件 ⇒ 核心算法覆盖率跌破 90% ⇒ Gate 必须红 |
+
 
 #### 测试目录结构总结
 

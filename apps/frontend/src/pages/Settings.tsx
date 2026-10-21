@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
@@ -86,7 +87,7 @@ export default function Settings() {
     setError(null);
     try {
       const res = await api.get('/strategy/plugins');
-      if (res.data.success) setPlugins(res.data.data ?? []);
+      if (isOkEnvelope(res.data)) setPlugins(res.data.data ?? []);
       else setError(res.data.message ?? '加载失败');
     } catch (err) {
       setError(extractErrorMessage(err, '加载失败'));

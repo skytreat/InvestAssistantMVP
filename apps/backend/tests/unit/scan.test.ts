@@ -278,7 +278,7 @@ describe('scan — 选股扫描路径', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.tradeDate).toBe(TRADE_DATE);
 
     // 候选池 5 只全部被扫描

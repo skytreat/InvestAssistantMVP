@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { isFailedEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, inputStyle } from '../theme/styles';
@@ -277,8 +278,9 @@ export default function TradeFormModal({
         fee: fee.trim() === '' ? 0 : Number(fee),
         trade_reason: tradeReason.trim(),
       });
-      const body = (res?.data ?? {}) as { success?: boolean; message?: string; data?: unknown };
-      if (body.success === false) {
+      // 🔴 T89b：后端已删 `success` 字段 —— 失败判定看 `code`（非 0 即失败）
+      const body = (res?.data ?? {}) as { code?: number | string; message?: string; data?: unknown };
+      if (isFailedEnvelope(body)) {
         setError(body.message ?? '提交失败，请稍后重试');
         return;
       }

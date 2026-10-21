@@ -92,5 +92,10 @@ T89a 的前端 36 处改读 `message`，**立刻修掉一个线上 UX bug**：
 
 ### 对真相源的影响
 - ✅ **SDD §4.3 / §12.3 B1 已回写**（本次 SDD PR）
-- ⏳ 待回写：`docs/coding-standards.md:69-72`（其 §9 与本 ADR 冲突）
+- ✅ **SDD §4.2 已补注**（T89b · 2026-10-21）：§4.2 的 envelope 示例**本就**不含 `success`
+  （本 ADR 的决策是「改代码向 SDD 靠拢」），T89b 落地后补上「成功判定唯一口径 = `code === 0`」
+  「响应体无 `success` 键」「错误体额外带同值 `error`」「`/api/health` 不走 envelope」四条约束，
+  并修正 §4.4 两处响应体描述（`system-log` / `admin/backup`）。
+- ✅ **`docs/coding-standards.md` §9 已回写**（T89b · 2026-10-21）：删掉「代码尚未对齐」的过期表述，
+  改为「成功判定只看 `code === 0`；响应体没有 `success` 键」。
 - ⏳ 待回写：`docs/coding-standards.md:169` 引用的 `packages/core/src/error-codes.ts` **不存在**

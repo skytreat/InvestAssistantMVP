@@ -44,7 +44,7 @@ describe('T98 AdminGuard', () => {
   beforeEach(() => {
     getMock.mockReset();
     postMock.mockReset();
-    getMock.mockResolvedValue({ data: { success: true, data: [] } });
+    getMock.mockResolvedValue({ data: { code: 0, data: [] } });
     setSession(null, null);
   });
 

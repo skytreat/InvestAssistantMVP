@@ -151,7 +151,7 @@ describe('datacheck 名称契约（C1~C12 的 name 与 SDD §5.7 主表逐字一
     }
     const { status, body } = await getResult(ADMIN_TOKEN);
     expect(status).toBe(200);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     const items = body.data as SummaryItem[];
     expect(items).toHaveLength(12);
     for (const [id, title] of SDD_5_7_TITLES) {
@@ -277,7 +277,8 @@ describe('datacheck 端点的管理员鉴权（裁决 D-10 / G7.4）', () => {
     insertCheckLog(TODAY, 'C1', 'SUCCESS', 'C1 PASS');
     const { status, body } = await getResult(USER_TOKEN);
     expect(status).toBe(403);
-    expect(body.success).toBe(false);
+    expect(body.code).toBe('FORBIDDEN');
+    expect('success' in body).toBe(false);
     expect(body.code).toBe('FORBIDDEN');
   });
 });

@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { truncatedTextStyle } from '../theme/styles';
@@ -325,7 +326,7 @@ export default function Review() {
   const fetchStats = async () => {
     try {
       const res = await api.get('/review/yield');
-      if (res.data.success) setStats(res.data.data);
+      if (isOkEnvelope(res.data)) setStats(res.data.data);
     } catch {
       /* ignore */
     }
@@ -335,7 +336,7 @@ export default function Review() {
     setHistoryLoading(true);
     try {
       const res = await api.get('/asset-stat/history', { params: { days: 365 } });
-      if (res.data.success) setHistory(res.data.data ?? []);
+      if (isOkEnvelope(res.data)) setHistory(res.data.data ?? []);
     } catch {
       /* ignore */
     } finally {
@@ -359,7 +360,7 @@ export default function Review() {
       if (startDate) params.start_date = startDate;
       if (endDate) params.end_date = endDate;
       const res = await api.get('/review/trades', { params });
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setTrades(res.data.data ?? []);
         setTotalPages(res.data.pagination?.totalPages ?? 1);
         setTotal(res.data.pagination?.total ?? 0);

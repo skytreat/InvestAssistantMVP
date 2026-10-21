@@ -133,8 +133,9 @@ describe('Trade · HOLDING_INSUFFICIENT', () => {
     });
     expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
+    expect(body.code).toBe('HOLDING_INSUFFICIENT');
     expect(body.error).toBe('HOLDING_INSUFFICIENT');
-    expect(body.success).toBe(false);
+    expect('success' in body).toBe(false);
   });
 
   it('卖出恰好 100 股 → 201 + position=0', async () => {
@@ -659,7 +660,7 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
       expect(res.statusCode, `${c.type}（${c.label}）应创建成功`).toBe(201);
       const body = JSON.parse(res.body);
       expect(body.code).toBe(0);
-      expect(body.success).toBe(true);
+      expect(body.code).toBe(0);
 
       // ② 载荷正确：trade_id / position / hold_rel 三件套齐全
       expect(body.data.trade_id, `${c.type} 必须返回 trade_id`).toBeGreaterThan(0);
@@ -719,7 +720,7 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
       const body = JSON.parse(res.body);
       expect(body.error).toBe('TRADE_REASON_REQUIRED');
       expect(body.code).toBe('TRADE_REASON_REQUIRED');
-      expect(body.success).toBe(false);
+      expect('success' in body).toBe(false);
       expect(body.data).toBeNull();
 
       // 未落库（按**成交时刻**定位，避免误命中底仓那笔 buy）

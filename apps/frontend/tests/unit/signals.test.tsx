@@ -94,8 +94,8 @@ const DEFAULT_ROW: SignalFixture = {
 /**
  * 安装 api.get 的 mock（每个用例自给自足 —— sequence.shuffle 下用例顺序随机）
  *
- * 返回体用 `mockResponse` 造，与后端 envelope（`{code, data, timestamp, success}`）
- * 同形：源码读的是 `res.data.success` 与 `res.data.data`。
+ * 返回体用 `mockResponse` 造，与后端 envelope（`{code, data, timestamp}`）
+ * 同形：源码读的是 `res.data.code` 与 `res.data.data`（T89b 起成功判定看 `code === 0`）。
  */
 function installApiMock(rows: SignalFixture[] = [DEFAULT_ROW]): void {
   getMock.mockResolvedValue(mockResponse(rows));

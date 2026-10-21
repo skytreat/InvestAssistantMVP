@@ -1,13 +1,16 @@
 /**
- * 统一响应 envelope（T89a · SDD §4.2）
+ * 统一响应 envelope（T89a · SDD §4.2；T89b 删 `success`）
  *
- * 成功体：`{ code: 0, data, timestamp, success: true }`
- * 错误体：`{ code: <错误码字符串>, message, data: null, timestamp, success: false, error: <同 code> }`
+ * 成功体：`{ code: 0, data, timestamp }`
+ * 错误体：`{ code: <错误码字符串>, message, data: null, timestamp, error: <同 code> }`
  *
- * ⚠️ `success` 字段是**过渡期**产物：T89a 阶段保留它（前端 20 处 `if (res.data.success)` 依赖），
- *   T89b（Wave 8）会删掉它，前端届时改判 `code === 0`。
- *   `error` 字段同样保留 —— T89a ③ 统一其语义为**错误码**（此前混放中文），
- *   中文一律移入 `message`。
+ * 🔴 **`success` 字段已删除（T89b · Wave 8）**
+ *   T89a 阶段它是过渡产物（前端 20 处 `if (res.data.success)` 依赖它），
+ *   现在前端统一按 **`code === 0`** 判定成功 —— 与 SDD §4.2 的 `{code, data, timestamp}` 逐字对齐。
+ *   ⇒ 后端**任何**响应体都不得再出现 `success` 键（契约测试逐路由强制断言）。
+ *
+ * ⚠️ `error` 字段**保留**：它是 `code` 的同值副本，供前端「`code` 缺失时按 `error` 兜底」的
+ *   回落链使用（`apps/frontend/src/api/errorMessages.ts` / `api/errors.ts` 的 `readErrorCode`）。
  *
  * `timestamp` 用 ISO 8601（带时区偏移），与 SDD §4.2 示例一致。
  */
@@ -17,8 +20,6 @@ export interface OkEnvelope<T = unknown> {
   code: 0;
   data: T;
   timestamp: string;
-  /** 过渡期字段，T89b 删除 */
-  success: true;
   /** 额外的顶层字段（pagination / timeMs 等） */
   [key: string]: unknown;
 }
@@ -31,9 +32,7 @@ export interface FailEnvelope {
   message: string;
   data: null;
   timestamp: string;
-  /** 过渡期字段，与 code 同值；T89b 删除 */
-  success: false;
-  /** 过渡期字段，与 code 同值；T89b 删除 */
+  /** `code` 的同值副本（前端 `code` 缺失时的回落来源） */
   error: string;
 }
 
@@ -48,7 +47,7 @@ function now(): string {
  * @param data 业务数据（放在 `data` 字段）
  */
 export function ok<T>(data: T, extra?: Record<string, unknown>): OkEnvelope<T> & Record<string, unknown> {
-  return { code: 0, data, timestamp: now(), success: true, ...(extra ?? {}) };
+  return { code: 0, data, timestamp: now(), ...(extra ?? {}) };
 }
 
 /**
@@ -65,7 +64,6 @@ export function fail(status: number, code: string, message: string): FailEnvelop
     message,
     data: null,
     timestamp: now(),
-    success: false,
     error: code,
   };
 }

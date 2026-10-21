@@ -258,10 +258,10 @@ describe('T94 — POST /api/strategy/reload 路由（app.inject，不占端口�
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
-      success: boolean;
+      code: number;
       data: { dir: string; loaded: number; plugins: unknown[]; errors: unknown[] };
     };
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(typeof body.data.loaded).toBe('number');
     expect(Array.isArray(body.data.plugins)).toBe(true);
     expect(Array.isArray(body.data.errors)).toBe(true);
@@ -282,11 +282,10 @@ describe('T94 — POST /api/strategy/reload 路由（app.inject，不占端口�
     });
     expect(aliasRes.statusCode).toBe(mainRes.statusCode);
     // ⚠️ T89a：响应体新增 `timestamp`（SDD §4.2）→ 两次调用时间戳不同，
-    //    不能整体 deep-equal；只比对**业务字段**（data / code / success）。
+    //    不能整体 deep-equal；只比对**业务字段**（data / code）。
     const a = aliasRes.json();
     const m = mainRes.json();
     expect(a.code).toBe(m.code);
-    expect(a.success).toBe(m.success);
     expect(a.data).toEqual(m.data);
   });
 });

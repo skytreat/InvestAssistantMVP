@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import {
@@ -59,13 +60,16 @@ export interface BackupEntry {
 
 /** `POST /api/admin/backup` 的返回体里本组件用得到的部分 */
 interface BackupRunResult {
+  // ⚠️ 这里的 `success` 是**备份服务自己的结果字段**（`services/backup.ts`），
+  //    **不是** envelope 的 `success`（T89b 已删）—— 语义不同，刻意保留。
   readonly sqlite?: { readonly success?: boolean; readonly size?: number };
   readonly duckdb?: { readonly success?: boolean; readonly size?: number };
 }
 
 /** 后端统一 envelope 的最小形状（只取本组件读得到的字段） */
 interface ApiEnvelope<T> {
-  readonly success?: boolean;
+  /** 🔴 T89b：成功判定唯一口径 `code === 0`（后端已删 `success` 字段） */
+  readonly code?: number | string;
   readonly message?: string;
   readonly data?: T;
 }
@@ -154,7 +158,7 @@ export default function AdminBackupPanel() {
     try {
       const res = await api.get('/admin/backups');
       const body = res.data as ApiEnvelope<BackupEntry[]>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         setEntries(Array.isArray(body.data) ? body.data : []);
       } else {
         setListError(body?.message ?? '读取备份列表失败');
@@ -179,7 +183,7 @@ export default function AdminBackupPanel() {
     try {
       const res = await api.post('/admin/backup');
       const body = res.data as ApiEnvelope<BackupRunResult>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         const result = body.data ?? {};
         const sqliteOk = result.sqlite?.success === true;
         const duckdbOk = result.duckdb?.success === true;
@@ -210,7 +214,7 @@ export default function AdminBackupPanel() {
         confirm: true,
       });
       const body = res.data as ApiEnvelope<{ file?: string; safetyBackup?: string }>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         setRestoreNotice(`已从备份恢复：${entry.name}`);
         await loadBackups();
       } else {

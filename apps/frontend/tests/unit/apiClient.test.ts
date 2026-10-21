@@ -254,7 +254,6 @@ describe('T64 · 统一错误映射（api/client.ts 出口处补 message）', ()
         code: 'HOLDING_INSUFFICIENT',
         data: null,
         timestamp: '2026-10-20T00:00:00.000Z',
-        success: false,
         error: 'HOLDING_INSUFFICIENT',
       });
     };

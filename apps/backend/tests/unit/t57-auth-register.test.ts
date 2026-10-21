@@ -196,7 +196,7 @@ describe('T57 — POST /api/auth/register 路由级越权用例', () => {
     resetUserTable();
     const { status, body } = await registerRaw(app, { username: 'alice_admin', password: 'pw-alice-1' });
     expect(status).toBe(201);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     const data = body.data as SessionShape;
     expect(data.user.role).toBe('admin');
     expect(typeof data.token).toBe('string');
@@ -315,7 +315,7 @@ describe('T57 — POST /api/auth/refresh 双 token + 轮换', () => {
     expect(row.refresh_token_expires_at).toBe(session.refresh_token_expires_at);
     const { status, body } = await refreshRaw(app, session.refresh_token);
     expect(status).toBe(200);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     const rotated = body.data as SessionShape; // 新 access token 有效（7d，由 services/auth.ts 签发）
     const payload = verifyToken(rotated.token);
     expect(payload).not.toBeNull();

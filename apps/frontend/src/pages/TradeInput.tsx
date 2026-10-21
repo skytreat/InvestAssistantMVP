@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import {
@@ -327,7 +328,7 @@ export default function TradeInput() {
     setLoading(true);
     try {
       const res = await api.post('/trade', payload);
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setResult(res.data.data as TradeResult);
       } else {
         const errMsg = res.data.message ?? '请求失败';

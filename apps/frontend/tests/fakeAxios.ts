@@ -42,7 +42,7 @@ export function httpError(
 
 /** 造一个成功响应体（后端统一 envelope） */
 export function okResponse(data: unknown): { data: Record<string, unknown> } {
-  return { data: { code: 0, data, timestamp: '2026-10-20T00:00:00.000Z', success: true } };
+  return { data: { code: 0, data, timestamp: '2026-10-20T00:00:00.000Z' } };
 }
 
 /** 造一个失败响应体（后端统一 envelope） */
@@ -52,7 +52,6 @@ export function failResponse(code: string, message?: string): Record<string, unk
     message: message ?? '',
     data: null,
     timestamp: '2026-10-20T00:00:00.000Z',
-    success: false,
     error: code,
   };
 }

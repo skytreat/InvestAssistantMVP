@@ -82,7 +82,6 @@ export function mockResponse<T>(data: T, extra?: Record<string, unknown>) {
       code: 0,
       data,
       timestamp: '2026-10-20T00:00:00.000Z',
-      success: true,
       ...(extra ?? {}),
     },
   };
@@ -98,7 +97,6 @@ export function mockErrorResponse(status: number, code: string, message: string)
         message,
         data: null,
         timestamp: '2026-10-20T00:00:00.000Z',
-        success: false,
         error: code,
       },
     },

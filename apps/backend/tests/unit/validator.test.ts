@@ -81,7 +81,24 @@ describe('validator — runAllChecks 结构', () => {
   }, 60_000);
 
   it('runAllChecks 不抛错（内部 try-catch 兜底）', async () => {
-    expect(async () => await runAllChecks('2026-99-99')).not.toThrow();
+    // 🔴 2026-10-21 实测修复（T86b 顺带发现，**先于本任务存在的潜伏缺陷**）：
+    //   原写法 `expect(async () => await runAllChecks(...)).not.toThrow()`
+    //   **不会 await 那个 Promise** —— `not.toThrow()` 只同步调用函数并检查「有没有同步抛出」，
+    //   而 `runAllChecks` 是 async ⇒ 返回的 Promise 被丢弃 ⇒ 变成「发射后不管」的火流星。
+    //
+    //   后果链（实测复现）：
+    //   ① 火流星在**测试文件 teardown 之后**才真正查 DuckDB；
+    //   ② 此时 `tests/setup.ts` 的 afterAll 已把 `DUCKDB_PATH` 还原成 undefined；
+    //   ③ `src/db/duckdb.ts` 的 `globalThis` 单例（进程内唯一）就绑定到
+    //      `data/quotes.duckdb`（12KB **空壳**，无 `v_stock_qfq` 表）；
+    //   ④ 此后**所有**测试文件的行情查询报 `Catalog Error: Table with name
+    //      v_stock_qfq does not exist` ⇒ 假红（T81「顺序依赖」类）。
+    //
+    //   触发条件是「本文件恰好是进程里第一个查 DuckDB 的」⇒ 表现为**随机飘红**
+    //   （实测 45 个文件时约 1/3 概率命中；加/减测试文件会改变 shuffle 排列 ⇒ 概率变）。
+    //
+    //   ⇒ 修法：**真正 await**。
+    await expect(runAllChecks('2026-99-99')).resolves.toHaveLength(12);
   }, 60_000);
 });
 

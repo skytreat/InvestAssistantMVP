@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
@@ -52,7 +53,8 @@ export interface AdminUser {
 
 /** 后端统一 envelope 的最小形状（只取本组件读得到的字段） */
 interface ApiEnvelope<T> {
-  readonly success?: boolean;
+  /** 🔴 T89b：成功判定唯一口径 `code === 0`（后端已删 `success` 字段） */
+  readonly code?: number | string;
   readonly message?: string;
   readonly data?: T;
 }
@@ -137,7 +139,7 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
     try {
       const res = await api.get('/admin/users');
       const body = res.data as ApiEnvelope<AdminUser[]>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         setUsers(Array.isArray(body.data) ? body.data : []);
       } else {
         setListError(body?.message ?? '读取用户列表失败');
@@ -171,7 +173,7 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
     try {
       const res = await api.patch(`/admin/role/${change.user.id}`, { role: change.nextRole });
       const body = res.data as ApiEnvelope<null>;
-      if (body?.success) {
+      if (isOkEnvelope(body)) {
         const label = change.nextRole === 'admin' ? '管理员' : '普通用户';
         setNotice(`已将「${change.user.username}」的角色改为${label}`);
         await loadUsers();
