@@ -32,13 +32,63 @@ import { COLORS, MAX_WIDTH, RADIUS, SPACING, TYPO } from './tokens';
  * **本文件不引入任何裸 hex**（唯一例外见下方 `secondaryButtonStyle` 的注释）。
  */
 
-/** 页面容器：统一内边距 + 居中 + 给移动端底部 TabBar 让位 */
+/**
+ * 页面容器：统一内边距 + 居中 + 给移动端底部 TabBar 让位
+ *
+ * ## T76 ④「容器改 fluid」
+ *
+ * ⚠️ **「fluid」≠「去掉 maxWidth」** —— 桌面仍需 1200px 上限（`MAX_WIDTH` token 保留），
+ *    「fluid」指的是**宽度随视口变化**（`width: 100%` + `boxSizing: border-box`）。
+ *
+ * ⚠️ **断点 padding 不在这里** —— inline style 表达不了 `@media`（ui-spec §5 决策 2），
+ *    故「≤768px 收窄到 12px」由 `src/styles/global.css` 的
+ *    `@media (max-width: 768px) { .page-container { padding: 12px } }` 承担
+ *    （`className="page-container"` 挂在 `App.tsx` 的外壳容器上）。
+ *
+ * ⚠️ `maxWidth: MAX_WIDTH` **只允许出现在本文件**（T76 验收 ④ 的落地判据：
+ *    `App.tsx` / `pages/_shared.tsx` 里不得再出现 `maxWidth`）。
+ */
 export const pageContainerStyle: CSSProperties = {
-  padding: SPACING.pagePadding,
+  width: '100%',
+  // 桌面上限（token）—— 宽度随视口变化，但不超过 MAX_WIDTH
   maxWidth: MAX_WIDTH,
   margin: '0 auto',
+  boxSizing: 'border-box',
+  padding: SPACING.pagePadding,
   // 给移动端底部 TabBar 让位
   paddingBottom: '86px',
+};
+
+/**
+ * 导航链接（顶栏平铺 / 桌面左侧栏共用）
+ *
+ * ⚠️ 之所以下沉到本文件：T76 起**顶栏与左侧栏是同一批入口的两种形态**，
+ *    样式必须只有一份 —— 否则两处各写一份，改色/改间距时必然漂移
+ *    （与 `pageContainerStyle` 下沉到 `theme/styles.ts` 是同一个理由）。
+ */
+export const navLinkStyle: CSSProperties = {
+  padding: '8px 12px',
+  marginRight: SPACING.gapTight,
+  color: COLORS.brandLink,
+  textDecoration: 'none',
+  borderRadius: RADIUS.sm,
+};
+
+/**
+ * 导航链接激活态（T63 · ui-spec §4「语义标签 / 导航激活态」）
+ *
+ * 复用既有 token，不引入新 hex：
+ * - 底色 `COLORS.brandBg`（浅蓝）
+ * - 文字 `COLORS.brandLink`（深蓝）
+ * - 字重 600
+ *
+ * ⚠️ **react-router v6 没有 v5 的 `activeStyle` 属性** —— v6 用**函数式 `style`**
+ *    （`style={({ isActive }) => ({ ...base, ...(isActive ? active : {}) })}`）。
+ */
+export const navLinkActiveStyle: CSSProperties = {
+  background: COLORS.brandBg,
+  color: COLORS.brandLink,
+  fontWeight: 600,
 };
 
 /** 卡片容器 */

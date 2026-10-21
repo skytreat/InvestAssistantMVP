@@ -5,10 +5,12 @@
  * 「允许引一个轻量 CSS 文件（global.css）定义 :focus-visible、body 背景、
  *   html/body margin 重置 —— 这些 inline style 表达不了」。
  *
- * ⚠️ 本文件**只放全局 reset + 焦点环 + Spinner 动画关键帧**，不含任何页面级样式。
+ * ⚠️ 本文件**只放全局 reset + 焦点环 + 容器断点 padding + Spinner 动画关键帧**，
+ *    不含任何页面级样式。
  *    语义化改造（header/main/footer、label htmlFor、th scope、aria-current、
  *    导航激活态等）归 **T63**，不要在这里做，避免两个任务互相覆盖。
  *    `@keyframes spin` 归 **T65** —— inline style 表达不了动画，只能落在 CSS 文件里。
+ *    `.page-container` 的断点 padding 归 **T76 ④** —— 同样因为 inline style 表达不了 `@media`。
  *
  * 数值来源：`docs/client/ui-spec.md` §1（对应 `src/theme/tokens.ts` 的
  * `COLORS.pageBg` / `COLORS.brand` / `COLORS.borderFocus` / `TYPO.fontFamily`）。
@@ -40,6 +42,28 @@ body {
 /* 鼠标点击等「非键盘」焦点不显示焦点环 */
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/**
+ * 页面容器（T76 ④ · 断点 padding）
+ *
+ * ⚠️ **inline style 表达不了 `@media`**（ui-spec §5 决策 2 的原话就是
+ *    「允许引一个轻量 CSS 文件（global.css）定义 inline style 表达不了的东西」）
+ *    ⇒ 容器 padding 的断点行为只能落在这里 —— 组件侧只挂 `className="page-container"`。
+ *
+ * - 桌面（>768px）：24px（= `SPACING.pagePadding`）
+ * - 手机/平板（≤768px）：12px（窄屏少留白，把宽度让给内容）
+ *
+ * ⚠️ CSS 文件里用不了 TS 常量，故此处**照抄同值字面量**（与本文件既有做法一致）。
+ */
+.page-container {
+  padding: 24px; /* SPACING.pagePadding */
+}
+
+@media (max-width: 768px) {
+  .page-container {
+    padding: 12px;
+  }
 }
 
 /**
