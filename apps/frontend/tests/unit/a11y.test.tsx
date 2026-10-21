@@ -32,7 +32,7 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import React from 'react';
-import { act } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
 import { renderWithRouter } from '../helpers';
 import {
   runA11y,
@@ -298,6 +298,9 @@ interface PageCase {
  *
  * ⚠️ 与 `src/App.tsx` 的路由一一对应 —— 新增页面时**必须**在这里补一条，
  * 否则 G3.4 会出现「新增页面逃过门禁」的盲区。
+ *
+ * ⚠️ `/kline` 不在此列 —— 它用 `<canvas>` 手绘，jsdom 无 `getContext('2d')` → 组件必崩
+ *    （见文件末尾的 `it.todo`），由真浏览器脚本 `scripts/a11y-check.mjs` 覆盖。
  */
 const PAGES: PageCase[] = [
   { key: 'login', path: '/login' },
@@ -305,6 +308,7 @@ const PAGES: PageCase[] = [
   { key: 'trade', path: '/trade' },
   { key: 'signals', path: '/signals' },
   { key: 'stockscan', path: '/stockscan' },
+  { key: 'candidates', path: '/candidates' },
   { key: 'review', path: '/review' },
   { key: 'settings', path: '/settings' },
   { key: 'admin', path: '/admin', admin: true },
@@ -327,6 +331,7 @@ const KNOWN_VIOLATIONS: Record<string, ReadonlyArray<readonly [string, string, s
   trade: [],
   signals: [],
   stockscan: [],
+  candidates: [],
   review: [],
   settings: [],
   admin: [],
@@ -395,6 +400,25 @@ describe('a11y 基线 · G3.4（axe 核心规则 0 critical）', () => {
         ]);
 
         expect(actual).toEqual([...KNOWN_VIOLATIONS[page.key]]);
+      });
+
+      /**
+       * 标题层级：**有且仅有 1 个 `<h1>`**（T76 ⑦ · Wave 7 卡 5）
+       *
+       * ⚠️ axe 的 `page-has-heading-one` 是 **moderate** 级（不进 G3.4 的 critical 门禁），
+       *    但它同样是真缺陷 —— 读屏用户靠 h1 定位页面，层级缺失会让他们「不知道自己在哪」。
+       *    `/kline` 曾长期是 `<h2>`（本卡已改成 `<h1>`），故在此钉死断言防回归。
+       *
+       * ⚠️ `/kline` 页在 jsdom 里跑不了（canvas）→ 由真浏览器脚本覆盖，见文件末尾的 `it.todo`。
+       */
+      it('标题层级：有且仅有 1 个 <h1>（T76 ⑦）', async () => {
+        await renderRoute(page);
+
+        // Admin 是 `React.lazy` 异步 chunk —— 等它渲染出来再断言
+        await waitFor(() => {
+          expect(document.querySelectorAll('h1').length).toBeGreaterThan(0);
+        });
+        expect(document.querySelectorAll('h1')).toHaveLength(1);
       });
     });
   }

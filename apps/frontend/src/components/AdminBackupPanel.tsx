@@ -248,7 +248,10 @@ export default function AdminBackupPanel() {
       {/* 内联反馈区 —— `aria-live` 让读屏也能听到结果；失败给「重试」 */}
       <div aria-live="polite" aria-busy={backupBusy} data-testid="backup-status">
         {backupNotice !== null && (
-          <div style={{ ...statusBarStyle, ...successStyle }} data-testid="backup-notice">
+          <div
+            style={{ ...statusBarStyle, ...successStyle, color: COLORS.textSuccess }}
+            data-testid="backup-notice"
+          >
             {backupNotice}
           </div>
         )}
@@ -350,7 +353,10 @@ export default function AdminBackupPanel() {
       {/* 恢复的内联反馈区 */}
       <div aria-live="polite" aria-busy={restoreBusy} data-testid="restore-status">
         {restoreNotice !== null && (
-          <div style={{ ...statusBarStyle, ...successStyle }} data-testid="restore-notice">
+          <div
+            style={{ ...statusBarStyle, ...successStyle, color: COLORS.textSuccess }}
+            data-testid="restore-notice"
+          >
             {restoreNotice}
           </div>
         )}

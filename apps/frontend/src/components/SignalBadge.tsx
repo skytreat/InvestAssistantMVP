@@ -35,9 +35,9 @@ const DIRECTION_SYMBOL: Record<string, string> = {
   hold: '·',
 };
 
-/** 方向 → 颜色 */
+/** 方向 → 颜色（绿用正文色档 `textSuccess` —— 白底 5.02:1，饱和的 `success` 只有 3.30:1）*/
 function directionColor(direction: string): string {
-  if (direction === 'buy') return COLORS.success;
+  if (direction === 'buy') return COLORS.textSuccess;
   if (direction === 'sell') return COLORS.danger;
   return COLORS.textSecondary;
 }
@@ -77,15 +77,14 @@ export function SignalBadge({ signal, priceDate }: SignalBadgeProps) {
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
       >
         {/*
-          ⚠ 图标用 `warning`（#d97706，对白底 3.2:1 —— **非文字元素**只需 3:1），
-          文字用 `textDisclaimer`（#92400e，6.8:1 —— 小字需 4.5:1）。
-          ⚠️ 不整段用 `warning`：那是 13px 小字，3.2:1 **不达 WCAG AA**，
-          真浏览器 axe 的 `color-contrast` 会报（jsdom 测不到，见 tests/helpers/a11y.ts）。
+          ⚠ 图标与文字都走**正文色档** `textWarning`（#92400e，白底 7.09:1）——
+          饱和的 `COLORS.warning`（#d97706）白底只有 3.19:1，当**小字**用不达 WCAG AA
+          （真浏览器 axe 的 `color-contrast` 会报，jsdom 测不到，见 tests/helpers/a11y.ts）。
         */}
-        <span aria-hidden="true" style={{ color: COLORS.warning, fontSize: TYPO.bodySize }}>
+        <span aria-hidden="true" style={{ color: COLORS.textWarning, fontSize: TYPO.bodySize }}>
           ⚠
         </span>
-        <span style={{ color: COLORS.textDisclaimer, fontSize: TYPO.smallSize }}>信号过期</span>
+        <span style={{ color: COLORS.textWarning, fontSize: TYPO.smallSize }}>信号过期</span>
         {/* 过期不等于作废：原信号仍可读，但明确标注它不是最新的 */}
         <span style={mutedStyle}>
           原信号：{directionText(signal.direction)} · {signal.plugin_id}

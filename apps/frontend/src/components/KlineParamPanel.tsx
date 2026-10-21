@@ -202,7 +202,7 @@ export default function KlineParamPanel({ params, unit, barCount, onChange, onRe
                     data-testid={`${id}-hint`}
                     role="status"
                     aria-live="polite"
-                    style={{ fontSize: TYPO.captionSize, color: COLORS.warning, maxWidth: 200 }}
+                    style={{ fontSize: TYPO.captionSize, color: COLORS.textWarning, maxWidth: 200 }}
                   >
                     {message}
                   </span>

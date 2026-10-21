@@ -194,9 +194,9 @@ export function PositionDetailModal({
   };
 
   const pnl = position?.unrealizedPnl ?? null;
-  const pnlColor = (pnl ?? 0) >= 0 ? COLORS.success : COLORS.danger;
+  const pnlColor = (pnl ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger;
   const yieldValue = position?.unrealizedYield ?? null;
-  const yieldColor = (yieldValue ?? 0) >= 0 ? COLORS.success : COLORS.danger;
+  const yieldColor = (yieldValue ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger;
 
   const tradeButtonStyle: React.CSSProperties = {
     ...buttonStyle,

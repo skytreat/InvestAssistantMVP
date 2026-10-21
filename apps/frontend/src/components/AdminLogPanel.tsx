@@ -77,13 +77,20 @@ export const LOG_TYPE_LABEL: Record<string, string> = {
   candidate_migrate: '候选迁移',
 };
 
-/** 日志级别 → 颜色（全部取 token；卡 5 调整 token 数值时自动跟随） */
+/**
+ * 日志级别 → 颜色（全部取 token；卡 5 调整 token 数值时自动跟随）
+ *
+ * ⚠️ **Wave 7 卡 5（裁决 D-9）**：级别是**文字**，故走**正文色档**
+ *    （`textInfo` 6.70:1 / `textWarning` 7.09:1 / `textSuccess` 5.02:1）——
+ *    饱和的 `COLORS.info` / `warning` / `success` 白底只有 3.68 / 3.19 / 3.30，
+ *    会被真浏览器 axe 判 color-contrast（serious）。
+ */
 const LEVEL_COLOR: Record<string, string> = {
-  INFO: COLORS.info,
-  WARN: COLORS.warning,
+  INFO: COLORS.textInfo,
+  WARN: COLORS.textWarning,
   ERROR: COLORS.danger,
   SKIP: COLORS.textMuted,
-  SUCCESS: COLORS.success,
+  SUCCESS: COLORS.textSuccess,
 };
 
 /** 可选日志级别 —— 与 `services/logger.ts` 的 `ALLOWED_LEVELS` 逐字一致 */

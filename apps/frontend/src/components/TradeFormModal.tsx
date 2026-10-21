@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, inputStyle } from '../theme/styles';
+import { useDialogFocus } from './useDialogFocus';
 import type { TradeSide } from './positionDomain';
 
 /**
@@ -40,12 +41,11 @@ import type { TradeSide } from './positionDomain';
  * - `role="dialog"` + `aria-modal="true"` + `aria-labelledby`（`useId`，多实例不串）
  *   + `aria-describedby`（指向说明文字）；
  * - **ESC 关闭**（`document` 的 keydown，与 `ConfirmDialog.tsx:56-70` 同款实现）；
+ * - **焦点锁定 + 焦点回归**（Wave 7 卡 5 · T76 ⑤）：打开时焦点移入弹窗（落在**第一个可编辑控件**上）、
+ *   Tab 在弹窗内循环、关闭后焦点归还触发元素 —— 实现见 `components/useDialogFocus.ts`
+ *   （原生 `keydown` + `document.activeElement`，**不引第三方库**，裁决 D-15）；
  * - 点击遮罩关闭（点在弹窗内部**不**关闭 —— 判据是 `e.target === e.currentTarget`）；
  * - 字段级提示用 `aria-describedby` 挂到控件上，读屏可播报。
- *
- * ⚠️ **焦点锁定 / 焦点回归不在本任务范围** —— 属 **T76 ⑤**（Wave 8 弹窗焦点管理）。
- *    届时需补：打开时把焦点移入弹窗、Tab 键在弹窗内循环、关闭后把焦点还给触发元素。
- *    本组件**刻意不做**这两件事，避免与 T76 重复实现 / 互相覆盖。
  *
  * `open=false` 时**不渲染任何 DOM**（返回 null）—— 不占位、不进无障碍树
  * （与 `ConfirmDialog.tsx:68` 的约定一致）。
@@ -199,6 +199,14 @@ export default function TradeFormModal({
   const [error, setError] = useState<string | null>(null);
   /** 哪些字段被用户动过（决定「数量/价格」的提示是否展示）*/
   const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  /**
+   * 焦点锁定 / 焦点回归（Wave 7 卡 5 · T76 ⑤）
+   *
+   * ⚠️ **默认落点 = 弹窗内第一个可编辑控件**（标的代码是只读的，跳过）——
+   *    「提交交易」按钮在表单填完前是 `disabled`，无法聚焦，故不作首选。
+   */
+  const { dialogRef } = useDialogFocus<HTMLDivElement>(open);
 
   /**
    * 打开时重置表单
@@ -383,10 +391,12 @@ export default function TradeFormModal({
   return (
     <div data-testid="trade-form-overlay" onClick={handleOverlayClick} style={overlayStyle}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descId}
+        tabIndex={-1}
         style={dialogStyle}
       >
         <h2 id={titleId} style={titleStyle}>

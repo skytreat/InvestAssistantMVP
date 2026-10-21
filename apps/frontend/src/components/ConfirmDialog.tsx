@@ -3,6 +3,7 @@ import { COLORS, SPACING, TYPO } from '../theme/tokens';
 // ⚠️ T66 分层收口：样式对象来自 `theme/`（纯常量层），**不再从 `pages/_shared` 取** ——
 //    组件层反向依赖页面层属于依赖倒置。
 import { buttonStyle, cardStyle } from '../theme/styles';
+import { useDialogFocus } from './useDialogFocus';
 
 /**
  * 确认对话框（T65 · ui-spec §4「焦点锁定」项的前置件）
@@ -11,12 +12,11 @@ import { buttonStyle, cardStyle } from '../theme/styles';
  * - `role="dialog"` + `aria-modal="true"` —— 语义化弹窗；
  * - `aria-labelledby` 指向标题节点（`useId` 生成唯一 id，多实例不串）；
  * - `aria-describedby` 指向正文节点（无正文时不加该属性）；
- * - **ESC 关闭**（纯 JS、成本极低）—— 监听 `document` 的 `keydown`。
- *
- * ⚠️ **焦点锁定 / 焦点回归不在本任务范围** —— 属 **T76 ⑤**（弹窗焦点管理）。
- *    届时需补：打开时把焦点移入弹窗（建议聚焦确认按钮）、
- *    Tab 键在弹窗内循环、关闭后把焦点还给触发元素。
- *    本组件目前**不做**这两件事，避免与 T76 重复实现 / 互相覆盖。
+ * - **ESC 关闭**（纯 JS、成本极低）—— 监听 `document` 的 `keydown`；
+ * - **焦点锁定 + 焦点回归**（Wave 7 卡 5 · T76 ⑤）：打开时焦点移入弹窗（**落在弹窗容器上**，
+ *   不落在破坏性的「确认」按钮上）、Tab 在弹窗内循环、关闭后焦点归还触发元素 ——
+ *   实现见 `components/useDialogFocus.ts`（原生 `keydown` + `document.activeElement`，
+ *   **不引第三方库**，裁决 D-15）。
  *
  * `open=false` 时**不渲染任何 DOM**（返回 null）—— 不占位、不进无障碍树。
  */
@@ -51,6 +51,14 @@ export default function ConfirmDialog({
 }: ConfirmDialogProps) {
   const titleId = useId();
   const messageId = useId();
+  /**
+   * 焦点锁定 / 焦点回归（Wave 7 卡 5 · T76 ⑤）
+   *
+   * ⚠️ **焦点落在弹窗容器上**，不落在「确认」按钮上 ——
+   *    焦点在按钮上时 **Enter 会直接激活它**（浏览器标准行为），
+   *    对「确认删除」这类破坏性操作就是「一按回车就删」。
+   */
+  const { dialogRef } = useDialogFocus<HTMLDivElement>(open, { focusContainer: true });
 
   // ESC 关闭：只在 open 时挂监听，卸载时摘掉
   useEffect(() => {
@@ -83,10 +91,12 @@ export default function ConfirmDialog({
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={hasMessage ? messageId : undefined}
+        tabIndex={-1}
         style={{
           ...cardStyle,
           maxWidth: 480,

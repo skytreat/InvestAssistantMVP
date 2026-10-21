@@ -295,7 +295,10 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
       {/* 内联反馈区 —— 后端拒绝时显示后端原文案 */}
       <div aria-live="polite" aria-busy={busy} data-testid="role-status">
         {notice !== null && (
-          <div style={{ ...statusBarStyle, ...successStyle }} data-testid="role-notice">
+          <div
+            style={{ ...statusBarStyle, ...successStyle, color: COLORS.textSuccess }}
+            data-testid="role-notice"
+          >
             {notice}
           </div>
         )}

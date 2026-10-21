@@ -632,9 +632,10 @@ export default function StockScan() {
             <option value="">全部</option>
           </select>
           {/*
-            ⚠️ 颜色用 `COLORS.textDisclaimer`（深琥珀 #92400e，白底对比度 7.2:1 ≥ 4.5:1）
-               而不是 `COLORS.warning`（#d97706 对比度 3.3:1）——
+            ⚠️ 颜色用 `COLORS.textWarning`（深琥珀 #92400e，白底对比度 7.09:1 ≥ 4.5:1）
+               而不是 `COLORS.warning`（#d97706 是饱和图形档，对比度 3.19:1）——
                后者会被真浏览器 axe 判为 color-contrast 违规（serious）。
+               （Wave 7 卡 5 新增了 `textWarning`；此处沿用同值的 `textDisclaimer` 亦可。）
           */}
           <span style={{ ...hintStyle, color: COLORS.textDisclaimer }}>行业数据源暂不可用</span>
         </div>
@@ -744,7 +745,7 @@ export default function StockScan() {
           放在上方的「选股配置」卡片里会让用户在页面底部点了按钮却看不到回显。
         */}
         {actionError && <div style={errorStyle}>{actionError}</div>}
-        {actionMsg && <div style={successStyle}>{actionMsg}</div>}
+        {actionMsg && <div style={{ ...successStyle, color: COLORS.textSuccess }}>{actionMsg}</div>}
 
         {loading ? (
           <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>选股进行中...</div>
@@ -856,7 +857,7 @@ export default function StockScan() {
                               typeof pct === 'number'
                                 ? pct >= 0
                                   ? COLORS.danger
-                                  : COLORS.success
+                                  : COLORS.textSuccess
                                 : COLORS.textSecondary,
                           }}
                         >
@@ -868,7 +869,7 @@ export default function StockScan() {
                             style={{
                               color:
                                 r.signalType === 'BUY'
-                                  ? COLORS.success
+                                  ? COLORS.textSuccess
                                   : r.signalType === 'SELL'
                                     ? COLORS.danger
                                     : COLORS.textSecondary,
@@ -891,7 +892,13 @@ export default function StockScan() {
                           <button
                             style={{
                               ...smallButtonStyle,
-                              background: COLORS.success,
+                              /*
+                               * ⚠️ 底色用**正文色档**（Wave 7 卡 5 · 裁决 D-9）：
+                               *   `COLORS.success`（饱和绿）承载白字只有 3.30:1 —— 达不到
+                               *   WCAG 1.4.3 的 4.5:1，真浏览器 axe 会判 color-contrast（serious）。
+                               *   `textSuccess`（#15803d）+ 白字 = 5.02:1 ✅
+                               */
+                              background: COLORS.textSuccess,
                             }}
                             disabled={st === 'loading' || st === 'watch'}
                             onClick={() => void promoteToWatch(r.symbol)}

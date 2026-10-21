@@ -351,7 +351,10 @@ export default function Candidates() {
         {/* 操作结果（成功 / 失败）—— `aria-live` 让读屏也能听到反馈 */}
         <div aria-live="polite">
           {notice !== null && (
-            <div data-testid="candidate-notice" style={{ color: COLORS.success, fontSize: TYPO.bodySize }}>
+            <div
+              data-testid="candidate-notice"
+              style={{ color: COLORS.textSuccess, fontSize: TYPO.bodySize }}
+            >
               {notice}
             </div>
           )}

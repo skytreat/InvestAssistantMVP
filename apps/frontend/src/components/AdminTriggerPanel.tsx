@@ -275,7 +275,10 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
       </button>
       <div aria-live="polite" aria-busy={datacheckBusy} data-testid="datacheck-status">
         {datacheckNotice !== null && (
-          <div style={{ ...statusBarStyle, ...successStyle }} data-testid="datacheck-notice">
+          <div
+            style={{ ...statusBarStyle, ...successStyle, color: COLORS.textSuccess }}
+            data-testid="datacheck-notice"
+          >
             {datacheckNotice}
           </div>
         )}
@@ -306,7 +309,10 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
       </button>
       <div aria-live="polite" aria-busy={signalBusy} data-testid="signal-status">
         {signalNotice !== null && (
-          <div style={{ ...statusBarStyle, ...successStyle }} data-testid="signal-notice">
+          <div
+            style={{ ...statusBarStyle, ...successStyle, color: COLORS.textSuccess }}
+            data-testid="signal-notice"
+          >
             {signalNotice}
           </div>
         )}

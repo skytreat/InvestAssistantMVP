@@ -497,7 +497,7 @@ export default function TradeInput() {
           />
 
           {holdingError && (
-            <div style={{ fontSize: TYPO.captionSize, color: COLORS.warning, marginBottom: 8 }}>
+            <div style={{ fontSize: TYPO.captionSize, color: COLORS.textWarning, marginBottom: 8 }}>
               {holdingError}
             </div>
           )}
@@ -556,7 +556,12 @@ export default function TradeInput() {
             </div>
           )}
           {result && (
-            <div style={successStyle}>
+            /*
+             * ⚠️ `successStyle` 里的 `COLORS.success` 是**饱和图形档**（白底 3.30:1）——
+             *   `theme/styles.ts` 属卡 4 的地盘（不在本卡改动范围），故在**使用点**覆盖成
+             *   正文色档 `textSuccess`（白底 5.02:1 ✅）。
+             */
+            <div style={{ ...successStyle, color: COLORS.textSuccess }}>
               提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价=
               {result.position.avgCost.toFixed(4)}
             </div>
