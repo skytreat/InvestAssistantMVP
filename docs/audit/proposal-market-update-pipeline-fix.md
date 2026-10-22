@@ -20,14 +20,16 @@
 
 > **行情增量更新的「二进制机制」是好的（增量语义已实测证实），坏的是「Node 侧持锁」与「部署态」两处。**
 >
-> **四条新发现**：
+> **三条新发现**：
 > ① 🔴 **Fastify 常驻持锁 ⇒ 装好 timer 也必然失败**（plan 完全未覆盖；**修复方向已实测验证可行**）；
-> ② 🟠 **mini 库跑不了 tdx2db**（缺 `_meta` + 抽样语义会被冲垮）；
-> ③ 🟠 **F8 的验收载体是「读文件」⇒ G5.1 已判过假绿**；
-> ④ 🟠 **4 段 cron 未设 `preventOverrun` + 真库单条校验 SQL 3.27s ⇒ 段间重叠**（与 ① 叠加会连锁自愈失败）。
+> ② 🟠 **F8 的验收载体是「读文件」⇒ G5.1 已判过假绿**；
+> ③ 🟠 **4 段 cron 未设 `preventOverrun` + 真库单条校验 SQL 3.27s ⇒ 段间重叠**（与 ① 叠加会连锁自愈失败）。
+>
+> 另附 **1 条设计确认**（**不是缺陷**）：**mini 库不跑 tdx2db 是设计意图**，且缺 `_meta` 这条**护栏必须保留**（§2.2）。
 
 **§13 拟登记 4 条**：1 条阻断级（B-15）+ 3 条重要级（I-26 / I-27 / I-28）。
-**拟新增 4 个 T 任务**：T99（锁模型）/ T100（部署态）/ T101（mini 库策略）/ T102（F8 验收真触发 + cron 重叠）。
+**拟新增 3 个 T 任务**：T99（锁模型）/ T100（部署态，含 mini 库重抽）/ **T102**（F8 验收真触发 + cron 重叠）。
+（T101 保留为**已撤销占位**，见 §3 —— 记录「初稿曾误派 mini 库任务」，避免后人重复踩坑。）
 
 ---
 
@@ -133,9 +135,13 @@ $ node fixcheck.mjs
 
 ---
 
-### 2.2 🟠 发现 2 —— mini 库跑不了 tdx2db（且语义会被冲垮）
+### 2.2 ✅ 设计确认（**不是缺陷**）—— mini 库不跑 tdx2db 是设计意图，且被工具强制
 
-#### 2.2.1 mini 库缺 `_meta` ⇒ 直接被拒
+> 🔴 **本节初稿误把「设计意图」当成「缺陷」，2026-10-21 修正。**
+> mini 库是**只读快照**，**设计上就不由 tdx2db 更新**（ADR-008 §2.1 的规格是「10 张 raw_ 表 + 6 张视图」，
+> **本就不含 `_meta`**）⇒ 「跑不了 tdx2db」是**正确行为**，不是问题。
+
+#### 2.2.1 `_meta` 缺失 = tdx2db 主动拒绝写入（**护栏有效**）
 
 ```console
 $ tdx2db cron --dburi 'duckdb:////tmp/opencode/minicron.duckdb'
@@ -144,11 +150,14 @@ $ tdx2db cron --dburi 'duckdb:////tmp/opencode/minicron.duckdb'
 请阅读 https://github.com/jing2uo/tdx2db/releases 了解迁移方式
 ```
 
-- mini 库的 10 张表由 `scripts/make-mini-duckdb.mjs:91-102` 的 `TABLES` 常量定义，**不含 `_meta`**；
+- mini 库的 10 张表由 `scripts/make-mini-duckdb.mjs:91-102` 的 `TABLES` 常量**刻意定义**（**不含 `_meta`**）；
 - `manifest.json` 的 `tableDdl` 同样无 `_meta`；
 - 真库 `_meta` 内容实测：`schema_version = 6.0`。
 
-#### 2.2.2 强行补 `_meta` 后，抽样语义被冲垮
+> ✅ **这条护栏必须保留**：`_meta` 缺失 ⇒ tdx2db **拒绝写入** ⇒ 「mini 库是只读快照」这一约束
+> **由工具本身强制**，不依赖人的自觉。**任何时候都不应该给 mini 库补 `_meta`。**
+
+#### 2.2.2 「若有人绕过护栏会怎样」（实测，作为护栏必要性的佐证）
 
 ```console
 # 手工补 _meta.schema_version='6.0' 后跑 tdx2db cron（仅 /tmp 副本，未动真库/仓库库）
@@ -159,7 +168,10 @@ $ tdx2db cron --dburi 'duckdb:////tmp/opencode/minicron.duckdb'
 - `raw_symbol_class` 从 **250 只**变成 **11,863 只**（全市场）；
 - mini 库赖以成立的「真库**逐位一致子集**」前提（ADR-008 §2.3 两层开关的 `numeric` 层；原文见 `apps/backend/tests/_marketData.ts:33`）**当场作废**。
 
-#### 2.2.3 但增量语义被证实了（正面结论）
+> ⇒ 这组数字**不是缺陷证据，而是护栏必要性的证据**：正因为绕过 `_meta` 会把 250 只抽样冲成全市场，
+> **`_meta` 缺失这条设计不能动**。
+
+#### 2.2.3 顺带证实了增量语义（正面结论，与 mini 无关）
 
 | 项 | 实测 |
 |---|---|
@@ -168,12 +180,15 @@ $ tdx2db cron --dburi 'duckdb:////tmp/opencode/minicron.duckdb'
 | 日志字符串 | `no new daily data` / `no new basic data` / `1min data imported` / `factors calculated` / `gbbq data imported` |
 | 交易日语义 | `workflow.(*TradingCalendar).IsTradingDay` / `IsHoliday` / `IsWeekend` / `LastTradingDayOnOrBefore` |
 
-#### 2.2.4 结论
+#### 2.2.4 剩下的唯一开放项：**谁负责重抽**（流程问题，非缺陷）
 
-> **mini 库的正确姿势不是喂 tdx2db**，而是
-> **真库更新 → `make-mini-duckdb.mjs extract` 重抽 Parquet → 提交 Parquet → CI 现 build**。
-> 这正是 ADR-008 §3「迷你库会过期 → 固定快照 + 一键重生成脚本」的设计，
-> 但**目前没有定时化 / 没人负责触发**。
+- mini 库与真库**当前同步**（实测两者 `max(date)` 均为 `2026-10-12`，mini 202 标的 / 46,528 行）；
+- ADR-008 §3 **已明确接受**「迷你库会过期」为代价，缓解手段 = 「固定快照 + 一键重生成脚本」——**脚本已存在**
+  （`make-mini-duckdb.mjs extract` / `build`）；
+- ⇒ **唯一开放项是「触发时机」**：T100 把真库回填到最新交易日后，mini 库需要重抽一次。
+  **不单独派 T 任务**，并入 T100 ⑥（见 §3 T100 交付物）。
+
+> ⚠️ **本节不产生 §13 偏差条目，也不需要独立 T 任务。**（初稿曾拟派 T101「mini 库策略修正」，已撤销 —— 见 §3 T101）
 
 ---
 
@@ -256,19 +271,17 @@ C1_SQL（真库, v_stock_qfq 物化）耗时 = 3272 ms
 |---|---|
 | **建议归属** | **Wave 8**（或独立「Wave 7.5 · 部署态」，见 §5 D-1） |
 | **前置** | T99（否则装好了也跑不通） |
-| **交付物** | ① 装 `deploy/tdx2db.service` + `deploy/tdx2db-update.timer` → `/etc/systemd/system/` + `daemon-reload` + `enable --now`<br>② 解决 `User=invol` 不存在（`useradd -r -s /bin/false invol` 或改 unit 为运行用户）<br>③ 解决 `/opt/invol` 不可写（DuckDB 需在同目录建 `.wal`）<br>④ 首次 `tdx2db cron` **留痕**（stdout/stderr 重定向到文件，禁止再出现「无日志可查」）<br>⑤ **数据回填**：把 `2026-10-13`~`2026-10-21` 补齐<br>⑥ 修 `docs/deploy.md`（当前描述的 17:00→17:05 链路与实况脱节） |
-| **测试要点** | ① `systemctl is-enabled tdx2db-update.timer` == `enabled`<br>② `systemctl list-timers` 显示下次触发 = 明日 17:00<br>③ `journalctl -u tdx2db.service` 有成功记录且 `exit_code=0`<br>④ 真库 `max(raw_kline_daily.date)` == 最近交易日<br>⑤ `tdx2db` 端到端跑通后**真库无 `.wal` 残留**、文件大小/行数合理 |
-| **卡点** | 🔴 需 **root** 与**改动 `/opt/invol` 属主** ⇒ 属**生产环境变更**，须所有者授权；<br>⚠️ 与 AGENTS.md「跑测试前必须先停掉后端」冲突 —— 17:00 窗口内 Node 持锁会挡住 tdx2db（这正是 T99 要解决的） |
+| **交付物** | ① 装 `deploy/tdx2db.service` + `deploy/tdx2db-update.timer` → `/etc/systemd/system/` + `daemon-reload` + `enable --now`<br>② 解决 `User=invol` 不存在（`useradd -r -s /bin/false invol` 或改 unit 为运行用户）<br>③ 解决 `/opt/invol` 不可写（DuckDB 需在同目录建 `.wal`）<br>④ 首次 `tdx2db cron` **留痕**（stdout/stderr 重定向到文件，禁止再出现「无日志可查」）<br>⑤ **数据回填**：把 `2026-10-13`~`2026-10-21` 补齐<br>⑥ 修 `docs/deploy.md`（当前描述的 17:00→17:05 链路与实况脱节）<br>⑦ **mini 库重抽**（并入此项，不另派任务 —— 见 §2.2.4）：真库回填后跑一次 `make-mini-duckdb.mjs extract` 重抽 Parquet 并提交；顺带在 `apps/backend/tests/fixtures/mini-market/README.md` 补一行**禁令**「⛔ 不要给 mini 库补 `_meta`、不要对它跑 tdx2db —— 会把 250 只抽样冲成全市场（实测 11,863 只）」 |
+| **测试要点** | ① `systemctl is-enabled tdx2db-update.timer` == `enabled`<br>② `systemctl list-timers` 显示下次触发 = 明日 17:00<br>③ `journalctl -u tdx2db.service` 有成功记录且 `exit_code=0`<br>④ 真库 `max(raw_kline_daily.date)` == 最近交易日<br>⑤ `tdx2db` 端到端跑通后**真库无 `.wal` 残留**、文件大小/行数合理<br>⑥ mini 库重抽后：抽样标的数仍 == 250、class 比例仍符合 ADR-008 §2.1、**仍无 `_meta` 表** |
+| **卡点** | 🔴 需 **root** 与**改动 `/opt/invol` 属主** ⇒ 属**生产环境变更**，须所有者授权；<br>⚠️ 与 AGENTS.md「跑测试前必须先停掉后端」冲突 —— 17:00 窗口内 Node 持锁会挡住 tdx2db（这正是 T99 要解决的）；<br>⚠️ ⑦ 会改动仓库内 12 个 Parquet 二进制文件 ⇒ 需先定「何时重抽」的策略（见 §5 D-3） |
 
-### T101 —— 🟠 mini 库策略修正（明确「不喂 tdx2db」+ 重生成触发）
+### ~~T101~~ ❌ 已撤销（2026-10-21 修正）—— mini 库策略「修正」
 
-| 项 | 内容 |
-|---|---|
-| **建议归属** | Wave 8（与 T100 同批，因为重抽依赖真库已更新） |
-| **前置** | T100 ⑤（真库已回填到最新交易日） |
-| **交付物** | ① **明确 mini 库不由 tdx2db 更新** —— 在 `scripts/make-mini-duckdb.mjs` / `apps/backend/tests/fixtures/mini-market/README.md` 写清「mini 库是**只读快照**，喂 tdx2db 会因缺 `_meta` 被拒、强行补 `_meta` 会把 250 只抽样冲成全市场」<br>② **重生成流程落地**：`真库更新 → extract 重抽 Parquet → 提交 Parquet → CI 现 build` 的**触发方式**（手动脚本 / 定期任务 / 随 T100 一起做）<br>③ CI 档（`MARKET_DATA_MODE=ci`）复用同一路径，不新增第二套 |
-| **测试要点** | ① `build` 后 mini 库行数与 `manifest.json` 一致<br>② mini 库**仍无** `_meta` 表（防止有人补上后误跑 tdx2db）<br>③ 抽样标的数仍 == 250、class 比例仍符合 ADR-008 §2.1 规格 |
-| **卡点** | ⚠️ 重抽 Parquet 会改动仓库内 12 个二进制文件 ⇒ 每次真库更新都会产生 diff，需要「何时重抽」的策略（见 §5 D-3） |
+> **撤销原因**：初稿把「mini 库跑不了 tdx2db」当成缺陷并派生本任务 —— **误判**。
+> mini 库**设计上就是只读快照**（ADR-008 §2.1：10 张 raw_ 表 + 6 张视图，**本就不含 `_meta`**），
+> 「跑不了 tdx2db」是**正确行为**，且 `_meta` 缺失这条**护栏必须保留**（绕过它会把 250 只抽样冲成 11,863 只 —— 实测）。
+> ⇒ **不产生 §13 偏差条目、不派独立 T 任务**；唯一残留的「重抽触发时机」并入 **T100 ⑦**。
+> 详见 §2.2。
 
 ### T102 —— 🟠 F8 验收升级（真触发替代「读文件」）+ cron 段重叠防护
 
@@ -339,7 +352,7 @@ C1_SQL（真库, v_stock_qfq 物化）耗时 = 3272 ms
 |---|---|---|---|
 | **D-1** | T100（部署态）放哪个 Wave | ① 独立「Wave 7.5」② 并入 Wave 8 ③ 单独一个 PR 不占 Wave | ② **并入 Wave 8** —— T78 最终审计必须包含它，否则 M4 tag 会在「行情从未更新」的状态下打出 |
 | **D-2** | **T99 的写窗口信号源**（Node 侧怎么知道 tdx2db 正在写？） | ① **文件哨兵**：`tdx2db.service` 加 `ExecStartPre/Post` 写/删 `/opt/invol/.tdx2db-writing`，Node 侧检测该文件即让锁<br>② **Node 侧主动探测**：改只读后，Node 用「尝试 RW 打开探测」判断（不现实）<br>③ **改为 Node 侧不做长驻**：每次查询开关（实测 +46ms/次，与 PE4 冲突）<br>④ **改 SDD 场景 4 的时序**：让 tdx2db 写库时 Fastify **整体停机**（17:00 停 → 写完起），与 systemd `ExecStartPre/Post` 联动 | ① **文件哨兵** —— 改动最小、跨进程可靠、不引入额外依赖；<br>✅ **无论选哪个，机制本身已实测可行**：调用 `closeDuckDBInstance()` 后 tdx2db 立刻拿到锁（§2.1.5 实验 5）⇒ 剩下的只是「谁来决定何时 close」；<br>⚠️ **SDD §5.1 场景 4 的「MVCC 自动处理 reader/writer 共存」必须改**（实测证伪） |
-| **D-3** | mini 库重抽 Parquet 的触发策略 | ① 随 T100 手动做一次（简单，但会过期）② 定期自动重抽（每次产生 12 个二进制 diff）③ 只在 CI 跑 `extract`（需 CI 有真库 ⇒ 不可行） | ① **随 T100 做一次 + 写进 ADR-008 的「重生成触发」小节**；<br>⚠️ 长期看 ② 更正确，但需先解决「二进制 diff 进 git」的流程问题 |
+| **D-3** | mini 库重抽 Parquet 的**触发时机**（**流程问题，非缺陷** —— ADR-008 §3 已接受「迷你库会过期」为代价） | ① 随 T100 手动做一次（简单，但会过期）② 定期自动重抽（每次产生 12 个二进制 diff）③ 只在 CI 跑 `extract`（需 CI 有真库 ⇒ 不可行） | ① **随 T100 ⑦ 做一次** + 写进 ADR-008 的「重生成触发」小节；<br>⚠️ 长期看 ② 更正确，但需先解决「二进制 diff 进 git」的流程问题 |
 | **D-4** | **行情层文档（SDD L3 + `tdx2db_schema.md` L3.5）与实测有 4 处不一致** —— 详见 **§4.1** | 见 §4.1 | 🔴 **修文档**（L3/L3.5 权威层）。<br>⚠️ 这些**不是**代码缺陷（代码侧 `validator.ts` / `marketData.ts` 已按实测修正）⇒ **不占用 §13.2 编号**，建议随 T99/T102 文档同步修正时一并处理。<br>⚠️ 但 `raw_symbol_class` 的 `is_st`/`is_listing` 缺失**有功能后果**（C3 ST 状态校验无字段可用）⇒ 需确认 C3 的实际实现口径 |
 | **D-5** | 本提案的落地方式 | ① 裁决后由主 agent 直接写进 plan §5/§12.7/§13.4（改 L4 计划文档）② 先落 `docs/adr/ADR-013`（决策归档）再改 plan ③ 只留本提案，等 Wave 8 开工时再定 | ① + ② —— D-2 涉及「Node 与外部写进程的协调协议」，属**架构决策**，按 AGENTS.md 应进 `docs/adr/`。<br>⚠️ **编号注意**：ADR-009~012 已被 **PR #25（`docs/v3-spec`，DRAFT）** 占用 ⇒ 本提案对应的新 ADR 应为 **ADR-013**。若 PR #25 先合入，则以 `docs/adr/README.md` 的实际最大编号 +1 为准 |
 
@@ -365,7 +378,7 @@ C1_SQL（真库, v_stock_qfq 物化）耗时 = 3272 ms
 
 | 项 | 归属 |
 |---|---|
-| mini 库作为测试夹具的**整体策略**（三档切换 / 两层开关） | **ADR-008**（已裁决，不动） |
+| mini 库作为测试夹具的**整体策略**（三档切换 / 两层开关 / **不由 tdx2db 更新**） | **ADR-008**（已裁决，**不动**）。⚠️ `make-mini-duckdb.mjs` 的 `TABLES` **刻意不含 `_meta`** ⇒ tdx2db 主动拒绝写入 —— **这条护栏必须保留，不要给 mini 库补 `_meta`**（§2.2） |
 | `tdx2db` 二进制自身的实现（Go 仓库） | **不在本仓库** |
 | 备份覆盖面补全（`raw_gbbq` / `raw_holidays` / `raw_symbol_class` / `v_etf_*` 未被 `backup.ts` 导出） | 另立（本提案未覆盖，建议并入 T100 或独立） |
 | `ENABLE_OCI_BACKUP` 远程备份 | **I-11 已裁决**「MVP 不交付远程备份」 |
