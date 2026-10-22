@@ -1,5 +1,9 @@
 # 提案：行情更新链路修复（新增 T 任务 + §13 偏差登记）
 
+> ✅ **裁决状态（2026-10-21）**：**所有者已裁决 D-1~D-5**，本提案已**落地**为
+> **plan §5 Wave 9（T99 / T100 / T102）+ §12.7 G9 + §13.1 B-15 + §13.2 I-34/I-35/I-36 + [ADR-012](../adr/ADR-012-market-update-write-window.md)**。
+> 本文档保留为**证据层**（原始实测输出与推理过程的可审计留档），**不再是待裁决草案**。
+>
 > 🔴 **本文档性质**：`docs/audit/` 是「证据层」。本文件**不新增任何事实定义、不复述技术契约**，
 > 只做三件事：① 汇总 2026-10-21 实测到的**三条新发现**（附原始证据）；
 > ② 给出**拟新增的 T 任务**（草案，待所有者裁决后才进 plan §5）；
@@ -35,6 +39,9 @@
 **拟新增 3 个 T 任务**：T99（锁模型）/ T100（部署态，含 mini 库重抽）/ **T102**（F8 验收真触发 + cron 重叠）—— **归属 Wave 9**（main 上 Wave 9 = T79 的 P2 波；main 的 I-32 已定「Wave 9 或后续」为 follow-up 归属）。
 （T101 保留为**已撤销占位**，见 §3 —— 记录「初稿曾误派 mini 库任务」，避免后人重复踩坑。）
 **新 ADR 应为 ADR-012**（main 已到 ADR-011）。
+
+✅ **已落地**：**[ADR-012](../adr/ADR-012-market-update-write-window.md)** + plan **§5 Wave 9**（T99/T100/T102）+ **§12.7 G9**（7 条）+ **§13.1 B-15** + **§13.2 I-34/I-35/I-36**。
+📌 **T100 在 Ubuntu 下仍用独立运行账号 `invol`**（所有者裁决：不借用 `ubuntu`；最小权限）。
 
 ---
 
@@ -130,6 +137,37 @@ $ tdx2db cron --dburi 'duckdb:////tmp/opencode/prodlock.duckdb'
 
 > ⇒ 「每次查询都开关」会给每次 API 请求加 ~46ms，与 **PE4（p99 < 200ms）** 冲突。
 > ⇒ 因此修复方向应是「**长驻但只读**」+「**写窗口前后显式释放/重开**」，而非无条件开关。
+
+#### 2.1.4b 🔴 手动触发路径同样中招（**方向 B**）
+
+| 事实 | 实测 |
+|---|---|
+| `services/quoteRerun.ts` / `routes/admin.ts` 里 `closeDuckDBInstance` | **0 命中** |
+| `server.ts:52` 的 `duckdbHealthCheck()` → `openConnection()` → `getInstance()` → `DuckDBInstance.create()` | ⇒ **Fastify 启动那一刻就持锁** ⇒ 17:00 的 tdx2db **100% 失败**（不是概率问题） |
+| 三级降级链（`systemd-run` / `systemctl start` / `execFile`） | **全是独立进程** ⇒ 全都要写锁 ⇒ **全部被挡** |
+
+⇒ **手动补跑（`POST /api/admin/rerun-quotes`）与自愈补跑（`scheduler.ts:48`）当前 100% 失败。**
+⇒ **方向 A（外部写 → Node 让锁）不够** —— 手动触发是**反方向**（Node 叫 tdx2db 写），
+必须由 **Node 主动 close**（**方向 B**）。详见 ADR-012 §2.3。
+
+⚠️ **只 close 也不够** —— 实测竞态：close 后到 tdx2db 启动之间若有并发查询，
+它会走 `getInstance()` **惰性重建 instance 把锁抢回** ⇒ tdx2db 又被挡。
+⇒ 必须同时有**进程内写窗口标志**（`inProcessWriting`），标志为真时**禁止重建**。
+
+```console
+# 方向 B 实测：close → exec → 惰性重建
+[1] instance 已持有（模拟 Fastify 现状）
+    直接 exec tdx2db => 🛑 错误: failed to connect to database: IO Error: Could not set lock …
+[2] 方向 B：close → exec → 惰性重建
+    closeDuckDBInstance() 已执行
+    exec tdx2db => 🟡 00010701 数据尚未发布      ← 已拿到锁并进入拉取流程
+[3] 惰性重建后查询仍可用 => [42]
+
+# 竞态实测
+[A] close 之后、tdx2db 启动之前，有一个并发查询进来：
+    并发查询已重建 instance（锁又被抢回）
+    tdx2db => ❌ 失败: … Could not set lock …
+```
 
 #### 2.1.5 ✅ 修复方向已被实测验证可行（**关键正面结论**）
 
@@ -396,13 +434,15 @@ C1_SQL（真库, v_stock_qfq 物化）耗时 = 3272 ms
 
 ## 5. 需要所有者裁决的决策点
 
-| # | 决策点 | 选项 | 建议 |
-|---|---|---|---|
-| **D-1** | T100（部署态）放哪个 Wave | ① 独立「Wave 8.5」② 并入 Wave 9 ③ 单独一个 PR 不占 Wave | ② **并入 Wave 9** —— Wave 8 已完成（§12.6 判 COND），Wave 9 是既定的 follow-up 波次（main 的 I-32/I-33 已归入）；<br>⚠️ 若不排进 Wave 9，则「行情从未更新」的状态会带着 M4 tag 长期存在 |
-| **D-2** | **T99 的写窗口信号源**（Node 侧怎么知道 tdx2db 正在写？） | ① **文件哨兵**：`tdx2db.service` 加 `ExecStartPre/Post` 写/删 `/opt/invol/.tdx2db-writing`，Node 侧检测该文件即让锁<br>② **Node 侧主动探测**：改只读后，Node 用「尝试 RW 打开探测」判断（不现实）<br>③ **改为 Node 侧不做长驻**：每次查询开关（实测 +46ms/次，与 PE4 冲突）<br>④ **改 SDD 场景 4 的时序**：让 tdx2db 写库时 Fastify **整体停机**（17:00 停 → 写完起），与 systemd `ExecStartPre/Post` 联动 | ① **文件哨兵** —— 改动最小、跨进程可靠、不引入额外依赖；<br>✅ **无论选哪个，机制本身已实测可行**：调用 `closeDuckDBInstance()` 后 tdx2db 立刻拿到锁（§2.1.5 实验 5）⇒ 剩下的只是「谁来决定何时 close」；<br>⚠️ **SDD §5.1 场景 4 的「MVCC 自动处理 reader/writer 共存」必须改**（实测证伪） |
-| **D-3** | mini 库重抽 Parquet 的**触发时机**（**流程问题，非缺陷** —— ADR-008 §3 已接受「迷你库会过期」为代价） | ① 随 T100 手动做一次（简单，但会过期）② 定期自动重抽（每次产生 12 个二进制 diff）③ 只在 CI 跑 `extract`（需 CI 有真库 ⇒ 不可行） | ① **随 T100 ⑦ 做一次** + 写进 ADR-008 的「重生成触发」小节；<br>⚠️ 长期看 ② 更正确，但需先解决「二进制 diff 进 git」的流程问题 |
-| **D-4** | **行情层文档（SDD L3 + `tdx2db_schema.md` L3.5）与实测有 4 处不一致** —— 详见 **§4.1** | 见 §4.1 | 🔴 **修文档**（L3/L3.5 权威层）。<br>⚠️ 这些**不是**代码缺陷（代码侧 `validator.ts` / `marketData.ts` 已按实测修正）⇒ **不占用 §13.2 编号**，建议随 T99/T102 文档同步修正时一并处理。<br>⚠️ 但 `raw_symbol_class` 的 `is_st`/`is_listing` 缺失**有功能后果**（C3 ST 状态校验无字段可用）⇒ 需确认 C3 的实际实现口径 |
-| **D-5** | 本提案的落地方式 | ① 裁决后由主 agent 直接写进 plan §5/§12.7/§13.4（改 L4 计划文档）② 先落 `docs/adr/ADR-012`（决策归档）再改 plan ③ 只留本提案，等 Wave 8 开工时再定 | ① + ② —— D-2 涉及「Node 与外部写进程的协调协议」，属**架构决策**，按 AGENTS.md 应进 `docs/adr/`。<br>⚠️ **编号注意**：main 已到 **ADR-011** ⇒ 本提案对应的新 ADR 应为 **ADR-012**。落地前以 `docs/adr/README.md` 的实际最大编号 +1 为准 |
+# ✅ **全部已裁决（2026-10-21）** —— 裁决结果见下表「裁决」列；决策理由归档在 [ADR-012](../adr/ADR-012-market-update-write-window.md)
+
+| # | 决策点 | 选项 | 建议 | **裁决** |
+|---|---|---|---|---|
+| **D-1** | T100（部署态）放哪个 Wave | ① 独立「Wave 8.5」② 并入 Wave 9 ③ 单独一个 PR 不占 Wave | ② **并入 Wave 9** —— Wave 8 已完成（§12.6 判 COND），Wave 9 是既定的 follow-up 波次（main 的 I-32/I-33 已归入）；<br>⚠️ 若不排进 Wave 9，则「行情从未更新」的状态会带着 M4 tag 长期存在 | **✅ ② 并入 Wave 9** |
+| **D-2** | **T99 的写窗口信号源**（Node 侧怎么知道 tdx2db 正在写？） | ① **文件哨兵**：`tdx2db.service` 加 `ExecStartPre/Post` 写/删 `/opt/invol/.tdx2db-writing`，Node 侧检测该文件即让锁<br>② **Node 侧主动探测**：改只读后，Node 用「尝试 RW 打开探测」判断（不现实）<br>③ **改为 Node 侧不做长驻**：每次查询开关（实测 +46ms/次，与 PE4 冲突）<br>④ **改 SDD 场景 4 的时序**：让 tdx2db 写库时 Fastify **整体停机**（17:00 停 → 写完起），与 systemd `ExecStartPre/Post` 联动 | ① **文件哨兵** —— 改动最小、跨进程可靠、不引入额外依赖；<br>✅ **无论选哪个，机制本身已实测可行**：调用 `closeDuckDBInstance()` 后 tdx2db 立刻拿到锁（§2.1.5 实验 5）⇒ 剩下的只是「谁来决定何时 close」；<br>⚠️ **SDD §5.1 场景 4 的「MVCC 自动处理 reader/writer 共存」必须改**（实测证伪） | **✅ ① 文件哨兵**。<br>「谁决定何时 close」= **systemd 决定窗口起止**（`ExecStartPre/Post` 写/删哨兵），**Node 惰性执行 close**（下次查询前发现哨兵即让锁 + 返回可重试错误；17:01 段轮询等待窗口结束）。<br>⇒ Node **不需要**预判窗口、不需要与 tdx2db 通信 ⇒ `Persistent=true` 的补跑漂移也照样成立。<br>🔴 **补入方向 B**（所有者追问后发现）：**手动触发 / 自愈补跑是反方向 —— Node 叫 tdx2db 写 ⇒ 必须 Node 主动 close**；且只 close 不够，**并发查询会重建 instance 抢回锁**（实测）⇒ 必须加进程内写窗口标志禁止重建。<br>详见 ADR-012 §2.1（方向 A）/ §2.3（方向 B） |
+| **D-3** | mini 库重抽 Parquet 的**触发时机**（**流程问题，非缺陷** —— ADR-008 §3 已接受「迷你库会过期」为代价） | ① 随 T100 手动做一次（简单，但会过期）② 定期自动重抽（每次产生 12 个二进制 diff）③ 只在 CI 跑 `extract`（需 CI 有真库 ⇒ 不可行） | ① **随 T100 ⑦ 做一次** + 写进 ADR-008 的「重生成触发」小节；<br>⚠️ 长期看 ② 更正确，但需先解决「二进制 diff 进 git」的流程问题 | **✅ 暂不重抽**（本波不做）。<br>⇒ mini 库与真库的窗口差异继续存在；`numeric` 层断言不受影响（mini 是真库的逐位一致子集） |
+| **D-4** | **行情层文档（SDD L3 + `tdx2db_schema.md` L3.5）与实测有 4 处不一致** —— 详见 **§4.1** | 见 §4.1 | 🔴 **修文档**（L3/L3.5 权威层）。<br>⚠️ 这些**不是**代码缺陷（代码侧 `validator.ts` / `marketData.ts` 已按实测修正）⇒ **不占用 §13.2 编号**，建议随 T99/T102 文档同步修正时一并处理。<br>⚠️ 但 `raw_symbol_class` 的 `is_st`/`is_listing` 缺失**有功能后果**（C3 ST 状态校验无字段可用）⇒ 需确认 C3 的实际实现口径 | **✅ 修** —— 已并入 **G9.7** 门槛（四处不一致全修）。<br>⚠️ `is_st`/`is_listing` 的功能后果（C3 ST 校验口径）**仍待确认**，不阻塞 G9.7 |
+| **D-5** | 本提案的落地方式 | ① 裁决后由主 agent 直接写进 plan §5/§12.7/§13.4（改 L4 计划文档）② 先落 `docs/adr/ADR-012`（决策归档）再改 plan ③ 只留本提案，等 Wave 8 开工时再定 | ① + ② —— D-2 涉及「Node 与外部写进程的协调协议」，属**架构决策**，按 AGENTS.md 应进 `docs/adr/`。<br>⚠️ **编号注意**：main 已到 **ADR-011** ⇒ 本提案对应的新 ADR 应为 **ADR-012**。落地前以 `docs/adr/README.md` 的实际最大编号 +1 为准 | **✅ ① + ②** —— 已落 **[ADR-012](../adr/ADR-012-market-update-write-window.md)**，并据此改了 plan §5 / §12.7 / §13.1 / §13.2 / §13.4 |
 
 ---
 

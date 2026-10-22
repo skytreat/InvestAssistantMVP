@@ -21,6 +21,7 @@
 | [ADR-006](ADR-006-engineering-gates-and-wave-acceptance.md) | 工程门槛暂缓项与验收分层 | B-5、B-6 | T86、T86b、§12.7 Gate |
 | [ADR-007](ADR-007-route-contract-and-candidate-migration.md) | 路由契约与候选池迁移语义 | B-7、B-12、I-1 | T90、T92 |
 | [ADR-008](ADR-008-test-market-data-strategy.md) | 测试行情库策略 —— 迷你 DuckDB + 三档切换 + 两层开关 + 视图使用约束 | Wave 5 实施期性能诊断 | T60b、T60 剩余项、视图物化反模式修复 |
+| [ADR-012](ADR-012-market-update-write-window.md) | 行情更新链路的跨进程写窗口协调协议 —— DuckDB 只读 + systemd 哨兵 + Node 惰性让锁 | §13.1 B-15、§13.2 I-34/I-35/I-36 | T99、T100、T102 |
 | [ADR-009](ADR-009-co1-permission-target.md) | CO1 数据文件权限目标口径 —— 专用服务账号（`nobody` 作废） | T78 最终审计（Wave 8 收口） | 部署时验证项（`docs/deploy.md` §2） |
 | [ADR-010](ADR-010-dec7-frontend-core-adapter-copy.md) | DEC-6 / DEC-7 收口 —— 前端复制一份适配层，AGENTS.md 不修订 | T78 最终审计（Wave 8 收口） | 无新任务（Wave 5 已落地） |
 | [ADR-011](ADR-011-dec8-macd-warmup-drift.md) | DEC-8 收口 —— 接受 MACD warm-up 瞬态漂移，不做数据订正 | T78 最终审计（Wave 8 收口） | 无新任务（口径归档） |
@@ -28,6 +29,8 @@
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 
 **实施期新增**：ADR-008 来自 Wave 5 实施期的性能诊断与 owner 裁决（非 §13.1 阻断项）。
+
+**实施期新增**：ADR-012 来自 2026-10-21 对「行情数据库增量更新能否使用」的实测调查（Wave 8 完成后的独立复核）。
 
 **Wave 8 收口新增（ADR-009 ~ ADR-011）** —— 来自 T78 最终审计（`docs/audit/fullstack-audit-v2.md`）：
 
