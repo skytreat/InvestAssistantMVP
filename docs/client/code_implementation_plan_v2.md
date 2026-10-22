@@ -358,6 +358,25 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 | 🔒 **T86b** | ✅ **完成**（2026-10-21） | **恢复 SDD §12.2 覆盖率门槛 + 90% 阻断 Gate（§13.4 B-5 裁决：暂缓执行，届时补齐）** | ① 把 §12.4 E3 从「frontend ≥60% / backend 不低于当前基线」改回 **SDD §12.2 原值**：核心算法 ≥90% / C1-C12 校验 ≥85% / 插件引擎 ≥90% / 前端 ≥70%<br>② `.github/workflows/ci.yml` 恢复 SDD §12.6 的 **90% 阻断 Gate**（「核心算法 + 插件引擎 <90% 阻断合入」）<br>③ 补齐到门槛所需的测试（缺口清单由 T60/T61 盘点结果给出）<br>④ 同步修回 SDD §12.6 判定规则中被本轮下调的部分 | ① `npm run test:coverage` 输出满足全部门槛<br>② **故意把某模块覆盖率压到 89% → CI 必须红**<br>③ §12.6 判定规则恢复覆盖率条款<br>④ B-5 从 §13.1 关闭 | ✅ **实测四模块全部达标**（`npm run test:coverage`，CI 同口径）：核心算法 **99.19%/92.19%**、插件引擎 **99.17%/95.91%**、C1-C12 **96.10%/88.94%**、前端 **93.93%/81.93%**（行/分支）⇒ **选 (A) 全量恢复门槛**，无需 §12.7 豁免登记。<br>补齐动作：新增 `apps/backend/tests/unit/pluginEngineCoverage.test.ts`（52 例）+ `apps/backend/tests/unit/validatorCoverage.test.ts`（6 例）；顺手修掉 `validator.test.ts:84` 的「未 await 的 async 断言」（T81 顺序依赖类潜伏缺陷，会随机带红整个行情用例集）。<br>🔒 依赖 T60 / T61 的测试存量，否则无从判断缺口。 |
 | **T78** | ✅ **完成**（2026-10-21）—— **判定 ⚠️ COND**（初判 FAIL，Wave 8 收口后改判；见 §12.6） | **T-GAP-5 全栈最终审计 + 文档**（验收标准见 **§12**，判定规则见 §12.6） | `docs/audit/fullstack-audit-v2.md`：① Requirements §4.2 In-Scope **14 项**逐项；② Requirements §5.1-5.5 业务规则逐条；③ PRD §5.1-5.9 **交互 9 节**逐条；④ SDD §12.5 **功能 11 + 性能 6 + 安全 6 + 合规 1** 共 24 项；⑤ AGENTS.md 硬约束（含 §4 修订后的新表述）；⑥ Out-Scope 未被偷跑；⑦ 性能指标 PE1-PE6 实测数据；⑧ §13 全部偏差登记的关闭状态 | 按 §12.6 判定规则给出 PASS/COND/FAIL → PASS 才打 tag `M4`；任一 FAIL 不能交付 |
 
+### Wave 9 — 行情更新链路修复（部署态 + 跨进程写窗口）
+
+> 🚦 **出口门槛 G9**（§12.7）—— **真机「17:00 tdx2db 写库 → 17:01 校验读到新数据」端到端跑通**（不得 mock）。
+>
+> 🔴 **为什么在 Wave 8 之后才做**：Wave 7 / Wave 8 已于 2026-10-21 完成（G7 7/7、G8 PASS，§12.6 判 ⚠️ COND），
+> 但 **Requirements §4.2 #12「收盘后定时自动化」在 T78 审计中被判 ✅ PASS，依据是「代码 + unit 文件内容」** ——
+> 而实测**timer 从未安装、行情落后 6 个交易日**。⇒ 本波补上「载体存在 ≠ 功能可用」的缺口。
+> 依据与原始证据：[`docs/audit/proposal-market-update-pipeline-fix.md`](../audit/proposal-market-update-pipeline-fix.md)；协议决策：[`docs/adr/ADR-012-market-update-write-window.md`](../adr/ADR-012-market-update-write-window.md)。
+
+| ID | 状态 | 任务 | 交付物 | 测试要点 | 卡点 |
+|---|---|---|---|---|---|
+| 🔒 **T99** | ⬜ 待启动 | **DuckDB 访问模型改造（只读 + 写窗口让锁）**（§13.1 **B-15**） | ① `db/duckdb.ts`：`DuckDBInstance.create(path, { access_mode: 'READ_ONLY' })` —— 落实 AGENTS.md:376「只有 SELECT 权限」<br>② **进程内写窗口标志** `inProcessWriting`：为真时 `getInstance()` **不得重建** instance（⚠️ 实测：不加此标志，close 后的并发查询会重建 instance 抢回锁 ⇒ tdx2db 必失败，见 ADR-012 §2.3.3）<br>③ **方向 A（外部写 → Node 被动让锁）**：哨兵文件 `/opt/invol/.tdx2db-writing`（可 env 覆盖）；检测到哨兵 ⇒ `closeDuckDBInstance()` + 行情 API 返回可重试错误；哨兵消失 ⇒ 惰性重建<br>④ **方向 B（Node 自己触发写 → Node 主动让锁）**：**`services/quoteRerun.ts` 的 `rerunQuoteUpdate()` 必须先置 `inProcessWriting` + `closeDuckDBInstance()`，再 exec tdx2db，结束后清标志** —— ⚠️ 现状该文件**零 close**，而三级降级链全是独立进程 ⇒ **手动补跑与自愈补跑当前 100% 失败**（ADR-012 §2.3）<br>⑤ `services/scheduler.ts` 17:01 校验段：窗口内**轮询等待**（带超时），避免读到半写状态<br>⑥ `services/scheduler.ts` 四个 `AsyncTask` 加 `preventOverrun: true`（消除 17:01/17:02 段重叠，§13.2 **I-36**）<br>⑦ `server.ts` SIGTERM：`closeDuckDBInstance()` 后再退出<br>⑧ **顺带关闭 main §13.2 I-26**（单例把首次查询那一刻的路径永久缓存 ⇒ 改为每次连接时解析）<br>⑨ 同步修 **SDD §5.1 场景 4**（`SDD.md:1563`「DuckDB MVCC 自动处理 reader/writer 共存」**已被实测证伪**） | ① 单测：哨兵存在时 `queryDuckDB` 抛结构化「行情更新中」错误，窗口结束后自动恢复<br>② **方向 B 集成测试**：`rerunQuoteUpdate()` 执行期间新查询被拒；exec tdx2db **拿得到锁**（断言不再出现 `Conflicting lock`）<br>③ **竞态防护断言**：`inProcessWriting=true` 期间 `getInstance()` 不重建 instance<br>④ 集成：`closeDuckDBInstance()` 后**另一进程**能 RW 打开同一文件（用 `/tmp` 临时库，**不碰真库**）<br>⑤ 断言生产代码里 DuckDB 打开**必须**是 `READ_ONLY`（grep 断言）<br>⑥ `preventOverrun` 生效性：长任务时同 job 第二次触发被跳过<br>⑦ 回归：受影响的行情用例全绿 | 🔴 需与 T100 的 systemd unit（写哨兵）**同批**，否则方向 A 的窗口信号无来源<br>⚠️ **方向 B（④）不依赖 T100** —— 它是**纯 Node 侧**改动，且是「手动补跑」与「自愈补跑」两条路径的**共同前提** |
+| 🔒 **T100** | ⬜ 待启动 | **部署态落地（unit + 运行用户 + 目录权限 + 数据回填）**（§13.2 **I-34**） | ① 装 `deploy/tdx2db.service` + `deploy/tdx2db-update.timer` → `/etc/systemd/system/` + `daemon-reload` + `enable --now`<br>② **创建独立运行账号 `invol`**（`useradd -r -s /bin/false invol`，`deploy.sh` Step 1 的设计）—— ⚠️ 本机 `id invol` 失败 ⇒ 该用户**从未被创建**（`deploy.sh` 从未执行完）。**所有者已裁决：Ubuntu 下仍用独立账号 `invol`，不用 `ubuntu`**（最小权限：tdx2db 只需要写行情库目录，不需要其他权限）<br>③ 解决 `/opt/invol` 不可写（DuckDB 需在同目录建 `.wal`）⇒ **精确 chown**：<br>　　`chown invol:invol /opt/invol`（顶层目录，让 invol 能建 `.wal`）+ `chown invol:invol /opt/invol/quotes.duckdb`<br>　　⚠️ **不要用 `deploy.sh` Step 7 的 `chown -R invol:invol /opt/invol`** —— 它会把整个项目目录（含 `.git`、`node_modules`）改成 invol 属主 ⇒ 本机 `ubuntu` 用户后续 `git`/`npm` 全部 Permission denied<br>④ **修 `deploy/deploy.sh` 的 3 个真缺陷**（实测，逐个会导致脚本失败或产物错误）：<br>　　(a) **Step 8 `cp "$SCRIPT_DIR/Caddyfile" /etc/caddy/`** —— `/etc/caddy` 不存在且 **caddy 未安装** ⇒ `set -euo pipefail` 使脚本**在此中止** ⇒ **Step 9（tdx2db init）与 Step 10（启动服务）永不执行**（这正是本机没有行情库初始化痕迹的原因）<br>　　(b) **Step 5 `npm ci --omit=dev` 后才 `npm run build`** —— `typescript`/`tsup` 在 devDeps 里，被 `--omit=dev` 删掉 ⇒ **build 必失败** ⇒ 顺序应为「全量安装 → build → 再 `--omit=dev` 裁剪」<br>　　(c) **Step 7 `chown -R`** 过宽（同上 ③）<br>⑤ `tdx2db.service` 加 `ExecStartPre/Post` 写/删哨兵（ADR-012 §2.1）<br>⑥ 首次 `tdx2db cron` **留痕**（stdout/stderr 落文件，禁止再出现「无日志可查」）<br>⑦ **数据回填**：把 `2026-10-13`~`2026-10-21` 补齐<br>⑧ 修 `docs/deploy.md`（当前描述的 17:00→17:05 链路与实况脱节） | ① `systemctl is-enabled tdx2db-update.timer` == `enabled`<br>② `systemctl list-timers` 显示下次触发 = 明日 17:00<br>③ `journalctl -u tdx2db.service` 有成功记录且 `exit_code=0`<br>④ 真库 `max(raw_kline_daily.date)` == 最近交易日<br>⑤ 真库**无 `.wal` 残留**、文件大小/行数合理<br>⑥ **`deploy.sh` 修复验证**：`bash -n deploy/deploy.sh` 语法通过；Step 8 的 caddy 分支在 caddy 未安装时**不中止**脚本（`set -e` 兼容）；Step 5 的 build 在**裁剪前**完成<br>⑦ **权限验证**：`sudo -u invol touch /opt/invol/.probe` 成功（能在库同目录建文件）；同时 `/opt/invol/InvestAssistantMVP/.git` 属主**仍是 ubuntu**（未被 `chown -R` 波及） | 🔴 **生产环境变更**（改 `/opt/invol` 属主 + 装 unit）⇒ 须所有者授权<br>⚠️ 与 AGENTS.md「跑测试前必须先停掉后端」冲突 —— 17:00 窗口内 Node 持锁会挡住 tdx2db（**这正是 T99 要解决的**） |
+| 🔒 **T102** | ⬜ 待启动 | **F8 验收升级（真触发替代「读文件」）**（§13.2 **I-35**） | ① `cronSequence.test.ts` 的 F8 用例**分层**：<br>　　- **配置层**（现有，CI 可跑）：unit 文件内容 + cron 表达式 —— 保留<br>　　- **运行层**（新增，**仅真机**，CI 跳过）：`systemctl is-enabled` / `is-active` / `list-timers` / `journalctl` 有触发记录<br>② 该分层同步登记到 **SDD §12.5 F8 行**（否则 SDD 与实际载体不符）<br>③ 门禁 **G9** 增列「F8 运行层证据」<br>④ **重新判定** `docs/audit/fullstack-audit-v2.md` 里 Requirements §4.2 #12「收盘后定时自动化」的 ✅ PASS（依据是「代码 + unit 文件」，属假绿） | ① 配置层用例仍全绿（CI）<br>② 运行层用例在真机 PASS、在 CI `skip` 且 skip 原因写明<br>③ **反向验证**：把 timer 停掉后运行层用例必须 FAIL（防止再造一个恒绿）<br>④ 重新判定后，`fullstack-audit-v2.md` 的 #12 行不得再是无条件 ✅ | ⚠️ 运行层用例**不能在 CI 跑**（CI 无 systemd）⇒ 需在 §12.7 豁免规则登记「CI 环境无法验证运行层」，否则 G9 会因「无载体」判 FAIL |
+
+> ⚠️ **T79**（响应式 Phase 2/3 + P2 体验收尾）仍属 Wave 9；本波的三项与它**文件零重叠**，可并行。
+> ⚠️ **mini 库重抽（ADR-008 §3 的「一键重生成」）本波不做**（所有者裁决：**暂时不重抽**）⇒ mini 库与真库的窗口差异继续存在，
+> 但 mini 库的 `numeric` 层断言不受影响（它是真库的**逐位一致子集**，只在重抽后才会随真库前进）。
+
 ---
 
 ## 6. 任务汇总与工作量
@@ -849,6 +868,20 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **G8.2** | T86b 覆盖率达标，或已按 §12.7 豁免规则登记 | `test:coverage`<br>✅ **2026-10-21 已达标**（四模块实测全部过线，无需豁免）：核心算法 99.19%/92.19% · 插件引擎 99.17%/95.91% · C1-C12 96.10%/88.94% · 前端 93.93%/81.93%（行/分支）<br>✅ **2026-10-21 T78 独立复跑确认**（`MARKET_DATA_MODE=mini npm run test:coverage`，EXIT=0 + **逐字复刻 CI `coverage-gate` 脚本**，GATE_EXIT=0）：核心算法 **99.19%/92.19%** · 插件引擎 **99.17%/95.92%** · C1-C12 **96.10%/88.89%** · 前端 **94.50%/82.03%**（行/分支） |
 | **G8.3** | G1-G7 全部 PASS 且各有落档文件 **+ §12.7「未完成验收项 → 归属门槛」表登记的 T60 三项余项** | 目录检查 + 三项余项实测<br>✅ **G1-G7 子项 PASS**（7 份落档文件 `wave-1..7-audit.md` 齐备、判定全 PASS、逐条有实测原始数据）<br>✅ **T60 三项余项 PASS**（`tests/http/` 7 文件 / 29 用例全绿 · EXIT=0；PE4 单请求 p99=**125.7ms** ≤ 200ms；N+1 已消除 —— 5 只与 30 只持仓查询次数**完全相同**）<br>⚠️ **两项残留（不影响 G8.3 判定，但影响 §12.6 与合并流程）**：① 该套件在审计结束时**未 commit**，须提交进 Wave 8 的 commit 序列并与本 gate 文档同 PR（§12.8 规则 1）；② **PE4 并发档 `autocannon -c 100` p99=3522.9ms 未达标** ⇒ 进 §12.6 的 A 组（**已登记为偏差 §9.3 D-4 / §13.2 I-28**）<br>✅ **2026-10-21 收口**：残留 ② 的 **SE1「HTTP 层真实 301 未实测」已关闭** —— Caddy **v2.11.7 实测** `redir … permanent` 返回 **301**（真起 Caddy + 裸 socket）⇒ **SE1 判 PASS**（详见 `docs/adr/ADR-009` 之外的 §12.6 结论块与 `fullstack-audit-v2.md` §2.3） |
 
+
+#### G9 · Wave 9 出口（行情更新链路修复）
+
+| # | 门槛 | 验证方式 |
+|---|---|---|
+| 🔒 **G9.1** | **真机「17:00 tdx2db 写库 → 17:01 校验读到新数据」端到端跑通** —— 真库 `max(raw_kline_daily.date)` == 最近交易日，且 `journalctl -u tdx2db.service` 有成功记录 | 真机实测 + `journalctl` 原始输出<br>⚠️ **不得 mock**（与 G7.5 同理） |
+| 🔒 **G9.2** | **Node 侧不持写锁** —— 双进程实验：Node 侧持 instance 时外部进程打开同库失败；`closeDuckDBInstance()` 后成功 | `/tmp` 临时库实验（**不碰真库**） |
+| 🔒 **G9.3** | **DuckDB 打开必须是 `READ_ONLY`** —— 生产代码 grep 断言 | grep 断言 + 单测 |
+| 🔒 **G9.3b** | **方向 B 生效** —— `rerunQuoteUpdate()` 执行期间新查询被拒；exec tdx2db **拿得到锁**（不再出现 `Conflicting lock`）；且 `inProcessWriting` 期间 `getInstance()` **不重建** instance | 集成测试（`/tmp` 临时库，**不碰真库**）+ 并发竞态用例 |
+| **G9.4** | **F8 运行层证据** —— `systemctl is-enabled` == enabled / `list-timers` 显示下次 17:00 / `journalctl` 有触发记录 | 真机探针（CI 跳过需按 §12.7 登记豁免） |
+| **G9.5** | **`preventOverrun` 生效** —— 长任务时同 job 不重复触发；真库上单轮 C1-C12 落在 60s 内 | 单测 + 真库计时 |
+| **G9.6** | **Requirements §4.2 #12「收盘后定时自动化」重新判定** —— `fullstack-audit-v2.md` 该行不得再是无条件 ✅ | 文档复核 + G9.1 证据 |
+| **G9.7** | **行情层文档 4 处不一致已修** —— `raw_holidays` 语义 / `raw_symbol_class` 列 / `class` 取值 / `--min` flag 名（§4.1 表，ADR-012 附带项） | 文档 diff 复核 |
+
 ---
 
 ### 12.8 Wave Gate 执行流程（硬阻断）
@@ -957,6 +990,10 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **I-32** | **行情用例「静默 skip」伪装成「通过」⇒ 门禁假绿**（2026-10-21 T78 两次全量实测量化） | DuckDB 被别的进程锁住时，`tests/_marketData.ts` 的 `detectMarketDataAvailable()` 重试 3 次后仍失败 ⇒ 守卫判 false ⇒ **行情相关用例被 skip，且 vitest 退出码 = 0**。实测：机器空闲 `npm test` = **911 passed / 1 skipped**；同机有另一个 vitest 持 DuckDB 锁时 = **894 passed / 18 skipped**（17 个用例静默消失）⇒ **退出码两次都是 0**。PE2 亦实测 2 轮直接 **SKIP（不跑）且 EXIT=0** | 🔴 **已登记待修（§9.3 D-8）** —— 建议：① CI 把「行情用例被跳过」判红；② 或在 CI 断言「迷你库档下 skipped 数 = 0」（CI 用迷你库 ⇒ 迷你库下**不得 skip**）。**本 Wave 不改代码**（不碰 `apps/backend/tests/`）⇒ 留待 **Wave 9 或后续任务**（**移交清单 M-12**） |
 | **I-33** | **C' 组 P2 体验项 U7 / U16 / U20 未完成**（2026-10-21 T78 复核） | §12.3b：**U7** 面包屑（`grep -rn 'breadcrumb\|面包屑' apps/frontend/src` = 0 命中）/ **U16** 三态按钮选中态视觉加强（未加 fontWeight 600 + borderWidth 2px）/ **U20** 表格手机端卡片化 + touch ≥44×44px（无 `@media (pointer: coarse)`）⇒ 3 项 P2 **未完成**（U6 导航重排**实质已交付**） | 🟡 **已登记偏差（§9.3 D-9）** —— P2 级项按 §12.6 属 **COND 范畴**；落地归属 **T79 / Wave 9**（**移交清单 M-11**） |
 
+| **I-34** | **行情更新的部署态从未落地，真库落后 6 个交易日**（2026-10-21 实测）| ① `tdx2db-update.timer` / `tdx2db.service` **从未安装**（`systemctl cat` → `No files found`；`list-unit-files 'tdx*'` → 0；`journalctl -u tdx2db.service` → `-- No entries --`）；无 cron / at / user-timer 替代通道<br>② `User=invol` **不存在**（`id invol` → no such user）<br>③ `/opt/invol` 属主 `root:root` 755 → DuckDB 需在同目录建 `.wal` → 实测 `Permission denied`<br>④ `deploy/deploy.sh` **从未在本机执行过**（`/opt/invol/secrets`、`/opt/invol/plugins/strategies` 不存在）<br>⑤ 真库 `max(raw_kline_daily.date)` = **2026-10-12** ⇒ 落后 6 个完整交易日（10-13/14/15/16/19/20，**非周末/节假日误报**）<br>⑥ `docs/deploy.md` 描述的 17:00→17:05 链路与实况脱节 | **Requirements §4.2 #12**（收盘后定时自动化）+ **SDD §5.1 五段时序** | 🔴 **派任务 → T100**。<br>⚠️ plan §1 行 34 已自认「真机部署验证（systemd unit / Caddy HTTPS）」**仍未覆盖** ⇒ 本条是那条自认缺口的**具体化** |
+| **I-35** | **F8「5 段自动化触发」的验收载体只验「unit 文件内容」⇒ G5.1 与 T78 最终审计都判过假绿**（2026-10-21 实测）| ① `tests/integration/cronSequence.test.ts:144,171` 只 `readFileSync('deploy/tdx2db-update.timer')` 后比对正则 —— 验证的是**仓库文件内容**，不是**本机 timer 是否装了/触发过**<br>② 全仓 `grep systemctl apps/backend/tests/` → **0 命中**（`quoteRerun.test.ts` 全 mock）<br>③ `docs/audit/wave-5-audit.md:17` 的 **G5.1（🔒 硬阻断）据此判 F8 PASS**<br>④ 🔴 **波及面更大**：`docs/audit/fullstack-audit-v2.md:202` 对 **Requirements §4.2 #12「收盘后定时自动化」** 也判了 **✅ PASS**，依据同为「代码 + unit 文件内容」⇒ **§12.6 全局判定（⚠️ COND）带着这条假绿通过**<br>⑤ 已知实际状态：timer 未安装、数据落后 6 个交易日 ⇒ **功能不可用而门禁绿** | **SDD §12.5 F8**（「每日 5 段自动化正确触发」）+ **§12.7 硬阻断语义** | 🔴 **派任务 → T102**（运行层用例 + 分层登记 + 重新判定 #12）。<br>⚠️ 与本节 **I-32**（行情用例静默 skip 假绿 → §9.3 D-8）**互补不同源**（I-32 在守卫层 / 本条在验收用例层）⇒ **同批修** |
+| **I-36** | **4 段 cron 未设 `preventOverrun` + 真库单条校验 SQL 3.27s ⇒ 17:01/17:02 段重叠**（2026-10-21 实测）| ① `services/scheduler.ts:105,139,214,245` 四个 `AsyncTask` **全部未设 `preventOverrun`**（`grep -c` = 0）；`toad-scheduler` README:350 该选项**默认 false**<br>② 真库实测：`SELECT COUNT(DISTINCT symbol) FROM v_stock_qfq WHERE date='2026-10-12'`（= C1 的 SQL 形态）耗时 **3272ms** —— `validator.ts` 的 C1/C6 **仍走视图**（T60c 只改了 `marketData.ts` / `dataCheck.ts`）<br>③ 段间隔仅 **60 秒**（17:01 → 17:02）⇒ C1~C12 单轮在真库上分钟级 ⇒ **17:02 信号段极可能在 17:01 未结束时触发**<br>④ 连锁效应：若 17:00 的 tdx2db 正在写库（受 **B-15** 持锁影响），17:01 校验读不到新数据 ⇒ 判 ERROR/WARN ⇒ 触发 `scheduler.ts:48` 的 `runDatacheckWithRerun` **再跑一次 tdx2db** ⇒ 与 17:00 的进程抢锁 ⇒ **自愈必然失败** | **SDD §5.1 五段时序**（17:00 写 → 17:01 校验 → 17:02 信号，按序执行）+ **Requirements §7.1**（C1 失败级别 ERROR ⇒ 自动触发补跑） | 🔴 **派任务 → T99 ④**（`preventOverrun`）。<br>⚠️ 修 B-15 / I-34 而不修本条 ⇒ **自愈链路仍会失败**（三条必须一起修） |
+
 ### 13.3 次要级（口径/命名层面）
 
 | # | 项 | 说明 |
@@ -991,6 +1028,13 @@ DEC-12(已定, §13.4) ──→ T85-T94
 > | 工程门槛暂缓与 Wave 验收分层 | [ADR-006](../adr/ADR-006-engineering-gates-and-wave-acceptance.md) |
 > | 路由契约与候选池迁移语义 | [ADR-007](../adr/ADR-007-route-contract-and-candidate-migration.md) |
 > 本节记录所有者对 §13.1 阻断项的**逐项裁决**。裁决即新约束，**优先于本计划此前的任何推断**。
+>
+> 📌 **2026-10-21 第二轮裁决（行情更新链路）**：见下表 **B-15 / I-34 / I-35 / I-36**。
+> 决策理由与代价见 **[ADR-012](../adr/ADR-012-market-update-write-window.md)**；原始实测证据见
+> [`docs/audit/proposal-market-update-pipeline-fix.md`](../audit/proposal-market-update-pipeline-fix.md)（证据层）。
+> 所有者裁决要点：**D-1** 修复并入 Wave 9；**D-2** 写窗口信号源 = systemd 哨兵文件（**窗口起止由 systemd 决定，Node 惰性执行 close**）；
+> **D-3** mini 库**暂不重抽**；**D-4** 行情层文档不一致**要修**；**D-5** 先落 ADR 再改 plan；
+> **T100 在 Ubuntu 下仍用独立运行账号 `invol`**（不借用 `ubuntu`）。
 
 | # | 裁决 | 落地任务 | 对真相源的影响 |
 |---|---|---|---|
@@ -1007,6 +1051,10 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **B-7** | ✅ **派任务改行为** —— 候选池迁移只打标记 | **T92** | 删除 `watch.ts:85-88` 的 INSERT 分支；改写 `watchPromote.test.ts:35` 断言 |
 | **B-8** | ✅ **派任务补契约字段** | **T93** | `pluginEngine.ts:62-72` 补 7 个字段 + `PluginSignal.params`→`metrics` 统一；含字段完备性单测 |
 | **B-13** | ✅ **属 MVP** | **T94** | §8 该条**删除**（初稿误读 AGENTS.md 的路径/扩展名/eval 约束为功能禁令）。⚠️ 实测沙盒与加载器**已实装**，只缺 admin 路由壳（0.5d） |
+| **B-15** | ✅ **派任务 → T99**（2026-10-21 所有者裁决）—— **Fastify 常驻持有 DuckDB 写锁 ⇒ 行情更新链路结构性不可用** | **T99** | 🔴 **需改 SDD §5.1 场景 4**（`SDD.md:1563`「DuckDB MVCC 自动处理 reader/writer 共存」**已被实测证伪** —— DuckDB 是单写者文件锁）。<br>✅ 决策理由与代价见 **ADR-012**；原始证据见 `docs/audit/proposal-market-update-pipeline-fix.md` §2.1 |
+| **I-34** | ✅ **派任务 → T100**（2026-10-21）—— 部署态从未落地 + 数据落后 6 个交易日 | **T100** | 需改 `docs/deploy.md`（L5 运维层）。⚠️ **需所有者授权**（改 `/opt/invol` 属主 + 装 systemd unit）|
+| **I-35** | ✅ **派任务 → T102**（2026-10-21）—— F8 验收载体只验「unit 文件内容」 | **T102** | 需同步 **SDD §12.5 F8 行**；并需**重新判定** `fullstack-audit-v2.md` 的 Requirements §4.2 #12 |
+| **I-36** | ✅ **并入 T99**（2026-10-21）—— 4 段 cron 未设 `preventOverrun` | **T99 ④** | ⚠️ 是否同时把 `validator.ts` 的 C1/C6 从视图改基表下推（真库 3.27s）—— 属 T60c 遗留范围，**待定** |
 
 **新增任务一览**（均已写入 §5，编号接续 T84 之后）：
 
