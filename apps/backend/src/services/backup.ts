@@ -19,7 +19,11 @@ import { writeSystemLog } from './logger.js';
 
 // 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/backup 覆盖）
 export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup');
-const RETENTION_DAYS = 3;
+// ⚠️ **分级保留期**（D-6 裁决 L2：b）—— Requirements §4.2 #13 / SDD §6.5：
+//   行情数据（可重建）保留 7 天；业务数据（不可重建）保留 30 天。
+//   之前的实现是统一 3 天，把唯一有业务意义的分级抹平了 —— 2026-10-22 修正。
+export const QUOTE_RETENTION_DAYS = 7;
+export const BUSINESS_RETENTION_DAYS = 30;
 
 function _ensureBackupDir(): void {
   if (!fs.existsSync(BACKUP_DIR)) {
@@ -34,16 +38,26 @@ function _date(): string {
   return local.toISOString().slice(0, 10);
 }
 
+export function _retentionDaysFor(name: string): number {
+  // 行情备份产物（parquet）：7 天；业务备份产物（SQLite VACUUM INTO）：30 天；
+  // 其余文件（目录、未知扩展名）按业务的 30 天处理，宁可多留也不误删。
+  if (/^v_stock_qfq\..*\.parquet$/.test(name) || /^v_etf_qfq\..*\.parquet$/.test(name)) {
+    return QUOTE_RETENTION_DAYS;
+  }
+  return BUSINESS_RETENTION_DAYS;
+}
+
 export function _deleteOldBackups(): number {
   _ensureBackupDir();
-  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
   let deleted = 0;
   const entries = fs.readdirSync(BACKUP_DIR);
   for (const name of entries) {
     const full = path.join(BACKUP_DIR, name);
     try {
       const stat = fs.statSync(full);
-      if (stat.isFile() && stat.mtimeMs < cutoff) {
+      if (!stat.isFile()) continue;
+      const cutoff = Date.now() - _retentionDaysFor(name) * 24 * 60 * 60 * 1000;
+      if (stat.mtimeMs < cutoff) {
         fs.unlinkSync(full);
         deleted++;
       }
@@ -91,8 +105,12 @@ export async function backupDuckDB(): Promise<{ success: boolean; size?: number;
     const duckdbPath = resolveDuckDBPath();
     const out = path.join(BACKUP_DIR, `v_stock_qfq.${_date()}.parquet`);
 
-    const inst = await DuckDBInstance.create(duckdbPath);
+    const inst = await DuckDBInstance.create(duckdbPath, { access_mode: 'READ_ONLY' });
     const conn = await inst.connect();
+    // ⚠️ 备份期间 Fastify 也拿不到库（backup 与 tdx2db 都在写）⇒
+    //    本函数在 direction A 的哨兵窗口内被调用时，必须先 close instance。
+    //    此处 duckdb.ts 单例已 close（由 enterDuckDBWriteWindow 或手动 close），
+    //    故这里创建的 instance 是独立的、短生命周期的只读 instance。
     await conn.runAndReadAll(`COPY v_stock_qfq TO '${out}' (FORMAT PARQUET)`);
     const size = fs.statSync(out).size;
     writeSystemLog({
