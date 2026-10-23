@@ -48,7 +48,14 @@ import * as loggerNs from '../../src/services/logger.js';
 
 // 动态 import backup.js —— 此时 env 已设，backup.ts 内 BACKUP_DIR 会正确读到 TEST_BACKUP_DIR
 const backupMod = await import('../../src/services/backup.js');
-const { backupSQLite, backupDuckDB, _deleteOldBackups, restoreSQLiteBackup } = backupMod;
+const {
+  backupSQLite,
+  backupDuckDB,
+  runFullBackup,
+  isQuoteBackupEnabled,
+  _deleteOldBackups,
+  restoreSQLiteBackup,
+} = backupMod;
 
 // ================================================================
 
@@ -163,7 +170,7 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
 
       expect(deleted).toBe(1);
 
-// 8 天前的被删除（行情保留期 7 天，8 > 7）
+      // 8 天前的被删除（行情保留期 7 天，8 > 7）
       expect(fs.existsSync(file4)).toBe(false);
       // 2 天前的保留（RETENTION_DAYS=3，2 < 3）
       expect(fs.existsSync(file2)).toBe(true);
@@ -290,6 +297,102 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
 
       vi.restoreAllMocks();
     });
+  });
+});
+
+// ================================================================
+// G10 · ENABLE_QUOTE_BACKUP（DEC-13 / Requirements §4.2 #12-#13）
+//
+// 契约：默认 true；仅字面量 'false' 关闭；关闭时 DuckDB 不打开、不写 parquet，
+//       SQLite 业务库备份恒常执行；未设置 / 'true' 与现状一致。
+// ⚠️ 反向验证：若实现忽略开关（仍打开 DuckDB / 仍产 parquet），本组用例必须 FAIL。
+// ================================================================
+describe('ENABLE_QUOTE_BACKUP — 行情库备份开关', () => {
+  const ORIGINAL_ENABLE_QUOTE_BACKUP = process.env.ENABLE_QUOTE_BACKUP;
+
+  afterEach(() => {
+    if (ORIGINAL_ENABLE_QUOTE_BACKUP !== undefined) {
+      process.env.ENABLE_QUOTE_BACKUP = ORIGINAL_ENABLE_QUOTE_BACKUP;
+    } else {
+      delete process.env.ENABLE_QUOTE_BACKUP;
+    }
+    if (ORIGINAL_DUCKDB_PATH !== undefined) process.env.DUCKDB_PATH = ORIGINAL_DUCKDB_PATH;
+    else delete process.env.DUCKDB_PATH;
+  });
+
+  it('默认开启：未设置 / true → true；仅 false → false', () => {
+    delete process.env.ENABLE_QUOTE_BACKUP;
+    expect(isQuoteBackupEnabled()).toBe(true);
+
+    process.env.ENABLE_QUOTE_BACKUP = 'true';
+    expect(isQuoteBackupEnabled()).toBe(true);
+
+    process.env.ENABLE_QUOTE_BACKUP = 'false';
+    expect(isQuoteBackupEnabled()).toBe(false);
+
+    // 其他值不关闭（默认开启语义）
+    process.env.ENABLE_QUOTE_BACKUP = '0';
+    expect(isQuoteBackupEnabled()).toBe(true);
+  });
+
+  it('false：backupDuckDB 返回 skipped，且不打开 DuckDB / 不产 parquet', async () => {
+    process.env.ENABLE_QUOTE_BACKUP = 'false';
+    // 指向不存在的路径：一旦实现真的打开 DuckDB，READ_ONLY 会失败或留下文件
+    const sentinel = path.join(TMP_DIR, `quote-backup-disabled-${Date.now()}.duckdb`);
+    process.env.DUCKDB_PATH = sentinel;
+
+    fs.mkdirSync(TEST_BACKUP_DIR, { recursive: true });
+    const parquetBefore = new Set(
+      fs.readdirSync(TEST_BACKUP_DIR).filter((name) => name.endsWith('.parquet')),
+    );
+
+    const logSpy = vi.spyOn(loggerNs, 'writeSystemLog').mockImplementation(() => {});
+    try {
+      const result = await backupDuckDB();
+
+      expect(result).toEqual({ success: true, skipped: true });
+      expect(fs.existsSync(sentinel), '关闭时不得打开/创建 DuckDB 文件').toBe(false);
+
+      const parquetAfter = fs.readdirSync(TEST_BACKUP_DIR).filter((name) => name.endsWith('.parquet'));
+      expect(parquetAfter.filter((name) => !parquetBefore.has(name))).toEqual([]);
+
+      const skipLog = logSpy.mock.calls
+        .map((c) => c[0])
+        .find((arg) => arg?.logType === 'backup' && arg?.message?.includes('跳过'));
+      expect(skipLog).toBeDefined();
+      expect(skipLog?.level).not.toBe('ERROR');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('false：runFullBackup 仍备份 SQLite，DuckDB 标记 skipped', async () => {
+    process.env.ENABLE_QUOTE_BACKUP = 'false';
+    const sentinel = path.join(TMP_DIR, `quote-backup-full-${Date.now()}.duckdb`);
+    process.env.DUCKDB_PATH = sentinel;
+
+    ConfigStore.resetInstance();
+    ConfigStore.getInstance();
+
+    fs.mkdirSync(TEST_BACKUP_DIR, { recursive: true });
+    const parquetBefore = new Set(
+      fs.readdirSync(TEST_BACKUP_DIR).filter((name) => name.endsWith('.parquet')),
+    );
+
+    const result = await runFullBackup();
+
+    // SQLite 业务库不可重建 ⇒ 开关不得影响其备份
+    expect(result.sqlite.success).toBe(true);
+    expect(
+      fs.readdirSync(TEST_BACKUP_DIR).some((name) => BACKUP_FILE_RE.test(name)),
+      'SQLite 备份产物 business.db.YYYY-MM-DD 必须存在',
+    ).toBe(true);
+
+    // 行情库跳过
+    expect(result.duckdb).toEqual({ success: true, skipped: true });
+    expect(fs.existsSync(sentinel)).toBe(false);
+    const parquetAfter = fs.readdirSync(TEST_BACKUP_DIR).filter((name) => name.endsWith('.parquet'));
+    expect(parquetAfter.filter((name) => !parquetBefore.has(name))).toEqual([]);
   });
 });
 

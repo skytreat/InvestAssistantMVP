@@ -63,7 +63,12 @@ interface BackupRunResult {
   // ⚠️ 这里的 `success` 是**备份服务自己的结果字段**（`services/backup.ts`），
   //    **不是** envelope 的 `success`（T89b 已删）—— 语义不同，刻意保留。
   readonly sqlite?: { readonly success?: boolean; readonly size?: number };
-  readonly duckdb?: { readonly success?: boolean; readonly size?: number };
+  readonly duckdb?: {
+    readonly success?: boolean;
+    readonly size?: number;
+    /** `ENABLE_QUOTE_BACKUP=false` 时后端返回 true —— 配置跳过，不是失败 */
+    readonly skipped?: boolean;
+  };
 }
 
 /** 后端统一 envelope 的最小形状（只取本组件读得到的字段） */
@@ -187,9 +192,9 @@ export default function AdminBackupPanel() {
         const result = body.data ?? {};
         const sqliteOk = result.sqlite?.success === true;
         const duckdbOk = result.duckdb?.success === true;
-        setBackupNotice(
-          `备份完成（SQLite：${sqliteOk ? '成功' : '失败'} / DuckDB：${duckdbOk ? '成功' : '失败'}）`,
-        );
+        const duckdbLabel =
+          result.duckdb?.skipped === true ? '已跳过（配置关闭）' : duckdbOk ? '成功' : '失败';
+        setBackupNotice(`备份完成（SQLite：${sqliteOk ? '成功' : '失败'} / DuckDB：${duckdbLabel}）`);
         await loadBackups();
       } else {
         setBackupError(body?.message ?? '备份失败');

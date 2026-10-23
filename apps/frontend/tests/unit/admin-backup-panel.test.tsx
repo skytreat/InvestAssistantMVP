@@ -118,6 +118,27 @@ describe('Admin 备份面板', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  it('DuckDB 关闭（skipped）→ 显示「已跳过（配置关闭）」而非成功/失败', async () => {
+    const user = userEvent.setup();
+    postMock.mockResolvedValueOnce(
+      mockResponse({
+        sqlite: { success: true, size: 1024 },
+        duckdb: { success: true, skipped: true },
+      }),
+    );
+
+    renderWithRouter(<AdminBackupPanel />);
+    await screen.findAllByTestId('backup-row');
+
+    await user.click(screen.getByRole('button', { name: '立即备份' }));
+
+    const notice = await screen.findByTestId('backup-notice');
+    expect(notice).toHaveTextContent('SQLite：成功');
+    expect(notice).toHaveTextContent('DuckDB：已跳过（配置关闭）');
+    expect(notice).not.toHaveTextContent('DuckDB：成功');
+    expect(notice).not.toHaveTextContent('DuckDB：失败');
+  });
+
   it('失败状态条提供重试按钮', async () => {
     const user = userEvent.setup();
     // 第一次备份失败（磁盘满），之后成功

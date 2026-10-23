@@ -259,19 +259,25 @@ export function registerCronJobs(app: FastifyInstance): void {
     ),
   );
 
-  // === 17:05 双库备份 ===
+  // === 17:05 备份（SQLite 恒常；DuckDB 受 ENABLE_QUOTE_BACKUP 控制）===
   app.scheduler.addCronJob(
     new CronJob(
       { cronExpression: '5 17 * * 1-5' },
       new AsyncTask('backup', async () => {
-        writeSystemLog({ logType: 'backup', level: 'INFO', message: '双库备份开始' });
+        writeSystemLog({
+          logType: 'backup',
+          level: 'INFO',
+          message: '备份开始（SQLite 恒常；DuckDB 受 ENABLE_QUOTE_BACKUP 控制）',
+        });
         try {
           const result = await runFullBackup();
-          const anyError = !result.sqlite.success || !result.duckdb.success;
+          // 行情库开关关闭时 duckdb.success=true 且 skipped=true —— 这是配置生效，不是失败。
+          const duckdbState = result.duckdb.skipped ? 'SKIP' : result.duckdb.success ? 'OK' : 'FAIL';
+          const anyError = !result.sqlite.success || (!result.duckdb.skipped && !result.duckdb.success);
           writeSystemLog({
             logType: 'backup',
             level: anyError ? 'ERROR' : 'SUCCESS',
-            message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} duckdb=${result.duckdb.success ? 'OK' : 'FAIL'} cleaned=${result.cleanedFiles}`,
+            message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} duckdb=${duckdbState} cleaned=${result.cleanedFiles}`,
             detail: JSON.stringify(result),
           });
         } catch (err: any) {

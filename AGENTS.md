@@ -135,7 +135,7 @@
 4. `user_asset_rel` 唯一索引固定三列：`(user_openid, asset_code, rel_type)`，**不能改为两列**，保证watch/hold/candidate可独立共存。
 5. 桌面Node服务**仅监听127.0.0.1；CORS仅允许127.0.0.1**，禁止监听0.0.0.0。
 6. 行情约束：云端云数据库**不存储全市场日线**；全市场日线仅存在桌面本地 **DuckDB + SQLite 双数据库**（DuckDB 行情层只读、可重建；SQLite 业务层可写、不可重建）。
-7. 行情时间链（**MVP 阶段，systemd timer + Fastify 内部 cron 混合调度**）：`17:00 systemd timer 触发 tdx2db Go 二进制 → 17:01-17:03 Fastify @fastify/schedule 触发 C1-C12 校验 + 插件信号生成 → 17:05 Fastify cron 触发双库备份`。**tdx2db 独立进程化**，不受 Node 进程生命周期影响；Fastify 内部 4 段任务共享同一数据库连接池和插件引擎实例。
+7. 行情时间链（**MVP 阶段，systemd timer + Fastify 内部 cron 混合调度**）：`17:00 systemd timer 触发 tdx2db Go 二进制 → 17:01-17:03 Fastify @fastify/schedule 触发 C1-C12 校验 + 插件信号生成 → 17:05 Fastify cron 触发备份（SQLite 恒常 + DuckDB 受 `ENABLE_QUOTE_BACKUP` 控制，默认开启）`。**tdx2db 独立进程化**，不受 Node 进程生命周期影响；Fastify 内部 4 段任务共享同一数据库连接池和插件引擎实例。
 8. 任务粒度控制1‑3人天；大任务不要继续膨胀，可拆分子任务。
 9. 新增npm依赖必须说明理由，禁止随意引入第三方库。
 
@@ -410,7 +410,7 @@ Wave 1-8 合计 52 个任务 / ~64 人天，**人工逐任务 review 不现实**
 | 需求权威源 | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
 | PRD | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
 | SDD 设计文档 | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
-| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T98，53 个任务，Wave 1-8）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
+| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T103，Wave 1-10）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
 | **决策归档** | `docs/adr/` | **已接受 ADR 8 份** —— 决策结论 + 理由 + 代价 + 备选方案否决理由；索引见 `docs/adr/README.md`。**本文档与实施计划只引用决策，不重复决策理由** |
 | ~~旧实施计划~~ | `docs/archive/MVP_code_implementation_plan_SUPERSEDED-2026-10-17.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系），已归档 |
 | ~~旧需求原件~~ | `docs/archive/Requirements_original_SUPERSEDED-2026-10-13.md` | ❌ **需求 V1.1（OCI 架构）**，已被 `Requirements_simplified.md` 取代，已归档 |

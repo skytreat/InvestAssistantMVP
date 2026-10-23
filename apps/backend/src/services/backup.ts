@@ -7,7 +7,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { writeSystemLog } from './logger.js';
 
 /**
- * 双库备份（T30）
+ * 备份（T30）：SQLite 恒常 + DuckDB 可配置开关（DEC-13）
  *
  * SQLite：better-sqlite3 db.backup(path) 热备份（零停机，AGENTS.md 推荐）
  * DuckDB：COPY v_stock_qfq TO parquet（本质 SELECT 导出，不写 DuckDB 本身，符合只读硬约束）
@@ -24,6 +24,19 @@ export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup
 //   之前的实现是统一 3 天，把唯一有业务意义的分级抹平了 —— 2026-10-22 修正。
 export const QUOTE_RETENTION_DAYS = 7;
 export const BUSINESS_RETENTION_DAYS = 30;
+
+/**
+ * 行情库备份开关（DEC-13 / Requirements §4.2 #12-#13）
+ *
+ * 默认开启；**仅** `ENABLE_QUOTE_BACKUP=false` 关闭。
+ * ⚠️ 必须**每次调用时**惰性读取：`--coverage` 会在 setupFiles 之前加载模块，
+ *    模块顶层常量会固化成导入瞬间的环境（AGENTS.md「CI 三陷阱」#2）。
+ * ⚠️ 只影响 DuckDB 行情库（可由 tdx2db 重建）；SQLite 业务库不可重建，
+ *    备份恒常执行，不受本开关影响。
+ */
+export function isQuoteBackupEnabled(): boolean {
+  return process.env.ENABLE_QUOTE_BACKUP !== 'false';
+}
 
 function _ensureBackupDir(): void {
   if (!fs.existsSync(BACKUP_DIR)) {
@@ -98,7 +111,23 @@ export async function backupSQLite(): Promise<{ success: boolean; size?: number;
  * DuckDB COPY TO parquet（本质 SELECT 导出，不写 DuckDB 本身）
  * Fastify 进程只有 SELECT 权限也能做，符合 AGENTS.md 硬约束
  */
-export async function backupDuckDB(): Promise<{ success: boolean; size?: number; error?: string }> {
+export async function backupDuckDB(): Promise<{
+  success: boolean;
+  size?: number;
+  skipped?: boolean;
+  error?: string;
+}> {
+  // 关闭时：不建目录、不打开 DuckDB、不写 parquet，仅留一条 SKIP 日志。
+  if (!isQuoteBackupEnabled()) {
+    writeSystemLog({
+      logType: 'backup',
+      level: 'SKIP',
+      message: 'DuckDB 备份已跳过（ENABLE_QUOTE_BACKUP=false）',
+      detail: 'quote_backup=SKIP reason=config_disabled',
+    });
+    return { success: true, skipped: true };
+  }
+
   try {
     _ensureBackupDir();
     // ⚠️ 必须复用 `db/duckdb.ts` 的解析器 —— 两处各读一遍 env 会在测试档位切换时口径不一
@@ -177,11 +206,11 @@ function _uploadToOCI(files: string[]): { success: boolean; uploaded: number; er
 }
 
 /**
- * 一键双库备份 + 可选 OCI 上传
+ * 一键备份（SQLite 恒常 + DuckDB 受 ENABLE_QUOTE_BACKUP 控制）+ 可选 OCI 上传
  */
 export async function runFullBackup(): Promise<{
   sqlite: { success: boolean; size?: number };
-  duckdb: { success: boolean; size?: number };
+  duckdb: { success: boolean; size?: number; skipped?: boolean };
   cleanedFiles: number;
   ociUploaded?: number;
 }> {
@@ -206,7 +235,11 @@ export async function runFullBackup(): Promise<{
 
   return {
     sqlite: { success: sqliteResult.success, size: sqliteResult.size },
-    duckdb: { success: duckdbResult.success, size: duckdbResult.size },
+    duckdb: {
+      success: duckdbResult.success,
+      size: duckdbResult.size,
+      skipped: duckdbResult.skipped,
+    },
     cleanedFiles: cleaned,
     ociUploaded,
   };
