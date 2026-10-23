@@ -26,7 +26,7 @@
 
 ### 1.2 `raw_kline_1min` —— 不复权 1 分钟 K 线（MVP 不使用）
 
-> 注意：AGENTS.md 明确禁止分钟级策略和盘中实时信号，这张表只在 `tdx2db cron --with-1min` 时生成，Fastify 不读。
+> 注意：AGENTS.md 明确禁止分钟级策略和盘中实时信号，这张表只在 `tdx2db cron --min` 时生成（Linux arm64 会跳过），Fastify 不读。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -122,20 +122,21 @@ FROM raw_gbbq WHERE category = 1;
 - 1990s 初老数据有 c2/c4 非零（如 1990-03-01 c2=3.56, c4=1.0），属于通达信早期 gbbq 文件旧字段定义，MVP 只关心近 1–2 年行情校验，完全不影响
 - **category=2 与 category=1 经常在同一日期成对出现**（如 1991-05-02、1993-05-24）—— 通达信内部设计：先写除权事件（category=1），再追加复权因子链节点（category=2）
 
-### 1.6 `raw_holidays` —— 交易日历（**只有交易日**）
+### 1.6 `raw_holidays` —— 休市日黑名单（**只有休市日**）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| **date** | **DATE** | **交易日日期** |
+| **date** | **DATE** | **休市日日期** |
 
-**关键**：这张表**只有一个 `date` 列**，没有 `is_trading_day` 列。有行 = 交易日，没行 = 非交易日。
+**关键**：这张表**只有一个 `date` 列**，没有 `is_trading_day` 列。有行 = 休市日，没行 = 交易日（或周末）。
+⚠️ **2026-10-19 实测（I-20）**：真库 680 行中，落在 2020~2030 区间且有行情/有日线的 = **0 行** ⇒ 确为休市日黑名单。
 
 ### 1.7 `raw_symbol_class` —— 标的分类（**视图依赖的路由表**）
 
 | 字段 | 类型 | 说明 | 备注 |
 |---|---|---|---|
 | symbol | VARCHAR | 标的代码 | |
-| **class** | **VARCHAR** | **品种分类** | 实测值：`stock`（股票）、`etf`、`index`（指数）、`bond`（债券） |
+| **class** | **VARCHAR** | **品种分类** | 实测值：`stock`（股票 6158）、`etf`（2839）、`unknown`（1357）、`block`（1128）、`index`（801）、`bstock`（166）。**无 `bond`** |
 
 `v_stock_*` 视图通过 `INNER JOIN raw_symbol_class ON sc.class = 'stock'` 过滤股票；`v_etf_*` 同理过滤 ETF。
 
@@ -255,7 +256,7 @@ FROM raw_gbbq WHERE category = 1;
 | ❌ 错误写法 | ✅ 正确写法 | 影响 |
 |---|---|---|
 | `WHERE trade_date = ?` | `WHERE date = ?` | C1-C12 全部校验 SQL 全挂 |
-| `WHERE is_trading_day = 1` | `WHERE date IN (SELECT date FROM raw_holidays)` | C2 交易日判断写反 |
+| `WHERE is_trading_day = 1` | `WHERE date NOT IN (SELECT date FROM raw_holidays) AND EXTRACT(ISODOW FROM date) BETWEEN 1 AND 5` | C2 交易日判断写反（raw_holidays = 休市日黑名单） |
 | `JOIN raw_kline_daily ON ex_date` | `JOIN raw_kline_daily ON date` | C8/C10 JOIN 失败 |
 | `SELECT pre_close FROM raw_kline_daily` | `JOIN raw_basic_daily ... SELECT preclose` | C11 preclose 为空 |
 | `raw_adjust_factor.factor` | `raw_adjust_factor.hfq_factor` | C9 字段不存在 |

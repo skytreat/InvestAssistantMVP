@@ -48,9 +48,11 @@ echo "✅ 系统依赖就绪"
 
 # Step 5: npm install + build
 cd "$PROJECT_ROOT"
-npm ci --omit=dev 2>/dev/null || npm install --omit=dev
+npm ci
 npm run build --workspace=apps/backend
 npm run build --workspace=apps/frontend 2>/dev/null || true  # 前端 Phase 3 才有
+# 裁剪 devDeps（build 完成后再裁，否则 typescript/tsup 被删导致 build 失败）
+npm prune --omit=dev 2>/dev/null || true
 echo "✅ 构建完成"
 
 # Step 6: 复制产物
@@ -60,14 +62,14 @@ cp "$PROJECT_ROOT/.env.local" "$DEPLOY_DIR/"
 echo "✅ 产物部署完成"
 
 # Step 7: 设置权限
-chown -R "$USERNAME:$USERNAME" "$DEPLOY_DIR"
+chown "$USERNAME:$USERNAME" "$DEPLOY_DIR" "$DEPLOY_DIR/quotes.duckdb"
 echo "✅ 权限设置完成"
 
 # Step 8: 安装 systemd units
 cp "$SCRIPT_DIR/tdx2db.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/tdx2db-update.timer" /etc/systemd/system/
 cp "$SCRIPT_DIR/invest-assistant.service" /etc/systemd/system/
-cp "$SCRIPT_DIR/Caddyfile" /etc/caddy/
+cp "$SCRIPT_DIR/Caddyfile" /etc/caddy/ 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable tdx2db-update.timer
 systemctl enable invest-assistant.service
