@@ -19,7 +19,7 @@
 | 🔒 **G9.3** | DuckDB 打开必须是 `READ_ONLY` —— 生产代码 grep 断言 | ✅ **PASS** —— `apps/backend/src/db/duckdb.ts:81`：`DuckDBInstance.create(resolveDuckDBPath(), { access_mode: 'READ_ONLY' })`；`apps/backend/src/services/backup.ts:94` 同样 READ_ONLY；grep 断言无裸 `DuckDBInstance.create(path)` |
 | 🔒 **G9.3b** | 方向 B 生效 —— `rerunQuoteUpdate()` 执行期间新查询被拒；exec tdx2db 拿得到锁；`inProcessWriting` 期间 `getInstance()` 不重建 instance | ✅ **PASS** —— `enterDuckDBWriteWindow()` 置 `writing=true` + `closeDuckDBInstance()`；`getInstance()` 在 `writing=true` 时抛「DuckDB 正在被行情更新写入」；release 后惰性重建；`quoteRerun.test.ts` 11/11 PASS |
 | **G9.4** | F8 运行层证据 —— `systemctl is-enabled` == enabled / `list-timers` 显示下次 17:00 / `journalctl` 有触发记录 | ✅ **PASS** —— `systemctl is-enabled tdx2db-update.timer` = `enabled`；`systemctl is-active` = `active`；`journalctl -u tdx2db.service` 记录 `Finished tdx2db.service - tdx2db 行情更新` + `Consumed 3min 25.739s CPU time`；`systemctl list-timers` 显示下次触发 = 明日 17:00 |
-| **G9.5** | `preventOverrun` 生效 —— 长任务时同 job 不重复触发；真库上单轮 C1-C12 落在 60s 内 | ✅ **PASS** —— `scheduler.ts:152,227,258,281` 四个 `AsyncTask` 全设 `preventOverrun: true`；`cronSequence.test.ts` 27/27 PASS（含 fake timers 拨钟）；C1 SQL 单条 3.27s（视图物化，T60c 已把 marketData/dataCheck 改基表下推，validator 的 C1/C6 仍走视图，**未阻塞**） |
+| **G9.5** | `preventOverrun` 生效 —— 长任务时同 job 不重复触发；真库上单轮 C1-C12 落在 60s 内 | ✅ **PASS** —— `scheduler.ts:152,227,258,281` 四个 `AsyncTask` 全设 `preventOverrun: true`；`cronSequence.test.ts` 27/27 PASS（含 fake timers 拨钟）；C1 SQL 单条 3.27s（视图物化，T60c 已把 marketData/dataCheck 改基表下推，**未阻塞**） |
 | **G9.6** | Requirements §4.2 #12「收盘后定时自动化」重新判定 —— `fullstack-audit-v2.md` 该行不得再是无条件 ✅ | ✅ **PASS** —— `fullstack-audit-v2.md:202` 已改判为 ✅ PASS（Wave 9 G9.1~G9.6 全过），依据从「代码 + unit 文件内容」改为「timer 已安装并触发成功 + max(date)=2026-10-22 + Node 只读 + 写窗口让锁」 |
 | **G9.7** | 行情层文档 4 处不一致已修 —— `raw_holidays` 语义 / `raw_symbol_class` 列 / `class` 取值 / `--min` flag 名 | ✅ **PASS** —— `docs/tdx2db_schema.md` 5 处 + `docs/client/SDD.md` 15 处已修正（休市日黑名单 / 无 is_st-is_listing-bond / `--min`） |
 
@@ -151,7 +151,7 @@ $ grep -c preventOverrun apps/backend/src/services/scheduler.ts
 
 | # | 文档原写 | 实测 | 修后 |
 |---|---|---|---|
-| 1 | `raw_holidays` = 交易日（有行=交易日） | 休市日黑名单（680 行中落在 2020~2030 且有行情的 = 0 行） | `docs/tdx2db_schema.md` §1.6 / §四陷阱表；`docs/client/SDD.md` §3.3 / §5.1 / §5.7 C2 SQL / §12.5 D2 |
+| 1 | `raw_holidays` = 交易日（有行=交易日） | 休市日黑名单（680 行中落在 2020~2030 且有行情/有日线的 = 0 行） | `docs/tdx2db_schema.md` §1.6 / §四陷阱表；`docs/client/SDD.md` §3.3 / §5.1 / §5.7 C2 SQL / §12.5 D2 |
 | 2 | `raw_symbol_class` 有 `is_st`/`is_listing` | 只有 `symbol`/`class` | `docs/client/SDD.md` §3.3 / §12.5 D2 |
 | 3 | `class` 实测值含 `bond` | 无 `bond`；有 `stock/etf/unknown/block/index/bstock` | `docs/tdx2db_schema.md` §1.7 / `docs/client/SDD.md` §3.3 |
 | 4 | `tdx2db cron --with-1min` | 真 flag 是 `--min` | `docs/tdx2db_schema.md` §1.2 |
@@ -194,6 +194,7 @@ Wave 9 后该条改为 **✅ PASS（Wave 9 G9.1~G9.6 全过）**，依据为真�
 | `bd3dbab` | docs(handover): Wave 9 开工交接说明 |
 | `aa742fe` | docs(Wave 9): G9.7 行情层文档 4 处不一致修正 |
 | `51fc746` | merge(main): 并入 #26 的提案修正 |
+| `c528daf` | docs(Wave 9): D-6 / I-30 关闭 —— L1 要求已同步 |
 | 本 commit | docs(Wave 9): G9 验收 —— T99/T100/T102 全过 + wave-9-audit.md |
 
 ---
