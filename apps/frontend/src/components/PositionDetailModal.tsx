@@ -5,6 +5,7 @@ import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle } from '../theme/styles';
+import Breadcrumbs from './Breadcrumbs';
 import KlineMiniChart, { MINI_CHART_DEFAULT_DAYS } from './KlineMiniChart';
 import ScrollableTable from './ScrollableTable';
 import SignalBadge from './SignalBadge';
@@ -240,6 +241,18 @@ export function PositionDetailModal({
           marginBottom: 0,
         }}
       >
+        {/* T79 ④：Modal 内的面包屑（当前项 = 标的代码） */}
+        <Breadcrumbs
+          items={[
+            {
+              label: '仪表盘',
+              to: '/',
+            },
+            { label: '标的详情' },
+            { label: code ?? '--' },
+          ]}
+        />
+
         {/* ── 标题行 ── */}
         <div
           style={{

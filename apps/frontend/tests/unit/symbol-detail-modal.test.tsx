@@ -376,6 +376,15 @@ describe('建议 C · 标的详情 Modal', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it('T79 ④：Modal 内有面包屑，当前项为标的代码', async () => {
+    renderWithRouter(<PositionDetailModal open position={POSITION} onCancel={() => {}} />);
+
+    const nav = screen.getByRole('navigation', { name: '面包屑' });
+    expect(nav).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '仪表盘' })).toHaveAttribute('href', '/');
+    expect(screen.getByText('sh600000')).toHaveAttribute('aria-current', 'page');
+  });
+
   it('建议 C：role=dialog + aria-modal + 可访问名（标题含代码与名称）', () => {
     renderWithRouter(<PositionDetailModal open position={POSITION} onCancel={() => {}} />);
 

@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Signals from '../../src/pages/Signals';
 import { mockResponse, renderWithRouter } from '../helpers';
 import { COLORS } from '../../src/theme/tokens';
+import { useUserStore } from '../../src/store/user';
 
 /**
  * T72 · Signals 页增强（页面级用例）
@@ -333,3 +334,46 @@ function fireChange(el: HTMLInputElement, value: string): void {
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
+
+describe('T79 ③ · 信号空态引导', () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    useUserStore.setState({ role: 'user', token: null, username: null });
+  });
+
+  afterEach(() => {
+    useUserStore.setState({ role: null, token: null, username: null });
+  });
+
+  it('空态包含「今日暂无策略信号」+「收盘后 17:02 自动运行信号生成」', async () => {
+    installPagedMock([{ rows: [], totalPages: 0, total: 0 }]);
+    renderWithRouter(<Signals />);
+
+    const empty = await screen.findByTestId('signals-empty');
+    expect(empty).toHaveTextContent('今日暂无策略信号');
+    expect(empty).toHaveTextContent('收盘后 17:02 自动运行信号生成');
+    // 时刻必须是 17:02（17:03 是除权导入）
+    expect(empty).not.toHaveTextContent('17:03');
+  });
+
+  it('管理员额外看到【立即运行信号】，点击跳转 Admin', async () => {
+    useUserStore.setState({ role: 'admin', token: 't', username: 'admin' });
+    installPagedMock([{ rows: [], totalPages: 0, total: 0 }]);
+    const user = userEvent.setup();
+    const result = renderWithRouter(<Signals />, { initialEntries: ['/signals'] });
+
+    const runNow = await screen.findByTestId('signals-run-now');
+    expect(runNow).toHaveTextContent('立即运行信号');
+
+    await user.click(runNow);
+    await waitFor(() => expect(result.routerPath).toBe('/admin'));
+  });
+
+  it('普通用户看不到【立即运行信号】', async () => {
+    installPagedMock([{ rows: [], totalPages: 0, total: 0 }]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByTestId('signals-empty');
+    expect(screen.queryByTestId('signals-run-now')).not.toBeInTheDocument();
+  });
+});
