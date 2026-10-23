@@ -10,6 +10,7 @@ import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
 import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from './signalService.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
+import { isDuckDBWriteSentinelPresent } from '../db/duckdb.js';
 import { runFullBackup } from './backup.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
@@ -108,6 +109,26 @@ export function registerCronJobs(app: FastifyInstance): void {
           level: 'INFO',
           message: 'C1-C12 校验开始',
         });
+        // 方向 A（ADR-012 §2.1）：外部写进程正在写库时，先等它写完再校验
+        const SENTINEL_WAIT_MS = 120_000;
+        const SENTINEL_POLL_MS = 1_000;
+        const waitStart = Date.now();
+        while (isDuckDBWriteSentinelPresent() && Date.now() - waitStart < SENTINEL_WAIT_MS) {
+          writeSystemLog({
+            logType: 'datacheck',
+            level: 'INFO',
+            message: '检测到 tdx2db 写窗口，等待其完成后再校验',
+          });
+          await new Promise((r) => setTimeout(r, SENTINEL_POLL_MS));
+        }
+        if (isDuckDBWriteSentinelPresent()) {
+          writeSystemLog({
+            logType: 'datacheck',
+            level: 'WARN',
+            message: '等待 tdx2db 写窗口超时（120s），跳过本轮校验',
+          });
+          return;
+        }
         // 单一事实源（T85b ②）：日历口径的当前交易日（数据陈旧会如实暴露，不会假绿）
         const date = (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
         try {
@@ -128,7 +149,7 @@ export function registerCronJobs(app: FastifyInstance): void {
           });
         }
       }),
-      { id: 'datacheck-c1-c12' },
+      { id: 'datacheck-c1-c12', preventOverrun: true },
     ),
   );
 
@@ -203,7 +224,7 @@ export function registerCronJobs(app: FastifyInstance): void {
           });
         }
       }),
-      { id: 'signal-generate' },
+      { id: 'signal-generate', preventOverrun: true },
     ),
   );
 
@@ -234,7 +255,7 @@ export function registerCronJobs(app: FastifyInstance): void {
           });
         }
       }),
-      { id: 'dividend-import' },
+      { id: 'dividend-import', preventOverrun: true },
     ),
   );
 
@@ -257,7 +278,7 @@ export function registerCronJobs(app: FastifyInstance): void {
           writeSystemLog({ logType: 'backup', level: 'ERROR', message: '备份异常', detail: String(err) });
         }
       }),
-      { id: 'backup' },
+      { id: 'backup', preventOverrun: true },
     ),
   );
 

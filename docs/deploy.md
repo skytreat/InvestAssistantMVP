@@ -5,6 +5,15 @@
 DuckDB 行情库：/opt/invol/quotes.duckdb
 SQLite 业务库：/opt/invol/data/business.db
 
+## ⚠️ Wave 9 修订（2026-10-22）
+
+> - **`tdx2db-update.timer` / `tdx2db.service` 已在本机安装**（Wave 9 T100）。
+> - **运行用户 = `invol`**（`useradd -r -s /bin/false invol`）。
+> - **链路时序 unchanged**：17:00 systemd timer → tdx2db cron；17:01-17:05 Fastify 内部 cron。
+> - **Fastify 进程在 17:00 窗口内会主动让锁**（ADR-012 §2.3 方向 B：`rerunQuoteUpdate()` 先 close instance 再 exec tdx2db）。
+> - **外部写期间**，Node 侧检测哨兵 `/opt/invol/.tdx2db-writing`（可 env 覆盖 `TDX2DB_WRITE_SENTINEL`）⇒ 行情 API 返回可重试错误。
+> - **`docs/deploy.md` 原描述的 17:00→17:05 链路与实况一致**（Wave 8 之前因 unit 未安装而脱节，Wave 9 已补齐）。
+
 ## 一键部署
 
 ```bash

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DuckDBInstance, DuckDBTypeId } from '@duckdb/node-api';
 
@@ -64,21 +65,50 @@ const RETRY_DELAY_MS = 200;
  * 惰性创建 + Promise 去重：并发首次调用只会真正 create 一次，后续 await 同一个 promise。
  */
 interface DuckDBSingleton {
+  /** 当前打开的 instance；为 null 表示已释放（下次查询惰性重建） */
   promise: Promise<DuckDBInstance> | null;
+  /** 进程内写窗口标志：为 true 时 getInstance() **不得**重建 instance
+   *  （防止并发查询抢回文件锁 ⇒ 外部写进程 tdx2db 又被挡，见 ADR-012 §2.3.3） */
+  writing: boolean;
 }
 
 const GLOBAL_KEY = '__investDuckDBSingleton__';
 
 function singleton(): DuckDBSingleton {
   const g = globalThis as unknown as Record<string, DuckDBSingleton | undefined>;
-  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = { promise: null };
+  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = { promise: null, writing: false };
   return g[GLOBAL_KEY] as DuckDBSingleton;
+}
+
+/** 进程内写窗口是否打开（方向 B：Node 主动触发 tdx2db 时置 true） */
+export function isDuckDBWriting(): boolean {
+  return singleton().writing;
+}
+
+/** 打开写窗口：置标志 + 释放 instance，返回 release 函数 */
+export async function enterDuckDBWriteWindow(): Promise<() => void> {
+  const s = singleton();
+  if (s.writing) {
+    throw new Error('DuckDB 写窗口已在进行中（并发 rerun 不允许）');
+  }
+  s.writing = true;
+  await closeDuckDBInstance();
+  return () => {
+    s.writing = false;
+    // 下次查询惰性重建
+  };
 }
 
 async function getInstance(): Promise<DuckDBInstance> {
   const s = singleton();
+  // 方向 B：写窗口期间禁止重建 instance（否则并发查询会抢回锁 ⇒ tdx2db 失败）
+  if (s.writing) {
+    throw new Error('DuckDB 正在被行情更新写入（inProcessWriting），请稍后重试');
+  }
   if (!s.promise) {
-    s.promise = DuckDBInstance.create(resolveDuckDBPath()).catch((err) => {
+    // access_mode: 'READ_ONLY' —— 落实 AGENTS.md:376「Fastify 对 DuckDB 只有 SELECT 权限」
+    // （默认读写模式会持写锁，挡住 tdx2db 的 cron 写入）
+    s.promise = DuckDBInstance.create(resolveDuckDBPath(), { access_mode: 'READ_ONLY' }).catch((err) => {
       // 创建失败必须清空缓存，否则会永久缓存一个 rejected promise
       s.promise = null;
       throw err;
@@ -98,6 +128,18 @@ export async function closeDuckDBInstance(): Promise<void> {
     inst.closeSync();
   } catch {
     // instance 从未成功创建或已失效，无需处理
+  }
+}
+
+/** 哨兵文件路径（可 env 覆盖）—— 方向 A 的信号源 */
+export const DUCKDB_WRITE_SENTINEL = process.env.TDX2DB_WRITE_SENTINEL ?? '/opt/invol/.tdx2db-writing';
+
+/** 检查哨兵是否存在（方向 A：外部写进程在写库） */
+export function isDuckDBWriteSentinelPresent(): boolean {
+  try {
+    return fs.existsSync(DUCKDB_WRITE_SENTINEL);
+  } catch {
+    return false;
   }
 }
 

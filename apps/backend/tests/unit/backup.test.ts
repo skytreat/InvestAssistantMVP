@@ -144,26 +144,26 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
 
       const now = Date.now();
       const twoDaysAgo = new Date(now - 2 * 24 * 60 * 60 * 1000);
-      const fourDaysAgo = new Date(now - 4 * 24 * 60 * 60 * 1000);
+      const eightDaysAgo = new Date(now - 8 * 24 * 60 * 60 * 1000);
       const today = new Date(now);
 
-      const file2 = path.join(TEST_BACKUP_DIR, 'backup.2days.db');
-      const file4 = path.join(TEST_BACKUP_DIR, 'backup.4days.db');
-      const file0 = path.join(TEST_BACKUP_DIR, 'backup.today.db');
+      const file2 = path.join(TEST_BACKUP_DIR, 'v_stock_qfq.2days.parquet');
+      const file4 = path.join(TEST_BACKUP_DIR, 'v_stock_qfq.8days.parquet');
+      const file0 = path.join(TEST_BACKUP_DIR, 'v_stock_qfq.today.parquet');
 
       fs.writeFileSync(file2, '2days');
       fs.writeFileSync(file4, '4days');
       fs.writeFileSync(file0, 'today');
 
       fs.utimesSync(file2, twoDaysAgo, twoDaysAgo);
-      fs.utimesSync(file4, fourDaysAgo, fourDaysAgo);
+      fs.utimesSync(file4, eightDaysAgo, eightDaysAgo);
       fs.utimesSync(file0, today, today);
 
       const deleted = _deleteOldBackups();
 
       expect(deleted).toBe(1);
 
-      // 4 天前的被删除
+// 8 天前的被删除（行情保留期 7 天，8 > 7）
       expect(fs.existsSync(file4)).toBe(false);
       // 2 天前的保留（RETENTION_DAYS=3，2 < 3）
       expect(fs.existsSync(file2)).toBe(true);
@@ -181,16 +181,30 @@ describe('backup — _deleteOldBackups & backupSQLite', () => {
       cleanupBackupDir();
       const now = Date.now();
       const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000);
+      const fortyDaysAgo = new Date(now - 40 * 24 * 60 * 60 * 1000);
 
+      // 业务产物（SQLite 备份）→ 30 天阈值 ⇒ 10 天前仍保留
       for (let i = 0; i < 3; i++) {
-        const full = path.join(TEST_BACKUP_DIR, `old.${i}.db`);
+        const full = path.join(TEST_BACKUP_DIR, `business.${i}.db`);
         fs.writeFileSync(full, 'old');
         fs.utimesSync(full, tenDaysAgo, tenDaysAgo);
       }
+      // 行情产物（parquet）→ 7 天阈值 ⇒ 10 天前被删
+      for (let i = 0; i < 2; i++) {
+        const full = path.join(TEST_BACKUP_DIR, `v_stock_qfq.old${i}.parquet`);
+        fs.writeFileSync(full, 'old');
+        fs.utimesSync(full, tenDaysAgo, tenDaysAgo);
+      }
+      // 业务产物 → 30 天阈值 ⇒ 40 天前被删
+      const stale = path.join(TEST_BACKUP_DIR, 'business.stale.db');
+      fs.writeFileSync(stale, 'stale');
+      fs.utimesSync(stale, fortyDaysAgo, fortyDaysAgo);
 
       const deleted = _deleteOldBackups();
+      // 2 个行情 parquet（7 天阈值）+ 1 个 40 天前的业务 db（30 天阈值）= 3
       expect(deleted).toBe(3);
-      expect(fs.readdirSync(TEST_BACKUP_DIR).length).toBe(0);
+      // 3 个 10 天前的业务 db 仍保留
+      expect(fs.readdirSync(TEST_BACKUP_DIR).length).toBe(3);
     });
   });
 

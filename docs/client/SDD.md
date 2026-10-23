@@ -1273,7 +1273,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `raw_basic_daily` | 前收盘价 + 市值/换手率 | C11 取 `preclose`（raw_kline_daily 没有这个字段） | `date`, `symbol`, `preclose`, `turnover`, `floatmv`, `totalmv` |
 | `raw_adjust_factor` | 后复权因子（**稀疏存储，只在除权日追加**） | C9 校验因子计算 | `date`, `symbol`, `hfq_factor`（⚠️ 字段名是 `hfq_factor` 不是 `factor`） |
 | `raw_gbbq` | 股本变迁 / 权息事件 | C8/C10 除权校验 + 除权自动导入 | `category`, `symbol`, `date`, `c1`–`c4`。**MVP 只取 `category=1`**（除权除息）：`date`=ex_date，`c1/10`=每股分红，`c3/10`=每股送转比例，**c2 和 c4 永远=0**（2020年以来零例外）。category=2（通达信内部复权因子链）、category=5（股本快照）MVP 完全忽略 |
-| `raw_holidays` | **交易日历（只有交易日，无 is_trading_day 列）** | C1 历史日期过滤、C2 交易日判断 | 只有 `date` 一列。有行=交易日，没行=非交易日 |
+| `raw_holidays` | **休市日黑名单（只有休市日，无 is_trading_day 列）** | C1 历史日期过滤、C2 交易日判断 | 只有 `date` 一列。有行=休市日，没行=交易日（或周末）。⚠️ I-20 实测：680 行中落在 2020~2030 区间且有行情/有日线的 = 0 行 |
 | `raw_symbol_class` | 品种分类 | 视图路由依赖 | `symbol`, `class`（实测值：`stock` / `etf` / `index` / `bond`） |
 
 #### 📊 视图（v_，共 6 张，由 tdx2db init 自动创建）
@@ -1306,7 +1306,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `raw_basic_daily` | C11 `preclose`、C7 换手率、市值过滤（选股公共过滤 T55） | `date`,`symbol`,`preclose`,`turnover`,`floatmv`,`totalmv` |
 | `raw_holidays` | C1/C2 交易日判断 | `date` |
 | `raw_gbbq` | C8/C10 除权校验 + 除权自动导入（**仅 `category=1`**） | `category`,`symbol`,`date`,`c1`-`c4` |
-| `raw_symbol_class` | C3 ST 状态校验、选股 `asset_type`/`exclude_st` 过滤、ETF 视图路由 | `symbol`,`class`,`is_listing`,`is_st` |
+| `raw_symbol_class` | ETF 视图路由、选股 `asset_type` 过滤 | `symbol`,`class`（实测值：`stock` / `etf` / `unknown` / `block` / `index` / `bstock`；**无 `is_st`/`is_listing`/`bond`**） |
 | **`raw_symbol_name`** | **标的搜索 `/api/symbols/search`（`routes/symbolSearch.ts:29`，已在用）；并供 C3 移动端可交易性校验（`services/validator.ts`）+ 选股/持仓/候选池展示证券名称（T55/T67/T73/T74）** | `symbol`,`name` |
 | **`raw_tdx_blocks_info` / `raw_tdx_blocks_member`** | **选股页「行业选择」公共过滤的数据源（T55，PRD §5.6）** | `block_code`,`block_name`,`block_type`,`symbol` |
 
@@ -1586,7 +1586,7 @@ sequenceDiagram
 | 1 | ✅ tdx2db 成功 + 有新数据 | DuckDB 最新日期 == 今天 | 正常流程，Fastify cron 直接进入 C1 校验 |
 | 2 | ❌ tdx2db 失败 | tdx2db exit_code ≠ 0 | Fastify 触发补跑（`systemd-run --wait` 同步等），补跑还失败则 ERROR 并 SKIP 后续 |
 | 3 | ⚠️ tdx2db 成功但无新数据 | tdx2db exit_code=0，但 DuckDB 最新日期 < 今天 | 交易日历判断：如果今天是交易日 → 视为异常（数据源延迟），触发补跑；如果不是交易日 → 正常 SKIP 所有后续段 |
-| 4 | 🔄 tdx2db 正在写入时 Fastify 启动 | DuckDB 文件被独占写入 | Fastify 只读连接 open 时 DuckDB MVCC 自动处理 reader/writer 共存，但若 writer 持有大事务导致 WAL 膨胀，reader 可能等待；设 **5 秒连接超时 + retry 2 次** |
+| 4 | 🔄 tdx2db 正在写入时 Fastify 启动 | DuckDB 文件被独占写入 | ⚠️ **I-20 实测证伪**：DuckDB 是**单写者文件锁**，不是 MVCC 共享读 ⇒ 读写进程**不能共存**。修法：Fastify 必须先 `closeDuckDBInstance()` 让锁（ADR-012 §2.3），外部写期间返回可重试错误。设 **5 秒连接超时 + retry 2 次** 仅作为兜底 |
 
 **协调机制细节**：
 
@@ -2033,7 +2033,7 @@ FROM today_counts tc;
 
 ```sql
 -- C2 交易日历匹配
--- raw_holidays 只有一个 date 列，表示交易日（有 = 交易日，无 = 非交易日）
+-- raw_holidays 只有一个 date 列，表示**休市日**（有 = 休市日，无 = 交易日，⚠️ 旧注释写反，I-20 实测修正）
 -- 只有交易日应该有日线数据
 
 SELECT
@@ -2775,7 +2775,7 @@ sequenceDiagram
 | # | 待决策项 | 决策方向（已搜索验证的）| 影响范围 | 决策人 | 截止日期 |
 |---|---------|------------------------|---------|--------|---------|
 | D1 | **【✅ 已确认】** tdx2db 使用预编译二进制，**不需要编译**。下载地址：`https://github.com/jing2uo/tdx2db/releases/download/v2026.8.12/tdx2db_Linux_arm64.tar.gz`（Linux arm64，v2026.8.12）| 直接下载 tar.gz → tar -xzf → mv /usr/local/bin/tdx2db | 行情层全链路 | Dev | Phase 1 启动前 |
-| D2 | **【✅ 已确认】** `tdx2db init` 产出的 DuckDB schema：10 张 raw_ 表 + 6 张视图，**完整字段说明见 [tdx2db_schema.md](../tdx2db_schema.md)**（2026-10-15 DuckDB 实测 dump）。关键列名约定：所有表日期列一律叫 `date`（不是 `trade_date`）；`raw_gbbq.category=1` 才是除权除息；`raw_holidays` 只有一个 `date` 列（有=交易日）；`raw_adjust_factor` 字段名是 `hfq_factor`；`raw_kline_daily` 没有 `preclose`（要 JOIN `raw_basic_daily`） | 数据模型 + 所有 SQL 查询 | Dev | Phase 1 启动前 |
+| D2 | **【✅ 已确认】** `tdx2db init` 产出的 DuckDB schema：10 张 raw_ 表 + 6 张视图，**完整字段说明见 [tdx2db_schema.md](../tdx2db_schema.md)**（2026-10-15 DuckDB 实测 dump）。关键列名约定：所有表日期列一律叫 `date`（不是 `trade_date`）；`raw_gbbq.category=1` 才是除权除息；`raw_holidays` 只有一个 `date` 列（有=**休市日**，I-20 实测）；`raw_adjust_factor` 字段名是 `hfq_factor`；`raw_kline_daily` 没有 `preclose`（要 JOIN `raw_basic_daily`）；`raw_symbol_class` 只有 `symbol`/`class`（**无 `is_st`/`is_listing`/`bond`**） | 数据模型 + 所有 SQL 查询 | Dev | Phase 1 启动前 |
 | D3 | **【✅ 已确认（改用替代包）】** 原版 `technicalindicators` npm 包（v3.1.0）**7 年前停更**，已无维护。MVP 改用 **`fast-technical-indicators`**（零依赖、100% API 兼容、活跃维护）。备选 fork：`@wahack/technicalindicators` v3.1.2（9 个月前发布）。Node 22 兼容：纯 TS 实现、无原生依赖，理论上全版本兼容；Phase 1 启动前 `npm i fast-technical-indicators && npx vitest run` 实测确认 | 插件引擎 + K 线图指标 | Dev | Phase 1 启动前 |
 | D4 | **【✅ 已确认（curl 实测）】** 东财 C12 跨源校验接口。**实测结果（2026-10-15 Node curl）**：① `push2his.eastmoney.com/api/qt/stock/kline/get` 可用（掘金 emt.18.cn 需鉴权）；② secid 格式：**`0.代码`（深市）** / **`1.代码`（沪市）**，如 `0.000001`、`1.600000`（不是 `0.0.000001` 也不是无市场前缀）；③ fqt 参数：**1=前复权、0=不复权、2=后复权**（与 v_stock_qfq 前复权口径对齐）；④ 返回格式：`data.klines` 是逗号分隔字符串数组，字段固定顺序：`date,open,high,low,close,volume,amount,amplitude,pct_chg,change,turnover`；⑤ 公开免费、**无需 token**、无明显限流（30 秒 100 次没触发 429）；⑥ CORS `*` 允许跨域。Fastify 后端可以直接 GET | C12 跨源校验实现 | Dev | Phase 1 启动前 |
 | D5 | **【✅ 已确认（实测）】** Tushare Free API daily 接口。**实测结果（2026-10-15 本地跑通）**：① `pre_close` 字段**确认存在且值正确**（000001.SZ 20261014 close=11.50, pre_close=11.57）；② 限流：**daily 接口 50 次/分钟**（100 次压力测试 → 前 19 次成功、后 81 次频率超限）；③ API 格式：POST `http://api.tushare.pro`，JSON body `{ api_name, token, params, fields }`，成功返回 `{ code: 0, data: { fields, items } }`；④ 错误码 4010x 系列表示频率超限。MVP C11 每天 1 次 30 只，1 分钟内搞定，远低于阈值 | C11 跨源校验 | Dev | Phase 1 启动前 |

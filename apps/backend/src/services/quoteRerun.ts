@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeSystemLog } from './logger.js';
+import { enterDuckDBWriteWindow } from '../db/duckdb.js';
 
 /**
  * 行情更新补跑（G3a — PRD D3「WARN 级别校验自动触发补跑」+ SDD §5.1 Step 3）
@@ -156,7 +157,27 @@ export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
     detail: `dburi=${DUCKDB_URI}`,
   });
 
+  // 🔴 **方向 B**（ADR-012 §2.3）：Node 自己触发写 ⇒ 必须 Node 主动让锁。
+  //   - 先置写窗口标志 + close instance，再 exec tdx2db，结束后清标志
+  //   - ⚠️ **只 close 不够**：窗口内并发查询会重建 instance 抢回锁 ⇒ tdx2db 失败
+  //   - 三级降级链（systemd-run / systemctl / exec）全部是独立进程 ⇒ 全都要写锁
+  //     ⇒ 全部被挡（方向 B 是它们能成功的唯一前提）
+  let releaseWriteWindow: (() => void) | null = null;
+  try {
+    releaseWriteWindow = await enterDuckDBWriteWindow();
+  } catch (err) {
+    writeSystemLog({
+      logType: 'tdx2db_update',
+      level: 'WARN',
+      message: '进入 DuckDB 写窗口失败，保持现状继续主流程',
+      detail: String(err).slice(0, 300),
+    });
+    return { status: 'FAIL', method: 'none', message: 'enter write window failed' };
+  }
+
   const result = (await _trySystemdRun()) ?? (await _trySystemctl()) ?? (await _tryDirectExec());
+
+  if (releaseWriteWindow) releaseWriteWindow();
 
   if (result) {
     if (result.status === 'SUCCESS') {
