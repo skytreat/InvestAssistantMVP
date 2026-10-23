@@ -195,7 +195,12 @@ AssertionError: expected 89928 to be +0
 `apps/backend/tests/integration/cronSequence.test.ts` 在 `5a90e8a` 已有 4 处
 `@typescript-eslint/no-require-imports`（`npx eslint .` 失败，非本任务引入）。
 为让 PR 的 `lint-and-typecheck` job 可绿，本 PR 附一条独立 commit 改为静态 import
-（`execFileSync` / `fs`），行为不变：该文件 9/9 PASS。
+（`execFileSync` / `fs`）。
+
+**同文件 CI 守卫修复**：首次 PR CI 暴露 GitHub Actions 上 `/run/systemd/system` **存在**
+但 timer 未安装，旧守卫 `!fs.existsSync('/run/systemd/system')` 误判为真机 ⇒ 3 条 T102
+真机探针 FAIL，连带 `build-and-test` 与 `Coverage Gate` 两个 job 红。改为
+`Boolean(process.env.CI) || (...)` 优先认 CI；本地真机（无 `CI`）仍照常跑探针。
 
 ---
 

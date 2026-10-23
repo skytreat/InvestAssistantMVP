@@ -169,7 +169,10 @@ beforeEach(() => {
 describe('cron_sequence_trigger — 运行层（仅真机，CI 跳过）', () => {
   // 🔴 T102：原 F8 用例只读 unit 文件内容，无法验证真实触发 ⇒ 假绿（G5.1 / T78 都中招）。
   //    本 describe 用 systemctl / journalctl 真机探针，CI 环境无 systemd ⇒ skip。
-  const isCi = !process.env.CI_SYSTEMD_AVAILABLE && !fs.existsSync('/run/systemd/system');
+  // 🔴 2026-10-23 实测：GitHub Actions 上 `/run/systemd/system` **存在**，但 timer 未安装，
+  //    旧守卫会把 CI 误判为真机并让 3 条探针 FAIL ⇒ 必须优先认 `CI` 环境变量。
+  const isCi =
+    Boolean(process.env.CI) || (!process.env.CI_SYSTEMD_AVAILABLE && !fs.existsSync('/run/systemd/system'));
   const itRun = isCi ? it.skip : it;
 
   itRun('cron_sequence_trigger (run): timer 已安装且 enabled', () => {
