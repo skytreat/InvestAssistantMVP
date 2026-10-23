@@ -117,6 +117,10 @@ SQLITE_DB_PATH=/opt/invol/data/business.db
 # 备份目录
 BACKUP_DIR=/opt/invol/backup
 
+# 行情库（DuckDB）备份开关：默认 true；仅 false 关闭。
+# 关闭后 17:05 只备份 SQLite 业务库（不可重建），行情库不产 parquet（可由 tdx2db 重建）。
+# ENABLE_QUOTE_BACKUP=false
+
 # 自定义插件目录（可选，默认 /opt/invol/plugins/strategies）
 # 该目录必须存在且对运行用户可写；不存在时后端只记 INFO 日志跳过磁盘加载（内置插件仍可用）
 # PLUGIN_ALLOWED_PATH=/opt/invol/plugins/strategies
@@ -132,7 +136,7 @@ JWT_SECRET=change-me-in-production
 17:01 Fastify cron -> C1-C12 数据校验
 17:02 Fastify cron -> 插件信号生成（依赖 DuckDB）
 17:03 Fastify cron -> 除权事件同步
-17:05 Fastify cron -> 双库热备份（SQLite db.backup + DuckDB COPY TO）
+17:05 Fastify cron -> 热备份（SQLite db.backup 恒常执行；DuckDB COPY TO 受 ENABLE_QUOTE_BACKUP 控制，默认开启）
 ```
 
 ## 回滚

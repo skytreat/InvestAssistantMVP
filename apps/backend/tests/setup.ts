@@ -12,6 +12,7 @@
 //      SQLITE_DB_PATH    —— 每个测试文件自己指向临时库；加载 .env.local 的开发库
 //                           路径有写坏 data/business.db 的风险。
 //      ENABLE_OCI_BACKUP —— 一旦为 'true' 会触发真实对象存储备份。
+//      ENABLE_QUOTE_BACKUP —— 一旦为 'false' 会让行情库备份用例静默跳过（假绿）。
 //      BACKUP_DIR        —— 备份目录由各测试自己指定临时目录。
 //
 // ② env 守卫：两级基线
@@ -42,6 +43,7 @@ const ENV_LOAD_DENYLIST = new Set<string>([
   'TUSHARE_TOKEN',
   'SQLITE_DB_PATH',
   'ENABLE_OCI_BACKUP',
+  'ENABLE_QUOTE_BACKUP',
   'BACKUP_DIR',
 ]);
 
@@ -51,6 +53,7 @@ const GUARDED_ENV_KEYS = [
   'SQLITE_DB_PATH',
   'DUCKDB_PATH',
   'ENABLE_OCI_BACKUP',
+  'ENABLE_QUOTE_BACKUP',
   'BACKUP_DIR',
   'JWT_SECRET',
 ] as const;

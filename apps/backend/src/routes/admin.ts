@@ -237,7 +237,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         logType: 'backup',
         level: 'SUCCESS',
         message: `${user.username} 手动触发备份`,
-        detail: JSON.stringify({ sqlite: result.sqlite.success, duckdb: result.duckdb.success }),
+        detail: JSON.stringify({
+          sqlite: result.sqlite.success,
+          duckdb: result.duckdb.success,
+          duckdb_skipped: result.duckdb.skipped === true,
+        }),
       });
       return reply.send(ok(result));
     } catch (err) {

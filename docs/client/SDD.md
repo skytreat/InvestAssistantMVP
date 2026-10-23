@@ -1455,7 +1455,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/admin/system-log/fallback` | GET | 是（仅 admin）| 读取**系统日志降级记录**（SQLite 不可用时写入的兜底文件，JSON Lines 格式）。<br>**响应**：`{ exists: boolean, lines: string[] }`（`lines` = 尾部 **200 行**）。<br>⚠️ **响应体不含文件绝对路径**（路径泄露 = 告诉攻击者去读哪个文件）。<br>⚠️ **文件不存在 → `exists:false` + `lines:[]`**（**正常空态**，不是错误）。<br>⚠️ **读失败 → 500 `INTERNAL_ERROR`，且不回传 fs 的原始错误**（fs 错误信息里含绝对路径）—— 服务端日志留痕，响应只给一句中文 |
 | `/api/admin/users` | GET | 是（仅 admin）| 用户列表（按 `id` 升序）；元素 = `{ id, username, role, created_at }`（`role` ∈ `admin` / `user`）|
 | `/api/admin/role/:userId` | PATCH | 是（仅 admin）| 升级/降级角色；body `{ role: 'admin' \| 'user' }`。<br>⚠️ **禁止降级自己** → 400 `PARAM_INVALID`；⚠️ **admin 只能有 1 人**（已有其它 admin 时升级 → 400 `PARAM_INVALID`）|
-| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**双库备份**（SQLite + DuckDB）；响应 `{ code: 0, data: { sqlite: { success, size }, duckdb: { success, size } }, timestamp }`<br>⚠️ **嵌套的 `success`** 是**备份服务自己的结果字段**（`services/backup.ts`），**不是** envelope 的 `success`（§4.2 已删）—— 语义不同，勿混淆 |
+| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**备份**（SQLite 恒常 + DuckDB 受 `ENABLE_QUOTE_BACKUP` 控制）；响应 `{ code: 0, data: { sqlite: { success, size }, duckdb: { success, size, skipped? } }, timestamp }`<br>⚠️ **嵌套的 `success`** 是**备份服务自己的结果字段**（`services/backup.ts`），**不是** envelope 的 `success`（§4.2 已删）—— 语义不同，勿混淆<br>⚠️ **`duckdb.skipped=true`** = `ENABLE_QUOTE_BACKUP=false` 的配置跳过（此时 `duckdb.success=true`、无 `size`）；前端必须显示「已跳过（配置关闭）」，**不得**当成成功或失败 |
 | `/api/admin/backups` | GET | 是（仅 admin）| 备份文件列表（按 `modified` **倒序**）；元素 = `{ name, size, modified }`。<br>⚠️ **`size` 的单位 = 字节**（`stat.size`）—— 前端只做可读化换算，**不得改单位口径**；`modified` = ISO 8601 字符串 |
 | `/api/admin/backup/:file/restore` | POST | 是（仅 admin）| 从备份恢复 SQLite 业务库（**破坏性操作**）。<br>🔴 **必须带 body `{ "confirm": true }`** —— 缺失 → **400 `CONFIRM_REQUIRED`**。<br>⚠️ **仅 `business.db.YYYY-MM-DD` 形态可恢复**（文件名白名单）；`*.parquet` 与 `*.pre-restore-*` 一律失败 → 400 `RESTORE_FAILED`。<br>⚠️ `:file` 需 **URL 编码**（服务端 `decodeURIComponent`）。<br>响应 `{ file, safetyBackup }`（恢复前的安全备份文件名）|
 
@@ -2437,7 +2437,8 @@ graph LR
 
 **分级策略**（裁决 **I-11=A**，2026-10-17）：
 
-- **MVP 交付范围**：**仅本地双库备份** + 滚动清理（行情 7 天 / 业务 30 天）+ 恢复验证脚本
+- **MVP 交付范围**：**仅本地备份**（SQLite 恒常 + DuckDB 默认，可配置关闭）+ 滚动清理（行情 7 天 / 业务 30 天）+ 恢复验证脚本
+- **行情库备份开关（DEC-13，2026-10-23）**：env `ENABLE_QUOTE_BACKUP`，**默认 `true`；仅字面量 `false` 关闭**，且**每次备份时惰性读取**（禁止模块顶层常量，见 AGENTS.md「CI 三陷阱」#2）。关闭时 `backupDuckDB()` 返回 `{ success: true, skipped: true }`，**不打开 DuckDB、不写 parquet**；SQLite 业务库不可重建，备份恒常执行、不受开关影响。关闭后旧 parquet 仍按 7 天滚动清理；重新开启即恢复每日备份。`scripts/restore-drill.sh` 在无 parquet 时 WARN 跳过行情段，SQLite 段仍完整校验。
 - **移出 MVP**：~~远程对象存储上传（rclone）~~、~~Lifecycle Policy 自动清理 90 天~~、~~恢复脚本写入 CI/CD pipeline~~
   - 依据：实测 `backup.ts:98` 注释「OCI 上传 MVP T30 暂缓」，初稿 SDD 却把远程写成硬要求 → PRD §6.2「备份恢复验证通过率 100%」不可达
 - **恢复验证要求**（本地）：
