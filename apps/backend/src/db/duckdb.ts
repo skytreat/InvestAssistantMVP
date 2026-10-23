@@ -132,7 +132,8 @@ export async function closeDuckDBInstance(): Promise<void> {
 }
 
 /** 哨兵文件路径（可 env 覆盖）—— 方向 A 的信号源 */
-export const DUCKDB_WRITE_SENTINEL = process.env.TDX2DB_WRITE_SENTINEL ?? '/opt/invol/.tdx2db-writing';
+export const DUCKDB_WRITE_SENTINEL =
+  process.env.TDX2DB_WRITE_SENTINEL ?? '/opt/invol/IA_Prod/.tdx2db-writing';
 
 /** 检查哨兵是否存在（方向 A：外部写进程在写库） */
 export function isDuckDBWriteSentinelPresent(): boolean {

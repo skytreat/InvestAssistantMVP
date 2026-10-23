@@ -6,14 +6,14 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=invol
-WorkingDirectory=/opt/invol
+WorkingDirectory=/opt/invol/IA_Prod
 UMask=0077
 TimeoutStartSec=1800
-ExecStartPre=/bin/sh -c 'echo $$ > /opt/invol/.tdx2db-writing'
-ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
-ExecStartPost=/bin/rm -f /opt/invol/.tdx2db-writing
+ExecStartPre=/bin/sh -c 'echo $$ > /opt/invol/IA_Prod/.tdx2db-writing'
+ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
+ExecStartPost=/bin/rm -f /opt/invol/IA_Prod/.tdx2db-writing
 # tdx2db 失败时 ExecStartPost 不会执行；ExecStopPost 兜底清理哨兵。
-ExecStopPost=-/bin/rm -f /opt/invol/.tdx2db-writing
+ExecStopPost=-/bin/rm -f /opt/invol/IA_Prod/.tdx2db-writing
 StandardOutput=journal
 StandardError=journal
 SuccessExitStatus=0

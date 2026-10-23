@@ -256,7 +256,7 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 ```
 
 **外部工具（非 Node.js，不在 workspace 内）**：
-- `tdx2db` — systemd timer 调度的 Go 二进制（`tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'`）
+- `tdx2db` — systemd timer 调度的 Go 二进制（`tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'`）
 - `rclone` — 系统包安装（`/usr/bin/rclone`，备份上传）
 
 **为什么 workspace 只有 Node.js 项目但保留 tdx2db Go 二进制**：
@@ -769,7 +769,7 @@ graph TD
 #### 2.12.2 路由设计
 
 ```typescript
-// /opt/invol/frontend/src/router/index.tsx
+// apps/frontend/src/router/index.tsx
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -861,7 +861,7 @@ export const router = createBrowserRouter([
 **Store 示例（authStore）**：
 
 ```typescript
-// /opt/invol/frontend/src/stores/authStore.ts
+// apps/frontend/src/stores/authStore.ts
 import { create } from "zustand";
 import * as api from "@/api/client";
 
@@ -911,7 +911,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 #### 2.12.4 API Client 层设计
 
 ```typescript
-// /opt/invol/frontend/src/api/client.ts
+// apps/frontend/src/api/client.ts
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 import { useAuthStore } from "@/stores/authStore";
 import { useNavigate } from "react-router-dom";
@@ -1608,7 +1608,7 @@ sequenceDiagram
     │   │   └─ 今天是交易日 → 数据源延迟，进入 Step 3 补跑
     │
     ├─ Step 3: 补跑 tdx2db
-    │   ├─ Fastify 调用 systemd-run --wait tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+    │   ├─ Fastify 调用 systemd-run --wait tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
     │   ├─ 同步等待（timeout 5 分钟），拿到 exit_code
     │   ├─ exit_code=0 + DuckDB 有新数据 → 继续 C1-C12
     │   ├─ exit_code=0 但 DuckDB 仍无新数据 → 视为数据源整体不可用，ERROR + SKIP
@@ -1624,7 +1624,7 @@ sequenceDiagram
 ```bash
 # 方式 A：systemd-run --wait（推荐，Fastify 同步拿 exit_code）
 systemd-run --wait --user \
-  tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+  tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
 
 # 方式 B：systemctl start（异步，Fastify 需后续轮询状态）
 systemctl start tdx2db.service
@@ -1840,7 +1840,7 @@ export interface StrategyPlugin {
 | 规则 | 说明 |
 |------|------|
 | 内置插件库 | 打包在 `@invest/core` 包内；MVP 仅 `rsi` + `macd_cross`（默认启用） |
-| 用户自定义插件 | 放置在 `/opt/invol/plugins/strategies/`，**仅支持 .js**（require() 加载） |
+| 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
 | 故障隔离 | execute() 抛异常 → catch 后标记本轮跳过、记录 ERROR 日志、不影响其他插件和主流程 |
@@ -2453,7 +2453,7 @@ SDD 之前只描述了每日增量更新流程，**首次部署时的全量行�
 flowchart LR
     A["新 VM 准备就绪"] --> B["下载 tdx2db 预编译二进制<br/>wget github.com/jing2uo/tdx2db/releases<br/>→ tar -xzf → mv 到 /usr/local/bin/tdx2db"]
     B --> C["下载通达信日线完整包<br/>wget https://data.tdx.com.cn/vipdoc/hsjday.zip<br/>→ unzip -q -d vipdoc"]
-    C --> D["tdx2db init --dburi 'duckdb:///opt/invol/quotes.duckdb'<br/>--dayfiledir ./vipdoc"]
+    C --> D["tdx2db init --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'<br/>--dayfiledir ./vipdoc"]
     D --> E["DuckDB 文件 ≈ 1.2GB"]
     E --> F["完整性校验<br/>duckdb .tables + COUNT(*) ≥ 5000"]
     F --> G["chmod 600 quotes.duckdb<br/>配置 systemd unit"]
@@ -2463,12 +2463,12 @@ flowchart LR
 **命令参考**（已从用户侧确认）：
 ```bash
 # 首次初始化
-mkdir -p vipdoc /opt/invol
+mkdir -p vipdoc /opt/invol/IA_Prod
 wget https://data.tdx.com.cn/vipdoc/hsjday.zip && unzip -q hsjday.zip -d vipdoc
-tdx2db init --dburi 'duckdb:///opt/invol/quotes.duckdb' --dayfiledir ./vipdoc
+tdx2db init --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb' --dayfiledir ./vipdoc
 
 # 每日增量更新（systemd timer 调度）
-tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
 ```
 
 ---
@@ -2512,8 +2512,8 @@ graph TB
 ### 7.3 systemd unit 示例（invest-assistant.service）
 
 > 实际文件以 `deploy/invest-assistant.service` 为准；运行目录为
-> `/opt/invol/app`（dist + prod node_modules + packages/core），
-> 生产配置来自 `/opt/invol/.env.local`。
+> `/opt/invol/IA_Prod/app`（dist + prod node_modules + packages/core），
+> 生产配置来自 `/opt/invol/IA_Prod/.env.local`。
 
 ```ini
 [Unit]
@@ -2525,13 +2525,13 @@ Wants=network-online.target
 Type=simple
 User=invol
 Group=invol
-WorkingDirectory=/opt/invol/app
-ExecStart=/usr/bin/node /opt/invol/app/dist/server.js
+WorkingDirectory=/opt/invol/IA_Prod/app
+ExecStart=/usr/bin/node /opt/invol/IA_Prod/app/dist/server.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/invol/.env.local
+EnvironmentFile=/opt/invol/IA_Prod/.env.local
 UMask=0077
 PrivateTmp=true
 StandardOutput=journal
@@ -2554,13 +2554,13 @@ After=network-online.target
 Type=oneshot
 User=invol
 Group=invol
-WorkingDirectory=/opt/invol
+WorkingDirectory=/opt/invol/IA_Prod
 UMask=0077
 TimeoutStartSec=1800
-ExecStartPre=/bin/sh -c 'echo $$ > /opt/invol/.tdx2db-writing'
-ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
-ExecStartPost=/bin/rm -f /opt/invol/.tdx2db-writing
-ExecStopPost=-/bin/rm -f /opt/invol/.tdx2db-writing
+ExecStartPre=/bin/sh -c 'echo $$ > /opt/invol/IA_Prod/.tdx2db-writing'
+ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
+ExecStartPost=/bin/rm -f /opt/invol/IA_Prod/.tdx2db-writing
+ExecStopPost=-/bin/rm -f /opt/invol/IA_Prod/.tdx2db-writing
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tdx2db
@@ -2586,7 +2586,7 @@ WantedBy=timers.target
 ```
 
 **权限说明**：
-- DuckDB 文件 `/opt/invol/quotes.duckdb` owner 为 `invol:invol`，模式 `600`（ADR-009）
+- DuckDB 文件 `/opt/invol/IA_Prod/quotes.duckdb` owner 为 `invol:invol`，模式 `600`（ADR-009）
 - Fastify 与 tdx2db 均以专用账号 `invol` 运行；Fastify 对 DuckDB 只有 SELECT 权限
 - 目录权限由 `deploy/deploy.sh` 定向设置：`data/`、`backup/`、`plugins/` 750，
   `secrets/` 700；不要对整个 `/opt/invol` 做 `chown -R`（会波及代码仓库）
@@ -2598,8 +2598,8 @@ WantedBy=timers.target
 | `restore_duckdb.sh` | 手动 | 从远程下载 → 解压 → COPY FROM PARQUET → 完整性校验 |
 | `restore_sqlite.sh` | 手动 | 从远程下载 → 直接替换文件 → 启动验证 |
 | `verify_backup.sh` | 每月 cron 自动 | 下载备份 → 校验 schema → 抽样数据完整性 |
-| `deploy/deploy.sh` | 部署时手动 / CI | git pull → npm ci → build → 原子切换 `/opt/invol/app` → 健康检查失败自动回滚 |
-| `deploy/healthcheck.sh` | 手动 / CI | `curl -sf http://127.0.0.1:8080/api/health`（端口可读 `/opt/invol/.env.local`） |
+| `deploy/deploy.sh` | 部署时手动 / CI | git pull → npm ci → build → 原子切换 `/opt/invol/IA_Prod/app` → 健康检查失败自动回滚 |
+| `deploy/healthcheck.sh` | 手动 / CI | `curl -sf http://127.0.0.1:8080/api/health`（端口可读 `/opt/invol/IA_Prod/.env.local`） |
 
 ### 7.5 监控与告警（最小化）
 
@@ -2635,12 +2635,12 @@ sequenceDiagram
 
     Note over VM: 部署脚本（不改当前运行版本直到健康检查）
     VM->>VM: npm ci → npm run build → npm prune --omit=dev
-    VM->>VM: 组装 /opt/invol/.app.new（dist + node_modules + core）
+    VM->>VM: 组装 /opt/invol/IA_Prod/.app.new（dist + node_modules + core）
     VM->>VM: stop invest-assistant → mv app app.old → mv .app.new app
     VM->>VM: start invest-assistant → curl 127.0.0.1:8080/api/health
 
     alt 健康检查通过（HTTP 200）
-        VM->>VM: 切换 /opt/invol/frontend/dist
+        VM->>VM: 切换 /opt/invol/IA_Prod/frontend/dist
         VM-->>Admin: 上线完成
     else 健康检查失败
         VM->>VM: stop → rm app → mv app.old app → start
@@ -2653,7 +2653,7 @@ sequenceDiagram
 
 | 场景 | 回滚步骤 | RTO | 数据影响 |
 |------|---------|-----|---------|
-| 代码 bug（新上线）| `systemctl stop invest-assistant` → `rm -rf /opt/invol/app` → `mv /opt/invol/app.old /opt/invol/app` → `systemctl start invest-assistant` | < 2 min | 无（DB 迁移幂等，新写入可保留）|
+| 代码 bug（新上线）| `systemctl stop invest-assistant` → `rm -rf /opt/invol/IA_Prod/app` → `mv /opt/invol/IA_Prod/app.old /opt/invol/IA_Prod/app` → `systemctl start invest-assistant` | < 2 min | 无（DB 迁移幂等，新写入可保留）|
 | DB 迁移不可逆 | 从最近 SQLite 备份恢复 | < 10 min | 恢复到上线前时间点，上线后写入丢失 |
 | DuckDB 损坏 | 从远程下载 → 解压 → 恢复 | < 5 min | 行情数据完整恢复 |
 | SQLite 损坏 | 从远程下载 → 直接替换文件 | < 3 min | 业务数据完整恢复 |
@@ -2792,7 +2792,7 @@ sequenceDiagram
 | D4 | **【✅ 已确认（curl 实测）】** 东财 C12 跨源校验接口。**实测结果（2026-10-15 Node curl）**：① `push2his.eastmoney.com/api/qt/stock/kline/get` 可用（掘金 emt.18.cn 需鉴权）；② secid 格式：**`0.代码`（深市）** / **`1.代码`（沪市）**，如 `0.000001`、`1.600000`（不是 `0.0.000001` 也不是无市场前缀）；③ fqt 参数：**1=前复权、0=不复权、2=后复权**（与 v_stock_qfq 前复权口径对齐）；④ 返回格式：`data.klines` 是逗号分隔字符串数组，字段固定顺序：`date,open,high,low,close,volume,amount,amplitude,pct_chg,change,turnover`；⑤ 公开免费、**无需 token**、无明显限流（30 秒 100 次没触发 429）；⑥ CORS `*` 允许跨域。Fastify 后端可以直接 GET | C12 跨源校验实现 | Dev | Phase 1 启动前 |
 | D5 | **【✅ 已确认（实测）】** Tushare Free API daily 接口。**实测结果（2026-10-15 本地跑通）**：① `pre_close` 字段**确认存在且值正确**（000001.SZ 20261014 close=11.50, pre_close=11.57）；② 限流：**daily 接口 50 次/分钟**（100 次压力测试 → 前 19 次成功、后 81 次频率超限）；③ API 格式：POST `http://api.tushare.pro`，JSON body `{ api_name, token, params, fields }`，成功返回 `{ code: 0, data: { fields, items } }`；④ 错误码 4010x 系列表示频率超限。MVP C11 每天 1 次 30 只，1 分钟内搞定，远低于阈值 | C11 跨源校验 | Dev | Phase 1 启动前 |
 | D6 | **【✅ 已确认】** tdx2db 上游数据源：`https://data.tdx.com.cn/vipdoc/hsjday.zip`（通达信完整日线包） | Phase 1 init 阶段 `wget hsjday.zip && unzip -q` 即可使用 | tdx2db init | Dev | Phase 1 启动前 |
-| D7 | **【✅ 已确认】** 远程备份存储：**OCI Object Storage**（Oracle Cloud Infrastructure）。lifecycle policy 配置：DuckDB 原始快照保留 30 天、压缩增量保留 90 天 | rclone mount 方式接入：`rclone mount oci:invest-assistant-backup /opt/invol/backup --allow-other`；配置文件加密存储于 `/opt/invol/secrets/rclone.conf.enc` | 备份策略 + 运维脚本 | Dev | Phase 1 启动前 |
+| D7 | **【✅ 已确认】** 远程备份存储：**OCI Object Storage**（Oracle Cloud Infrastructure）。lifecycle policy 配置：DuckDB 原始快照保留 30 天、压缩增量保留 90 天 | rclone mount 方式接入：`rclone mount oci:invest-assistant-backup /opt/invol/IA_Prod/backup --allow-other`；配置文件加密存储于 `/opt/invol/IA_Prod/secrets/rclone.conf.enc` | 备份策略 + 运维脚本 | Dev | Phase 1 启动前 |
 | D8 | **【✅ 已确认】** JWT 签名密钥：MVP 直接用 `.env` 环境变量。生成命令 `openssl rand -hex 32 > .env.local`；`.env.*` 全部 `.gitignore`；Fastify 启动时读取 `JWT_SECRET` 环境变量 | 安全 S4 达标（MVP 单用户场景足够；V2 多用户升级 Vault/HSM） | 安全 S4 | Dev | Phase 1 启动前 |
 | D9 | **【✅ 已确认】** tdx2db 命令行：首次 `tdx2db init --dburi 'duckdb://path' --dayfiledir ./vipdoc`；每日增量 `tdx2db cron --dburi 'duckdb://path'`。DuckDB URI 格式 `duckdb://[path]`，增量 vs 全量由命令区分 | 每日更新耗时 + DuckDB 文件大小 | Dev | Phase 1 启动前 |
 | D10 | **【✅ 已确认】** 插件沙盒 MVP 实现锁定：`new Function()` + AST 关键字黑名单（`global`/`process`/`require`/`import`/`Function`/`constructor`/`prototype`/`__proto__`/`eval`）+ 语法预校验（`new Function(code)` 提前抛 SyntaxError）+ `Promise.race` 50ms 硬超时。**V2 升级路线**：替换底层为 isolated-vm v5 真隔离（接口 `execute(ctx, params)` 不变，无缝切换）。**风险接受**：主线程死循环无法被 setTimeout 打断，但 MVP 插件是开发者预置的（AGENTS.md 硬约束禁止用户上传），风险可忽略 | 插件安全 | Dev | Phase 2 启动前实现 |
@@ -2852,7 +2852,7 @@ sequenceDiagram
 | SE4 | 插件沙盒约束（禁止 global/process/require） | `apps/backend/tests/unit/pluginEngine.test.ts` → `sandbox_violation_5_cases` | ❌ 待建（已覆盖 globalThis/process/require 3 例，用例名与 5 例口径未落地） |
 | SE5 | system_log 金额脱敏 | `apps/backend/tests/unit/logger.test.ts`（describe「logger — S6 脱敏」） | ✅ 已有 |
 | SE6 | admin API 路由二次角色校验 | `apps/backend/tests/integration/auth.test.ts` → `admin_role_guard` | ❌ 待建（文件在，用例名未落地） |
-| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/data/*.db /opt/invol/quotes.duckdb`（部署机实测） | ❌ 待实测（需部署机） |
+| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/IA_Prod/data/*.db /opt/invol/IA_Prod/quotes.duckdb`（部署机实测） | ❌ 待实测（需部署机） |
 
 > **统计（2026-10-21 更新）**：24 项中 **✅ 已有 13 项**（**F1 / F2 / F3 / F4 / F5 / F6 / F7 / F8** / F11 / **PE2** / PE6 / SE2 / SE5）、
 > **❌ 11 项**（6 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
@@ -3071,7 +3071,7 @@ afterEach(async () => {
 
 | # | 原始需求 §9 | 对应测试 Case | 通过标准 |
 |---|------------|--------------|---------|
-| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/data/*.db /opt/invol/quotes.duckdb` | 600 + owner=invol:invol |
+| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/IA_Prod/data/*.db /opt/invol/IA_Prod/quotes.duckdb` | 600 + owner=invol:invol |
 
 ### 12.5.1 测试行情库策略（迷你 DuckDB）
 

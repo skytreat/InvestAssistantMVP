@@ -3,11 +3,11 @@ set -euo pipefail
 
 # Fastify 健康检查脚本
 # 返回 0 = 健康，非 0 = 不健康
-# 端口优先取环境变量 PORT，其次读 /opt/invol/.env.local，最后默认 8080。
+# 端口优先取环境变量 PORT，其次读 /opt/invol/IA_Prod/.env.local，最后默认 8080。
 
 PORT="${PORT:-}"
-if [ -z "$PORT" ] && [ -r /opt/invol/.env.local ]; then
-    PORT="$(sed -n 's/^PORT=//p' /opt/invol/.env.local | tail -n 1 | tr -d '"[:space:]')"
+if [ -z "$PORT" ] && [ -r /opt/invol/IA_Prod/.env.local ]; then
+    PORT="$(sed -n 's/^PORT=//p' /opt/invol/IA_Prod/.env.local | tail -n 1 | tr -d '"[:space:]')"
 fi
 case "$PORT" in
     ''|*[!0-9]*) PORT=8080 ;;

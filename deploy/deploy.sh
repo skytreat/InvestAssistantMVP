@@ -10,14 +10,15 @@ set -Eeuo pipefail
 #     bash deploy/deploy.sh
 #
 # 说明：
-# - 生产环境配置只从 /opt/invol/.env.local 读取；不会用仓库里的 .env.local 覆盖。
-# - 后端运行目录为 /opt/invol/app，包含 dist + prod node_modules + packages/core。
-# - 前端静态产物原子切换到 /opt/invol/frontend/dist。
+# - 生产环境配置只从 /opt/invol/IA_Prod/.env.local 读取；不会用仓库里的 .env.local 覆盖。
+# - 后端运行目录为 /opt/invol/IA_Prod/app，包含 dist + prod node_modules + packages/core。
+# - 前端静态产物原子切换到 /opt/invol/IA_Prod/frontend/dist。
 # - Caddy 是可选前置依赖；未安装或未提供域名时跳过 HTTPS，不中断部署。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEPLOY_DIR="/opt/invol"
+LEGACY_DIR="/opt/invol"
+DEPLOY_DIR="$LEGACY_DIR/IA_Prod"
 APP_DIR="$DEPLOY_DIR/app"
 APP_STAGE="$DEPLOY_DIR/.app.new"
 FRONTEND_DIR="$DEPLOY_DIR/frontend/dist"
@@ -44,9 +45,9 @@ InvestAssistant MVP 生产部署脚本（OCI Ubuntu 24.04，ARM/x86）
     bash deploy/deploy.sh
 
 说明：
-- 生产环境配置只从 /opt/invol/.env.local 读取；不会用仓库里的 .env.local 覆盖。
-- 后端运行目录为 /opt/invol/app，包含 dist + prod node_modules + packages/core。
-- 前端静态产物原子切换到 /opt/invol/frontend/dist。
+- 生产环境配置只从 /opt/invol/IA_Prod/.env.local 读取；不会用仓库里的 .env.local 覆盖。
+- 后端运行目录为 /opt/invol/IA_Prod/app，包含 dist + prod node_modules + packages/core。
+- 前端静态产物原子切换到 /opt/invol/IA_Prod/frontend/dist。
 - Caddy 是可选前置依赖；未安装或未提供域名时跳过 HTTPS，不中断部署。
 EOF
 }
@@ -166,6 +167,7 @@ if ! id "$USERNAME" >/dev/null 2>&1; then
     echo "✅ 创建用户 $USERNAME"
 fi
 
+mkdir -p "$LEGACY_DIR"
 install -d -m 755 "$DEPLOY_DIR"
 install -d -m 750 "$DEPLOY_DIR/data" "$DEPLOY_DIR/backup" "$DEPLOY_DIR/plugins/strategies"
 install -d -m 700 "$DEPLOY_DIR/secrets"
@@ -186,6 +188,22 @@ echo "✅ 目录结构就绪"
 # ---------------------------------------------------------------------------
 CURRENT_STEP="检查生产环境文件"
 if [ ! -f "$ENV_FILE" ]; then
+    if [ -f "$LEGACY_DIR/.env.local" ]; then
+        install -m 600 "$LEGACY_DIR/.env.local" "$ENV_FILE"
+        chown "$USERNAME:$USERNAME" "$ENV_FILE"
+        sed -i \
+            -e "s|^SQLITE_DB_PATH=$LEGACY_DIR/business.db$|SQLITE_DB_PATH=$DEPLOY_DIR/data/business.db|" \
+            -e "s|^SQLITE_DB_PATH=$LEGACY_DIR/|SQLITE_DB_PATH=$DEPLOY_DIR/|" \
+            -e "s|^DUCKDB_PATH=$LEGACY_DIR/|DUCKDB_PATH=$DEPLOY_DIR/|" \
+            -e "s|^BACKUP_DIR=$LEGACY_DIR/|BACKUP_DIR=$DEPLOY_DIR/|" \
+            -e "s|^PLUGIN_ALLOWED_PATH=$LEGACY_DIR/|PLUGIN_ALLOWED_PATH=$DEPLOY_DIR/|" \
+            -e "s|^TDX2DB_WRITE_SENTINEL=$LEGACY_DIR/|TDX2DB_WRITE_SENTINEL=$DEPLOY_DIR/|" \
+            "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+        echo "⚠️  已从 $LEGACY_DIR/.env.local 复制生产配置到 $ENV_FILE，并改写路径。" >&2
+        echo "   请核对 JWT_SECRET / TUSHARE_TOKEN / SQLITE_DB_PATH / DUCKDB_PATH / BACKUP_DIR 后重新执行本脚本。" >&2
+        exit 1
+    fi
     if [ -f "$PROJECT_ROOT/.env.template" ]; then
         install -m 600 "$PROJECT_ROOT/.env.template" "$ENV_FILE"
         chown "$USERNAME:$USERNAME" "$ENV_FILE"
@@ -220,13 +238,46 @@ case "$APP_PORT" in
 esac
 echo "✅ 生产环境文件就绪（HTTP 端口 $APP_PORT）"
 
+# 新目录首次部署时，绝不自动创建空库覆盖旧数据；必须先按文档迁移。
+CURRENT_STEP="检查旧部署数据"
+if [ ! -e "$DEPLOY_DIR/data/business.db" ]; then
+    for legacy_db in "$LEGACY_DIR/data/business.db" "$LEGACY_DIR/business.db"; do
+        if [ -e "$legacy_db" ]; then
+            echo "❌ 检测到旧 SQLite 业务库：$legacy_db" >&2
+            echo "   新目录 $DEPLOY_DIR/data/business.db 尚不存在，脚本已停止，避免创建空库。" >&2
+            echo "   请先按 docs/deploy.md「从旧目录迁移」停服迁移数据，再重新执行。" >&2
+            exit 1
+        fi
+    done
+fi
+if [ ! -e "$DEPLOY_DIR/quotes.duckdb" ]; then
+    for legacy_quotes in "$LEGACY_DIR/quotes.duckdb" "$LEGACY_DIR/data/quotes.duckdb"; do
+        if [ -e "$legacy_quotes" ]; then
+            echo "❌ 检测到旧 DuckDB 行情库：$legacy_quotes" >&2
+            echo "   新目录 $DEPLOY_DIR/quotes.duckdb 尚不存在，脚本已停止，避免重新初始化空库。" >&2
+            echo "   请先按 docs/deploy.md「从旧目录迁移」停服迁移数据，再重新执行。" >&2
+            exit 1
+        fi
+    done
+fi
+
 # 兼容已有部署：旧库可能属于 ubuntu 或其他用户，启动前统一到专用账号。
 CURRENT_STEP="规范已有 SQLite 文件权限"
 SQLITE_DB_PATH_CFG="$(sed -n 's/^SQLITE_DB_PATH=//p' "$ENV_FILE" | tail -n 1 | tr -d '"[:space:]')"
-case "$SQLITE_DB_PATH_CFG" in
-    "$DEPLOY_DIR"/*) ;;
-    *) SQLITE_DB_PATH_CFG="" ;;
-esac
+DUCKDB_PATH_CFG="$(sed -n 's/^DUCKDB_PATH=//p' "$ENV_FILE" | tail -n 1 | tr -d '"[:space:]')"
+BACKUP_DIR_CFG="$(sed -n 's/^BACKUP_DIR=//p' "$ENV_FILE" | tail -n 1 | tr -d '"[:space:]')"
+for cfg in "SQLITE_DB_PATH:$SQLITE_DB_PATH_CFG" "DUCKDB_PATH:$DUCKDB_PATH_CFG" "BACKUP_DIR:$BACKUP_DIR_CFG"; do
+    key="${cfg%%:*}"
+    value="${cfg#*:}"
+    case "$value" in
+        "$DEPLOY_DIR"/*) ;;
+        *)
+            echo "❌ $key 必须位于 $DEPLOY_DIR 下（当前值：${value:-未设置}）" >&2
+            echo "   请修正 $ENV_FILE 后重新执行，避免在旧路径下创建空库。" >&2
+            exit 1
+            ;;
+    esac
+done
 for db in "$DEPLOY_DIR/data/business.db" "$DEPLOY_DIR/business.db" "$SQLITE_DB_PATH_CFG"; do
     [ -n "$db" ] || continue
     [ -f "$db" ] || continue

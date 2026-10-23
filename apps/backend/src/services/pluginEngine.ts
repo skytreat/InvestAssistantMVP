@@ -23,7 +23,7 @@ export const PLUGIN_TIMEOUT_MS = 50;
  * ⚠️ 目录必须是**绝对路径**（路径逃逸检查按 `path.resolve` 前缀比对，见 loadPluginsFromDir）。
  * ⚠️ 该目录不存在时**不报错**，只记 INFO 日志跳过磁盘加载（内置插件仍可用）。
  */
-export const PLUGIN_ALLOWED_PATH = process.env.PLUGIN_ALLOWED_PATH ?? '/opt/invol/plugins/strategies';
+export const PLUGIN_ALLOWED_PATH = process.env.PLUGIN_ALLOWED_PATH ?? '/opt/invol/IA_Prod/plugins/strategies';
 
 /** 耗时取 3 位小数（微秒精度足够定位 50ms 预算问题，又不打日志刷屏） */
 const round3 = (ms: number): number => Math.round(ms * 1000) / 1000;

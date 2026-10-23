@@ -7,13 +7,13 @@ Wants=network-online.target
 Type=simple
 User=invol
 Group=invol
-WorkingDirectory=/opt/invol/app
-ExecStart=/usr/bin/node /opt/invol/app/dist/server.js
+WorkingDirectory=/opt/invol/IA_Prod/app
+ExecStart=/usr/bin/node /opt/invol/IA_Prod/app/dist/server.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/invol/.env.local
+EnvironmentFile=/opt/invol/IA_Prod/.env.local
 UMask=0077
 PrivateTmp=true
 StandardOutput=journal

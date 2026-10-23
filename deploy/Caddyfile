@@ -11,7 +11,7 @@ __CADDY_DOMAIN__ {
 	# 前端 SPA 静态资源（Vite build 产物）
 	# SPA history mode 兜底：所有非文件路径都返回 index.html
 	handle {
-		root * /opt/invol/frontend/dist
+		root * /opt/invol/IA_Prod/frontend/dist
 		try_files {path} /index.html
 		encode zstd gzip
 		file_server
