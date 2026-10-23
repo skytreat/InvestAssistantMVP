@@ -567,7 +567,7 @@ registerIndicator({
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
-| 实现成本 | 1 | `caddy reverse_proxy localhost:3000` 一行配置；Let's Encrypt 自动续期 |
+| 实现成本 | 1 | `caddy reverse_proxy 127.0.0.1:8080` 一行配置；Let's Encrypt 自动续期 |
 | 运维成本 | 1 | systemd 守护；证书自动管理零人工干预 |
 | 风险 | 2 | 社区活跃，但比 nginx 配置文档略少 |
 
@@ -2327,7 +2327,7 @@ WHERE date = '{{TRADE_DATE}}';
 | S2 | 端口最小化 | Caddy 仅暴露 443；Fastify 监听 `127.0.0.1:8080`（仅本地可访问） | 外部扫描只看到 443 |
 | S3 | 密码存储 | `bcrypt`（cost=12），加盐 16 字节，单哈希 ≈ 250ms | 彩虹表不可行；暴力破解每哈希耗时过长 |
 | S4 | Token 机制 | JWT（HS256），payload={userId, role, exp}，access 7d + refresh 30d | Refresh 支持自动续期（刷新时 exp 重新计算）；签名密钥环境变量注入 |
-| S5 | 数据库文件权限 | `chown -R nobody:nogroup /opt/invest && chmod 600 *.db`；DuckDB 同理 | 进程用 `nobody` 运行，root 才能改权限 |
+| S5 | 数据库文件权限 | 专用账号 `invol`；`deploy.sh` 仅对 `data/ backup/ plugins/ secrets/` 定向 `chown/chmod`，数据文件 600（ADR-009） | Fastify/tdx2db 以 `invol` 运行；禁止对整个 `/opt/invol` 做 `chown -R` |
 | S6 | 日志脱敏 | system_log 中金额末 4 位替换为 `****`；用户标识末 4 位替换 | 防止日志泄露敏感数据 |
 | S7 | 插件沙盒（MVP） | **硬约束清单**：禁止访问 global/process/require；禁止文件/网络；执行超时硬限制 | MVP 靠约定 + 超时保护；V2 升级到 VM2 硬隔离 |
 | S8 | CSRF 防护 | SameSite=Strict Cookie + CSRF Token（双提交 Cookie 模式） | MVP 用 Token 机制已足够；Cookie 方案作为补充 |
@@ -2511,27 +2511,31 @@ graph TB
 
 ### 7.3 systemd unit 示例（invest-assistant.service）
 
+> 实际文件以 `deploy/invest-assistant.service` 为准；运行目录为
+> `/opt/invol/app`（dist + prod node_modules + packages/core），
+> 生产配置来自 `/opt/invol/.env.local`。
+
 ```ini
 [Unit]
-Description=Invest Assistant Fastify Server
-After=network.target duckdb-mount.service
+Description=InvestAssistant Fastify 后端
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=nobody
-Group=nogroup
-Environment=NODE_ENV=production
-Environment=DB_PATH=/opt/invol/user.db
-Environment=DUCKDB_PATH=/opt/invol/quotes.duckdb
-Environment=JWT_SECRET={{vault_or_env}}
-Environment=DATA_DIRECTORYS=/opt/invol/plugins/custom
-ExecStart=/usr/bin/node /opt/invol/dist/server.js
-Restart=always
+User=invol
+Group=invol
+WorkingDirectory=/opt/invol/app
+ExecStart=/usr/bin/node /opt/invol/app/dist/server.js
+Restart=on-failure
 RestartSec=5
-WatchdogSec=30
+TimeoutStopSec=30
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/invol/.env.local
+UMask=0077
+PrivateTmp=true
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=invest-assistant
 
 [Install]
 WantedBy=multi-user.target
@@ -2548,10 +2552,15 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=nobody
-Group=nogroup
-ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+User=invol
+Group=invol
 WorkingDirectory=/opt/invol
+UMask=0077
+TimeoutStartSec=1800
+ExecStartPre=/bin/sh -c 'echo $$ > /opt/invol/.tdx2db-writing'
+ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+ExecStartPost=/bin/rm -f /opt/invol/.tdx2db-writing
+ExecStopPost=-/bin/rm -f /opt/invol/.tdx2db-writing
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tdx2db
@@ -2577,9 +2586,10 @@ WantedBy=timers.target
 ```
 
 **权限说明**：
-- DuckDB 文件 `/opt/invol/quotes.duckdb` owner 为 `nobody:nogroup`（systemd User=nobody 运行 tdx2db）
-- Fastify 进程同样以 `nobody` 运行，对 DuckDB 只有 SELECT 权限（AGENTS DuckDB 硬约束第 1 条）
-- 如果未来 Fastify 需要不同用户运行，需调整文件权限（chmod o+r）或改用组权限
+- DuckDB 文件 `/opt/invol/quotes.duckdb` owner 为 `invol:invol`，模式 `600`（ADR-009）
+- Fastify 与 tdx2db 均以专用账号 `invol` 运行；Fastify 对 DuckDB 只有 SELECT 权限
+- 目录权限由 `deploy/deploy.sh` 定向设置：`data/`、`backup/`、`plugins/` 750，
+  `secrets/` 700；不要对整个 `/opt/invol` 做 `chown -R`（会波及代码仓库）
 
 ### 7.4 关键运维脚本清单
 
@@ -2588,8 +2598,8 @@ WantedBy=timers.target
 | `restore_duckdb.sh` | 手动 | 从远程下载 → 解压 → COPY FROM PARQUET → 完整性校验 |
 | `restore_sqlite.sh` | 手动 | 从远程下载 → 直接替换文件 → 启动验证 |
 | `verify_backup.sh` | 每月 cron 自动 | 下载备份 → 校验 schema → 抽样数据完整性 |
-| `upgrade.sh` | 部署时手动 | git pull → npm ci → npm run build → systemctl restart |
-| `health_check.sh` | systemd watchdog 触发 | `curl -sf http://localhost:3000/health || systemctl kill --kill-who=main invest-assistant` |
+| `deploy/deploy.sh` | 部署时手动 / CI | git pull → npm ci → build → 原子切换 `/opt/invol/app` → 健康检查失败自动回滚 |
+| `deploy/healthcheck.sh` | 手动 / CI | `curl -sf http://127.0.0.1:8080/api/health`（端口可读 `/opt/invol/.env.local`） |
 
 ### 7.5 监控与告警（最小化）
 
@@ -2618,22 +2628,23 @@ sequenceDiagram
     participant Backup as 远程存储
 
     Admin->>Git: git push → tag v1.0.0
-    Git->>Git: CI: npm ci + npm run build → dist/
-    Git->>VM: scp dist/ + package.json 到 /opt/invest-new/
-    Git->>Backup: 手动触发全量备份（上线前备份）
+    Git->>Git: CI: lint + typecheck + test + build
+    Git->>VM: ssh "cd /opt/invol/InvestAssistantMVP && git pull --ff-only && sudo bash deploy/deploy.sh"
+    VM->>Backup: 部署前备份 SQLite（脚本外的人工步骤或备份任务）
     Backup-->>Admin: 备份完成 OK
 
-    Note over VM: 准备阶段（不改当前运行版本）
-    Admin->>VM: cd /opt/invest-new && npm ci --omit=dev
-    Admin->>VM: 执行新 DB migration（幂等）
-    Admin->>VM: 软切换：systemctl stop invest-assistant → 指向新 dist/ → systemctl start
+    Note over VM: 部署脚本（不改当前运行版本直到健康检查）
+    VM->>VM: npm ci → npm run build → npm prune --omit=dev
+    VM->>VM: 组装 /opt/invol/.app.new（dist + node_modules + core）
+    VM->>VM: stop invest-assistant → mv app app.old → mv .app.new app
+    VM->>VM: start invest-assistant → curl 127.0.0.1:8080/api/health
 
-    alt 新服务健康检查通过（curl /health = 200）
-        VM-->>Admin: OK
-        Note over VM: 上线完成
+    alt 健康检查通过（HTTP 200）
+        VM->>VM: 切换 /opt/invol/frontend/dist
+        VM-->>Admin: 上线完成
     else 健康检查失败
-        VM-->>Admin: curl /health != 200
-        Admin->>VM: systemctl stop → 回滚到旧 dist/ → systemctl start
+        VM->>VM: stop → rm app → mv app.old app → start
+        VM-->>Admin: 自动回滚完成，输出 journalctl
         Admin->>Admin: 分析日志 → 修复 → 重新上线
     end
 ```
@@ -2642,7 +2653,7 @@ sequenceDiagram
 
 | 场景 | 回滚步骤 | RTO | 数据影响 |
 |------|---------|-----|---------|
-| 代码 bug（新上线）| `systemctl stop invest-assistant` → 指向旧 dist → `systemctl start` | < 2 min | 无（DB 迁移幂等，新写入可保留）|
+| 代码 bug（新上线）| `systemctl stop invest-assistant` → `rm -rf /opt/invol/app` → `mv /opt/invol/app.old /opt/invol/app` → `systemctl start invest-assistant` | < 2 min | 无（DB 迁移幂等，新写入可保留）|
 | DB 迁移不可逆 | 从最近 SQLite 备份恢复 | < 10 min | 恢复到上线前时间点，上线后写入丢失 |
 | DuckDB 损坏 | 从远程下载 → 解压 → 恢复 | < 5 min | 行情数据完整恢复 |
 | SQLite 损坏 | 从远程下载 → 直接替换文件 | < 3 min | 业务数据完整恢复 |
@@ -2841,7 +2852,7 @@ sequenceDiagram
 | SE4 | 插件沙盒约束（禁止 global/process/require） | `apps/backend/tests/unit/pluginEngine.test.ts` → `sandbox_violation_5_cases` | ❌ 待建（已覆盖 globalThis/process/require 3 例，用例名与 5 例口径未落地） |
 | SE5 | system_log 金额脱敏 | `apps/backend/tests/unit/logger.test.ts`（describe「logger — S6 脱敏」） | ✅ 已有 |
 | SE6 | admin API 路由二次角色校验 | `apps/backend/tests/integration/auth.test.ts` → `admin_role_guard` | ❌ 待建（文件在，用例名未落地） |
-| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a`（部署机实测） | ❌ 待实测（需部署机） |
+| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/data/*.db /opt/invol/quotes.duckdb`（部署机实测） | ❌ 待实测（需部署机） |
 
 > **统计（2026-10-21 更新）**：24 项中 **✅ 已有 13 项**（**F1 / F2 / F3 / F4 / F5 / F6 / F7 / F8** / F11 / **PE2** / PE6 / SE2 / SE5）、
 > **❌ 11 项**（6 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
@@ -3060,7 +3071,7 @@ afterEach(async () => {
 
 | # | 原始需求 §9 | 对应测试 Case | 通过标准 |
 |---|------------|--------------|---------|
-| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a /opt/invol/*.db` | 600 + owner=nobody:nogroup |
+| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/data/*.db /opt/invol/quotes.duckdb` | 600 + owner=invol:invol |
 
 ### 12.5.1 测试行情库策略（迷你 DuckDB）
 
@@ -3300,10 +3311,9 @@ jobs:
       - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           ssh -i ~/.ssh/id_rsa deploy@invest-vm \
-            "systemctl stop invest-assistant && \
-             rsync -avz --delete dist/ /opt/invol/dist/ && \
-             systemctl start invest-assistant && \
-             sleep 2 && curl -sf http://localhost:3000/health || (systemctl status invest-assistant; exit 1)"
+            "cd /opt/invol/InvestAssistantMVP && \
+             git pull --ff-only && \
+             sudo bash deploy/deploy.sh"
 ```
 
 #### Pipeline 规则
@@ -3313,7 +3323,7 @@ jobs:
 | PR 触发 | push + pull_request 都触发 Stage 1-4，不触发部署 |
 | 部署触发 | 仅 main 分支 push 触发，且需要 GitHub Actions Secrets 配置 SSH key |
 | 阻断点 | Lint 失败 / TypeScript 编译失败 / 覆盖率 Gate 不通过 / 集成测试失败 → 全部阻断 |
-| 健康检查 | 部署后 curl localhost:3000/health 验证，失败则 systemctl status 记录日志 |
+| 健康检查 | `deploy.sh` 内部 curl `127.0.0.1:8080/api/health` 验证，失败自动回滚 `app.old` |
 | 备份验证 | 每月第一个周五的 CI run 额外触发 `sudo systemctl start invest-backup.service`，验证备份链路通畅 |
 
 #### 覆盖率阻断 Gate（T86b 恢复，2026-10-21）

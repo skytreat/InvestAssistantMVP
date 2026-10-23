@@ -1,25 +1,19 @@
-:80 {
-    # HTTP → HTTPS 301
-    redir https://invest.example.com{uri} permanent
-}
+# 由 deploy/deploy.sh 渲染：__CADDY_DOMAIN__ / __CADDY_EMAIL__
+# 不要直接复制本文件；脚本会校验并安装到 /etc/caddy/Caddyfile。
+__CADDY_DOMAIN__ {
+	tls __CADDY_EMAIL__
 
-:443 {
-    # Let's Encrypt 自动续期
-    tls {
-        acme_email admin@example.com
-    }
+	# /api/* 反代到 Fastify 后端（只监听 127.0.0.1:8080）
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8080
+	}
 
-    # /api/* 反代到 Fastify 后端（只监听 127.0.0.1:8080）
-    route /api/* {
-        reverse_proxy 127.0.0.1:8080
-    }
-
-    # 前端 SPA 静态资源（Vite build 产物）
-    # SPA history mode 兜底：所有非文件路径都返回 index.html
-    route /* {
-        root * /opt/invol/frontend/dist
-        try_files {path} /index.html
-        encode zstd gzip
-        file_server
-    }
+	# 前端 SPA 静态资源（Vite build 产物）
+	# SPA history mode 兜底：所有非文件路径都返回 index.html
+	handle {
+		root * /opt/invol/frontend/dist
+		try_files {path} /index.html
+		encode zstd gzip
+		file_server
+	}
 }
