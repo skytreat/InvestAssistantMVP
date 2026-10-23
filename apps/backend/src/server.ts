@@ -67,6 +67,8 @@ async function bootstrap() {
 // 优雅退出
 process.on('SIGTERM', async () => {
   console.log('收到 SIGTERM，正在关闭...');
+  const { closeDuckDBInstance } = await import('./db/duckdb.js');
+  await closeDuckDBInstance();
   process.exit(0);
 });
 

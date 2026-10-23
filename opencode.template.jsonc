@@ -42,7 +42,8 @@
       "/sys/**": "allow",
       "/opt/invol/**": "allow",
       "$HOME/**": "allow",
-      "/tmp/**": "allow"
+      "/tmp/**": "allow",
+      "etc/**": "allow"
     }
   },
   "agent": {
