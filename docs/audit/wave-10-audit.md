@@ -1,8 +1,8 @@
-# Wave 10 验收 —— 行情库备份可关闭开关（T103 / DEC-13）
+# Wave 10 验收 —— 行情库备份开关（T103 / DEC-13）+ P2 体验收尾（T79 ②~⑥）
 
 > **判定人**：Wave 10 实施 agent
 > **日期**：2026-10-23
-> **波次范围**：**T103**（`ENABLE_QUOTE_BACKUP` 行情库备份开关）
+> **波次范围**：**T103**（`ENABLE_QUOTE_BACKUP` 行情库备份开关）+ **T79 ②~⑥**（touch / 信号空态 / 面包屑 / Dashboard 概览 / 候选池面板）
 > **上游**：[`code_implementation_plan_v2.md`](../client/code_implementation_plan_v2.md) §5 Wave 10 / §9.1 DEC-13 / §12.7 G10
 > **判定规则**：G10（5 条）+ §12.6 全局判定；**只有 PASS / FAIL，无 COND**
 > **Base commit**：`5a90e8a`（Wave 9 文档收尾）
@@ -208,7 +208,7 @@ AssertionError: expected 89928 to be +0
 
 | # | 项 | 状态 |
 |---|---|---|
-| 1 | **T79 ②~⑥** P2 体验收尾 | ⬜ 待启动；**不计入 G10** |
+| 1 | **T79 ②~⑥** P2 体验收尾 | ✅ **已完成**（2026-10-23）；**不计入 G10**，证据见 §7 |
 | 2 | Wave 9 遗留：备份覆盖面未补（`raw_gbbq` / `raw_holidays` / `raw_symbol_class` / `v_etf_*`） | ⬜ 未关闭；T103 明确不负责 |
 | 3 | Wave 9 遗留：T102 运行层反向验证为手工 gate（单测占位 `expect(true)`） | ⬜ 未关闭 |
 | 4 | 本地全量 `t55` 数据前提漂移 | ⬜ 另立测试维护任务（见 §4.3） |
@@ -221,5 +221,23 @@ AssertionError: expected 89928 to be +0
 ✅ Wave 10 · T103 = PASS（G10 5/5，0 COND）
 ✅ 开关语义：默认开启；仅 ENABLE_QUOTE_BACKUP=false 关闭；SQLite 恒常备份
 ✅ 文档：L1 / L3 / L5 / AGENTS.md 同口径
-⚠️ Wave 10 未整体结束：T79 ②~⑥ 仍待启动
+✅ T79 ②~⑥ = 完成（P2 体验收尾；无 G10 门槛，证据见 §7）
 ```
+
+---
+
+## 7. T79 ②~⑥ —— P2 体验收尾（补充验收）
+
+> T79 不含 G10 门槛；本节记录交付证据，避免「无落档 = 未执行」。
+
+| 项 | 交付 | 证据 |
+|---|---|---|
+| ② touch ≥44×44 | `global.css` 的 `@media (pointer: coarse)`：button / role=button / a / input（不含 checkbox/radio）/ select / textarea / summary / label 高度下限 44px；按钮类宽度下限 44px；`touch-action: manipulation` | `touch-targets.test.ts` **4/4 PASS** |
+| ③ 信号空态引导 | `Signals.tsx` 空态保留「今日暂无策略信号」+「收盘后 **17:02** 自动运行信号生成」；管理员额外显示【立即运行信号】→ `/admin` | `signals-page.test.tsx` **17/17 PASS**（含 17:03 负断言、admin / 普通用户两态） |
+| ④ 面包屑 | 新增 `Breadcrumbs.tsx`；Kline（仪表盘 / K线图 / 标的）与 `PositionDetailModal`（仪表盘 / 标的详情 / 代码）接入；当前页 `aria-current="page"` | `breadcrumbs.test.tsx` **2/2** + `kline-page.test.tsx` / `symbol-detail-modal.test.tsx` 全绿 |
+| ⑤ Dashboard 概览 | 四块：资产汇总 / 今日快捷操作（买入、卖出、全部交易、admin 入口 + TodayActivityCard）/ 持仓 Top3（市值降序，>3 可展开）/ 最新信号 Top5（查看全部 → `/signals`）；admin 日志收进底部折叠 `<details>` | `dashboard.test.tsx` **17/17 PASS**（含 T79 3 条）；全量前端 **46 文件 / 655 PASS + 1 todo** |
+| ⑥ 候选池联动 | 新增 `CandidatePoolPanel.tsx`：默认折叠「候选池 N 只 · M 只有信号」，展开 Top5「有信号优先 → 跟踪天数长优先」，每行现价/信号/跟踪天数/【买入】；买入预填 `TradeFormModal` 现价 + D-11 理由，数量留空 | `candidate-pool-panel.test.tsx` **5/5**；Dashboard 集成用例验证弹窗预填；`trade-input.test.tsx` **45/45**（含 `?type=buy|sell` 落点，`sell` 映射业务口径「减仓」） |
+
+质量门禁：`npm run typecheck -w @invest/frontend` exit 0；`eslint apps/frontend/src apps/frontend/tests` exit 0；`npm run test -w @invest/frontend` **46 files / 655 passed / 1 todo**。
+
+> ⚠️ `?type=sell` 是 Dashboard 快捷入口的通用叫法；Requirements §5.1 无 `sell`，前端将其归一化为 `reduce`（减仓），避免落到非法交易类型。

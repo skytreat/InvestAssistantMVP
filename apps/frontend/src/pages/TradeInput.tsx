@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
@@ -136,9 +137,22 @@ function isDuplicateError(err: unknown): boolean {
 
 export default function TradeInput() {
   const isMobile = useIsMobile();
+  const [searchParams] = useSearchParams();
+
+  /**
+   * T79 ⑤：Dashboard 快捷操作 `/trade?type=buy|sell` 的落点。
+   * 只接受已知交易类型，非法值一律回落到 `buy`（不抛错、不白屏）。
+   */
+  const queryType = searchParams.get('type');
+  /** `sell` 是 Dashboard 快捷入口的通用叫法；业务口径对应「减仓」（Requirements §5.1 无 sell） */
+  const normalizedQueryType = queryType === 'sell' ? 'reduce' : queryType;
+  const initialTradeType: TradeType =
+    normalizedQueryType && Object.prototype.hasOwnProperty.call(TRADE_TYPE_LABEL, normalizedQueryType)
+      ? (normalizedQueryType as TradeType)
+      : 'buy';
 
   const [assetCode, setAssetCode] = useState('');
-  const [tradeType, setTradeType] = useState<TradeType>('buy');
+  const [tradeType, setTradeType] = useState<TradeType>(initialTradeType);
   const [exDividendOpen, setExDividendOpen] = useState(false);
   const [tradeDate, setTradeDate] = useState<string>(todayStr());
   const [tradeTime, setTradeTime] = useState<string>(nowTimeStr());

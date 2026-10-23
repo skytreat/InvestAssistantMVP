@@ -124,6 +124,7 @@ interface ApiOverrides {
   stat?: AssetStatFixture;
   positions?: PositionFixture[];
   summary?: PositionSummaryFixture;
+  candidate?: unknown[];
 }
 
 /** 安装 api.get 的分派实现（每个用例自给自足，不依赖其它用例的副作用）*/
@@ -131,6 +132,7 @@ function installApiMock(overrides: ApiOverrides = {}): void {
   const stat = overrides.stat ?? DEFAULT_STAT;
   const positions = overrides.positions ?? DEFAULT_POSITIONS;
   const summary = overrides.summary ?? DEFAULT_SUMMARY;
+  const candidate = overrides.candidate ?? [];
   getMock.mockImplementation(async (url: string) => {
     switch (url) {
       case '/holding':
@@ -167,7 +169,7 @@ function installApiMock(overrides: ApiOverrides = {}): void {
           summary: { total: 0, dividendCount: 0, bonusCount: 0 },
         });
       case '/candidate':
-        return mockResponse([]);
+        return mockResponse(candidate);
       default:
         throw new Error(`未预期的接口调用: ${url}`);
     }
@@ -272,6 +274,99 @@ describe('Dashboard · 双口径 Tab 切换', () => {
     // 信号接口固定带 page_size=5
     expect(getMock).toHaveBeenCalledWith('/signal', { params: { page_size: 5 } });
     expect(screen.queryByText('最近日志')).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * T79 ⑤ / ⑥ · 概览结构与候选池落点
+ * ------------------------------------------------------------------ */
+
+const FOUR_POSITIONS: PositionFixture[] = [0, 1, 2, 3].map((i) => ({
+  ...DEFAULT_POSITIONS[0],
+  asset_code: `sh60000${i + 1}`,
+  totalQuantity: 100 + i,
+  totalCostBasis: 500,
+  marketValue: 4000 - i * 1000,
+  unrealizedPnl: 500 - i * 100,
+  unrealizedYield: 0.1,
+  weight: 0.4 - i * 0.1,
+}));
+
+const FOUR_SUMMARY: PositionSummaryFixture = {
+  totalMarketValue: 10000,
+  totalCostBasis: 2000,
+  unrealizedPnl: 2000,
+  realizedPnL: 0,
+  priceDate: '2026-10-17',
+  positionCount: 4,
+};
+
+describe('T79 ⑤ / ⑥ · Dashboard 概览结构', () => {
+  beforeEach(() => {
+    useUserStore.setState({ role: 'user', token: null, username: null });
+    installApiMock({ positions: FOUR_POSITIONS, summary: FOUR_SUMMARY });
+  });
+
+  it('四块概览 + 候选池面板按顺序存在', async () => {
+    renderWithRouter(<Dashboard />);
+    await screen.findByText('总盈亏');
+
+    expect(screen.getByTestId('overview-assets')).toBeInTheDocument();
+    expect(screen.getByTestId('overview-quick-actions')).toBeInTheDocument();
+    expect(screen.getByTestId('overview-holdings')).toBeInTheDocument();
+    expect(screen.getByTestId('overview-signals')).toBeInTheDocument();
+    expect(screen.getByTestId('candidate-pool-panel')).toBeInTheDocument();
+
+    expect(screen.getByTestId('quick-action-buy')).toHaveAttribute('href', '/trade?type=buy');
+    expect(screen.getByTestId('quick-action-sell')).toHaveAttribute('href', '/trade?type=sell');
+    expect(screen.getByTestId('quick-action-review')).toHaveAttribute('href', '/review');
+    expect(screen.getByTestId('signals-view-all')).toHaveAttribute('href', '/signals');
+  });
+
+  it('候选池【买入】→ 打开交易弹窗，预填现价 / 理由，数量留空', async () => {
+    installApiMock({
+      positions: FOUR_POSITIONS,
+      summary: FOUR_SUMMARY,
+      candidate: [
+        {
+          asset_code: 'sh600001',
+          name: '候选一号',
+          current_close: 12.34,
+          tracked_days: 5,
+          migrated_from_candidate: 0,
+          signal: null,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<Dashboard />);
+    await screen.findByText('候选池 1 只 · 0 只有信号');
+
+    await user.click(screen.getByTestId('candidate-pool-toggle'));
+    await user.click(screen.getByRole('button', { name: '买入 sh600001' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect((screen.getByLabelText('价格') as HTMLInputElement).value).toBe('12.34');
+    expect((screen.getByLabelText('操作理由') as HTMLTextAreaElement).value).toBe('候选池买入 (sh600001)');
+    expect((screen.getByLabelText('数量') as HTMLInputElement).value).toBe('');
+  });
+
+  it('持仓 >3 只默认只显示市值 Top 3，点【查看全部】展开', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<Dashboard />);
+    await screen.findByText('总盈亏');
+
+    await waitFor(() => expect(screen.getAllByTestId('position-card')).toHaveLength(3));
+    expect(screen.getByText('持仓 Top 3（共 4 只）')).toBeInTheDocument();
+    const collapsedCodes = screen.getAllByTestId('position-card-code').map((el) => el.textContent);
+    expect(collapsedCodes).toEqual(['sh600001', 'sh600002', 'sh600003']);
+
+    await user.click(screen.getByTestId('holdings-toggle'));
+
+    await waitFor(() => expect(screen.getAllByTestId('position-card')).toHaveLength(4));
+    expect(screen.getByText('持仓明细（4 只）')).toBeInTheDocument();
+    expect(screen.getByTestId('holdings-toggle')).toHaveTextContent('收起');
   });
 });
 

@@ -96,3 +96,49 @@ body {
     animation: none !important;
   }
 }
+
+/**
+ * Touch 友好尺寸（T79 ② · ux_v2 §6 Phase 3）
+ *
+ * 仅在 **粗指针设备**（手机 / 平板 / 触屏笔记本）生效：
+ * 可点击控件的**高度**不小于 44px（WCAG 2.5.5 / Apple HIG 的常用下限）。
+ * 鼠标设备保持原有紧凑密度，避免桌面表格/工具栏被无谓撑高。
+ *
+ * ⚠️ 这是 **media query**，inline style 表达不了，故必须落在全局 CSS；
+ *    与 `.page-container` 的断点 padding 同理（ui-spec §5 决策 2）。
+ * ⚠️ 不给 `input[type=checkbox]` 强加 44×44 —— 那会把原生复选框画成巨大方块；
+ *    复选框的点击热区由关联的 `<label>` 补足（同样 44px 高）。
+ */
+@media (pointer: coarse) {
+  button,
+  [role='button'],
+  a,
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea,
+  summary,
+  label {
+    min-height: 44px;
+  }
+
+  button,
+  [role='button'] {
+    min-width: 44px;
+  }
+
+  a {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  button,
+  [role='button'],
+  a,
+  input,
+  select,
+  textarea,
+  summary,
+  label {
+    touch-action: manipulation;
+  }
+}

@@ -196,6 +196,19 @@ describe('T70 · K 线页数据链路', () => {
     expect(urls.some((u) => /^\/kline\//.test(u))).toBe(false);
   });
 
+  it('T79 ④：深层页面有面包屑（仪表盘 / K线图 / 当前标的）', async () => {
+    const { default: Kline } = await import('../../src/pages/Kline');
+    renderWithRouter(<Kline />, { initialEntries: ['/kline?symbol=sh600519'] });
+
+    await waitFor(() => expect(getMock).toHaveBeenCalled());
+
+    const nav = screen.getByRole('navigation', { name: '面包屑' });
+    expect(nav).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '仪表盘' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'K线图' })).toHaveAttribute('href', '/kline');
+    expect(screen.getByText('sh600519')).toHaveAttribute('aria-current', 'page');
+  });
+
   it('T70: 消费 `?symbol=` query（修复必修 bug ②：从标的详情 Modal 跳过来要落到目标标的）', async () => {
     const { default: Kline } = await import('../../src/pages/Kline');
     renderWithRouter(<Kline />, { initialEntries: ['/kline?symbol=sh600519'] });

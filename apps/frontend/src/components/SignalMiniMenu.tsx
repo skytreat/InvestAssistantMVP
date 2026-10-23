@@ -94,8 +94,8 @@ export interface SignalTradeDraft {
   assetCode: string;
   /** 交易方向（`buy` / `sell`）*/
   side: TradeSide;
-  /** 建议数量（D-9）*/
-  quantity: number;
+  /** 建议数量（D-9）；候选池买入等无持仓场景可以为空 */
+  quantity?: number;
   /** 现价（`currentPrice`；无行情 → `null`）*/
   price: number | null;
   /** 操作理由（D-11）*/

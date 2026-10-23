@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
@@ -7,6 +8,7 @@ import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
 import { SignalDirectionPill, SignalLabelTag } from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
+import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
   cardStyle,
@@ -111,6 +113,10 @@ function assetCodeOf(row: SignalRow): string {
 }
 
 export default function Signals() {
+  const navigate = useNavigate();
+  /** T79 ③：管理员在空态可直达 Admin 手动触发信号生成 */
+  const role = useUserStore((s) => s.role);
+
   // ── 筛选条件 ────────────────────────────────────────────────
   /** 交易日期（单日精确匹配）；默认今天 —— 与「进页自动加载（今日）」一致 */
   const [tradeDate, setTradeDate] = useState<string>(todayStr());
@@ -333,6 +339,20 @@ export default function Signals() {
             <div style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize, marginTop: 4 }}>
               收盘后 17:02 自动运行信号生成
             </div>
+            {/*
+              T79 ③：管理员额外入口 —— 空态时可直接去 Admin 手动触发，
+              普通用户看不到运维按钮。
+            */}
+            {role === 'admin' && (
+              <button
+                type="button"
+                data-testid="signals-run-now"
+                onClick={() => navigate('/admin')}
+                style={{ ...buttonStyle, marginTop: SPACING.gapBase }}
+              >
+                立即运行信号
+              </button>
+            )}
           </div>
         ) : (
           <>

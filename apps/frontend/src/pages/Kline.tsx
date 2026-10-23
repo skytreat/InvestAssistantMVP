@@ -6,6 +6,7 @@ import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { titleStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
+import Breadcrumbs from '../components/Breadcrumbs';
 import KlineParamPanel from '../components/KlineParamPanel';
 import { MOBILE_TABBAR_HEIGHT, useIsMobile } from './_shared';
 import {
@@ -277,6 +278,10 @@ export default function Kline() {
         样式沿用全站统一的 `titleStyle`（`theme/styles.ts`，24px/700）。
       */}
       <h1 style={titleStyle}>K 线图</h1>
+      {/* T79 ④：深层页面的面包屑（祖先可点击，当前标的为末项） */}
+      <Breadcrumbs
+        items={[{ label: '仪表盘', to: '/' }, { label: 'K线图', to: '/kline' }, { label: symbol }]}
+      />
 
       <div
         style={{
