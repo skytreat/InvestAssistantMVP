@@ -33,6 +33,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToadScheduler } from 'toad-scheduler';
+import { execFileSync } from 'node:child_process';
 
 /**
  * `fired` = 各段任务体的**实际调用顺序**记录；
@@ -168,24 +169,25 @@ beforeEach(() => {
 describe('cron_sequence_trigger — 运行层（仅真机，CI 跳过）', () => {
   // 🔴 T102：原 F8 用例只读 unit 文件内容，无法验证真实触发 ⇒ 假绿（G5.1 / T78 都中招）。
   //    本 describe 用 systemctl / journalctl 真机探针，CI 环境无 systemd ⇒ skip。
-  const isCi = !process.env.CI_SYSTEMD_AVAILABLE && !require('node:fs').existsSync('/run/systemd/system');
+  const isCi = !process.env.CI_SYSTEMD_AVAILABLE && !fs.existsSync('/run/systemd/system');
   const itRun = isCi ? it.skip : it;
 
   itRun('cron_sequence_trigger (run): timer 已安装且 enabled', () => {
-    const { execFileSync } = require('node:child_process');
     const out = execFileSync('systemctl', ['is-enabled', 'tdx2db-update.timer'], { encoding: 'utf8' }).trim();
     expect(out).toBe('enabled');
   });
 
   itRun('cron_sequence_trigger (run): list-timers 显示下次触发', () => {
-    const { execFileSync } = require('node:child_process');
-    const out = execFileSync('systemctl', ['list-timers', 'tdx2db-update.timer', '--no-pager'], { encoding: 'utf8' });
+    const out = execFileSync('systemctl', ['list-timers', 'tdx2db-update.timer', '--no-pager'], {
+      encoding: 'utf8',
+    });
     expect(out).toMatch(/tdx2db-update\.timer/);
   });
 
   itRun('cron_sequence_trigger (run): journalctl 有成功触发记录', () => {
-    const { execFileSync } = require('node:child_process');
-    const out = execFileSync('journalctl', ['-u', 'tdx2db.service', '--no-pager', '-n', '5'], { encoding: 'utf8' });
+    const out = execFileSync('journalctl', ['-u', 'tdx2db.service', '--no-pager', '-n', '5'], {
+      encoding: 'utf8',
+    });
     expect(out).toMatch(/Finished tdx2db\.service/);
   });
 
