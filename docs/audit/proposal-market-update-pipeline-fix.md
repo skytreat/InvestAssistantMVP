@@ -41,7 +41,7 @@
 **新 ADR 应为 ADR-012**（main 已到 ADR-011）。
 
 ✅ **已落地**：**[ADR-012](../adr/ADR-012-market-update-write-window.md)** + plan **§5 Wave 9**（T99/T100/T102）+ **§12.7 G9**（7 条）+ **§13.1 B-15** + **§13.2 I-34/I-35/I-36**。
-📌 **T100 在 Ubuntu 下仍用独立运行账号 `invol`**（所有者裁决：不借用 `ubuntu`；最小权限）。
+📌 **T100 的运行用户 = `ubuntu`**（所有者裁决：不建 `invol` 用户）。
 
 ---
 
