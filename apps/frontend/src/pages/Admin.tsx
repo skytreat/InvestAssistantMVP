@@ -1,4 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { pageContainerStyle, cardStyle, titleStyle, cardTitleStyle } from './_shared';
 import AdminBackupPanel from '../components/AdminBackupPanel';
 import AdminLogPanel from '../components/AdminLogPanel';
@@ -37,6 +39,25 @@ export default function Admin() {
    * ⇒ 计数 +1 ⇒ `DatacheckCards` 重新拉一次 `GET /admin/datacheck/result`。
    */
   const [checksRefreshKey, setChecksRefreshKey] = useState(0);
+  const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/api/market/latest-date');
+        if (cancelled) return;
+        if (isOkEnvelope(res.data)) {
+          const d = (res.data.data as { date?: string | null } | null)?.date ?? null;
+          setLatestQuoteDate(d);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const handleChecksRefreshed = useCallback(() => {
     setChecksRefreshKey((k) => k + 1);
   }, []);
@@ -44,6 +65,11 @@ export default function Admin() {
   return (
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>管理员面板</h1>
+      {latestQuoteDate && (
+        <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+          最新行情日期：{latestQuoteDate}
+        </div>
+      )}
 
       {/*
         ① 数据校验结果（C1-C12）

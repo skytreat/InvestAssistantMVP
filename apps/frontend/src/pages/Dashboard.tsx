@@ -275,6 +275,7 @@ export default function Dashboard() {
   const { role } = useUserStore();
 
   const [positions, setPositions] = useState<Position[]>([]);
+  const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
   const [posSummary, setPosSummary] = useState<PositionSummary | null>(null);
   const [posLoading, setPosLoading] = useState(false);
   const [posError, setPosError] = useState<string | null>(null);
@@ -329,6 +330,24 @@ export default function Dashboard() {
 
   /** 标的详情弹窗（卡 6）的标的代码；`null` = 关闭 */
   const [detailModal, setDetailModal] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/api/market/latest-date');
+        if (cancelled) return;
+        if (isOkEnvelope(res.data)) {
+          const d = (res.data.data as { date?: string | null } | null)?.date ?? null;
+          setLatestQuoteDate(d);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /**
    * 详情弹窗对应的持仓条目
@@ -594,6 +613,11 @@ export default function Dashboard() {
     <>
       <div style={pageContainerStyle}>
         <h1 style={titleStyle}>仪表盘</h1>
+        {latestQuoteDate && (
+          <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+            最新行情日期：{latestQuoteDate}
+          </div>
+        )}
 
         {/* T79 ⑤：概览四块之一 —— 资产汇总（总资产卡 + 资产组成） */}
         <section aria-label="资产汇总" data-testid="overview-assets">

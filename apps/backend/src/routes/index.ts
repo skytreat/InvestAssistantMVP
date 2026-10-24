@@ -56,6 +56,7 @@ const PUBLIC_ROUTES = new Set([
   '/api/auth/refresh',
   '/api/auth/seed',
   '/api/market/latest',
+  '/api/market/latest-date',
 ]);
 
 export async function registerRoutes(app: FastifyInstance) {
