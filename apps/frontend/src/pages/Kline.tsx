@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
@@ -181,9 +181,11 @@ export default function Kline() {
   }, [urlSymbol]);
 
   // 代码输入框 autocomplete：输入变化时查询 /symbols/search
+  // ⚠️ 首次 mount 不触发（symbolInput 有默认值 sh600000，但用户并未输入）
+  const hasTypedRef = useRef(false);
   useEffect(() => {
     const kw = symbolInput.trim();
-    if (kw.length === 0) {
+    if (kw.length === 0 || !hasTypedRef.current) {
       setSymbolSuggestions([]);
       return;
     }
@@ -326,7 +328,10 @@ export default function Kline() {
           <input
             id="kline-input-symbol"
             value={symbolInput}
-            onChange={(e) => setSymbolInput(e.target.value)}
+            onChange={(e) => {
+              hasTypedRef.current = true;
+              setSymbolInput(e.target.value);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') applySymbol();
             }}
