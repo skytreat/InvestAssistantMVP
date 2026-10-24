@@ -437,9 +437,7 @@ interface C5Row {
 async function checkC5(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const row = firstRow(
-      await queryDuckDB<C5Row>(C5_SQL, [tradeDate, TOLERANCES.CLASS_COUNT_DROP]),
-    );
+    const row = firstRow(await queryDuckDB<C5Row>(C5_SQL, [tradeDate, TOLERANCES.CLASS_COUNT_DROP]));
     if (!row) {
       return { checkId: 'C5', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
