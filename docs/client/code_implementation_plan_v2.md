@@ -222,7 +222,7 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 
 ---
 
-## 5. 实施计划（T49-T103，57 个任务，Wave 1-10；其中 T89 拆为 T89a/T89b）
+## 5. 实施计划（T49-T109，63 个任务，Wave 1-11；其中 T89 拆为 T89a/T89b）
 
 > **任务粒度**：1-3 人天。**每个 T 任务一条 commit**，格式 `<prefix>: T<编号> <描述>`。
 > **依赖标记**：🔒 = 有前置阻塞任务。
@@ -1142,7 +1142,13 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **T92** | Wave 1 | ✅ 完成 | 候选池迁移改为「只打标记，不建关联」 | 与 T50 同批 |
 | **T93** | Wave 1 | ✅ 完成 | 补齐插件契约字段（7 个）+ `params`→`metrics` 统一 | 🔒 与 T83/T58 同批 |
 | **T94** | Wave 1 | ✅ 完成 | 实现 `POST /api/strategy/reload`（仅补 admin 路由壳）+ 删除 §8 误判条目 | 无 |
-| **T103** | Wave 10 | ⬜ 待启动 | **行情库备份可关闭开关**（env `ENABLE_QUOTE_BACKUP`，默认 `true`；SQLite 业务库备份不受影响）+ 文档同步 | DEC-13 |
+| **T103** | Wave 10 | ✅ 完成 | **行情库备份可关闭开关**（env `ENABLE_QUOTE_BACKUP`，默认 `true`；SQLite 业务库备份不受影响）+ 文档同步 | DEC-13 |
+| **T104** | Wave 11 | ✅ 完成（本 PR） | **DuckDB 方向 A 哨兵让锁** —— 哨兵出现时释放 Node instance，写完后惰性重建 | 无 |
+| **T105** | Wave 11 | ✅ 完成（本 PR） | **17:00 tdx2db 结果归集** —— `systemctl show` + `system_log(tdx2db_update)` | 无 |
+| **T106** | Wave 11 | ✅ 完成（本 PR） | **校验闸门语义 + 补跑** —— 失败/未触发留 ERROR；成功无数据先补跑一次 | T105 |
+| **T107** | Wave 11 | ✅ 完成（本 PR） | **C8 改读 SQLite** —— 按 `duration_s` 判 120s，删除 DuckDB `?::date` | T105 |
+| **T108** | Wave 11 | ✅ 完成（本 PR） | **时区对齐** —— timer + 4 段 CronJob 显式 `Asia/Shanghai` | 无 |
+| **T109** | Wave 11 | ✅ 完成（本 PR） | **Caddy IP 脚本** —— `/api/*` 独立反代，`try_files` 仅兜底 | 无 |
 
 ### 13.5 裁决收口
 
