@@ -438,7 +438,7 @@ async function checkC5(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
     const row = firstRow(
-      await queryDuckDB<C5Row>(C5_SQL, [tradeDate, tradeDate, TOLERANCES.CLASS_COUNT_DROP]),
+      await queryDuckDB<C5Row>(C5_SQL, [tradeDate, TOLERANCES.CLASS_COUNT_DROP]),
     );
     if (!row) {
       return { checkId: 'C5', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
@@ -876,8 +876,8 @@ function compareC11Rows(local: C11LocalRow, ts: TushareDailyRow): boolean {
     priceOk(local.low, ts.low) &&
     priceOk(local.close, ts.close) &&
     priceOk(local.pre_close, ts.pre_close) &&
-    Math.abs(local.volume - ts.volume) < 1 &&
-    Math.abs(local.amount - ts.amount) < 1
+    Math.abs(local.volume - ts.volume * 100) < 1 &&
+    Math.abs(local.amount - ts.amount * 1000) < 1
   );
 }
 
