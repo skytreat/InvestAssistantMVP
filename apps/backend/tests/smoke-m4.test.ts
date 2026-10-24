@@ -179,7 +179,7 @@ describe('M4 · 登录与鉴权', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(typeof body.data.token).toBe('string');
     expect(body.data.user.role).toBe('admin');
   });
@@ -226,7 +226,7 @@ describe('M4 · 交易闭环与双口径收益', () => {
     const res = snap.build;
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.position.totalQuantity).toBe(1000);
     // 买入手续费计入成本：(1000*10 + 5) / 1000
     expect(body.data.position.avgCost).toBeCloseTo(10.005, 4);
@@ -494,7 +494,7 @@ describe('M4 · 备份与恢复', () => {
     const res = backupRes;
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.sqlite.success).toBe(true);
 
     const files = fs.readdirSync(BACKUP_DIR).filter((f) => /^business\.db\.\d{4}-\d{2}-\d{2}$/.test(f));
@@ -603,7 +603,7 @@ describe('M4 · 备份与恢复', () => {
 
     expect(snap.restore.statusCode).toBe(200);
     const restoreBody = JSON.parse(snap.restore.body);
-    expect(restoreBody.success).toBe(true);
+    expect(restoreBody.code).toBe(0);
     expect(restoreBody.data.safetyBackup).toMatch(/pre-restore/);
 
     expect(snap.login.statusCode).toBe(200);

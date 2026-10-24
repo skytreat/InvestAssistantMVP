@@ -91,7 +91,7 @@ describe('GET /api/signal · 分页查询', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(Array.isArray(body.data)).toBe(true);
     expect(body.pagination).toBeDefined();
     expect(body.pagination.page).toBe(1);
@@ -110,7 +110,7 @@ describe('GET /api/signal · 分页查询', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.length).toBeGreaterThan(0);
     for (const row of body.data) {
       expect(row.plugin_id).toBe('rsi_oversold');
@@ -162,7 +162,7 @@ describe('Watch CRUD · 38-42', () => {
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(typeof body.data.id).toBe('number');
   });
 
@@ -180,7 +180,7 @@ describe('Watch CRUD · 38-42', () => {
     });
     expect(res.statusCode).toBe(409);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(body.code).toBe('DUPLICATE');
     expect(body.error).toBe('DUPLICATE');
   });
 
@@ -192,7 +192,7 @@ describe('Watch CRUD · 38-42', () => {
     });
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(false);
+    expect(body.code).toBe('NOT_FOUND');
     expect(body.error).toBe('NOT_FOUND');
   });
 });
@@ -222,7 +222,7 @@ describe('Candidate CRUD · UNIQUE 三列独立共存', () => {
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(typeof body.data.id).toBe('number');
 
     // 验证数据库里 watch + candidate 共存

@@ -130,7 +130,7 @@ describe('G4.5 · check-duplicate · 基本语义', () => {
     });
     expect(status).toBe(200);
     expect(body.code).toBe(0);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(typeof body.timestamp).toBe('string');
     expect(body.data.taken).toBe(false);
     expect(body.data.taken_at).toBeUndefined();
@@ -288,7 +288,8 @@ describe('G4.5 · check-duplicate · 参数校验（缺参数 / 非法 → 400 P
     expect(status).toBe(400);
     expect(body.error).toBe('PARAM_INVALID');
     expect(body.code).toBe('PARAM_INVALID');
-    expect(body.success).toBe(false);
+    // 🔴 T89b：响应体**不再有** `success` 键
+    expect('success' in body).toBe(false);
   });
 
   it('缺 trade_type → 400 PARAM_INVALID', async () => {
@@ -338,7 +339,8 @@ describe('G4.5 · check-duplicate · 参数校验（缺参数 / 非法 → 400 P
     expect(status).toBe(400);
     expect(body.data).toBeNull();
     expect(Object.keys(body.data ?? {})).not.toContain('taken');
-    expect(body.success).toBe(false);
+    expect(body.code).toBe('PARAM_INVALID');
+    expect('success' in body).toBe(false);
     expect(typeof body.message).toBe('string');
     expect(body.message.length).toBeGreaterThan(0);
   });

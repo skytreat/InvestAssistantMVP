@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
@@ -12,6 +14,7 @@ import ScrollableTable from '../components/ScrollableTable';
 import TodayActivityCard from '../components/TodayActivityCard';
 import TradeFormModal from '../components/TradeFormModal';
 import type { SignalTradeDraft } from '../components/SignalMiniMenu';
+import CandidatePoolPanel, { type CandidateBuyDraft } from '../components/CandidatePoolPanel';
 import {
   DIRECTION_LABEL,
   fmt,
@@ -78,11 +81,18 @@ interface SystemLog {
   message: string;
 }
 
+/**
+ * 日志级别 → 颜色
+ *
+ * ⚠️ **走「正文色档」**（Wave 7 卡 5 · 裁决 D-9）：`COLORS.success` / `COLORS.warning`
+ *    是**饱和图形档**（白底只有 3.30 / 3.19），当正文用会被真浏览器 axe 判 color-contrast；
+ *    日志级别是**文字**，故一律用加深档 `textSuccess` / `textWarning`。
+ */
 const LEVEL_COLOR: Record<string, string> = {
   ERROR: COLORS.danger,
-  WARN: COLORS.warning,
+  WARN: COLORS.textWarning,
   SKIP: COLORS.textMuted,
-  SUCCESS: COLORS.success,
+  SUCCESS: COLORS.textSuccess,
   INFO: COLORS.brand,
 };
 
@@ -253,10 +263,19 @@ export function DonutChart({ stock, etf, selected = 'all', onSelect }: DonutChar
   );
 }
 
+/** T79 ⑤：今日快捷操作入口（Link 复用主按钮视觉） */
+const quickActionStyle: React.CSSProperties = {
+  ...buttonStyle,
+  textDecoration: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+};
+
 export default function Dashboard() {
   const { role } = useUserStore();
 
   const [positions, setPositions] = useState<Position[]>([]);
+  const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
   const [posSummary, setPosSummary] = useState<PositionSummary | null>(null);
   const [posLoading, setPosLoading] = useState(false);
   const [posError, setPosError] = useState<string | null>(null);
@@ -273,6 +292,8 @@ export default function Dashboard() {
   const [sortKey, setSortKey] = useState<SortKey>('pnl');
   /** 排序方向（默认按盈亏金额**降序**）*/
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  /** T79 ⑤：持仓概览默认只显示市值 Top 3（≤3 只时无需折叠） */
+  const [holdingsExpanded, setHoldingsExpanded] = useState(false);
 
   const [signals, setSignals] = useState<Signal[]>([]);
   const [sigLoading, setSigLoading] = useState(false);
@@ -309,6 +330,24 @@ export default function Dashboard() {
 
   /** 标的详情弹窗（卡 6）的标的代码；`null` = 关闭 */
   const [detailModal, setDetailModal] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/market/latest-date');
+        if (cancelled) return;
+        if (isOkEnvelope(res.data)) {
+          const d = (res.data.data as { date?: string | null } | null)?.date ?? null;
+          setLatestQuoteDate(d);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /**
    * 详情弹窗对应的持仓条目
@@ -348,6 +387,22 @@ export default function Dashboard() {
   const handleSignalTrade = (draft: SignalTradeDraft) => {
     setSignalDraft(draft);
     setTradeModal({ code: draft.assetCode, side: draft.side });
+  };
+
+  /**
+   * T79 ⑥：候选池【买入】→ 同一个交易弹窗（预填现价 / D-11 理由）
+   *
+   * 候选不是持仓，故**没有数量建议**（`quantity: undefined`），由用户自行填写。
+   */
+  const handleCandidateBuy = (draft: CandidateBuyDraft) => {
+    setSignalDraft({
+      assetCode: draft.assetCode,
+      side: 'buy',
+      quantity: undefined,
+      price: draft.price,
+      reason: draft.reason,
+    });
+    setTradeModal({ code: draft.assetCode, side: 'buy' });
   };
 
   /** 关闭交易弹窗（并清掉预填草稿）*/
@@ -391,7 +446,7 @@ export default function Dashboard() {
   const refreshPositions = async () => {
     try {
       const res = await api.get('/holding');
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setPositions(res.data.data ?? []);
         setPosSummary(res.data.summary ?? null);
         setPosError(null);
@@ -406,7 +461,7 @@ export default function Dashboard() {
       setPosLoading(true);
       try {
         const res = await api.get('/holding');
-        if (res.data.success) {
+        if (isOkEnvelope(res.data)) {
           setPositions(res.data.data ?? []);
           setPosSummary(res.data.summary ?? null);
         } else setPosError(res.data.message ?? '请求失败');
@@ -421,7 +476,7 @@ export default function Dashboard() {
       setStatLoading(true);
       try {
         const res = await api.get('/asset-stat/latest');
-        if (res.data.success) setStat(res.data.data ?? null);
+        if (isOkEnvelope(res.data)) setStat(res.data.data ?? null);
         else setStatError(res.data.message ?? '请求失败');
       } catch (err) {
         setStatError(extractErrorMessage(err));
@@ -434,7 +489,7 @@ export default function Dashboard() {
       setSigLoading(true);
       try {
         const res = await api.get('/signal', { params: { page_size: 5 } });
-        if (res.data.success) setSignals(res.data.data ?? []);
+        if (isOkEnvelope(res.data)) setSignals(res.data.data ?? []);
         else setSigError(res.data.message ?? '请求失败');
       } catch (err) {
         setSigError(extractErrorMessage(err));
@@ -448,7 +503,7 @@ export default function Dashboard() {
         setLogLoading(true);
         try {
           const res = await api.get('/admin/system-log', { params: { page_size: 5 } });
-          if (res.data.success) setLogs(res.data.data ?? []);
+          if (isOkEnvelope(res.data)) setLogs(res.data.data ?? []);
           else setLogError(res.data.message ?? '请求失败');
         } catch (err) {
           setLogError(extractErrorMessage(err));
@@ -471,20 +526,45 @@ export default function Dashboard() {
     return { stock, etf };
   }, [positions]);
 
-  const activePositions = positions.filter((p) => p.totalQuantity > 0);
+  const activePositions = useMemo(() => positions.filter((p) => p.totalQuantity > 0), [positions]);
 
   /**
    * 下钻后的持仓列表
    *
    * ⚠️ **下钻过滤的是持仓列表本身**（PRD §5.3 行 229），不是切页 —— 页面结构不变。
    */
-  const filteredPositions = activePositions.filter((p) =>
-    typeFilter === 'all' ? true : (typeFilter === 'etf') === isEtf(p.asset_code),
+  const filteredPositions = useMemo(
+    () =>
+      activePositions.filter((p) =>
+        typeFilter === 'all' ? true : (typeFilter === 'etf') === isEtf(p.asset_code),
+      ),
+    [activePositions, typeFilter],
   );
+
+  /**
+   * 概览 Top 3：按**市值**降序（无市值的排最后，代码字典序兜底）
+   *
+   * 注意与「持仓明细」的用户排序（盈亏/收益率/仓位）区分：
+   * 折叠态是快速概览，不应被上一次排序状态影响。
+   */
+  const overviewTopPositions = useMemo(() => {
+    return [...activePositions]
+      .sort((a, b) => {
+        const av = a.marketValue ?? -1;
+        const bv = b.marketValue ?? -1;
+        if (av !== bv) return bv - av;
+        return a.asset_code.localeCompare(b.asset_code);
+      })
+      .slice(0, 3);
+  }, [activePositions]);
+
+  /** 是否展开完整持仓：≤3 只、下钻筛选、或用户主动展开 */
+  const showAllHoldings = holdingsExpanded || typeFilter !== 'all' || activePositions.length <= 3;
 
   /** 点击饼图某一段：选中该类型；再点同一段 → 取消过滤（回到全部）*/
   const handleTypeSelect = (type: Exclude<TypeFilter, 'all'>) => {
     setTypeFilter((cur) => (cur === type ? 'all' : type));
+    setHoldingsExpanded(true);
   };
 
   /**
@@ -533,206 +613,284 @@ export default function Dashboard() {
     <>
       <div style={pageContainerStyle}>
         <h1 style={titleStyle}>仪表盘</h1>
+        {latestQuoteDate && (
+          <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>最新行情日期：{latestQuoteDate}</div>
+        )}
 
-        {/* G7b 总资产卡（双口径切换，PRD §5.3） */}
-        <div style={cardStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>总资产</div>
-            <div
-              style={{
-                display: 'flex',
-                border: `1px solid ${COLORS.borderMedium}`,
-                borderRadius: RADIUS.sm,
-                overflow: 'hidden',
-              }}
-            >
-              {(
-                [
-                  ['price', '价格口径'],
-                  ['actual', '实际口径'],
-                ] as [Caliber, string][]
-              ).map(([k, label]) => (
-                <button
-                  key={k}
-                  onClick={() => setCaliber(k)}
-                  style={{
-                    ...buttonStyle,
-                    borderRadius: 0,
-                    background: caliber === k ? COLORS.brand : COLORS.cardBg,
-                    color: caliber === k ? COLORS.cardBg : COLORS.textSecondary,
-                    border: 'none',
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+        {/* T79 ⑤：概览四块之一 —— 资产汇总（总资产卡 + 资产组成） */}
+        <section aria-label="资产汇总" data-testid="overview-assets">
+          {/* G7b 总资产卡（双口径切换，PRD §5.3） */}
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>总资产</div>
+              <div
+                style={{
+                  display: 'flex',
+                  border: `1px solid ${COLORS.borderMedium}`,
+                  borderRadius: RADIUS.sm,
+                  overflow: 'hidden',
+                }}
+              >
+                {(
+                  [
+                    ['price', '价格口径'],
+                    ['actual', '实际口径'],
+                  ] as [Caliber, string][]
+                ).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setCaliber(k)}
+                    style={{
+                      ...buttonStyle,
+                      borderRadius: 0,
+                      background: caliber === k ? COLORS.brand : COLORS.cardBg,
+                      color: caliber === k ? COLORS.cardBg : COLORS.textSecondary,
+                      border: 'none',
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
 
-          {statLoading && <Spinner />}
-          {statError && <div style={{ color: COLORS.danger }}>{statError}</div>}
-          {!statLoading &&
-            !statError &&
-            (stat ? (
-              <>
-                <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginTop: SPACING.gapBase }}>
-                  <div>
-                    <div style={{ fontSize: 30, fontWeight: 'bold', color: COLORS.brandLink }}>
-                      {fmt(posSummary?.totalMarketValue)}
+            {statLoading && <Spinner />}
+            {statError && <div style={{ color: COLORS.danger }}>{statError}</div>}
+            {!statLoading &&
+              !statError &&
+              (stat ? (
+                <>
+                  <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginTop: SPACING.gapBase }}>
+                    <div>
+                      <div style={{ fontSize: 30, fontWeight: 'bold', color: COLORS.brandLink }}>
+                        {fmt(posSummary?.totalMarketValue)}
+                      </div>
+                      <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总资产</div>
                     </div>
-                    <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总资产</div>
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 30,
-                        fontWeight: 'bold',
-                        color:
-                          (caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
-                            ? COLORS.success
-                            : COLORS.danger,
-                      }}
-                    >
-                      {(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
-                        ? '+'
-                        : ''}
-                      {fmt(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual)}
+                    <div>
+                      <div
+                        style={{
+                          fontSize: 30,
+                          fontWeight: 'bold',
+                          color:
+                            (caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
+                              ? COLORS.textSuccess
+                              : COLORS.danger,
+                        }}
+                      >
+                        {(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual) >= 0
+                          ? '+'
+                          : ''}
+                        {fmt(caliber === 'price' ? stat.total_profit_price : stat.total_profit_actual)}
+                      </div>
+                      <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总盈亏</div>
                     </div>
-                    <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总盈亏</div>
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: 30,
-                        fontWeight: 'bold',
-                        color:
-                          (caliber === 'price'
+                    <div>
+                      <div
+                        style={{
+                          fontSize: 30,
+                          fontWeight: 'bold',
+                          color:
+                            (caliber === 'price'
+                              ? stat.total_assets_price_yield
+                              : stat.total_assets_actual_yield) >= 0
+                              ? COLORS.textSuccess
+                              : COLORS.danger,
+                        }}
+                      >
+                        {fmtPct(
+                          caliber === 'price'
                             ? stat.total_assets_price_yield
-                            : stat.total_assets_actual_yield) >= 0
-                            ? COLORS.success
-                            : COLORS.danger,
-                      }}
-                    >
-                      {fmtPct(
-                        caliber === 'price' ? stat.total_assets_price_yield : stat.total_assets_actual_yield,
-                      )}
+                            : stat.total_assets_actual_yield,
+                        )}
+                      </div>
+                      <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总收益率</div>
                     </div>
-                    <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>总收益率</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 30, fontWeight: 'bold', color: COLORS.accentPurple }}>
-                      {fmt(posSummary?.realizedPnl)}
+                    <div>
+                      <div style={{ fontSize: 30, fontWeight: 'bold', color: COLORS.accentPurple }}>
+                        {fmt(posSummary?.realizedPnl)}
+                      </div>
+                      <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>已实现盈亏</div>
                     </div>
-                    <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>已实现盈亏</div>
                   </div>
-                </div>
-                {/*
+                  {/*
                 成本口径单列一行 —— **不能**与「总资产」共用同一个「值 div + 标签 div」父级：
                 现有用例的 `metricText(label)` 取「标签父元素的首个子元素」，
                 两个口径挤在同一个父级里会取错节点。
               */}
-                <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: SPACING.gapTight }}>
-                  持仓总成本 {fmt(posSummary?.totalCostBasis)}
+                  <div
+                    style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: SPACING.gapTight }}
+                  >
+                    持仓总成本 {fmt(posSummary?.totalCostBasis)}
+                  </div>
+                  <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: SPACING.gapBase }}>
+                    快照日期 {stat.trade_date}
+                    {posSummary?.priceDate && ` · 现价取自 ${posSummary.priceDate}`}
+                    {' · '}
+                    {caliber === 'price'
+                      ? '价格口径：纯价格涨跌，不含分红送转'
+                      : '实际口径：含分红等现金流，反映真实收益'}
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: COLORS.textMuted, padding: '12px 0' }}>
+                  暂无资产快照（每天 17:02 信号生成后自动写入）
                 </div>
-                <div style={{ fontSize: 12, color: COLORS.neutral, marginTop: SPACING.gapBase }}>
-                  快照日期 {stat.trade_date}
-                  {posSummary?.priceDate && ` · 现价取自 ${posSummary.priceDate}`}
-                  {' · '}
-                  {caliber === 'price'
-                    ? '价格口径：纯价格涨跌，不含分红送转'
-                    : '实际口径：含分红等现金流，反映真实收益'}
-                </div>
-              </>
-            ) : (
-              <div style={{ color: COLORS.textMuted, padding: '12px 0' }}>
-                暂无资产快照（每天 17:02 信号生成后自动写入）
-              </div>
-            ))}
-        </div>
-
-        {/* G7c 资产组成饼图 */}
-        <div style={cardStyle}>
-          <div style={cardTitleStyle}>资产组成</div>
-          <DonutChart
-            stock={allocation.stock}
-            etf={allocation.etf}
-            selected={typeFilter}
-            onSelect={handleTypeSelect}
-          />
-          <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: SPACING.gapBase }}>
-            点击图例或饼图可下钻到持仓列表
+              ))}
           </div>
-          {typeFilter !== 'all' && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: SPACING.gapBase,
-                flexWrap: 'wrap',
-                marginTop: SPACING.gapBase,
-                fontSize: TYPO.smallSize,
-                color: COLORS.textSecondary,
-              }}
-            >
-              <span>
-                已按「{TYPE_LABEL[typeFilter]}」筛选持仓（{filteredPositions.length} /{' '}
-                {activePositions.length} 只）
-              </span>
-              <button
-                type="button"
-                onClick={() => setTypeFilter('all')}
+
+          {/* G7c 资产组成饼图 */}
+          <div style={cardStyle}>
+            <div style={cardTitleStyle}>资产组成</div>
+            <DonutChart
+              stock={allocation.stock}
+              etf={allocation.etf}
+              selected={typeFilter}
+              onSelect={handleTypeSelect}
+            />
+            <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: SPACING.gapBase }}>
+              点击图例或饼图可下钻到持仓列表
+            </div>
+            {typeFilter !== 'all' && (
+              <div
                 style={{
-                  ...ghostButtonStyle,
-                  borderRadius: RADIUS.sm,
-                  padding: '2px 8px',
-                  cursor: 'pointer',
-                  fontFamily: TYPO.fontFamily,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: SPACING.gapBase,
+                  flexWrap: 'wrap',
+                  marginTop: SPACING.gapBase,
                   fontSize: TYPO.smallSize,
+                  color: COLORS.textSecondary,
                 }}
               >
-                清除筛选
-              </button>
-            </div>
-          )}
-        </div>
+                <span>
+                  已按「{TYPE_LABEL[typeFilter]}」筛选持仓（{filteredPositions.length} /{' '}
+                  {activePositions.length} 只）
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('all')}
+                  style={{
+                    ...ghostButtonStyle,
+                    borderRadius: RADIUS.sm,
+                    padding: '2px 8px',
+                    cursor: 'pointer',
+                    fontFamily: TYPO.fontFamily,
+                    fontSize: TYPO.smallSize,
+                  }}
+                >
+                  清除筛选
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
 
-        {/*
-        今日动态概览卡（卡 5 · ux_v2 建议 D）
+        {/* T79 ⑤：概览第二块 —— 今日快捷操作区（入口 + 今日动态概览） */}
+        <section aria-label="今日快捷操作" data-testid="overview-quick-actions">
+          <div style={cardStyle}>
+            <div style={cardTitleStyle}>今日快捷操作</div>
+            <div style={{ display: 'flex', gap: SPACING.gapBase, flexWrap: 'wrap' }}>
+              <Link data-testid="quick-action-buy" to="/trade?type=buy" style={quickActionStyle}>
+                买入
+              </Link>
+              <Link data-testid="quick-action-sell" to="/trade?type=sell" style={quickActionStyle}>
+                卖出
+              </Link>
+              <Link
+                data-testid="quick-action-review"
+                to="/review"
+                style={{
+                  ...ghostButtonStyle,
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                }}
+              >
+                查看全部交易
+              </Link>
+              {role === 'admin' && (
+                <Link
+                  data-testid="quick-action-admin"
+                  to="/admin"
+                  style={{
+                    ...ghostButtonStyle,
+                    textDecoration: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  系统日志 / 手动任务
+                </Link>
+              )}
+            </div>
+          </div>
+
+          {/*
+          今日动态概览卡（卡 5 · ux_v2 建议 D）
         ⚠️ **位置契约**：插在「资产汇总卡（总资产 + 资产组成饼图）」与「持仓明细卡」之间 ——
            ux_v2 建议 D 原文「插在资产汇总卡和持仓卡之间」。
         ⚠️ **默认不传 `tradeDate` prop** —— 日期锚点 = `/api/holding` 的 `summary.priceDate`
            （最新行情交易日，裁决 D-6），由组件自己取。
       */}
-        <TodayActivityCard />
+          <TodayActivityCard />
+        </section>
 
-        {/* 持仓卡片列表（T33 规格） */}
-        <div style={cardStyle}>
-          <div style={cardTitleStyle}>持仓明细（{filteredPositions.length} 只）</div>
-          {posLoading && <Spinner />}
-          {posError && <div style={{ color: COLORS.danger }}>{posError}</div>}
-          {!posLoading &&
-            !posError &&
-            (activePositions.length === 0 ? (
-              <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无持仓</div>
-            ) : (
-              <div>
-                {/* 排序 / 过滤工具条（卡 3 · F-D5）—— 过滤后为空时也要留着（否则改不回来）*/}
-                <PositionToolbar
-                  sortKey={sortKey}
-                  sortDirection={sortDirection}
-                  onSortKeyChange={setSortKey}
-                  onSortDirectionToggle={() => setSortDirection((cur) => (cur === 'desc' ? 'asc' : 'desc'))}
-                  typeFilter={typeFilter}
-                  onTypeFilterChange={setTypeFilter}
-                  industryAvailable={industryAvailable}
-                />
-                {filteredPositions.length === 0 ? (
-                  <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>
-                    当前筛选下无持仓
-                  </div>
-                ) : (
-                  <>
-                    {/*
+        {/* T79 ⑤：概览第三块 —— 持仓 Top 3（≤3 只或用户展开时显示全部） */}
+        <section aria-label="持仓概览" data-testid="overview-holdings">
+          {/* 持仓卡片列表（T33 规格） */}
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: SPACING.gapBase, flexWrap: 'wrap' }}>
+              <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>
+                {showAllHoldings
+                  ? `持仓明细（${filteredPositions.length} 只）`
+                  : `持仓 Top 3（共 ${activePositions.length} 只）`}
+              </div>
+              {activePositions.length > 3 && typeFilter === 'all' && (
+                <button
+                  type="button"
+                  data-testid="holdings-toggle"
+                  onClick={() => setHoldingsExpanded((cur) => !cur)}
+                  style={{ ...ghostButtonStyle, cursor: 'pointer', fontSize: TYPO.smallSize }}
+                >
+                  {holdingsExpanded ? '收起' : `查看全部 ${activePositions.length} 只`}
+                </button>
+              )}
+            </div>
+            {posLoading && <Spinner />}
+            {posError && <div style={{ color: COLORS.danger }}>{posError}</div>}
+            {!posLoading &&
+              !posError &&
+              (activePositions.length === 0 ? (
+                <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无持仓</div>
+              ) : (
+                <div>
+                  {/* 排序 / 过滤工具条（卡 3 · F-D5）—— 过滤后为空时也要留着（否则改不回来）*/}
+                  <PositionToolbar
+                    sortKey={sortKey}
+                    sortDirection={sortDirection}
+                    onSortKeyChange={(key) => {
+                      setSortKey(key);
+                      setHoldingsExpanded(true);
+                    }}
+                    onSortDirectionToggle={() => {
+                      setSortDirection((cur) => (cur === 'desc' ? 'asc' : 'desc'));
+                      setHoldingsExpanded(true);
+                    }}
+                    typeFilter={typeFilter}
+                    onTypeFilterChange={(type) => {
+                      setTypeFilter(type);
+                      setHoldingsExpanded(true);
+                    }}
+                    industryAvailable={industryAvailable}
+                  />
+                  {filteredPositions.length === 0 ? (
+                    <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>
+                      当前筛选下无持仓
+                    </div>
+                  ) : (
+                    <>
+                      {/*
                     持仓卡片网格（卡 3 · F-D2）
                     ⚠️ **纯 CSS Grid 流体列数**，不用 JS 断点、不用 media query：
                       `repeat(auto-fill, minmax(min(320px, 100%), 1fr))`
@@ -745,162 +903,115 @@ export default function Dashboard() {
                     - 卡片根节点另带 `min-width: 0`（Grid 子项默认 `min-width: auto`，
                       内容过宽会撑破轨道）。
                   */}
-                    <div
-                      data-testid="position-grid"
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))',
-                        gap: SPACING.gapRelaxed,
-                        alignItems: 'start',
-                      }}
-                    >
-                      {sortedPositions.map((p) => (
-                        <PositionCard
-                          key={p.asset_code}
-                          position={p}
-                          assetType={isEtf(p.asset_code) ? 'etf' : 'stock'}
-                          priceDate={posSummary?.priceDate ?? null}
-                          /* 接线（批次 5）：三条入口 —— 交易弹窗 / 详情弹窗 / 信号一键链路 */
-                          onTrade={handleTrade}
-                          onOpenDetail={handleOpenDetail}
-                          onSignalTrade={handleSignalTrade}
-                        />
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
-        </div>
-
-        <div style={cardStyle}>
-          <div style={cardTitleStyle}>最新信号</div>
-          {sigLoading && <Spinner />}
-          {sigError && <div style={{ color: COLORS.danger }}>{sigError}</div>}
-          {!sigLoading && !sigError && (
-            /*
-             * ⚠️ **表格必须套在可横向滚动的容器里**（G3.5）：
-             *    `table` 的 `width:100%` 只是最小宽度，5 列（代码/策略/方向/标签/日期）
-             *    在 375px 窄屏下最小内容宽度超过卡片宽度 → 表格溢出卡片 →
-             *    溢出向上冒泡 → **文档级**横向溢出。
-             *    套上 `overflow-x:auto` 的容器后，表格在自己内部横向滚动，文档不再被撑宽。
-             */
-            <ScrollableTable label="最新信号表">
-              <table style={tableStyle} aria-label="最新信号">
-                <thead>
-                  <tr>
-                    <th scope="col" style={thStyle}>
-                      代码
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      策略
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      方向
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      标签
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      日期
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {signals.length === 0 ? (
-                    <tr>
-                      <td style={thTdStyle} colSpan={5}>
-                        暂无信号
-                      </td>
-                    </tr>
-                  ) : (
-                    signals.map((s, i) => (
-                      <tr key={i}>
-                        <td style={thTdStyle}>{s.asset_code}</td>
-                        <td style={thTdStyle}>{s.plugin_id}</td>
-                        <td style={thTdStyle}>
-                          <span
-                            style={{
-                              color:
-                                s.direction === 'buy'
-                                  ? COLORS.success
-                                  : s.direction === 'sell'
-                                    ? COLORS.danger
-                                    : COLORS.textSecondary,
-                              fontWeight: TYPO.cardTitleWeight,
-                            }}
-                          >
-                            {DIRECTION_LABEL[s.direction] ?? s.direction}
-                          </span>
-                        </td>
-                        <td style={thTdStyle}>{s.label}</td>
-                        <td style={thTdStyle}>{s.trade_date}</td>
-                      </tr>
-                    ))
+                      <div
+                        data-testid="position-grid"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))',
+                          gap: SPACING.gapRelaxed,
+                          alignItems: 'start',
+                        }}
+                      >
+                        {(showAllHoldings ? sortedPositions : overviewTopPositions).map((p) => (
+                          <PositionCard
+                            key={p.asset_code}
+                            position={p}
+                            assetType={isEtf(p.asset_code) ? 'etf' : 'stock'}
+                            priceDate={posSummary?.priceDate ?? null}
+                            /* 接线（批次 5）：三条入口 —— 交易弹窗 / 详情弹窗 / 信号一键链路 */
+                            onTrade={handleTrade}
+                            onOpenDetail={handleOpenDetail}
+                            onSignalTrade={handleSignalTrade}
+                          />
+                        ))}
+                      </div>
+                    </>
                   )}
-                </tbody>
-              </table>
-            </ScrollableTable>
-          )}
-        </div>
+                </div>
+              ))}
+          </div>
+        </section>
 
-        {role === 'admin' && (
+        {/* T79 ⑤：概览第四块 —— 策略信号 Top 5（详情交给 Signals 页） */}
+        <section aria-label="策略信号" data-testid="overview-signals">
           <div style={cardStyle}>
-            <div style={cardTitleStyle}>最近日志</div>
-            {logLoading && <Spinner />}
-            {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
-            {!logLoading && !logError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: SPACING.gapBase, flexWrap: 'wrap' }}>
+              <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>
+                最新信号
+              </div>
+              <Link
+                to="/signals"
+                data-testid="signals-view-all"
+                style={{
+                  ...ghostButtonStyle,
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                }}
+              >
+                查看全部信号 →
+              </Link>
+            </div>
+            {sigLoading && <Spinner />}
+            {sigError && <div style={{ color: COLORS.danger }}>{sigError}</div>}
+            {!sigLoading && !sigError && (
               /*
-               * ⚠️ **「最近日志」表是 dashboard@375 溢出的元凶**（G3.5，实测 +169px）：
-               *    「消息」列的内容是后端系统日志（运维噪声路径，如
-               *    「插件目录不可读，跳过磁盘加载: /opt/invol/plugins/strategies」），
-               *    属于**不可断的长字符串** → 把这一列顶到 217px → 整表 483px
-               *    → 超出卡片宽度 → 文档级横向溢出。
-               *
-               *    两道防线：
-               *    1. **容器化**（`overflow-x:auto`）—— 表格在自己内部滚动，文档不被撑宽；
-               *    2. **长文本截断**（`truncatedTextStyle`）—— 把「消息」列的宽度钉住，
-               *       完整内容通过 `title` 属性悬停可见（DOM 文本不裁剪 → 读屏仍可读全文）。
+               * ⚠️ **表格必须套在可横向滚动的容器里**（G3.5）：
+               *    `table` 的 `width:100%` 只是最小宽度，5 列（代码/策略/方向/标签/日期）
+               *    在 375px 窄屏下最小内容宽度超过卡片宽度 → 表格溢出卡片 →
+               *    溢出向上冒泡 → **文档级**横向溢出。
+               *    套上 `overflow-x:auto` 的容器后，表格在自己内部横向滚动，文档不再被撑宽。
                */
-              <ScrollableTable label="最近日志表">
-                <table style={tableStyle} aria-label="最近日志">
+              <ScrollableTable label="最新信号表">
+                <table style={tableStyle} aria-label="最新信号">
                   <thead>
                     <tr>
                       <th scope="col" style={thStyle}>
-                        时间
+                        代码
                       </th>
                       <th scope="col" style={thStyle}>
-                        类型
+                        策略
                       </th>
                       <th scope="col" style={thStyle}>
-                        级别
+                        方向
                       </th>
                       <th scope="col" style={thStyle}>
-                        消息
+                        标签
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        日期
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {logs.length === 0 ? (
+                    {signals.length === 0 ? (
                       <tr>
-                        <td style={thTdStyle} colSpan={4}>
-                          暂无日志
+                        <td style={thTdStyle} colSpan={5}>
+                          暂无信号
                         </td>
                       </tr>
                     ) : (
-                      logs.map((l, i) => (
+                      signals.map((s, i) => (
                         <tr key={i}>
-                          <td style={thTdStyle}>{l.created_at}</td>
-                          <td style={thTdStyle}>{l.log_type}</td>
-                          <td style={{ ...thTdStyle, color: LEVEL_COLOR[l.level] ?? COLORS.textSecondary }}>
-                            {l.level}
-                          </td>
+                          <td style={thTdStyle}>{s.asset_code}</td>
+                          <td style={thTdStyle}>{s.plugin_id}</td>
                           <td style={thTdStyle}>
-                            {/* 截断只作用于**视觉**；DOM 里的文本仍是全文 */}
-                            <div style={truncatedTextStyle} title={l.message}>
-                              {l.message}
-                            </div>
+                            <span
+                              style={{
+                                color:
+                                  s.direction === 'buy'
+                                    ? COLORS.textSuccess
+                                    : s.direction === 'sell'
+                                      ? COLORS.danger
+                                      : COLORS.textSecondary,
+                                fontWeight: TYPO.cardTitleWeight,
+                              }}
+                            >
+                              {DIRECTION_LABEL[s.direction] ?? s.direction}
+                            </span>
                           </td>
+                          <td style={thTdStyle}>{s.label}</td>
+                          <td style={thTdStyle}>{s.trade_date}</td>
                         </tr>
                       ))
                     )}
@@ -909,7 +1020,89 @@ export default function Dashboard() {
               </ScrollableTable>
             )}
           </div>
+        </section>
+
+        {role === 'admin' && (
+          <details data-testid="dashboard-admin-logs" style={{ ...cardStyle, padding: 0 }}>
+            <summary
+              style={{
+                cursor: 'pointer',
+                padding: SPACING.cardPadding,
+                fontWeight: TYPO.cardTitleWeight,
+                fontSize: TYPO.cardTitleSize,
+                color: COLORS.textPrimary,
+              }}
+            >
+              最近日志
+            </summary>
+            <div style={{ padding: `0 ${SPACING.cardPadding} ${SPACING.cardPadding}` }}>
+              {logLoading && <Spinner />}
+              {logError && <div style={{ color: COLORS.danger }}>{logError}</div>}
+              {!logLoading && !logError && (
+                /*
+                 * ⚠️ **「最近日志」表是 dashboard@375 溢出的元凶**（G3.5，实测 +169px）：
+                 *    「消息」列的内容是后端系统日志（运维噪声路径，如
+                 *    「插件目录不可读，跳过磁盘加载: /opt/invol/plugins/strategies」），
+                 *    属于**不可断的长字符串** → 把这一列顶到 217px → 整表 483px
+                 *    → 超出卡片宽度 → 文档级横向溢出。
+                 *
+                 *    两道防线：
+                 *    1. **容器化**（`overflow-x:auto`）—— 表格在自己内部滚动，文档不被撑宽；
+                 *    2. **长文本截断**（`truncatedTextStyle`）—— 把「消息」列的宽度钉住，
+                 *       完整内容通过 `title` 属性悬停可见（DOM 文本不裁剪 → 读屏仍可读全文）。
+                 */
+                <ScrollableTable label="最近日志表">
+                  <table style={tableStyle} aria-label="最近日志">
+                    <thead>
+                      <tr>
+                        <th scope="col" style={thStyle}>
+                          时间
+                        </th>
+                        <th scope="col" style={thStyle}>
+                          类型
+                        </th>
+                        <th scope="col" style={thStyle}>
+                          级别
+                        </th>
+                        <th scope="col" style={thStyle}>
+                          消息
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logs.length === 0 ? (
+                        <tr>
+                          <td style={thTdStyle} colSpan={4}>
+                            暂无日志
+                          </td>
+                        </tr>
+                      ) : (
+                        logs.map((l, i) => (
+                          <tr key={i}>
+                            <td style={thTdStyle}>{l.created_at}</td>
+                            <td style={thTdStyle}>{l.log_type}</td>
+                            <td style={{ ...thTdStyle, color: LEVEL_COLOR[l.level] ?? COLORS.textSecondary }}>
+                              {l.level}
+                            </td>
+                            <td style={thTdStyle}>
+                              {/* 截断只作用于**视觉**；DOM 里的文本仍是全文 */}
+                              <div style={truncatedTextStyle} title={l.message}>
+                                {l.message}
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </ScrollableTable>
+              )}
+            </div>
+          </details>
         )}
+
+        {/* T79 ⑥：候选池联动面板（默认折叠，位于 Dashboard 底部） */}
+        <CandidatePoolPanel onBuy={handleCandidateBuy} />
       </div>
 
       {/* ────────────────────────────────────────────────────────────── *

@@ -129,9 +129,9 @@ export function PositionCard({
   );
 
   const pnl = position.unrealizedPnl;
-  const pnlColor = (pnl ?? 0) >= 0 ? COLORS.success : COLORS.danger;
+  const pnlColor = (pnl ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger;
   const yieldValue = position.unrealizedYield;
-  const yieldColor = (yieldValue ?? 0) >= 0 ? COLORS.success : COLORS.danger;
+  const yieldColor = (yieldValue ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger;
 
   const tradeButtonStyle: React.CSSProperties = {
     padding: '4px 10px',
@@ -184,7 +184,7 @@ export function PositionCard({
             {assetType === 'etf' && (
               <span
                 data-testid="position-card-etf"
-                style={{ color: COLORS.success, fontSize: TYPO.captionSize }}
+                style={{ color: COLORS.textSuccess, fontSize: TYPO.captionSize }}
               >
                 ETF
               </span>

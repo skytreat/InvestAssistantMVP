@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, TYPO } from '../theme/tokens';
 import Spinner from './Spinner';
@@ -63,8 +64,7 @@ export interface KlineMiniChartProps {
 
 /** 后端 `GET /api/quote/:symbol/kline` 的响应体（envelope 内层）*/
 interface KlineApiResponse {
-  success?: boolean;
-  code?: number;
+  code?: number | string;
   message?: string;
   data?: {
     symbol: string;
@@ -73,17 +73,6 @@ interface KlineApiResponse {
     indicators: KlineIndicators | null;
     signals?: KlineSignalMarker[];
   };
-}
-
-/**
- * 判断 envelope 是否成功
- *
- * ⚠️ `success` 是 T89a 的**过渡字段**（T89b 会删）。故优先看 `code === 0`，
- *    `code` 不存在时回落到 `success === true` —— 两种形态都能判对。
- */
-function isOkEnvelope(body: KlineApiResponse): boolean {
-  if (typeof body.code === 'number') return body.code === 0;
-  return body.success === true;
 }
 
 /** 容器宽度（测不到就用基准宽度；并**封顶**在基准宽度内）*/

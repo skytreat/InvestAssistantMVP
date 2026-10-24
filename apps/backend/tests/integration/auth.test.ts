@@ -3,7 +3,7 @@
  *
  * 覆盖 SDD §12.4 auth 类：
  *   - login 200 / 401 密码错 / 401 用户不存在 / 400 缺字段
- *   - seed 201 新建 / 409 已存在
+ *   - seed 201 新建 / 409 USER_EXISTS
  *   - 无 token → 401 NO_TOKEN
  *   - 垃圾 token → 401 INVALID_TOKEN
  *   - 非 admin 走 admin 路由 → 403 FORBIDDEN
@@ -46,7 +46,7 @@ describe('Auth · login', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(typeof body.data.token).toBe('string');
     expect(body.data.token.split('.').length).toBe(3); // JWT 三段
     expect(body.data.user.username).toBe(ADMIN_USER);
@@ -60,7 +60,7 @@ describe('Auth · login', () => {
       payload: { username: ADMIN_USER, password: 'wrong-pass' },
     });
     expect(res.statusCode).toBe(401);
-    expect(JSON.parse(res.body).success).toBe(false);
+    expect(JSON.parse(res.body).code).toBe('UNAUTHORIZED');
   });
 
   it('用户不存在 → 401', async () => {
@@ -116,7 +116,7 @@ describe('Auth · SDD §12.5 F1（login_success / login_wrong_password）', () =
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.code).toBe(0);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data).not.toBeNull();
 
     // ② access token：3 段 JWT，且能**真实验签**解出载荷（不只是 split('.') 看段数）
@@ -170,7 +170,8 @@ describe('Auth · SDD §12.5 F1（login_success / login_wrong_password）', () =
     const body = JSON.parse(res.body);
     expect(body.code).toBe('UNAUTHORIZED');
     expect(body.error).toBe('UNAUTHORIZED');
-    expect(body.success).toBe(false);
+    // 🔴 T89b：响应体**不再有** `success` 键
+    expect('success' in body).toBe(false);
 
     // ② 错误响应**不含任何数据**（data === null，SDD §4.2 错误体）
     expect(body.data).toBeNull();
@@ -200,18 +201,28 @@ describe('Auth · seed', () => {
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.success).toBe(true);
+    expect(body.code).toBe(0);
     expect(body.data.user.username).toBe(uniqueName);
     expect(body.data.token.split('.').length).toBe(3);
   });
 
-  it('重复用户名 → 409', async () => {
+  it('重复用户名 → 409 USER_EXISTS（不是 INTERNAL_ERROR）', async () => {
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/auth/seed',
       payload: { username: ADMIN_USER, password: 'x', role: 'user' },
     });
     expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    // 🔴 建号重名是**业务冲突**，不是「服务内部错误」⇒ 必须是 USER_EXISTS（SDD §4.3）
+    expect(body.code).toBe('USER_EXISTS');
+    expect(body.error).toBe('USER_EXISTS');
+    expect(body.code).not.toBe('INTERNAL_ERROR');
+    // 仍是统一 envelope（SDD §4.2）
+    expect(body.data).toBeNull();
+    expect(typeof body.message).toBe('string');
+    expect(typeof body.timestamp).toBe('string');
+    expect('success' in body).toBe(false);
   });
 
   it('role 非法 → 400', async () => {
@@ -235,8 +246,9 @@ describe('Auth · /api/auth/seed 越权防护', () => {
     });
     expect(res.statusCode).toBe(403);
     const body = JSON.parse(res.body);
+    expect(body.code).toBe('ADMIN_ALREADY_EXISTS');
     expect(body.error).toBe('ADMIN_ALREADY_EXISTS');
-    expect(body.success).toBe(false);
+    expect('success' in body).toBe(false);
   });
 
   it('不传 role（默认 admin）→ 同样 403，不会静默建成管理员', async () => {

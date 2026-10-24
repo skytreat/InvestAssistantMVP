@@ -297,7 +297,6 @@ describe('T64 · 页面错误文案统一走错误码表', () => {
         code: 'EXTERNAL_SOURCE_UNAVAILABLE',
         data: null,
         timestamp: '2026-10-20T00:00:00.000Z',
-        success: false,
         error: 'EXTERNAL_SOURCE_UNAVAILABLE',
       });
     };

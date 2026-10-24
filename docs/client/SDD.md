@@ -256,7 +256,7 @@ apps/frontend/                             # Vite + React SPA，只发静态资�
 ```
 
 **外部工具（非 Node.js，不在 workspace 内）**：
-- `tdx2db` — systemd timer 调度的 Go 二进制（`tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'`）
+- `tdx2db` — systemd timer 调度的 Go 二进制（`tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'`）
 - `rclone` — 系统包安装（`/usr/bin/rclone`，备份上传）
 
 **为什么 workspace 只有 Node.js 项目但保留 tdx2db Go 二进制**：
@@ -567,7 +567,7 @@ registerIndicator({
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
-| 实现成本 | 1 | `caddy reverse_proxy localhost:3000` 一行配置；Let's Encrypt 自动续期 |
+| 实现成本 | 1 | `caddy reverse_proxy 127.0.0.1:8080` 一行配置；Let's Encrypt 自动续期 |
 | 运维成本 | 1 | systemd 守护；证书自动管理零人工干预 |
 | 风险 | 2 | 社区活跃，但比 nginx 配置文档略少 |
 
@@ -769,7 +769,7 @@ graph TD
 #### 2.12.2 路由设计
 
 ```typescript
-// /opt/invol/frontend/src/router/index.tsx
+// apps/frontend/src/router/index.tsx
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -861,7 +861,7 @@ export const router = createBrowserRouter([
 **Store 示例（authStore）**：
 
 ```typescript
-// /opt/invol/frontend/src/stores/authStore.ts
+// apps/frontend/src/stores/authStore.ts
 import { create } from "zustand";
 import * as api from "@/api/client";
 
@@ -911,7 +911,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 #### 2.12.4 API Client 层设计
 
 ```typescript
-// /opt/invol/frontend/src/api/client.ts
+// apps/frontend/src/api/client.ts
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 import { useAuthStore } from "@/stores/authStore";
 import { useNavigate } from "react-router-dom";
@@ -1273,7 +1273,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `raw_basic_daily` | 前收盘价 + 市值/换手率 | C11 取 `preclose`（raw_kline_daily 没有这个字段） | `date`, `symbol`, `preclose`, `turnover`, `floatmv`, `totalmv` |
 | `raw_adjust_factor` | 后复权因子（**稀疏存储，只在除权日追加**） | C9 校验因子计算 | `date`, `symbol`, `hfq_factor`（⚠️ 字段名是 `hfq_factor` 不是 `factor`） |
 | `raw_gbbq` | 股本变迁 / 权息事件 | C8/C10 除权校验 + 除权自动导入 | `category`, `symbol`, `date`, `c1`–`c4`。**MVP 只取 `category=1`**（除权除息）：`date`=ex_date，`c1/10`=每股分红，`c3/10`=每股送转比例，**c2 和 c4 永远=0**（2020年以来零例外）。category=2（通达信内部复权因子链）、category=5（股本快照）MVP 完全忽略 |
-| `raw_holidays` | **交易日历（只有交易日，无 is_trading_day 列）** | C1 历史日期过滤、C2 交易日判断 | 只有 `date` 一列。有行=交易日，没行=非交易日 |
+| `raw_holidays` | **休市日黑名单（只有休市日，无 is_trading_day 列）** | C1 历史日期过滤、C2 交易日判断 | 只有 `date` 一列。有行=休市日，没行=交易日（或周末）。⚠️ I-20 实测：680 行中落在 2020~2030 区间且有行情/有日线的 = 0 行 |
 | `raw_symbol_class` | 品种分类 | 视图路由依赖 | `symbol`, `class`（实测值：`stock` / `etf` / `index` / `bond`） |
 
 #### 📊 视图（v_，共 6 张，由 tdx2db init 自动创建）
@@ -1306,7 +1306,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `raw_basic_daily` | C11 `preclose`、C7 换手率、市值过滤（选股公共过滤 T55） | `date`,`symbol`,`preclose`,`turnover`,`floatmv`,`totalmv` |
 | `raw_holidays` | C1/C2 交易日判断 | `date` |
 | `raw_gbbq` | C8/C10 除权校验 + 除权自动导入（**仅 `category=1`**） | `category`,`symbol`,`date`,`c1`-`c4` |
-| `raw_symbol_class` | C3 ST 状态校验、选股 `asset_type`/`exclude_st` 过滤、ETF 视图路由 | `symbol`,`class`,`is_listing`,`is_st` |
+| `raw_symbol_class` | ETF 视图路由、选股 `asset_type` 过滤 | `symbol`,`class`（实测值：`stock` / `etf` / `unknown` / `block` / `index` / `bstock`；**无 `is_st`/`is_listing`/`bond`**） |
 | **`raw_symbol_name`** | **标的搜索 `/api/symbols/search`（`routes/symbolSearch.ts:29`，已在用）；并供 C3 移动端可交易性校验（`services/validator.ts`）+ 选股/持仓/候选池展示证券名称（T55/T67/T73/T74）** | `symbol`,`name` |
 | **`raw_tdx_blocks_info` / `raw_tdx_blocks_member`** | **选股页「行业选择」公共过滤的数据源（T55，PRD §5.6）** | `block_code`,`block_name`,`block_type`,`symbol` |
 
@@ -1379,6 +1379,18 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 }
 ```
 
+> 🔴 **成功判定的唯一口径 = `code === 0`**（`code` 是数字 `0`，失败时是**字符串**错误码）。
+>
+> - ⚠️ **响应体**没有 `success` 字段 —— 它是 T89a 的**过渡期**产物，已于 **T89b（Wave 8）删除**。
+>   前端一律判 `code === 0`；后端任何响应体都不得再出现 `success` 键
+>   （契约测试 `apps/backend/tests/integration/envelopeContract.test.ts` 逐路由强制断言）。
+> - ⚠️ **错误体**额外带一个 `error` 字段（与 `code` 同值）—— 它是 `code` 的**同值副本**，
+>   供前端「`code` 缺失时按 `error` 兜底」的回落链使用（`apps/frontend/src/api/errors.ts` 的 `readErrorCode`）。
+>   **不是**独立的错误信息字段（错误信息一律在 `message`）。
+>
+> 例外：**`GET /api/health`** 是健康检查（前端 Vite proxy 轮询用），**刻意不走 envelope**
+> —— 返回 `{ status, timestamp, uptime, version }`。
+
 ### 4.3 错误码体系
 
 | 分类 | 错误码 | 触发场景 | HTTP |
@@ -1389,6 +1401,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | 业务校验 | `TRADE_DUPLICATE` | 同标的 + 同类型 + 同日期 + **同时刻**已存在一笔**活记录**（见 §3.2 部分唯一索引） | 409 |
 | 业务校验 | `DUPLICATE_IMPORT` | 除权自动导入幂等冲突 | 200（跳过）|
 | 业务校验 | `SYMBOL_NOT_FOUND` | 标的不在自选/持仓（手动补充除权）| 404 |
+| 业务校验 | `USER_EXISTS` | 用户名已被占用（`POST /api/auth/register` / `POST /api/auth/seed` 建号重名）| 409 |
 | 权限 | `UNAUTHORIZED` | Token 无效或过期（缺失 / 无效 / 过期**统一用此码**，不再区分 `NO_TOKEN` / `INVALID_TOKEN`）| 401 |
 | 权限 | `FORBIDDEN` | admin API 普通用户访问 | 403 |
 | 系统 | `INTERNAL_ERROR` | 数据库异常、插件异常等 | 500 |
@@ -1398,7 +1411,13 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 > **✅ 已裁决（2026-10-17，DEC-12 B-9/B-10）**：本表为错误码**唯一权威**。
 > - `HOLDING_INSUFFICIENT` 统一为 **409**（§12.3 B1 原文写 400 系笔误，已同步修正）
 > - 新增 `TRADE_DUPLICATE`（§3.2 去重键落地所需）
-> - 统一响应 envelope 见 **§4.2**；**落地任务 T89a（Wave 1，加字段 + 错误码归一）/ T89b（Wave 8，删 `success`）**
+> - 统一响应 envelope 见 **§4.2**；**落地任务 T89a（Wave 1，加字段 + 错误码归一）/ T89b（Wave 8，删 `success`）** —— **两者均已落地**，现行契约即 §4.2
+>
+> **🆕 `USER_EXISTS`（Wave 8 缺陷修复 · 2026-10-21）**
+>
+> 建号重名是**正常的业务冲突**（409），此前误用 `INTERNAL_ERROR`（语义 =「服务内部错误」，
+> 对应 500 级系统故障）⇒ 现单列 `USER_EXISTS`。
+> ⚠️ 触发点有两处，**两处口径必须一致**：`POST /api/auth/register` 与 `POST /api/auth/seed`。
 
 ### 4.4 核心 API 路由清单
 
@@ -1418,6 +1437,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/quote/:symbol/kline` | GET | 是 | **K 线 + 指标 + 信号**（T53 落地 + **T70 配套补下发 `metrics_json`**）：`?days=120`（10~500，缺省 120）+ `?fq=qfq\|bfq\|hfq\|raw`（**四值白名单**，非法值 → **400 `PARAM_INVALID`**，**绝不静默回落 qfq**）+ `?rsi_period=14` / `?macd_fast=12` / `?macd_slow=26` / `?macd_signal=9`（越界 → 400 `PARAM_INVALID`）。返回 `{symbol, fq, symbolClass, klines[]（**升序** OHLCV）, indicators{macd, rsi, ma5/ma10/ma20/ma60, params}, signals[]}`。<br>🔴 **`signals[]` = **当前用户**该标的近 20 条信号（`user_id` **按 token 隔离**，**绝不信请求参数**；`is_deleted=1` 不下发）**，每项 = `trade_date` / `direction` / `label` / `strength` / `plugin_id` + **`metrics_json`（信号指标明细）**。<br>⚠️ **窗口口径 = 「最近 20 条，按 `trade_date` 升序排列」**（内层 `ORDER BY trade_date DESC` + `LIMIT 20` 取最近，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）—— 与 `GET /api/signal` 的分页窗口**完全同口径** ⇒ 同一用户 + 同一标的 + 同一条数时，两个端点返回**同一个行集合**（G5.5 的「signals 升序」= **页内行的排列方向**，与「取哪 N 条」不冲突）。<br>**`metrics_json` 的形态 = 原始 JSON 文本**（SQLite TEXT 列，由 `signalService.serializeMetrics` 写入；无明细时为 **`null`**，不是字符串 `'null'`）—— 与 `GET /api/signal`（`SELECT *`）**同形态、逐字节一致** ⇒ 两个端点口径统一，前端用**同一套** `parseMetricsJson` 解析即可。<br>**为何不下发解析后的对象**：解析属展示层职责；后端解析会让两个端点的字段类型分叉，且遇历史脏数据（非 JSON 文本）会把整个端点打成 500。<br>**收益**：K 线页信号标记 hover tooltip（PRD §5.2「策略信号标记：鼠标悬停显示方向 + 强度 + **指标明细**」）**无需**再发 `GET /api/signal?asset_code=` 补取 ⇒ **少一次网络往返**（PRD §5.2「参数实时生效 … **零网络请求**」）。<br>⚠️ **体积**：明细随 `SIGNAL_LIMIT=20` 天然封顶（内置插件产出的 metrics ≤ 7 键 / ≤ 200 字节）⇒ **实测**（120 根日线 + 20 条各带 6 键明细的信号）：整包响应 ≈ **20.3 KB**，摘掉 `metrics_json` 后 ≈ **17.9 KB** ⇒ 明细净增 ≈ **2.3 KB（+13%）** ⇒ **不需要**「只给最近 N 条带明细」的裁剪。<br>✅ **形状一致性**：`klines` 为空时该分支**同样返回 `signals: []`** ⇒ 响应里 `signals` 键**恒存在**（前端不必写 `Array.isArray(body.data.signals)` 兜底）|
 | `/api/strategy/plugins` | GET | 是 | 内置 + 自定义插件列表（含 enabled 状态）|
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
+| `/api/strategy/plugins/:id/toggle` | PUT | 是 | **启用 / 禁用**单个插件。body `{ enabled }`（接受 `true/false` / `1/0` / `'1'/'0'/'true'/'false'`，后端统一收口成 SQLite 的 `0/1`）；**无法识别的取值 → 400 `PARAM_INVALID`**（不是 500）。⚠️ **方法必须是 PUT** —— Fastify 不做方法回退，用 POST 会 404 |
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
 | `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
 | `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |
@@ -1427,11 +1447,17 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/candidate` | POST | 是 | 手动加标的；基准价自动取当日收盘价 |
 | `/api/candidate/:id/migrate` | POST | 是 | 迁移自选；支持 base/current 两种价格模式 |
 | `/api/ex-dividend/imports` | GET | 是 | 除权自动导入记录（**当前用户**，普通用户可读）；支持 `date`（YYYY-MM-DD 精确日）/ `days`（近 N 天，默认 1）；返回 `{ from, to, items[], summary{total,dividendCount,bonusCount} }` |
-| `/api/admin/datacheck/result` | GET | 是（仅 admin）| 12 项校验结果（含详情 JSON）|
-| `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发行情更新 + 校验 + 信号 + 除权 + 备份（串行）|
-| `/api/admin/system-log` | GET | 是（仅 admin）| 分页 + 日期过滤 + 类型过滤 |
-| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发备份 |
-| `/api/admin/role/:userId` | PATCH | 是（仅 admin）| 升级/降级角色 |
+| `/api/admin/datacheck/result` | GET | 是（仅 admin）| **最近一次 C1-C12 校验结果**（含详情 JSON）。<br>🔴 **admin 专属**：普通用户访问 → **403 `FORBIDDEN`**（此前无 role 校验，任何登录用户可读）。<br>**响应元素**：`{ checkId, name, result, message, detail }`。<br>**`name` = 12 个校验的中文名**，**唯一来源 = 后端 `services/validator.ts` 导出的 `CHECK_NAMES`**（逐字取自 §5.7 主表小节标题）—— **前端不得硬编码**。<br>**`result` 出库四态 = `PASS` / `WARN` / `ERROR` / `SKIP`**；⚠️ **落库**用的是 `system_log.level`（白名单 `INFO/WARN/ERROR/SKIP/SUCCESS`，**没有 `PASS`**）⇒ 落库 `SUCCESS`、**出库归一为 `PASS`**（两套词各自在自己的层内自洽）。<br>**「最近一次」的定位口径**：取 `log_type='datacheck'` 的全部 `log_date` → 只保留**真实日历日且 ≤ 今天**者 → 取最大者（🔴 **不用 `MAX(log_date)`** —— 越界日期会被 SQLite 的 `date()` 规范化通过，必须逐字段校验）。<br>**同 `checkId` 保留 `id` 最大的一条**（当天重跑时旧结果不得盖住新结果）。<br>**恒返回 12 条**（`{C1..C12}` 全集）：缺失项 → `result:'SKIP'` + `message:'未运行'` + `detail:null`（**不伪造 detail**）。<br>⚠️ **扩展校验（停牌/退市/ST/价差/成交量/滞后）不进 C 编号集合** —— 只认 `{C1..C12}`，其余编号一律丢弃 |
+| `/api/admin/datacheck/trigger` | POST | 是（仅 admin）| 手动触发 C1-C12 校验（body 可选 `{ trade_date }`，缺省取当前交易日）；响应 `{ trade_date, summaries[] }` |
+| `/api/admin/run-signal` | POST | 是（仅 admin）| 手动触发信号生成（body 可选 `{ trade_date }`，缺省取最近行情日）；按**当前用户的自选 ∪ 持仓**执行全部插件；响应 `{ stats, inserted, skipped, trade_date }` |
+| `/api/admin/rerun-quotes` | POST | 是（仅 admin）| 手动补跑行情更新（body 可选 `{ reason }`）。<br>🔴 **同步接口** —— 补跑跑完才返回，**没有「查任务状态」的轮询端点**；响应 `{ status, method, message, checks }`（`status` ∈ `SUCCESS` / `SKIP` / 其它失败态）。`status==='SUCCESS'` 时顺带重跑一次 C1-C12 并把结果放在 `checks` |
+| `/api/admin/system-log` | GET | 是（仅 admin）| `system_log` 分页查询（`SELECT *`，按 `id DESC`）。<br>**筛选参数**：`log_type`（等值）/ `level`（等值）/ **`start_date` + `end_date`（闭区间）** / `trade_date`（历史遗留的**单日等值**）。<br>⚠️ **日期过滤是区间**：`log_date` 为 `YYYY-MM-DD` 定长格式 ⇒ 直接字符串比较（`log_date BETWEEN ? AND ?`）；**只给一端** → 开区间（`>=` 或 `<=`）。<br>⚠️ `trade_date` **保留**（不破坏既有调用方），语义折算为「起止同一天」的区间，**与旧的 `log_date = ?` 完全等价**。<br>响应 `{ code: 0, data: rows[], timestamp, pagination: { page, pageSize, total, totalPages } }`（**无 `success` 键**）|
+| `/api/admin/system-log/fallback` | GET | 是（仅 admin）| 读取**系统日志降级记录**（SQLite 不可用时写入的兜底文件，JSON Lines 格式）。<br>**响应**：`{ exists: boolean, lines: string[] }`（`lines` = 尾部 **200 行**）。<br>⚠️ **响应体不含文件绝对路径**（路径泄露 = 告诉攻击者去读哪个文件）。<br>⚠️ **文件不存在 → `exists:false` + `lines:[]`**（**正常空态**，不是错误）。<br>⚠️ **读失败 → 500 `INTERNAL_ERROR`，且不回传 fs 的原始错误**（fs 错误信息里含绝对路径）—— 服务端日志留痕，响应只给一句中文 |
+| `/api/admin/users` | GET | 是（仅 admin）| 用户列表（按 `id` 升序）；元素 = `{ id, username, role, created_at }`（`role` ∈ `admin` / `user`）|
+| `/api/admin/role/:userId` | PATCH | 是（仅 admin）| 升级/降级角色；body `{ role: 'admin' \| 'user' }`。<br>⚠️ **禁止降级自己** → 400 `PARAM_INVALID`；⚠️ **admin 只能有 1 人**（已有其它 admin 时升级 → 400 `PARAM_INVALID`）|
+| `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**备份**（SQLite 恒常 + DuckDB 受 `ENABLE_QUOTE_BACKUP` 控制）；响应 `{ code: 0, data: { sqlite: { success, size }, duckdb: { success, size, skipped? } }, timestamp }`<br>⚠️ **嵌套的 `success`** 是**备份服务自己的结果字段**（`services/backup.ts`），**不是** envelope 的 `success`（§4.2 已删）—— 语义不同，勿混淆<br>⚠️ **`duckdb.skipped=true`** = `ENABLE_QUOTE_BACKUP=false` 的配置跳过（此时 `duckdb.success=true`、无 `size`）；前端必须显示「已跳过（配置关闭）」，**不得**当成成功或失败 |
+| `/api/admin/backups` | GET | 是（仅 admin）| 备份文件列表（按 `modified` **倒序**）；元素 = `{ name, size, modified }`。<br>⚠️ **`size` 的单位 = 字节**（`stat.size`）—— 前端只做可读化换算，**不得改单位口径**；`modified` = ISO 8601 字符串 |
+| `/api/admin/backup/:file/restore` | POST | 是（仅 admin）| 从备份恢复 SQLite 业务库（**破坏性操作**）。<br>🔴 **必须带 body `{ "confirm": true }`** —— 缺失 → **400 `CONFIRM_REQUIRED`**。<br>⚠️ **仅 `business.db.YYYY-MM-DD` 形态可恢复**（文件名白名单）；`*.parquet` 与 `*.pre-restore-*` 一律失败 → 400 `RESTORE_FAILED`。<br>⚠️ `:file` 需 **URL 编码**（服务端 `decodeURIComponent`）。<br>响应 `{ file, safetyBackup }`（恢复前的安全备份文件名）|
 
 ---
 
@@ -1560,7 +1586,7 @@ sequenceDiagram
 | 1 | ✅ tdx2db 成功 + 有新数据 | DuckDB 最新日期 == 今天 | 正常流程，Fastify cron 直接进入 C1 校验 |
 | 2 | ❌ tdx2db 失败 | tdx2db exit_code ≠ 0 | Fastify 触发补跑（`systemd-run --wait` 同步等），补跑还失败则 ERROR 并 SKIP 后续 |
 | 3 | ⚠️ tdx2db 成功但无新数据 | tdx2db exit_code=0，但 DuckDB 最新日期 < 今天 | 交易日历判断：如果今天是交易日 → 视为异常（数据源延迟），触发补跑；如果不是交易日 → 正常 SKIP 所有后续段 |
-| 4 | 🔄 tdx2db 正在写入时 Fastify 启动 | DuckDB 文件被独占写入 | Fastify 只读连接 open 时 DuckDB MVCC 自动处理 reader/writer 共存，但若 writer 持有大事务导致 WAL 膨胀，reader 可能等待；设 **5 秒连接超时 + retry 2 次** |
+| 4 | 🔄 tdx2db 正在写入时 Fastify 启动 | DuckDB 文件被独占写入 | ⚠️ **I-20 实测证伪**：DuckDB 是**单写者文件锁**，不是 MVCC 共享读 ⇒ 读写进程**不能共存**。修法：Fastify 必须先 `closeDuckDBInstance()` 让锁（ADR-012 §2.3），外部写期间返回可重试错误。设 **5 秒连接超时 + retry 2 次** 仅作为兜底 |
 
 **协调机制细节**：
 
@@ -1582,7 +1608,7 @@ sequenceDiagram
     │   │   └─ 今天是交易日 → 数据源延迟，进入 Step 3 补跑
     │
     ├─ Step 3: 补跑 tdx2db
-    │   ├─ Fastify 调用 systemd-run --wait tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+    │   ├─ Fastify 调用 systemd-run --wait tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
     │   ├─ 同步等待（timeout 5 分钟），拿到 exit_code
     │   ├─ exit_code=0 + DuckDB 有新数据 → 继续 C1-C12
     │   ├─ exit_code=0 但 DuckDB 仍无新数据 → 视为数据源整体不可用，ERROR + SKIP
@@ -1598,7 +1624,7 @@ sequenceDiagram
 ```bash
 # 方式 A：systemd-run --wait（推荐，Fastify 同步拿 exit_code）
 systemd-run --wait --user \
-  tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+  tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
 
 # 方式 B：systemctl start（异步，Fastify 需后续轮询状态）
 systemctl start tdx2db.service
@@ -1814,7 +1840,7 @@ export interface StrategyPlugin {
 | 规则 | 说明 |
 |------|------|
 | 内置插件库 | 打包在 `@invest/core` 包内；MVP 仅 `rsi` + `macd_cross`（默认启用） |
-| 用户自定义插件 | 放置在 `/opt/invol/plugins/strategies/`，**仅支持 .js**（require() 加载） |
+| 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
 | 故障隔离 | execute() 抛异常 → catch 后标记本轮跳过、记录 ERROR 日志、不影响其他插件和主流程 |
@@ -2007,7 +2033,7 @@ FROM today_counts tc;
 
 ```sql
 -- C2 交易日历匹配
--- raw_holidays 只有一个 date 列，表示交易日（有 = 交易日，无 = 非交易日）
+-- raw_holidays 只有一个 date 列，表示**休市日**（有 = 休市日，无 = 交易日，⚠️ 旧注释写反，I-20 实测修正）
 -- 只有交易日应该有日线数据
 
 SELECT
@@ -2301,7 +2327,7 @@ WHERE date = '{{TRADE_DATE}}';
 | S2 | 端口最小化 | Caddy 仅暴露 443；Fastify 监听 `127.0.0.1:8080`（仅本地可访问） | 外部扫描只看到 443 |
 | S3 | 密码存储 | `bcrypt`（cost=12），加盐 16 字节，单哈希 ≈ 250ms | 彩虹表不可行；暴力破解每哈希耗时过长 |
 | S4 | Token 机制 | JWT（HS256），payload={userId, role, exp}，access 7d + refresh 30d | Refresh 支持自动续期（刷新时 exp 重新计算）；签名密钥环境变量注入 |
-| S5 | 数据库文件权限 | `chown -R nobody:nogroup /opt/invest && chmod 600 *.db`；DuckDB 同理 | 进程用 `nobody` 运行，root 才能改权限 |
+| S5 | 数据库文件权限 | 专用账号 `invol`；`deploy.sh` 仅对 `data/ backup/ plugins/ secrets/` 定向 `chown/chmod`，数据文件 600（ADR-009） | Fastify/tdx2db 以 `invol` 运行；禁止对整个 `/opt/invol` 做 `chown -R` |
 | S6 | 日志脱敏 | system_log 中金额末 4 位替换为 `****`；用户标识末 4 位替换 | 防止日志泄露敏感数据 |
 | S7 | 插件沙盒（MVP） | **硬约束清单**：禁止访问 global/process/require；禁止文件/网络；执行超时硬限制 | MVP 靠约定 + 超时保护；V2 升级到 VM2 硬隔离 |
 | S8 | CSRF 防护 | SameSite=Strict Cookie + CSRF Token（双提交 Cookie 模式） | MVP 用 Token 机制已足够；Cookie 方案作为补充 |
@@ -2411,7 +2437,8 @@ graph LR
 
 **分级策略**（裁决 **I-11=A**，2026-10-17）：
 
-- **MVP 交付范围**：**仅本地双库备份** + 滚动清理（行情 7 天 / 业务 30 天）+ 恢复验证脚本
+- **MVP 交付范围**：**仅本地备份**（SQLite 恒常 + DuckDB 默认，可配置关闭）+ 滚动清理（行情 7 天 / 业务 30 天）+ 恢复验证脚本
+- **行情库备份开关（DEC-13，2026-10-23）**：env `ENABLE_QUOTE_BACKUP`，**默认 `true`；仅字面量 `false` 关闭**，且**每次备份时惰性读取**（禁止模块顶层常量，见 AGENTS.md「CI 三陷阱」#2）。关闭时 `backupDuckDB()` 返回 `{ success: true, skipped: true }`，**不打开 DuckDB、不写 parquet**；SQLite 业务库不可重建，备份恒常执行、不受开关影响。关闭后旧 parquet 仍按 7 天滚动清理；重新开启即恢复每日备份。`scripts/restore-drill.sh` 在无 parquet 时 WARN 跳过行情段，SQLite 段仍完整校验。
 - **移出 MVP**：~~远程对象存储上传（rclone）~~、~~Lifecycle Policy 自动清理 90 天~~、~~恢复脚本写入 CI/CD pipeline~~
   - 依据：实测 `backup.ts:98` 注释「OCI 上传 MVP T30 暂缓」，初稿 SDD 却把远程写成硬要求 → PRD §6.2「备份恢复验证通过率 100%」不可达
 - **恢复验证要求**（本地）：
@@ -2426,7 +2453,7 @@ SDD 之前只描述了每日增量更新流程，**首次部署时的全量行�
 flowchart LR
     A["新 VM 准备就绪"] --> B["下载 tdx2db 预编译二进制<br/>wget github.com/jing2uo/tdx2db/releases<br/>→ tar -xzf → mv 到 /usr/local/bin/tdx2db"]
     B --> C["下载通达信日线完整包<br/>wget https://data.tdx.com.cn/vipdoc/hsjday.zip<br/>→ unzip -q -d vipdoc"]
-    C --> D["tdx2db init --dburi 'duckdb:///opt/invol/quotes.duckdb'<br/>--dayfiledir ./vipdoc"]
+    C --> D["tdx2db init --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'<br/>--dayfiledir ./vipdoc"]
     D --> E["DuckDB 文件 ≈ 1.2GB"]
     E --> F["完整性校验<br/>duckdb .tables + COUNT(*) ≥ 5000"]
     F --> G["chmod 600 quotes.duckdb<br/>配置 systemd unit"]
@@ -2436,12 +2463,12 @@ flowchart LR
 **命令参考**（已从用户侧确认）：
 ```bash
 # 首次初始化
-mkdir -p vipdoc /opt/invol
+mkdir -p vipdoc /opt/invol/IA_Prod
 wget https://data.tdx.com.cn/vipdoc/hsjday.zip && unzip -q hsjday.zip -d vipdoc
-tdx2db init --dburi 'duckdb:///opt/invol/quotes.duckdb' --dayfiledir ./vipdoc
+tdx2db init --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb' --dayfiledir ./vipdoc
 
 # 每日增量更新（systemd timer 调度）
-tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
+tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
 ```
 
 ---
@@ -2484,27 +2511,31 @@ graph TB
 
 ### 7.3 systemd unit 示例（invest-assistant.service）
 
+> 实际文件以 `deploy/invest-assistant.service` 为准；运行目录为
+> `/opt/invol/IA_Prod/app`（dist + prod node_modules + packages/core），
+> 生产配置来自 `/opt/invol/IA_Prod/.env.local`。
+
 ```ini
 [Unit]
-Description=Invest Assistant Fastify Server
-After=network.target duckdb-mount.service
+Description=InvestAssistant Fastify 后端
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=nobody
-Group=nogroup
-Environment=NODE_ENV=production
-Environment=DB_PATH=/opt/invol/user.db
-Environment=DUCKDB_PATH=/opt/invol/quotes.duckdb
-Environment=JWT_SECRET={{vault_or_env}}
-Environment=DATA_DIRECTORYS=/opt/invol/plugins/custom
-ExecStart=/usr/bin/node /opt/invol/dist/server.js
-Restart=always
+User=invol
+Group=invol
+WorkingDirectory=/opt/invol/IA_Prod/app
+ExecStart=/usr/bin/node /opt/invol/IA_Prod/app/dist/server.js
+Restart=on-failure
 RestartSec=5
-WatchdogSec=30
+TimeoutStopSec=30
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/invol/IA_Prod/.env.local
+UMask=0077
+PrivateTmp=true
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=invest-assistant
 
 [Install]
 WantedBy=multi-user.target
@@ -2521,10 +2552,15 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=nobody
-Group=nogroup
-ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/quotes.duckdb'
-WorkingDirectory=/opt/invol
+User=invol
+Group=invol
+WorkingDirectory=/opt/invol/IA_Prod
+UMask=0077
+TimeoutStartSec=1800
+ExecStartPre=/bin/sh -c 'echo $$ > /opt/invol/IA_Prod/.tdx2db-writing'
+ExecStart=/usr/local/bin/tdx2db cron --dburi 'duckdb:///opt/invol/IA_Prod/quotes.duckdb'
+ExecStartPost=/bin/rm -f /opt/invol/IA_Prod/.tdx2db-writing
+ExecStopPost=-/bin/rm -f /opt/invol/IA_Prod/.tdx2db-writing
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tdx2db
@@ -2537,11 +2573,12 @@ WantedBy=multi-user.target
 ```ini
 # /etc/systemd/system/tdx2db-update.timer
 [Unit]
-Description=每日 17:00 触发 tdx2db 行情增量更新
+Description=每个交易日 17:00（北京时间）触发 tdx2db 行情增量更新
 
 [Timer]
-OnCalendar=*-*-* 17:00:00
-# 服务器本地时间（UTC+8），注意与 Fastify cron 时区对齐
+# T108：显式指定 Asia/Shanghai；服务器系统时区是 Etc/UTC
+# （若省略时区，17:00 UTC = 北京时间次日 01:00，2026-10-23 生产实测）
+OnCalendar=Mon..Fri *-*-* 17:00:00 Asia/Shanghai
 Persistent=true          # 错过的触发（服务器离线）恢复后立即补跑
 Unit=tdx2db.service
 
@@ -2550,9 +2587,10 @@ WantedBy=timers.target
 ```
 
 **权限说明**：
-- DuckDB 文件 `/opt/invol/quotes.duckdb` owner 为 `nobody:nogroup`（systemd User=nobody 运行 tdx2db）
-- Fastify 进程同样以 `nobody` 运行，对 DuckDB 只有 SELECT 权限（AGENTS DuckDB 硬约束第 1 条）
-- 如果未来 Fastify 需要不同用户运行，需调整文件权限（chmod o+r）或改用组权限
+- DuckDB 文件 `/opt/invol/IA_Prod/quotes.duckdb` owner 为 `invol:invol`，模式 `600`（ADR-009）
+- Fastify 与 tdx2db 均以专用账号 `invol` 运行；Fastify 对 DuckDB 只有 SELECT 权限
+- 目录权限由 `deploy/deploy.sh` 定向设置：`data/`、`backup/`、`plugins/` 750，
+  `secrets/` 700；不要对整个 `/opt/invol` 做 `chown -R`（会波及代码仓库）
 
 ### 7.4 关键运维脚本清单
 
@@ -2561,8 +2599,8 @@ WantedBy=timers.target
 | `restore_duckdb.sh` | 手动 | 从远程下载 → 解压 → COPY FROM PARQUET → 完整性校验 |
 | `restore_sqlite.sh` | 手动 | 从远程下载 → 直接替换文件 → 启动验证 |
 | `verify_backup.sh` | 每月 cron 自动 | 下载备份 → 校验 schema → 抽样数据完整性 |
-| `upgrade.sh` | 部署时手动 | git pull → npm ci → npm run build → systemctl restart |
-| `health_check.sh` | systemd watchdog 触发 | `curl -sf http://localhost:3000/health || systemctl kill --kill-who=main invest-assistant` |
+| `deploy/deploy.sh` | 部署时手动 / CI | git pull → npm ci → build → 原子切换 `/opt/invol/IA_Prod/app` → 健康检查失败自动回滚 |
+| `deploy/healthcheck.sh` | 手动 / CI | `curl -sf http://127.0.0.1:8080/api/health`（端口可读 `/opt/invol/IA_Prod/.env.local`） |
 
 ### 7.5 监控与告警（最小化）
 
@@ -2591,22 +2629,23 @@ sequenceDiagram
     participant Backup as 远程存储
 
     Admin->>Git: git push → tag v1.0.0
-    Git->>Git: CI: npm ci + npm run build → dist/
-    Git->>VM: scp dist/ + package.json 到 /opt/invest-new/
-    Git->>Backup: 手动触发全量备份（上线前备份）
+    Git->>Git: CI: lint + typecheck + test + build
+    Git->>VM: ssh "cd /opt/invol/InvestAssistantMVP && git pull --ff-only && sudo bash deploy/deploy.sh"
+    VM->>Backup: 部署前备份 SQLite（脚本外的人工步骤或备份任务）
     Backup-->>Admin: 备份完成 OK
 
-    Note over VM: 准备阶段（不改当前运行版本）
-    Admin->>VM: cd /opt/invest-new && npm ci --omit=dev
-    Admin->>VM: 执行新 DB migration（幂等）
-    Admin->>VM: 软切换：systemctl stop invest-assistant → 指向新 dist/ → systemctl start
+    Note over VM: 部署脚本（不改当前运行版本直到健康检查）
+    VM->>VM: npm ci → npm run build → npm prune --omit=dev
+    VM->>VM: 组装 /opt/invol/IA_Prod/.app.new（dist + node_modules + core）
+    VM->>VM: stop invest-assistant → mv app app.old → mv .app.new app
+    VM->>VM: start invest-assistant → curl 127.0.0.1:8080/api/health
 
-    alt 新服务健康检查通过（curl /health = 200）
-        VM-->>Admin: OK
-        Note over VM: 上线完成
+    alt 健康检查通过（HTTP 200）
+        VM->>VM: 切换 /opt/invol/IA_Prod/frontend/dist
+        VM-->>Admin: 上线完成
     else 健康检查失败
-        VM-->>Admin: curl /health != 200
-        Admin->>VM: systemctl stop → 回滚到旧 dist/ → systemctl start
+        VM->>VM: stop → rm app → mv app.old app → start
+        VM-->>Admin: 自动回滚完成，输出 journalctl
         Admin->>Admin: 分析日志 → 修复 → 重新上线
     end
 ```
@@ -2615,7 +2654,7 @@ sequenceDiagram
 
 | 场景 | 回滚步骤 | RTO | 数据影响 |
 |------|---------|-----|---------|
-| 代码 bug（新上线）| `systemctl stop invest-assistant` → 指向旧 dist → `systemctl start` | < 2 min | 无（DB 迁移幂等，新写入可保留）|
+| 代码 bug（新上线）| `systemctl stop invest-assistant` → `rm -rf /opt/invol/IA_Prod/app` → `mv /opt/invol/IA_Prod/app.old /opt/invol/IA_Prod/app` → `systemctl start invest-assistant` | < 2 min | 无（DB 迁移幂等，新写入可保留）|
 | DB 迁移不可逆 | 从最近 SQLite 备份恢复 | < 10 min | 恢复到上线前时间点，上线后写入丢失 |
 | DuckDB 损坏 | 从远程下载 → 解压 → 恢复 | < 5 min | 行情数据完整恢复 |
 | SQLite 损坏 | 从远程下载 → 直接替换文件 | < 3 min | 业务数据完整恢复 |
@@ -2749,12 +2788,12 @@ sequenceDiagram
 | # | 待决策项 | 决策方向（已搜索验证的）| 影响范围 | 决策人 | 截止日期 |
 |---|---------|------------------------|---------|--------|---------|
 | D1 | **【✅ 已确认】** tdx2db 使用预编译二进制，**不需要编译**。下载地址：`https://github.com/jing2uo/tdx2db/releases/download/v2026.8.12/tdx2db_Linux_arm64.tar.gz`（Linux arm64，v2026.8.12）| 直接下载 tar.gz → tar -xzf → mv /usr/local/bin/tdx2db | 行情层全链路 | Dev | Phase 1 启动前 |
-| D2 | **【✅ 已确认】** `tdx2db init` 产出的 DuckDB schema：10 张 raw_ 表 + 6 张视图，**完整字段说明见 [tdx2db_schema.md](../tdx2db_schema.md)**（2026-10-15 DuckDB 实测 dump）。关键列名约定：所有表日期列一律叫 `date`（不是 `trade_date`）；`raw_gbbq.category=1` 才是除权除息；`raw_holidays` 只有一个 `date` 列（有=交易日）；`raw_adjust_factor` 字段名是 `hfq_factor`；`raw_kline_daily` 没有 `preclose`（要 JOIN `raw_basic_daily`） | 数据模型 + 所有 SQL 查询 | Dev | Phase 1 启动前 |
+| D2 | **【✅ 已确认】** `tdx2db init` 产出的 DuckDB schema：10 张 raw_ 表 + 6 张视图，**完整字段说明见 [tdx2db_schema.md](../tdx2db_schema.md)**（2026-10-15 DuckDB 实测 dump）。关键列名约定：所有表日期列一律叫 `date`（不是 `trade_date`）；`raw_gbbq.category=1` 才是除权除息；`raw_holidays` 只有一个 `date` 列（有=**休市日**，I-20 实测）；`raw_adjust_factor` 字段名是 `hfq_factor`；`raw_kline_daily` 没有 `preclose`（要 JOIN `raw_basic_daily`）；`raw_symbol_class` 只有 `symbol`/`class`（**无 `is_st`/`is_listing`/`bond`**） | 数据模型 + 所有 SQL 查询 | Dev | Phase 1 启动前 |
 | D3 | **【✅ 已确认（改用替代包）】** 原版 `technicalindicators` npm 包（v3.1.0）**7 年前停更**，已无维护。MVP 改用 **`fast-technical-indicators`**（零依赖、100% API 兼容、活跃维护）。备选 fork：`@wahack/technicalindicators` v3.1.2（9 个月前发布）。Node 22 兼容：纯 TS 实现、无原生依赖，理论上全版本兼容；Phase 1 启动前 `npm i fast-technical-indicators && npx vitest run` 实测确认 | 插件引擎 + K 线图指标 | Dev | Phase 1 启动前 |
 | D4 | **【✅ 已确认（curl 实测）】** 东财 C12 跨源校验接口。**实测结果（2026-10-15 Node curl）**：① `push2his.eastmoney.com/api/qt/stock/kline/get` 可用（掘金 emt.18.cn 需鉴权）；② secid 格式：**`0.代码`（深市）** / **`1.代码`（沪市）**，如 `0.000001`、`1.600000`（不是 `0.0.000001` 也不是无市场前缀）；③ fqt 参数：**1=前复权、0=不复权、2=后复权**（与 v_stock_qfq 前复权口径对齐）；④ 返回格式：`data.klines` 是逗号分隔字符串数组，字段固定顺序：`date,open,high,low,close,volume,amount,amplitude,pct_chg,change,turnover`；⑤ 公开免费、**无需 token**、无明显限流（30 秒 100 次没触发 429）；⑥ CORS `*` 允许跨域。Fastify 后端可以直接 GET | C12 跨源校验实现 | Dev | Phase 1 启动前 |
 | D5 | **【✅ 已确认（实测）】** Tushare Free API daily 接口。**实测结果（2026-10-15 本地跑通）**：① `pre_close` 字段**确认存在且值正确**（000001.SZ 20261014 close=11.50, pre_close=11.57）；② 限流：**daily 接口 50 次/分钟**（100 次压力测试 → 前 19 次成功、后 81 次频率超限）；③ API 格式：POST `http://api.tushare.pro`，JSON body `{ api_name, token, params, fields }`，成功返回 `{ code: 0, data: { fields, items } }`；④ 错误码 4010x 系列表示频率超限。MVP C11 每天 1 次 30 只，1 分钟内搞定，远低于阈值 | C11 跨源校验 | Dev | Phase 1 启动前 |
 | D6 | **【✅ 已确认】** tdx2db 上游数据源：`https://data.tdx.com.cn/vipdoc/hsjday.zip`（通达信完整日线包） | Phase 1 init 阶段 `wget hsjday.zip && unzip -q` 即可使用 | tdx2db init | Dev | Phase 1 启动前 |
-| D7 | **【✅ 已确认】** 远程备份存储：**OCI Object Storage**（Oracle Cloud Infrastructure）。lifecycle policy 配置：DuckDB 原始快照保留 30 天、压缩增量保留 90 天 | rclone mount 方式接入：`rclone mount oci:invest-assistant-backup /opt/invol/backup --allow-other`；配置文件加密存储于 `/opt/invol/secrets/rclone.conf.enc` | 备份策略 + 运维脚本 | Dev | Phase 1 启动前 |
+| D7 | **【✅ 已确认】** 远程备份存储：**OCI Object Storage**（Oracle Cloud Infrastructure）。lifecycle policy 配置：DuckDB 原始快照保留 30 天、压缩增量保留 90 天 | rclone mount 方式接入：`rclone mount oci:invest-assistant-backup /opt/invol/IA_Prod/backup --allow-other`；配置文件加密存储于 `/opt/invol/IA_Prod/secrets/rclone.conf.enc` | 备份策略 + 运维脚本 | Dev | Phase 1 启动前 |
 | D8 | **【✅ 已确认】** JWT 签名密钥：MVP 直接用 `.env` 环境变量。生成命令 `openssl rand -hex 32 > .env.local`；`.env.*` 全部 `.gitignore`；Fastify 启动时读取 `JWT_SECRET` 环境变量 | 安全 S4 达标（MVP 单用户场景足够；V2 多用户升级 Vault/HSM） | 安全 S4 | Dev | Phase 1 启动前 |
 | D9 | **【✅ 已确认】** tdx2db 命令行：首次 `tdx2db init --dburi 'duckdb://path' --dayfiledir ./vipdoc`；每日增量 `tdx2db cron --dburi 'duckdb://path'`。DuckDB URI 格式 `duckdb://[path]`，增量 vs 全量由命令区分 | 每日更新耗时 + DuckDB 文件大小 | Dev | Phase 1 启动前 |
 | D10 | **【✅ 已确认】** 插件沙盒 MVP 实现锁定：`new Function()` + AST 关键字黑名单（`global`/`process`/`require`/`import`/`Function`/`constructor`/`prototype`/`__proto__`/`eval`）+ 语法预校验（`new Function(code)` 提前抛 SyntaxError）+ `Promise.race` 50ms 硬超时。**V2 升级路线**：替换底层为 isolated-vm v5 真隔离（接口 `execute(ctx, params)` 不变，无缝切换）。**风险接受**：主线程死循环无法被 setTimeout 打断，但 MVP 插件是开发者预置的（AGENTS.md 硬约束禁止用户上传），风险可忽略 | 插件安全 | Dev | Phase 2 启动前实现 |
@@ -2814,7 +2853,7 @@ sequenceDiagram
 | SE4 | 插件沙盒约束（禁止 global/process/require） | `apps/backend/tests/unit/pluginEngine.test.ts` → `sandbox_violation_5_cases` | ❌ 待建（已覆盖 globalThis/process/require 3 例，用例名与 5 例口径未落地） |
 | SE5 | system_log 金额脱敏 | `apps/backend/tests/unit/logger.test.ts`（describe「logger — S6 脱敏」） | ✅ 已有 |
 | SE6 | admin API 路由二次角色校验 | `apps/backend/tests/integration/auth.test.ts` → `admin_role_guard` | ❌ 待建（文件在，用例名未落地） |
-| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a`（部署机实测） | ❌ 待实测（需部署机） |
+| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/IA_Prod/data/*.db /opt/invol/IA_Prod/quotes.duckdb`（部署机实测） | ❌ 待实测（需部署机） |
 
 > **统计（2026-10-21 更新）**：24 项中 **✅ 已有 13 项**（**F1 / F2 / F3 / F4 / F5 / F6 / F7 / F8** / F11 / **PE2** / PE6 / SE2 / SE5）、
 > **❌ 11 项**（6 项待建用例载体、4 项待真机/部署环境实测、1 项待整改源码）。
@@ -2836,16 +2875,34 @@ sequenceDiagram
 
 **CI 门槛**：PR 合入 main 分支前，核心算法层 + 插件引擎覆盖率 **不能低于 90%**，否则阻断合入。
 
-> ⏸️ **已裁决（2026-10-17，DEC-12 B-5）：本表门槛与上述 CI 90% Gate 暂时冻结。**
+> ✅ **已恢复（2026-10-21，T86b 兑现 DEC-12 B-5 的「暂缓」裁决）**
 >
-> **理由**：前端当前 **0 测试**（无 vitest/jsdom/testing-library），全仓无 ESLint 配置，
-> 无测试基建的情况下设 90% 硬 Gate 会导致 CI 从第一天起就红，且诱导为凑数字写无意义测试。
+> **背景**：本表门槛与 90% CI Gate 曾于 2026-10-17 按 DEC-12 B-5 **暂时冻结**
+> （理由：前端当时 0 测试、全仓无 ESLint 配置 ⇒ 90% 硬 Gate 会让 CI 从第一天起就红，
+> 并诱导为凑数字写无意义测试）。**冻结 ≠ 取消** —— 实施计划 **T86b** 负责在测试存量到位后恢复。
 >
-> **过渡期实际执行值**（见实施计划 §12.4 E3）：`frontend ≥ 60%`（当前 0）；
-> `backend 不低于当前基线`（即暂不设硬门槛）。
+> **T86b 实测（`npm run test:coverage`，`MARKET_DATA_MODE=mini`，CI 同口径）**：
 >
-> **恢复义务**：由实施计划 **T86b**（Wave 8）负责 —— 测试存量到位后**必须把本表数值与 90% CI Gate 恢复**。在此之前，§12.6 的全局判定**不因覆盖率判 FAIL**。
-> ⚠️ 本条为**暂缓**而非取消；T86b 未完成前视为已登记偏差。
+> | 模块 | 行覆盖（实测 / 门槛） | 分支覆盖（实测 / 门槛） | 结论 |
+> |------|------|------|------|
+> | 核心算法层（`packages/core/src/`） | 246/248 = **99.19%** / ≥90% | 59/64 = **92.19%** / ≥85% | ✅ 达标 |
+> | 插件引擎（`pluginEngine.ts` + `packages/core/src/indicators/`） | 1074/1083 = **99.17%** / ≥90% | 328/342 = **95.91%** / ≥85% | ✅ 达标 |
+> | 数据校验引擎 C1-C12（`validator.ts`） | 640/666 = **96.10%** / ≥85% | 177/199 = **88.94%** / ≥80% | ✅ 达标 |
+> | 前端（`apps/frontend/src/`） | 10243/10905 = **93.93%** / ≥70% | 2230/2722 = **81.93%** / ≥65% | ✅ 达标 |
+>
+> ⚠️ **实测口径抖动**：分支覆盖率随 vitest 的 `sequence.shuffle` 顺序有 ±0.1 个百分点的波动
+> （同一份代码连跑两次的实测差异，如插件引擎 95.91% ↔ 95.92%、前端 81.93% ↔ 82.06%）
+> ⇒ **门槛必须留足余量**（本轮余量 ≥5 个百分点），否则 Gate 会因顺序抖动飘红。
+>
+> ⇒ **本表门槛全部恢复为生效状态**，CI 侧新增 `coverage-gate` job（**真阻断**：`exit 1`），
+> 见 §12.6「覆盖率阻断 Gate」。补齐过程新增
+> `apps/backend/tests/unit/pluginEngineCoverage.test.ts`（52 例）与
+> `apps/backend/tests/unit/validatorCoverage.test.ts`（6 例）。
+>
+> ⚠️ **口径说明**：实测口径 = 仓库脚本 `npm run test:coverage`
+> （后端 unit + integration + smoke、core、frontend）⇒ 与 CI `coverage-gate` job 完全一致，
+> 避免「本地全绿 / CI 全红」。
+
 
 ### 12.3 单元测试边界用例清单
 
@@ -3015,7 +3072,7 @@ afterEach(async () => {
 
 | # | 原始需求 §9 | 对应测试 Case | 通过标准 |
 |---|------------|--------------|---------|
-| CO1 | 数据文件权限 600 + 进程用 nobody 用户 | `sudo -u nobody stat -c %a /opt/invol/*.db` | 600 + owner=nobody:nogroup |
+| CO1 | 数据文件权限 600 + 专用账号 `invol`（ADR-009） | `sudo -u invol stat -c '%a %U:%G' /opt/invol/IA_Prod/data/*.db /opt/invol/IA_Prod/quotes.duckdb` | 600 + owner=invol:invol |
 
 ### 12.5.1 测试行情库策略（迷你 DuckDB）
 
@@ -3161,16 +3218,92 @@ jobs:
       - run: npx vitest run --coverage
       - name: Coverage Gate
         run: |
-          # coverage-v8 输出 JSON，提取核心模块覆盖率
-          CORE_COVERAGE=$(node -e "
-            const r = require('./coverage/coverage-final.json');
-            const core = Object.values(r).filter(f => f.path.includes('services/') || f.path.includes('algorithms/'));
-            const lines = core.reduce((s, f) => s + (f.l.found - f.l.get), 0);
-            const found = core.reduce((s, f) => s + f.l.found, 0);
-            console.log(Math.round((1 - lines/found) * 100));
-          ")
-          echo "Core algorithm coverage: ${CORE_COVERAGE}%"
-          if [ "${CORE_COVERAGE}" -lt 90 ]; then exit 1; fi
+          # 🔴 coverage-v8 输出的是 **v8 ICRCov**（`coverage-final.json`）——
+          #    **没有** Istanbul 的 `f.l.found` / `f.l.get`（见 §12.6 D14），
+          #    必须读每个文件的 `.s`（语句执行次数）/ `.b`（分支各路径执行次数）。
+          #    且覆盖率产物按 workspace 分目录落盘（不是仓库根的 ./coverage/）。
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const ROOT = process.cwd();
+
+          /** 优先 coverage-summary.json；没有则回退 coverage-final.json（v8 ICRCov） */
+          function loadWorkspace(dir) {
+            const summaryPath = path.join(dir, 'coverage-summary.json');
+            if (fs.existsSync(summaryPath)) {
+              const raw = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+              const files = {};
+              for (const [k, v] of Object.entries(raw)) {
+                if (k === 'total') continue;
+                files[k] = { lines: v.lines, branches: v.branches };
+              }
+              return files;
+            }
+            const finalPath = path.join(dir, 'coverage-final.json');
+            if (!fs.existsSync(finalPath)) return null;
+            const cov = JSON.parse(fs.readFileSync(finalPath, 'utf8'));
+            const files = {};
+            for (const [p, c] of Object.entries(cov)) {
+              let st = 0, sh = 0, bt = 0, bh = 0;
+              for (const cnt of Object.values(c.s || {})) { st += 1; if (cnt > 0) sh += 1; }
+              for (const arr of Object.values(c.b || {})) {
+                for (const cnt of arr) { bt += 1; if (cnt > 0) bh += 1; }
+              }
+              files[p] = {
+                lines: { total: st, covered: sh, pct: st === 0 ? 100 : (sh / st) * 100 },
+                branches: { total: bt, covered: bh, pct: bt === 0 ? 100 : (bh / bt) * 100 },
+              };
+            }
+            return files;
+          }
+
+          const WORKSPACES = {
+            core: loadWorkspace(path.join(ROOT, 'packages/core/coverage')),
+            backend: loadWorkspace(path.join(ROOT, 'apps/backend/coverage')),
+            frontend: loadWorkspace(path.join(ROOT, 'apps/frontend/coverage')),
+          };
+          for (const [ws, files] of Object.entries(WORKSPACES)) {
+            if (!files) { console.error(`FAIL 缺少覆盖率数据：${ws}`); process.exit(1); }
+          }
+
+          // 门槛 = §12.2 的表（核心算法 / 插件引擎 / C1-C12 / 前端）
+          const MODULES = [
+            { label: '核心算法层', min: { lines: 90, branches: 85 },
+              pick: (p) => p.includes('/packages/core/src/') },
+            { label: '插件引擎', min: { lines: 90, branches: 85 },
+              pick: (p) => p.includes('/apps/backend/src/services/pluginEngine.ts')
+                       || p.includes('/packages/core/src/indicators/') },
+            { label: 'C1-C12 校验', min: { lines: 85, branches: 80 },
+              pick: (p) => p.includes('/apps/backend/src/services/validator.ts') },
+            { label: '前端', min: { lines: 70, branches: 65 },
+              pick: (p) => p.includes('/apps/frontend/src/') },
+          ];
+
+          let failed = 0;
+          for (const m of MODULES) {
+            let lt = 0, lc = 0, bt = 0, bc = 0, count = 0;
+            for (const files of Object.values(WORKSPACES)) {
+              for (const [p, v] of Object.entries(files)) {
+                const norm = p.replace(/\\/g, '/');
+                if (!m.pick(norm)) continue;
+                count += 1;
+                lt += v.lines.total; lc += v.lines.covered;
+                bt += v.branches.total; bc += v.branches.covered;
+              }
+            }
+            const linePct = lt === 0 ? 100 : (lc / lt) * 100;
+            const brPct = bt === 0 ? 100 : (bc / bt) * 100;
+            const ok = count > 0 && linePct >= m.min.lines && brPct >= m.min.branches;
+            if (!ok) failed += 1;
+            console.log(`${ok ? 'PASS' : 'FAIL'}  ${m.label}`);
+            console.log(`      行覆盖   ${lc}/${lt} = ${linePct.toFixed(2)}%（门槛 >=${m.min.lines}%）`);
+            console.log(`      分支覆盖 ${bc}/${bt} = ${brPct.toFixed(2)}%（门槛 >=${m.min.branches}%）`);
+          }
+          if (failed > 0) {
+            console.error(`覆盖率 Gate 未通过：${failed} 个模块低于 §12.2 门槛 —— 阻断合入`);
+            process.exit(1);
+          }
+          NODE
 
       # Stage 4: Integration Test（需要临时 DuckDB + SQLite）
       - run: npm run test:integration
@@ -3179,10 +3312,9 @@ jobs:
       - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           ssh -i ~/.ssh/id_rsa deploy@invest-vm \
-            "systemctl stop invest-assistant && \
-             rsync -avz --delete dist/ /opt/invol/dist/ && \
-             systemctl start invest-assistant && \
-             sleep 2 && curl -sf http://localhost:3000/health || (systemctl status invest-assistant; exit 1)"
+            "cd /opt/invol/InvestAssistantMVP && \
+             git pull --ff-only && \
+             sudo bash deploy/deploy.sh"
 ```
 
 #### Pipeline 规则
@@ -3192,8 +3324,22 @@ jobs:
 | PR 触发 | push + pull_request 都触发 Stage 1-4，不触发部署 |
 | 部署触发 | 仅 main 分支 push 触发，且需要 GitHub Actions Secrets 配置 SSH key |
 | 阻断点 | Lint 失败 / TypeScript 编译失败 / 覆盖率 Gate 不通过 / 集成测试失败 → 全部阻断 |
-| 健康检查 | 部署后 curl localhost:3000/health 验证，失败则 systemctl status 记录日志 |
+| 健康检查 | `deploy.sh` 内部 curl `127.0.0.1:8080/api/health` 验证，失败自动回滚 `app.old` |
 | 备份验证 | 每月第一个周五的 CI run 额外触发 `sudo systemctl start invest-backup.service`，验证备份链路通畅 |
+
+#### 覆盖率阻断 Gate（T86b 恢复，2026-10-21）
+
+| 项 | 规格 |
+|---|---|
+| **落地位置** | `.github/workflows/ci.yml` 的 **`coverage-gate` job**（与 `lint-and-typecheck` 同级，独立 job ⇒ PR 页面一眼可见红/绿） |
+| **数据来源** | job 内跑 **`npm run test:coverage`**（仓库根脚本）⇒ 后端 unit+integration+smoke / core / frontend 的覆盖率产物 |
+| **解析方式** | `packages/core/coverage/`、`apps/backend/coverage/`、`apps/frontend/coverage/` 三个目录；**优先 `coverage-summary.json`**，没有则回退 `coverage-final.json`（**v8 ICRCov**：读 `.s` / `.b` 的执行次数，**不是** Istanbul 的 `f.l.found` / `f.l.get` —— 见 §12.1 D14） |
+| **判定模块** | 核心算法层（`packages/core/src/`）、插件引擎（`pluginEngine.ts` + `packages/core/src/indicators/`）、C1-C12 校验（`validator.ts`）、前端（`apps/frontend/src/`） |
+| **阈值** | **§12.2 表原值**：核心算法 ≥90%/85%、插件引擎 ≥90%/85%、C1-C12 ≥85%/80%、前端 ≥70%/65%（行/分支） |
+| **阻断方式** | 任一模块低于阈值 ⇒ **`exit 1`**（真阻断，不是打印警告） |
+| **口径一致性** | 用仓库根脚本 ⇒ **与本地 `npm run test:coverage` 完全同口径** ⇒ 不会出现「本地全绿 / CI 全红」 |
+| **反向验证** | `workflow_dispatch` 或分支名含 `coverage-reverse-check` 时，往 `packages/core/src/` 塞一个完全不被覆盖的文件 ⇒ 核心算法覆盖率跌破 90% ⇒ Gate 必须红 |
+
 
 #### 测试目录结构总结
 

@@ -105,6 +105,8 @@ export interface ChartBar extends RawBar {
   j: number;
   /** 该交易日的信号（无则 `null`）*/
   signal: SignalMarker | null;
+  /** 相对前一根 K 线收盘价的涨跌幅（%），第一根为 null */
+  changePct?: number | null;
 }
 
 /** 图表周期 → 参数面板里 K 线根数的单位（PRD §5.2「日 K / 周 K / 月 K」）*/
@@ -250,6 +252,10 @@ export function buildChartBars(
     d: kdj.d[i] ?? NaN,
     j: kdj.j[i] ?? NaN,
     signal: signalByDate.get(bar.date) ?? null,
+    changePct:
+      i > 0 && aggregated[i - 1].close
+        ? ((bar.close - aggregated[i - 1].close) / aggregated[i - 1].close) * 100
+        : null,
   }));
 }
 

@@ -2,7 +2,11 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import schedule from '@fastify/schedule';
 import { ConfigStore } from './config/configStore.js';
-import { duckdbHealthCheck } from './db/duckdb.js';
+import {
+  duckdbHealthCheck,
+  startDuckDBWriteSentinelWatcher,
+  stopDuckDBWriteSentinelWatcher,
+} from './db/duckdb.js';
 import { registerRoutes } from './routes/index.js';
 import { registerCronJobs } from './services/scheduler.js';
 
@@ -33,6 +37,10 @@ async function bootstrap() {
   // 初始化 ConfigStore（SQLite + DDL）
   const config = ConfigStore.getInstance();
   app.log.info(`SQLite 初始化完成: ${config.getDbPath()}`);
+
+  // 方向 A（ADR-012 §2.1）：tdx2db 是独立进程，Node 必须轮询哨兵并在写窗口释放 DuckDB instance
+  startDuckDBWriteSentinelWatcher();
+  app.log.info('DuckDB 写哨兵轮询已启动（方向 A）');
 
   // 注册路由
   await registerRoutes(app);
@@ -67,6 +75,17 @@ async function bootstrap() {
 // 优雅退出
 process.on('SIGTERM', async () => {
   console.log('收到 SIGTERM，正在关闭...');
+  stopDuckDBWriteSentinelWatcher();
+  const { closeDuckDBInstance } = await import('./db/duckdb.js');
+  await closeDuckDBInstance();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('收到 SIGINT，正在关闭...');
+  stopDuckDBWriteSentinelWatcher();
+  const { closeDuckDBInstance } = await import('./db/duckdb.js');
+  await closeDuckDBInstance();
   process.exit(0);
 });
 

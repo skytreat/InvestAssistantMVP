@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessageOrString } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import PluginParamForm, {
@@ -360,7 +361,7 @@ export default function StockScan() {
         ...(marketCapMaxYi.trim() !== '' ? { market_cap_max: Number(marketCapMaxYi) } : {}),
         // ⚠️ 不传 industry_code：板块表 0 行 → 传了会把结果清空（见文件头说明）
       });
-      if (res.data?.success && res.data?.data) {
+      if (isOkEnvelope(res.data) && res.data?.data) {
         setResults((res.data.data.results ?? []) as ScanResult[]);
         setTotalCandidates(res.data.data.totalCandidates ?? 0);
         setTotalPass(res.data.data.total ?? 0);
@@ -383,7 +384,7 @@ export default function StockScan() {
     setActionError('');
     try {
       const res = await api.post('/candidate', { asset_code: symbol });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         markRow(symbol, 'candidate');
         setActionMsg(`${symbol} 已加入候选池`);
       } else {
@@ -408,7 +409,7 @@ export default function StockScan() {
     markRow(symbol, 'loading');
     try {
       const res = await api.post('/watch', { asset_code: symbol });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         markRow(symbol, 'watch');
         setActionMsg(`${symbol} 已加入自选`);
       } else {
@@ -441,7 +442,7 @@ export default function StockScan() {
     setBatchLoading(true);
     try {
       const res = await api.post('/candidates/batch', { asset_codes: codes });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         const data = (res.data.data ?? {}) as {
           added?: number;
           skipped?: number;
@@ -632,9 +633,10 @@ export default function StockScan() {
             <option value="">全部</option>
           </select>
           {/*
-            ⚠️ 颜色用 `COLORS.textDisclaimer`（深琥珀 #92400e，白底对比度 7.2:1 ≥ 4.5:1）
-               而不是 `COLORS.warning`（#d97706 对比度 3.3:1）——
+            ⚠️ 颜色用 `COLORS.textWarning`（深琥珀 #92400e，白底对比度 7.09:1 ≥ 4.5:1）
+               而不是 `COLORS.warning`（#d97706 是饱和图形档，对比度 3.19:1）——
                后者会被真浏览器 axe 判为 color-contrast 违规（serious）。
+               （Wave 7 卡 5 新增了 `textWarning`；此处沿用同值的 `textDisclaimer` 亦可。）
           */}
           <span style={{ ...hintStyle, color: COLORS.textDisclaimer }}>行业数据源暂不可用</span>
         </div>
@@ -744,7 +746,7 @@ export default function StockScan() {
           放在上方的「选股配置」卡片里会让用户在页面底部点了按钮却看不到回显。
         */}
         {actionError && <div style={errorStyle}>{actionError}</div>}
-        {actionMsg && <div style={successStyle}>{actionMsg}</div>}
+        {actionMsg && <div style={{ ...successStyle, color: COLORS.textSuccess }}>{actionMsg}</div>}
 
         {loading ? (
           <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>选股进行中...</div>
@@ -856,7 +858,7 @@ export default function StockScan() {
                               typeof pct === 'number'
                                 ? pct >= 0
                                   ? COLORS.danger
-                                  : COLORS.success
+                                  : COLORS.textSuccess
                                 : COLORS.textSecondary,
                           }}
                         >
@@ -868,7 +870,7 @@ export default function StockScan() {
                             style={{
                               color:
                                 r.signalType === 'BUY'
-                                  ? COLORS.success
+                                  ? COLORS.textSuccess
                                   : r.signalType === 'SELL'
                                     ? COLORS.danger
                                     : COLORS.textSecondary,
@@ -891,7 +893,13 @@ export default function StockScan() {
                           <button
                             style={{
                               ...smallButtonStyle,
-                              background: COLORS.success,
+                              /*
+                               * ⚠️ 底色用**正文色档**（Wave 7 卡 5 · 裁决 D-9）：
+                               *   `COLORS.success`（饱和绿）承载白字只有 3.30:1 —— 达不到
+                               *   WCAG 1.4.3 的 4.5:1，真浏览器 axe 会判 color-contrast（serious）。
+                               *   `textSuccess`（#15803d）+ 白字 = 5.02:1 ✅
+                               */
+                              background: COLORS.textSuccess,
                             }}
                             disabled={st === 'loading' || st === 'watch'}
                             onClick={() => void promoteToWatch(r.symbol)}

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeSystemLog } from './logger.js';
+import { enterDuckDBWriteWindow } from '../db/duckdb.js';
 
 /**
  * 行情更新补跑（G3a — PRD D3「WARN 级别校验自动触发补跑」+ SDD §5.1 Step 3）
@@ -23,6 +24,9 @@ const execFileAsync = promisify(execFile);
 
 /** 单次补跑超时（SDD：5 分钟） */
 const RERUN_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_TIMEOUT_MS ?? 300_000);
+
+/** systemctl 补跑的轮询上限（对齐 tdx2db.service 的 TimeoutStartSec=1800） */
+const RERUN_SYSTEMCTL_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_SYSTEMCTL_TIMEOUT_MS ?? 1_800_000);
 
 /** 补跑后等待落库稳定的最长时间 */
 const RETRY_SETTLE_MS = Number(process.env.TDX2DB_RERUN_SETTLE_MS ?? 3_000);
@@ -59,9 +63,9 @@ async function _trySystemdRun(): Promise<RerunResult | null> {
     // systemd-run 不存在 / 无权限 / tdx2db 失败 → 交给下一级
     writeSystemLog({
       logType: 'tdx2db_update',
-      level: 'WARN',
-      message: 'systemd-run 补跑未成功，尝试降级方式',
-      detail: String(err).slice(0, 300),
+      level: 'INFO',
+      message: 'systemd-run 不可用，降级到 systemctl',
+      detail: String(err?.stderr || err?.stdout || err).slice(0, 500),
     });
     return null;
   }
@@ -71,7 +75,7 @@ async function _trySystemctl(): Promise<RerunResult | null> {
   try {
     await execFileAsync('systemctl', ['start', 'tdx2db.service'], { timeout: 30_000 });
     // 异步启动，轮询等待 oneshot 结束
-    const deadline = Date.now() + RERUN_TIMEOUT_MS;
+    const deadline = Date.now() + RERUN_SYSTEMCTL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 3_000));
       const { stdout } = await execFileAsync(
@@ -137,7 +141,7 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
         code === 'ENOENT'
           ? 'tdx2db 二进制不存在，跳过补跑（本地开发环境正常现象）'
           : 'tdx2db 直接 exec 补跑失败',
-      detail: String(err).slice(0, 300),
+      detail: String(err?.stderr || err?.stdout || err).slice(0, 500),
     });
     return null;
   }
@@ -156,7 +160,27 @@ export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
     detail: `dburi=${DUCKDB_URI}`,
   });
 
+  // 🔴 **方向 B**（ADR-012 §2.3）：Node 自己触发写 ⇒ 必须 Node 主动让锁。
+  //   - 先置写窗口标志 + close instance，再 exec tdx2db，结束后清标志
+  //   - ⚠️ **只 close 不够**：窗口内并发查询会重建 instance 抢回锁 ⇒ tdx2db 失败
+  //   - 三级降级链（systemd-run / systemctl / exec）全部是独立进程 ⇒ 全都要写锁
+  //     ⇒ 全部被挡（方向 B 是它们能成功的唯一前提）
+  let releaseWriteWindow: (() => void) | null = null;
+  try {
+    releaseWriteWindow = await enterDuckDBWriteWindow();
+  } catch (err) {
+    writeSystemLog({
+      logType: 'tdx2db_update',
+      level: 'WARN',
+      message: '进入 DuckDB 写窗口失败，保持现状继续主流程',
+      detail: String(err).slice(0, 300),
+    });
+    return { status: 'FAIL', method: 'none', message: 'enter write window failed' };
+  }
+
   const result = (await _trySystemdRun()) ?? (await _trySystemctl()) ?? (await _tryDirectExec());
+
+  if (releaseWriteWindow) releaseWriteWindow();
 
   if (result) {
     if (result.status === 'SUCCESS') {

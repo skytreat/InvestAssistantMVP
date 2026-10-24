@@ -7,19 +7,36 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { writeSystemLog } from './logger.js';
 
 /**
- * 双库备份（T30）
+ * 备份（T30）：SQLite 恒常 + DuckDB 可配置开关（DEC-13）
  *
  * SQLite：better-sqlite3 db.backup(path) 热备份（零停机，AGENTS.md 推荐）
  * DuckDB：COPY v_stock_qfq TO parquet（本质 SELECT 导出，不写 DuckDB 本身，符合只读硬约束）
  *   - 服务器实测全量 821MB parquet 几秒跑完
  *
- * 保留策略：本地 /opt/invol/backup/ 保留 3 天，清理过期文件
+ * 保留策略：本地 /opt/invol/IA_Prod/backup/ 行情 7 天 / 业务 30 天，清理过期文件
  * OCI Object Storage rclone copyto：MVP 简化——备份到本地足够（用户手动跑 cron mount 后再扩）
  */
 
-// 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/backup 覆盖）
+// 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/IA_Prod/backup 覆盖）
 export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup');
-const RETENTION_DAYS = 3;
+// ⚠️ **分级保留期**（D-6 裁决 L2：b）—— Requirements §4.2 #13 / SDD §6.5：
+//   行情数据（可重建）保留 7 天；业务数据（不可重建）保留 30 天。
+//   之前的实现是统一 3 天，把唯一有业务意义的分级抹平了 —— 2026-10-22 修正。
+export const QUOTE_RETENTION_DAYS = 7;
+export const BUSINESS_RETENTION_DAYS = 30;
+
+/**
+ * 行情库备份开关（DEC-13 / Requirements §4.2 #12-#13）
+ *
+ * 默认开启；**仅** `ENABLE_QUOTE_BACKUP=false` 关闭。
+ * ⚠️ 必须**每次调用时**惰性读取：`--coverage` 会在 setupFiles 之前加载模块，
+ *    模块顶层常量会固化成导入瞬间的环境（AGENTS.md「CI 三陷阱」#2）。
+ * ⚠️ 只影响 DuckDB 行情库（可由 tdx2db 重建）；SQLite 业务库不可重建，
+ *    备份恒常执行，不受本开关影响。
+ */
+export function isQuoteBackupEnabled(): boolean {
+  return process.env.ENABLE_QUOTE_BACKUP !== 'false';
+}
 
 function _ensureBackupDir(): void {
   if (!fs.existsSync(BACKUP_DIR)) {
@@ -34,16 +51,26 @@ function _date(): string {
   return local.toISOString().slice(0, 10);
 }
 
+export function _retentionDaysFor(name: string): number {
+  // 行情备份产物（parquet）：7 天；业务备份产物（SQLite VACUUM INTO）：30 天；
+  // 其余文件（目录、未知扩展名）按业务的 30 天处理，宁可多留也不误删。
+  if (/^v_stock_qfq\..*\.parquet$/.test(name) || /^v_etf_qfq\..*\.parquet$/.test(name)) {
+    return QUOTE_RETENTION_DAYS;
+  }
+  return BUSINESS_RETENTION_DAYS;
+}
+
 export function _deleteOldBackups(): number {
   _ensureBackupDir();
-  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
   let deleted = 0;
   const entries = fs.readdirSync(BACKUP_DIR);
   for (const name of entries) {
     const full = path.join(BACKUP_DIR, name);
     try {
       const stat = fs.statSync(full);
-      if (stat.isFile() && stat.mtimeMs < cutoff) {
+      if (!stat.isFile()) continue;
+      const cutoff = Date.now() - _retentionDaysFor(name) * 24 * 60 * 60 * 1000;
+      if (stat.mtimeMs < cutoff) {
         fs.unlinkSync(full);
         deleted++;
       }
@@ -84,15 +111,35 @@ export async function backupSQLite(): Promise<{ success: boolean; size?: number;
  * DuckDB COPY TO parquet（本质 SELECT 导出，不写 DuckDB 本身）
  * Fastify 进程只有 SELECT 权限也能做，符合 AGENTS.md 硬约束
  */
-export async function backupDuckDB(): Promise<{ success: boolean; size?: number; error?: string }> {
+export async function backupDuckDB(): Promise<{
+  success: boolean;
+  size?: number;
+  skipped?: boolean;
+  error?: string;
+}> {
+  // 关闭时：不建目录、不打开 DuckDB、不写 parquet，仅留一条 SKIP 日志。
+  if (!isQuoteBackupEnabled()) {
+    writeSystemLog({
+      logType: 'backup',
+      level: 'SKIP',
+      message: 'DuckDB 备份已跳过（ENABLE_QUOTE_BACKUP=false）',
+      detail: 'quote_backup=SKIP reason=config_disabled',
+    });
+    return { success: true, skipped: true };
+  }
+
   try {
     _ensureBackupDir();
     // ⚠️ 必须复用 `db/duckdb.ts` 的解析器 —— 两处各读一遍 env 会在测试档位切换时口径不一
     const duckdbPath = resolveDuckDBPath();
     const out = path.join(BACKUP_DIR, `v_stock_qfq.${_date()}.parquet`);
 
-    const inst = await DuckDBInstance.create(duckdbPath);
+    const inst = await DuckDBInstance.create(duckdbPath, { access_mode: 'READ_ONLY' });
     const conn = await inst.connect();
+    // ⚠️ 备份期间 Fastify 也拿不到库（backup 与 tdx2db 都在写）⇒
+    //    本函数在 direction A 的哨兵窗口内被调用时，必须先 close instance。
+    //    此处 duckdb.ts 单例已 close（由 enterDuckDBWriteWindow 或手动 close），
+    //    故这里创建的 instance 是独立的、短生命周期的只读 instance。
     await conn.runAndReadAll(`COPY v_stock_qfq TO '${out}' (FORMAT PARQUET)`);
     const size = fs.statSync(out).size;
     writeSystemLog({
@@ -159,11 +206,11 @@ function _uploadToOCI(files: string[]): { success: boolean; uploaded: number; er
 }
 
 /**
- * 一键双库备份 + 可选 OCI 上传
+ * 一键备份（SQLite 恒常 + DuckDB 受 ENABLE_QUOTE_BACKUP 控制）+ 可选 OCI 上传
  */
 export async function runFullBackup(): Promise<{
   sqlite: { success: boolean; size?: number };
-  duckdb: { success: boolean; size?: number };
+  duckdb: { success: boolean; size?: number; skipped?: boolean };
   cleanedFiles: number;
   ociUploaded?: number;
 }> {
@@ -188,7 +235,11 @@ export async function runFullBackup(): Promise<{
 
   return {
     sqlite: { success: sqliteResult.success, size: sqliteResult.size },
-    duckdb: { success: duckdbResult.success, size: duckdbResult.size },
+    duckdb: {
+      success: duckdbResult.success,
+      size: duckdbResult.size,
+      skipped: duckdbResult.skipped,
+    },
     cleanedFiles: cleaned,
     ociUploaded,
   };

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
@@ -40,6 +41,22 @@ const CATEGORY_LABEL: Record<string, string> = {
 };
 
 /**
+ * 「合规 / 承诺」提示条样式
+ *
+ * ⚠️ 复用既有的 `bgDisclaimer` / `textDisclaimer` 色板（**不新增裸 hex**）——
+ *    深琥珀文字（#92400e）在浅琥珀底上的对比度 6.8:1 ≥ 4.5:1。
+ */
+const noticeStyle: React.CSSProperties = {
+  background: COLORS.bgDisclaimer,
+  color: COLORS.textDisclaimer,
+  borderRadius: RADIUS.base,
+  padding: '8px 12px',
+  marginBottom: 12,
+  fontSize: TYPO.smallSize,
+  lineHeight: 1.8,
+};
+
+/**
  * 插件「启用 / 禁用」开关的 checkbox id（T63）
  *
  * 与参数字段 id 命名空间隔离（用 `plugin-` 前缀），避免与同名参数 key 撞 id。
@@ -70,7 +87,7 @@ export default function Settings() {
     setError(null);
     try {
       const res = await api.get('/strategy/plugins');
-      if (res.data.success) setPlugins(res.data.data ?? []);
+      if (isOkEnvelope(res.data)) setPlugins(res.data.data ?? []);
       else setError(res.data.message ?? '加载失败');
     } catch (err) {
       setError(extractErrorMessage(err, '加载失败'));
@@ -107,7 +124,9 @@ export default function Settings() {
     setSaving(p.id);
     setError(null);
     try {
-      await api.post(`/strategy/plugins/${p.id}/config`, { params });
+      // ⚠️ **必须用 PUT**（SDD §4.4）：后端只注册了 `PUT /api/strategy/plugins/:id/config`。
+      //   Fastify **不做方法回退** ⇒ 用 POST 会 404（按钮点了没反应）。
+      await api.put(`/strategy/plugins/${p.id}/config`, { params });
       setMsg(`已保存「${p.name}」参数`);
       setExpanded(null);
       await load();
@@ -122,7 +141,9 @@ export default function Settings() {
     const next = p.enabled ? 0 : 1;
     setError(null);
     try {
-      await api.post(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
+      // ⚠️ **必须用 PUT**（SDD §4.4）：后端只注册了 `PUT /api/strategy/plugins/:id/toggle`。
+      //   此前这里误用 POST ⇒ 设置页的「启用/禁用」开关**点了必然 404**。
+      await api.put(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
       setMsg(`已${next ? '启用' : '禁用'}「${p.name}」`);
       await load();
     } catch (err) {
@@ -134,11 +155,31 @@ export default function Settings() {
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>设置</h1>
 
-      {error && <div style={errorStyle}>{error}</div>}
-      {msg && <div style={successStyle}>{msg}</div>}
+      {/*
+       * 异步结果的播报区（T76 ⑤ · aria-live）
+       *
+       * ⚠️ **`aria-live` 必须挂在「常驻」的容器上** —— 若挂在条件渲染出来的节点上，
+       *    读屏在内容变化时该节点还不存在 ⇒ 播报不会触发（与 Dashboard / Candidates 的同款做法）。
+       * ⚠️ `successStyle` 里的 `COLORS.success` 是**饱和图形档**（白底 3.30:1）——
+       *    `theme/styles.ts` 属卡 4 的地盘（不在本卡改动范围），故在**使用点**覆盖成
+       *    正文色档 `textSuccess`（白底 5.02:1 ✅）。
+       */}
+      <div aria-live="polite" aria-busy={loading}>
+        {error && <div style={errorStyle}>{error}</div>}
+        {msg && <div style={{ ...successStyle, color: COLORS.textSuccess }}>{msg}</div>}
+      </div>
 
       <div style={cardStyle}>
         <div style={cardTitleStyle}>策略插件</div>
+        {/*
+         * PRD §5.9「插件安全承诺」——**逐字要点**（不是改写）：
+         *   「所有插件禁止包含荐股、资金托管、实盘对接功能」
+         *   「自定义插件默认执行超时保护，防止异常代码影响主流程」
+         * ⚠️ 这条承诺属于**插件管理区域**，故落在本卡片内（不是页脚、也不是全局合规条）。
+         */}
+        <div style={noticeStyle} data-testid="plugin-security-notice">
+          所有插件禁止包含荐股、资金托管、实盘对接功能；自定义插件默认执行超时保护，防止异常代码影响主流程。
+        </div>
         {loading && <Spinner />}
         {!loading && plugins.length === 0 && (
           <div style={{ color: COLORS.neutral, padding: 16 }}>暂无可用插件</div>
@@ -240,6 +281,23 @@ export default function Settings() {
           ))}
       </div>
 
+      {/*
+        PRD §5.9「隐私声明常驻（注册页 + 设置页）」——**逐字要点**：
+          「不收集手机号、位置、社交账号等多余个人信息」
+          「仅存储交易数据和行情相关数据」
+        ⚠️ 位置要求：**设置页独立区块**（不是「关于」卡片里的一句，也不是全局合规条）。
+        ⚠️ 注册页（`pages/Login.tsx`）的那一份**不在本卡改动范围**（见交付报告的遗留项）。
+      */}
+      <div style={cardStyle}>
+        <div style={cardTitleStyle}>隐私声明</div>
+        <div
+          style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}
+          data-testid="privacy-notice"
+        >
+          <div>本工具不收集手机号、位置、社交账号等多余个人信息；仅存储交易数据和行情相关数据。</div>
+        </div>
+      </div>
+
       <div style={cardStyle}>
         <div style={cardTitleStyle}>关于</div>
         <div style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}>
@@ -252,7 +310,8 @@ export default function Settings() {
             全局合规声明统一由 App.tsx 的 `<footer>`（`components/ComplianceFooter.tsx`）渲染，
             文案逐字取自 PRD §5.9。
             ⚠️ PRD §5.9 的「隐私声明常驻（注册页 + 设置页）」与「插件安全承诺（设置页插件区）」
-            属 T76 ⑥，尚未落地 —— 不要在此处替代。
+            属 T76 ⑥ —— 本卡（Wave 7 卡 5）已在**上方两个独立区块**落地（设置页部分）；
+            注册页（`pages/Login.tsx`）部分不在本卡改动范围。
           */}
         </div>
       </div>

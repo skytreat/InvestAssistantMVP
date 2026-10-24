@@ -109,7 +109,7 @@ describe('Review · PATCH 复盘 4 字段', () => {
       payload: { strategy_match: 1, review_summary: '按计划加仓', is_stop_loss: 0, remark: '纪律执行到位' },
     });
     expect(patch.statusCode).toBe(200);
-    expect(JSON.parse(patch.body).success).toBe(true);
+    expect(JSON.parse(patch.body).code).toBe(0);
 
     const after = await bundle.app.inject({
       method: 'GET',

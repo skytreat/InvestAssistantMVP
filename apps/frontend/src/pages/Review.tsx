@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { truncatedTextStyle } from '../theme/styles';
@@ -8,6 +9,7 @@ import ScrollableTable from '../components/ScrollableTable';
 import TriStateGroup, { type TriState } from '../components/TriStateGroup';
 import { ReviewTagLegend, ReviewTagPill, reviewTagOf } from '../components/ReviewTag';
 import { TRADE_TYPES, tradeTypeLabel } from '../components/tradeTypes';
+import { useDialogFocus } from '../components/useDialogFocus';
 import {
   pageContainerStyle,
   cardStyle,
@@ -158,7 +160,7 @@ function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Cali
    * 正常口径下后端 `user_asset_stat` 的收益率列是 NOT NULL 的有限值，
    * 这里只是兜底 —— 避免脏数据把整张图变成 NaN 坐标。
    */
-  const color = Number.isFinite(last) ? (last >= 0 ? COLORS.success : COLORS.danger) : COLORS.neutral;
+  const color = Number.isFinite(last) ? (last >= 0 ? COLORS.textSuccess : COLORS.danger) : COLORS.neutral;
   const hovered = hoverIndex !== null ? points[hoverIndex] : null;
 
   return (
@@ -292,6 +294,29 @@ export default function Review() {
     remark: '',
   });
 
+  /**
+   * 编辑弹窗的 a11y（Wave 7 卡 5 · T76 ⑤ / gap-list F-A15）
+   *
+   * ⚠️ 旧实现是**裸遮罩**（`position:fixed` + 一个 `<div>`）：没有 `role="dialog"`、
+   *    没有 ESC 关闭、没有焦点锁定 —— 读屏会把它当普通内容，键盘用户 Tab 得出去。
+   * ⇒ 补 `role` / `aria-modal` / `aria-labelledby`（`useId`）+ ESC 关闭 +
+   *   **焦点锁定 + 焦点回归**（原生实现，见 `components/useDialogFocus.ts`，不引第三方库）。
+   */
+  const editDialogTitleId = useId();
+  const { dialogRef: editDialogRef } = useDialogFocus<HTMLDivElement>(editingTrade !== null);
+
+  // ESC 关闭编辑弹窗（只在弹窗打开时挂监听，卸载时摘掉）
+  useEffect(() => {
+    if (!editingTrade) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setEditingTrade(null);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [editingTrade]);
+
   // T38 ① 双口径切换 + R2/R4 收益曲线
   const [caliber, setCaliber] = useState<Caliber>('price');
   const [curvePeriod, setCurvePeriod] = useState<CurvePeriod>('monthly');
@@ -301,7 +326,7 @@ export default function Review() {
   const fetchStats = async () => {
     try {
       const res = await api.get('/review/yield');
-      if (res.data.success) setStats(res.data.data);
+      if (isOkEnvelope(res.data)) setStats(res.data.data);
     } catch {
       /* ignore */
     }
@@ -311,7 +336,7 @@ export default function Review() {
     setHistoryLoading(true);
     try {
       const res = await api.get('/asset-stat/history', { params: { days: 365 } });
-      if (res.data.success) setHistory(res.data.data ?? []);
+      if (isOkEnvelope(res.data)) setHistory(res.data.data ?? []);
     } catch {
       /* ignore */
     } finally {
@@ -335,7 +360,7 @@ export default function Review() {
       if (startDate) params.start_date = startDate;
       if (endDate) params.end_date = endDate;
       const res = await api.get('/review/trades', { params });
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setTrades(res.data.data ?? []);
         setTotalPages(res.data.pagination?.totalPages ?? 1);
         setTotal(res.data.pagination?.total ?? 0);
@@ -512,7 +537,7 @@ export default function Review() {
       >
         {[
           { label: '总交易数', value: dash(stats?.totalTrades), color: COLORS.brandLink },
-          { label: '已复盘', value: dash(stats?.reviewedCount), color: COLORS.success },
+          { label: '已复盘', value: dash(stats?.reviewedCount), color: COLORS.textSuccess },
           {
             label: '胜率',
             value: stats?.winRate != null ? `${stats.winRate}%` : '--',
@@ -529,7 +554,7 @@ export default function Review() {
               stats?.totalRealizedPnl != null
                 ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
                 : '--',
-            color: (stats?.totalRealizedPnl ?? 0) >= 0 ? COLORS.success : COLORS.danger,
+            color: (stats?.totalRealizedPnl ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger,
           },
         ].map((card) => (
           <div key={card.label} style={{ ...cardStyle, flex: '1 1 140px', textAlign: 'center' }}>
@@ -708,7 +733,7 @@ export default function Review() {
                     </td>
                     <td style={thTdStyle}>
                       {t.review_summary ? (
-                        <span style={{ color: COLORS.success }}>✓</span>
+                        <span style={{ color: COLORS.textSuccess }}>✓</span>
                       ) : (
                         <span style={{ color: COLORS.textMuted }}>—</span>
                       )}
@@ -793,8 +818,15 @@ export default function Review() {
             zIndex: 200,
           }}
         >
-          <div style={{ ...cardStyle, maxWidth: 480, width: '90%' }}>
-            <div style={cardTitleStyle}>
+          <div
+            ref={editDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={editDialogTitleId}
+            tabIndex={-1}
+            style={{ ...cardStyle, maxWidth: 480, width: '90%' }}
+          >
+            <div id={editDialogTitleId} style={cardTitleStyle}>
               编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

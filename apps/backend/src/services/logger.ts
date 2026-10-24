@@ -3,7 +3,20 @@ import { ConfigStore } from '../config/configStore.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 
-const FALLBACK_FILE = '/var/log/invol/err.log';
+/** 降级日志文件的**默认**路径（可被 env `SYSTEM_LOG_FALLBACK_FILE` 覆盖）*/
+const DEFAULT_FALLBACK_FILE = '/var/log/invol/err.log';
+
+/**
+ * 取当前生效的降级日志文件路径
+ *
+ * ⚠️ **必须惰性读 env，不能在模块顶层定格**（两个理由）：
+ * 1. AGENTS.md「CI 三陷阱」第 2 条：vitest `--coverage` 会在 `setupFiles` **之前**
+ *    求值 `src/` 下的模块 → 顶层读 `process.env` 拿不到测试注入的值；
+ * 2. 集成测试需要在**导入之后**把兜底文件指向临时目录 → 顶层 `const` 会在导入时就定死。
+ */
+export function getFallbackLogFile(): string {
+  return process.env.SYSTEM_LOG_FALLBACK_FILE ?? DEFAULT_FALLBACK_FILE;
+}
 
 export interface SystemLogEntry {
   logType: string; // datacheck / signal_generate / dividend_import / backup / trigger_manual / startup
@@ -121,9 +134,75 @@ function writeNow(
 
   // 第 3 层：写文件（如果 journal 也没接住）
   try {
-    fs.appendFileSync(FALLBACK_FILE, journalMsg + '\n', { mode: 0o644 });
+    fs.appendFileSync(getFallbackLogFile(), journalMsg + '\n', { mode: 0o644 });
   } catch {
     // 彻底放弃
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// 降级日志的**读取**端（Wave 7 · 卡 1 · I-13）
+// ──────────────────────────────────────────────────────────────────────────
+
+/** 读降级日志尾部若干行的结果 */
+export interface FallbackLogTail {
+  /** 兜底文件是否存在（不存在 = 从未降级过，前端据此显示空态而非报错）*/
+  exists: boolean;
+  /** 尾部最多 n 行（**原始文本行**，JSON Lines 格式，一行一条）*/
+  lines: string[];
+}
+
+/** 读取降级日志时最多回读多少字节（大文件不至于全量进内存）*/
+const FALLBACK_TAIL_MAX_BYTES = 256 * 1024;
+
+/**
+ * 读降级日志文件的**尾部 n 行**（JSON Lines，一行一条）
+ *
+ * ## 为什么需要它
+ *
+ * `writeSystemLog` 的三层降级里，第 3 层把日志写成文件（`/var/log/invol/err.log`），
+ * 但**一直没有读取端**（plan §13.2 的 I-13）→ 管理员在 Admin 页看不到
+ * 「SQLite 不可用时到底写了什么」，只能去服务器上 `tail`。
+ * 本函数是那个读取端，配合 `GET /api/admin/system-log/fallback` 暴露给管理员。
+ *
+ * ## 契约（与路由一致）
+ *
+ * - 文件**不存在** → `{ exists: false, lines: [] }`（这是**正常状态**，不是错误）；
+ * - 文件存在但读失败（如权限不足）→ **抛出**原始异常，由路由转成 500
+ *   （不静默伪装成「无降级记录」，否则管理员会以为系统健康）。
+ *
+ * ⚠️ **不返回文件路径** —— 路径泄露等于告诉攻击者「去读哪个文件」。
+ *    路由层也因此**不回传** fs 的原始错误信息（fs 错误里含绝对路径）。
+ *
+ * @param n 回读的最大行数（<=0 时按 1 处理）
+ */
+export function readFallbackLogTail(n: number): FallbackLogTail {
+  const file = getFallbackLogFile();
+  const limit = Math.max(1, Math.floor(n));
+
+  let fd: number;
+  try {
+    fd = fs.openSync(file, 'r');
+  } catch (err) {
+    // 文件不存在 = 从未发生过降级 → 空态，不是错误
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false, lines: [] };
+    throw err;
+  }
+
+  try {
+    const size = fs.fstatSync(fd).size;
+    const readBytes = Math.min(size, FALLBACK_TAIL_MAX_BYTES);
+    const buf = Buffer.alloc(readBytes);
+    if (readBytes > 0) fs.readSync(fd, buf, 0, readBytes, size - readBytes);
+    const lines = buf
+      .toString('utf8')
+      .split('\n')
+      .filter((line) => line.trim() !== '');
+    // ⚠️ 只读了尾部一段时，**首行可能是被截断的半行** → 丢掉
+    if (readBytes < size && lines.length > 0) lines.shift();
+    return { exists: true, lines: lines.slice(-limit) };
+  } finally {
+    fs.closeSync(fd);
   }
 }
 

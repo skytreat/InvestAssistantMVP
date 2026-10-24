@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
+import { resolveErrorMessage } from '../api/errorMessages';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import {
   pageContainerStyle,
@@ -134,9 +137,22 @@ function isDuplicateError(err: unknown): boolean {
 
 export default function TradeInput() {
   const isMobile = useIsMobile();
+  const [searchParams] = useSearchParams();
+
+  /**
+   * T79 ⑤：Dashboard 快捷操作 `/trade?type=buy|sell` 的落点。
+   * 只接受已知交易类型，非法值一律回落到 `buy`（不抛错、不白屏）。
+   */
+  const queryType = searchParams.get('type');
+  /** `sell` 是 Dashboard 快捷入口的通用叫法；业务口径对应「减仓」（Requirements §5.1 无 sell） */
+  const normalizedQueryType = queryType === 'sell' ? 'reduce' : queryType;
+  const initialTradeType: TradeType =
+    normalizedQueryType && Object.prototype.hasOwnProperty.call(TRADE_TYPE_LABEL, normalizedQueryType)
+      ? (normalizedQueryType as TradeType)
+      : 'buy';
 
   const [assetCode, setAssetCode] = useState('');
-  const [tradeType, setTradeType] = useState<TradeType>('buy');
+  const [tradeType, setTradeType] = useState<TradeType>(initialTradeType);
   const [exDividendOpen, setExDividendOpen] = useState(false);
   const [tradeDate, setTradeDate] = useState<string>(todayStr());
   const [tradeTime, setTradeTime] = useState<string>(nowTimeStr());
@@ -327,15 +343,22 @@ export default function TradeInput() {
     setLoading(true);
     try {
       const res = await api.post('/trade', payload);
-      if (res.data.success) {
+      if (isOkEnvelope(res.data)) {
         setResult(res.data.data as TradeResult);
       } else {
-        const errMsg = res.data.message ?? '请求失败';
-        setError(errMsg === 'HOLDING_INSUFFICIENT' ? '持仓不足' : errMsg);
+        // ⚠️ **不再拿中文文案去比错误码**（本波修复的缺陷 ④）：
+        //   T89a 起 `message` 载中文、`code` 载错误码 —— 拿 message 比 'HOLDING_INSUFFICIENT'
+        //   **恒为 false**（死代码）。且后端已给「持仓不足：无法sell sh600000」这种
+        //   **带标的与交易类型**的具体文案 ⇒ 覆盖成笼统的「持仓不足」反而丢信息。
+        //   口径：`resolveErrorMessage` = message 优先 → 缺 message 时按 code 查码表 → 兜底。
+        setError(resolveErrorMessage(res.data, '请求失败'));
       }
     } catch (err) {
-      const errMsg = extractErrorMessage(err);
-      setError(errMsg === 'HOLDING_INSUFFICIENT' ? '持仓不足' : errMsg);
+      // ⚠️ HTTP 409 的 HOLDING_INSUFFICIENT 走的是**异常**分支（axios 对 4xx 抛错），
+      //   不是上面的 else 分支。
+      //   `extractErrorMessage` 内置回落链：message →（缺）按 code 查码表 → 兜底，
+      //   ⇒ 错误码仍然是判定依据，只是经由码表而不是「中文文案 == 错误码」。
+      setError(extractErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -497,7 +520,7 @@ export default function TradeInput() {
           />
 
           {holdingError && (
-            <div style={{ fontSize: TYPO.captionSize, color: COLORS.warning, marginBottom: 8 }}>
+            <div style={{ fontSize: TYPO.captionSize, color: COLORS.textWarning, marginBottom: 8 }}>
               {holdingError}
             </div>
           )}
@@ -556,7 +579,12 @@ export default function TradeInput() {
             </div>
           )}
           {result && (
-            <div style={successStyle}>
+            /*
+             * ⚠️ `successStyle` 里的 `COLORS.success` 是**饱和图形档**（白底 3.30:1）——
+             *   `theme/styles.ts` 属卡 4 的地盘（不在本卡改动范围），故在**使用点**覆盖成
+             *   正文色档 `textSuccess`（白底 5.02:1 ✅）。
+             */
+            <div style={{ ...successStyle, color: COLORS.textSuccess }}>
               提交成功！交易编号: {result.trade_id} &nbsp;|&nbsp; 最新持仓: 数量={result.position.qty}, 均价=
               {result.position.avgCost.toFixed(4)}
             </div>

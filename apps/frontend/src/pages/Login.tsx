@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
-import { SPACING } from '../theme/tokens';
+import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { useUserStore } from '../store/user';
 import { safeInternalPath } from '../utils/path';
 import {
   pageContainerStyle,
   cardStyle,
   titleStyle,
+  cardTitleStyle,
   inputStyle,
   buttonStyle,
   errorStyle,
@@ -57,8 +59,8 @@ export default function Login() {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { username, password });
-      // 兼容两种 envelope 判定：当前后端的 `success` 与 T89b 之后的 `code === 0`
-      const succeeded = res.data?.success === true || res.data?.code === 0;
+      // 🔴 T89b：后端已删 `success` 字段 —— 成功判定唯一口径是 `code === 0`
+      const succeeded = isOkEnvelope(res.data);
       const session = (res.data?.data ?? null) as SessionPayload | null;
       if (succeeded && session?.token) {
         login(
@@ -117,6 +119,32 @@ export default function Login() {
           </div>
           {error && <div style={errorStyle}>{error}</div>}
         </form>
+      </div>
+
+      {/*
+        PRD §5.9「隐私声明常驻：**注册页** + 设置页展示隐私声明」
+        —— 逐字要点：
+          「不收集手机号、位置、社交账号等多余个人信息」
+          「仅存储交易数据和行情相关数据」
+
+        ⚠️ **口径**：本前端目前**没有独立的「注册页」路由** ——
+          后端有 `POST /api/auth/register`（首个注册用户自动 admin），
+          但前端**只有登录表单**（`/login` 是**唯一免鉴权页面**，即「注册/登录」入口页）。
+          ⇒ PRD §5.9 要求的「注册页展示隐私声明」落在**本页面**：
+          声明**常驻**在注册/登录入口上，用户在**建号之前**就能看到。
+          （设置页的那一份由 Wave 7 卡 5 落地，见 `pages/Settings.tsx` 的 `privacy-notice`。）
+
+        ⚠️ **不得复用全局合规条**（`components/ComplianceFooter.tsx`）——
+          PRD §5.9 要的是**独立区块**，且文案与全局合规条**不同**。
+      */}
+      <div style={{ ...cardStyle, maxWidth: 400 }}>
+        <div style={cardTitleStyle}>隐私声明</div>
+        <div
+          style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}
+          data-testid="privacy-notice"
+        >
+          <div>本工具不收集手机号、位置、社交账号等多余个人信息；仅存储交易数据和行情相关数据。</div>
+        </div>
       </div>
     </div>
   );

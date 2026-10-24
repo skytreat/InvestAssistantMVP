@@ -126,13 +126,13 @@ interface TradeRecord {}
 ## 9 后端响应与错误码
 
 - 统一 envelope：**以 [SDD §4.2]](client/SDD.md) 为唯一权威**；落地分两阶段，见 [ADR-002](adr/ADR-002-api-envelope-and-error-codes.md)
-  （`T89a` Wave 1 加字段 / `T89b` Wave 8 删 `success`）
+  （`T89a` Wave 1 加字段 / `T89b` Wave 8 删 `success`）—— **两阶段均已落地**
 - 状态码以 [SDD §4.3]](client/SDD.md) 的 HTTP 列为准（例 `HOLDING_INSUFFICIENT` → **409**）
 - ✅ **错误响应含 `message` 字段**（中文文案，供前端直接展示）
   > ❌ 早期版本写「禁止额外 msg 字段」—— **与 SDD §4.2 示例直接矛盾**，且会导致
   > 前端拿不到中文文案、只能显示裸错误码。
-- ⚠️ **代码尚未对齐**（当前是 `{success, data/error, message}`，错误码 17 个）——
-  改代码由 T89a/T89b 负责，**本文档不预写新格式**以免与实现脱节。
+- ✅ **成功判定只看 `code === 0`**；响应体**没有 `success` 键**（T89b 已删，勿再加回来）。
+  错误体额外带 `error` 字段（与 `code` 同值，供前端兜底），错误信息一律在 `message`。
 - 其他：db 实例通过 `fastify.decorate` 挂载；所有入参做 Fastify schema 校验；
   服务只监听 `127.0.0.1`（❌ 禁止 `0.0.0.0`）
 

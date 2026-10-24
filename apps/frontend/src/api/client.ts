@@ -3,7 +3,7 @@ import { useUserStore } from '../store/user';
 import { resolveErrorMessage } from './errorMessages';
 
 /**
- * API 客户端（T64 · 错误码统一映射 + 会话过期体验）
+ * API 客户端（T64 · 错误码统一映射 + 会话过期体验；T89b · 统一 envelope 判定）
  *
  * 本文件承担三件事：
  *
@@ -16,7 +16,22 @@ import { resolveErrorMessage } from './errorMessages';
  *
  * 3. **会话过期通知（pub/sub）** —— 本文件不是组件，不能用 `<Navigate>`，
  *    故导出一对极简的订阅/广播函数，由 `App.tsx` 订阅后做跳转与提示条。
+ *
+ * 🔴 **T89b：成功判定的唯一口径 = `code === 0`**（后端已删除 `success` 字段）。
+ *    判定函数的**实现**放在 `api/envelope.ts`（纯函数、零依赖），
+ *    本文件负责 **re-export**，使 `api/client.ts` 仍是「API 层公共入口」这一约定成立。
+ *
+ * ⚠️ **为什么实现不直接写在本文件**：`api/client.ts` 会被前端测试
+ *    `vi.mock('../../src/api/client', () => ({ api: {...} }))` **整模块替换**，
+ *    放在这里的判定函数在测试里会变成 `undefined` ⇒ 调用点 `TypeError`。
+ *    `api/envelope.ts` 不被 mock ⇒ 判定逻辑始终是真实实现。
  */
+
+/* ------------------------------------------------------------------ *
+ * 统一 envelope 判定（T89b）—— 实现见 `api/envelope.ts`
+ * ------------------------------------------------------------------ */
+
+export { isOkEnvelope, isFailedEnvelope, type ApiEnvelopeBody } from './envelope';
 
 declare module 'axios' {
   interface AxiosRequestConfig {

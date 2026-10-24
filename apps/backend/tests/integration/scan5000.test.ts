@@ -178,7 +178,7 @@ describe('F7 / PE2 — 全市场条件选股 ≤ 3s（SDD §12.5）', () => {
       // ---- 契约断言 ----
       expect(status).toBe(200);
       expect(body.code).toBe(0);
-      expect(body.success).toBe(true);
+      expect(body.code).toBe(0);
 
       // 候选池：全市场口径（非空，且不超过 POOL_LIMIT 这个稳定上界）
       expect(data.totalCandidates).toBeGreaterThan(0);

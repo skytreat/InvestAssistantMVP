@@ -4,12 +4,13 @@
 import { queryDuckDB } from '../db/duckdb.js';
 import { writeSystemLog } from './logger.js';
 import { resolveTargetTradeDate } from './marketData.js';
+import { queryLatestTdx2dbTiming } from './quoteUpdateStatus.js';
 
 /** 校验结果三值（扩展 SKIP 用于 C11/C12 MVP） */
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
 
 /** 该日是否有任何行情数据（DuckDB 不可用时保守返回 false） */
-async function hasQuoteDataOn(date: string): Promise<boolean> {
+export async function hasQuoteDataOn(date: string): Promise<boolean> {
   try {
     const rows = await queryDuckDB<{ quote_rows: number }>(
       'SELECT COUNT(*) AS quote_rows FROM v_stock_qfq WHERE date = ?',
@@ -99,6 +100,43 @@ export interface CheckSummary {
   detail?: string; // 额外说明
   durationMs: number;
 }
+
+/**
+ * C1~C12 的中文名称 —— **逐字取自 SDD §5.7 主表的小节标题**
+ *
+ * ⚠️ **为什么名称必须由后端出**（Wave 7 · 卡 3 · 裁决 D-4）：
+ *   G7.6 的原文是「卡片显示的**校验名称与 SDD §5.7 主表一致**」。
+ *   若前端硬编码这份清单，一致性就变成「前端自说自话 vs 前端自说自话」——
+ *   名称一旦与 SDD 漂移，**没有任何一处会报错**（自证）。
+ *   ⇒ 唯一可证伪的做法：名称由本文件（**全仓唯一引用 SDD §5.7 标题的地方**）导出，
+ *     路由随结果一起下发，前端只负责渲染。
+ *
+ * ⚠️ **名称 = 标题正文**，不含编号前缀（`C1：` 那部分不是名称）。
+ * ⚠️ **SDD §5.7 末尾「📎 扩展校验」的 6 条（停牌/退市/ST/价差/成交量/滞后）不在此表内** ——
+ *    它们**不占用 C 编号、不计入 12 项主表**（SDD §5.7 该小节的裁决）。
+ */
+export const CHECK_NAMES: Record<string, string> = {
+  C1: '当日日线行数是否正常',
+  C2: '交易日历匹配',
+  C3: '复权因子数据新鲜度',
+  C4: '除权除息数据新鲜度',
+  C5: '板块 / 概念数据完整性',
+  C6: '市值数据存在性',
+  C7: '日线价格合理性',
+  C8: '行情更新执行时长',
+  C9: '复权因子抽样数学一致性',
+  C10: '除权除息事件覆盖完整性',
+  C11: 'Tushare 免费 API 跨源校验（每日 1 次）',
+  C12: '东财跨源校验（20 只抽样，节流）',
+};
+
+/**
+ * C1~C12 的**规范编号全集**（顺序 = 展示顺序）
+ *
+ * ⚠️ 由 `CHECK_NAMES` 的键派生 ⇒ 二者**不可能漂移**（新增一项校验只需改 `CHECK_NAMES`）。
+ * ⚠️ 这是「12 项」的**结构基准**（裁决 D-1），**不含名称** —— 名称一律由后端下发。
+ */
+export const CHECK_IDS: readonly string[] = Object.keys(CHECK_NAMES);
 
 // ─────────────────────────────────────────────────────────────────
 // 内部工具函数
@@ -399,9 +437,7 @@ interface C5Row {
 async function checkC5(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const row = firstRow(
-      await queryDuckDB<C5Row>(C5_SQL, [tradeDate, tradeDate, TOLERANCES.CLASS_COUNT_DROP]),
-    );
+    const row = firstRow(await queryDuckDB<C5Row>(C5_SQL, [tradeDate, TOLERANCES.CLASS_COUNT_DROP]));
     if (!row) {
       return { checkId: 'C5', result: 'SKIP', detail: 'DuckDB 无返回行', durationMs: Date.now() - start };
     }
@@ -521,73 +557,67 @@ async function checkC7(tradeDate: string): Promise<CheckSummary> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// C8：除权日价格跳变率交叉验证
-// SQL 原样来自 SDD §5.7 C8
-// ─────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────
 // C8：行情更新执行时长（Requirements §7.1：≤ 120s，WARN）
 // ⚠️ T85：初稿此处实现的是「数据滞后天数」—— 那是 SDD 的扩展校验，已移出。
-//    现按需求读 system_log 的 tdx2db_update 时间戳差。
-//    无该日志行（新库 / 从未跑过 tdx2db）→ SKIP，不得计为 PASS（ADR-004）。
+// ⚠️ T107（2026-10-24）：system_log 是 **SQLite** 表，原实现用 queryDuckDB 查询
+//    ⇒ 生产环境必然 `Catalog Error: Table with name system_log does not exist`，
+//    且 SQL 里的 `?::date` 是 PostgreSQL 语法，SQLite 不支持。
+//    现改为读 SQLite，并使用 T105 写入的 `duration_s`（真实执行耗时）。
+//    无结构化日志（新库 / 从未跑过 tdx2db）→ SKIP，不得计为 PASS（ADR-004）。
 // ─────────────────────────────────────────────────────────────────
-
-const C8_SQL = `
-SELECT
-    MAX(created_at) AS started_at,
-    CASE WHEN COUNT(*) = 0 THEN 'SKIP' ELSE 'PASS' END AS has_row
-FROM system_log
-WHERE log_type = 'tdx2db_update'
-  AND log_date = ?::date
-`;
-
-interface C8Row {
-  started_at: string | null;
-  has_row: CheckResult;
-}
-
-/** 把 system_log 的 'YYYY-MM-DD HH:MM:SS' 转成 Date（按本地时区） */
-function parseLocalTs(ts: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(ts);
-  if (!m) return null;
-  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-}
 
 async function checkC8(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const row = firstRow(await queryDuckDB<C8Row>(C8_SQL, [tradeDate]));
-    if (!row || row.has_row !== 'PASS' || !row.started_at) {
+    const row = queryLatestTdx2dbTiming(tradeDate);
+    if (!row) {
       return {
         checkId: 'C8',
         result: 'SKIP',
-        detail: `无 ${tradeDate} 的 tdx2db_update 日志（无法判定执行时长）`,
+        detail: `无 ${tradeDate} 的结构化 tdx2db_update 日志（无法判定执行时长）`,
         durationMs: Date.now() - start,
       };
     }
-    const started = parseLocalTs(row.started_at);
-    if (!started) {
+    if (!row.detail) {
       return {
         checkId: 'C8',
         result: 'WARN',
-        detail: `tdx2db_update 时间戳格式异常：${row.started_at}`,
+        detail: 'tdx2db_update 日志缺少 detail（无法判定执行时长）',
         durationMs: Date.now() - start,
       };
     }
-    // 执行时长 = 校验时刻 - 行情更新开始时刻（本库无 tdx2db 结束日志，取近似上界）
-    const elapsedSec = Math.round((Date.now() - started.getTime()) / 1000);
-    const result: CheckResult = elapsedSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.detail);
+    } catch {
+      return {
+        checkId: 'C8',
+        result: 'WARN',
+        detail: `tdx2db_update.detail 不是合法 JSON：${row.detail.slice(0, 120)}`,
+        durationMs: Date.now() - start,
+      };
+    }
+    const durationSec = Number((parsed as { duration_s?: unknown })?.duration_s);
+    if (!Number.isFinite(durationSec) || durationSec < 0) {
+      return {
+        checkId: 'C8',
+        result: 'WARN',
+        detail: `tdx2db_update.detail 缺少合法的 duration_s：${row.detail.slice(0, 120)}`,
+        durationMs: Date.now() - start,
+      };
+    }
+    const result: CheckResult = durationSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
     return {
       checkId: 'C8',
       result,
-      detail: `行情更新开始于 ${row.started_at}，至校验时已过 ${elapsedSec}s（上限 ${TOLERANCES.MAX_UPDATE_SECONDS}s）`,
+      detail: `行情更新耗时 ${durationSec}s（上限 ${TOLERANCES.MAX_UPDATE_SECONDS}s，日志时间 ${row.createdAt}）`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
     return {
       checkId: 'C8',
       result: 'WARN',
-      detail: `SQL 异常: ${String(err)}`,
+      detail: `读取 system_log 异常: ${String(err)}`,
       durationMs: Date.now() - start,
     };
   }
@@ -844,8 +874,8 @@ function compareC11Rows(local: C11LocalRow, ts: TushareDailyRow): boolean {
     priceOk(local.low, ts.low) &&
     priceOk(local.close, ts.close) &&
     priceOk(local.pre_close, ts.pre_close) &&
-    Math.abs(local.volume - ts.volume) < 1 &&
-    Math.abs(local.amount - ts.amount) < 1
+    Math.abs(local.volume - ts.volume * 100) < 1 &&
+    Math.abs(local.amount - ts.amount * 1000) < Math.max(1, local.amount * 0.005)
   );
 }
 

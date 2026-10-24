@@ -95,7 +95,7 @@ describe('T74 · DELETE /api/candidate/:asset_code —— 移除候选（软删�
       headers: authHeaders(),
     });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).success).toBe(true);
+    expect(JSON.parse(res.body).code).toBe(0);
 
     // 列表不再返回
     const list = await bundle.app.inject({

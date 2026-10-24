@@ -1,23 +1,25 @@
 [Unit]
 Description=InvestAssistant Fastify 后端
-After=network-online.target tdx2db.service
-Wants=network-online.target tdx2db.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=invol
 Group=invol
-WorkingDirectory=/opt/invol
-ExecStart=/usr/bin/node /opt/invol/dist/server.js
+WorkingDirectory=/opt/invol/IA_Prod/app
+ExecStart=/usr/bin/node /opt/invol/IA_Prod/app/dist/server.js
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/invol/.env.local
+EnvironmentFile=/opt/invol/IA_Prod/.env.local
+UMask=0077
+PrivateTmp=true
 StandardOutput=journal
 StandardError=journal
 
-# 安全硬约束：只监听 127.0.0.1
-# 实际监听在 Fastify 代码里配置，这里只是提醒
+# 安全硬约束：只监听 127.0.0.1（HOST 在 server.ts 中固定）
 # Caddy 反代到 127.0.0.1:8080
 
 [Install]

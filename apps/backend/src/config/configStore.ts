@@ -206,7 +206,7 @@ export class ConfigStore {
   private constructor() {
     // 数据库路径：环境变量 > 默认位置
     // Windows 开发: ./data/business.db
-    // Linux 部署: /opt/invol/business.db
+    // Linux 部署: /opt/invol/IA_Prod/data/business.db（由 /opt/invol/IA_Prod/.env.local 指定）
     this._dbPath = process.env.SQLITE_DB_PATH ?? path.resolve('data', 'business.db');
 
     // 确保目录存在

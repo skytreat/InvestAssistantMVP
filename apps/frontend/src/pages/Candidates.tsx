@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } from './_shared';
@@ -79,7 +80,7 @@ export default function Candidates() {
     setError(null);
     try {
       const res = await api.get('/candidate');
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         setRows(Array.isArray(res.data.data) ? (res.data.data as CandidateItem[]) : []);
       } else {
         setError(res.data?.message ?? '候选池加载失败');
@@ -97,7 +98,7 @@ export default function Candidates() {
     setWatchError(null);
     try {
       const res = await api.get('/watch');
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         setWatchRows(Array.isArray(res.data.data) ? (res.data.data as WatchItem[]) : []);
       } else {
         setWatchError(res.data?.message ?? '自选列表加载失败');
@@ -119,7 +120,7 @@ export default function Candidates() {
     async (assetCode: string): Promise<OpResult> => {
       try {
         const res = await api.post(`/candidate/${assetCode}/migrate`, { price_mode: priceMode });
-        if (res.data?.success) {
+        if (isOkEnvelope(res.data)) {
           const message =
             (res.data?.data as { message?: string } | undefined)?.message ??
             '已标记为迁移完成；不会自动加入自选，需手动从候选池加入自选';
@@ -136,7 +137,7 @@ export default function Candidates() {
   const removeOne = useCallback(async (assetCode: string): Promise<OpResult> => {
     try {
       const res = await api.delete(`/candidate/${assetCode}`);
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         return { ok: true, message: '已从候选池移除' };
       }
       return { ok: false, message: res.data?.message ?? '移除失败' };
@@ -148,7 +149,7 @@ export default function Candidates() {
   const addWatchOne = useCallback(async (assetCode: string): Promise<OpResult> => {
     try {
       const res = await api.post('/watch', { asset_code: assetCode });
-      if (res.data?.success) {
+      if (isOkEnvelope(res.data)) {
         return { ok: true, message: '已加入自选' };
       }
       return { ok: false, message: res.data?.message ?? '加入自选失败' };
@@ -351,7 +352,10 @@ export default function Candidates() {
         {/* 操作结果（成功 / 失败）—— `aria-live` 让读屏也能听到反馈 */}
         <div aria-live="polite">
           {notice !== null && (
-            <div data-testid="candidate-notice" style={{ color: COLORS.success, fontSize: TYPO.bodySize }}>
+            <div
+              data-testid="candidate-notice"
+              style={{ color: COLORS.textSuccess, fontSize: TYPO.bodySize }}
+            >
               {notice}
             </div>
           )}

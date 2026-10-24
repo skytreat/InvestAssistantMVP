@@ -29,8 +29,10 @@ import { fmt, fmtPct } from './positionDomain';
  * | 跟踪天数 | `tracked_days` | 加入日 → 今天（SDD §4.4:1426 契约字段）|
  * | 最新信号 | `signal` | 该标的**最新一条**信号；无信号 → `--` |
  *
- * ⚠️ **相对收益的配色口径**：正 = `COLORS.success`（绿）/ 负 = `COLORS.danger`（红），
+ * ⚠️ **相对收益的配色口径**：正 = `COLORS.textSuccess`（绿）/ 负 = `COLORS.danger`（红），
  *    与 `components/PositionCard.tsx` 的盈亏配色**同款**（P&L 语义在全站一致）。
+ *    （用正文色档 `textSuccess` 而非饱和的 `COLORS.success` —— 后者白底只有 3.30:1，
+ *      当正文用会被真浏览器 axe 判 color-contrast；见 Wave 7 卡 5 · 裁决 D-9。）
  *
  * ⚠️ **「迁移自选」与「加入自选」是两个不同的动作**（PRD S5）：
  *    - 【迁移自选】= `POST /api/candidate/:id/migrate` → **只打标记**，**不建** watch 关联；
@@ -224,7 +226,7 @@ export default function CandidateTable({
             const busy = pending === code;
             const inWatch = watchCodes.includes(code);
             const ret = typeof row.relative_return === 'number' ? row.relative_return : null;
-            const retColor = ret === null ? COLORS.textMuted : ret >= 0 ? COLORS.success : COLORS.danger;
+            const retColor = ret === null ? COLORS.textMuted : ret >= 0 ? COLORS.textSuccess : COLORS.danger;
 
             return (
               <tr key={typeof row.id === 'number' ? row.id : `${code}-${index}`}>

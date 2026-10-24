@@ -93,6 +93,18 @@ export default function KlineHoverPanel({
       <div>
         开 {formatIndicator(bar.open)} 高 {formatIndicator(bar.high)} 低 {formatIndicator(bar.low)} 收{' '}
         {formatIndicator(bar.close)}
+        {bar.changePct !== null && bar.changePct !== undefined && (
+          <span
+            style={{
+              marginLeft: 6,
+              color: bar.changePct >= 0 ? COLORS.candleUp : COLORS.candleDown,
+              fontWeight: 600,
+            }}
+          >
+            {bar.changePct >= 0 ? '+' : ''}
+            {bar.changePct.toFixed(2)}%
+          </span>
+        )}
       </div>
       <div>量 {formatVolume(bar.volume)}</div>
       {showMa && (
@@ -114,7 +126,7 @@ export default function KlineHoverPanel({
       )}
       {bar.signal && (
         <div data-testid="kline-hover-signal">
-          <span style={{ color: bar.signal.direction === 'buy' ? COLORS.success : COLORS.danger }}>
+          <span style={{ color: bar.signal.direction === 'buy' ? COLORS.textSuccess : COLORS.danger }}>
             {bar.signal.direction === 'buy' ? '▲' : '▼'} {signalDirectionText(bar.signal.direction)}
           </span>
           {bar.signal.label ? ` · ${bar.signal.label}` : ''}

@@ -1,7 +1,9 @@
 import React from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import { navLinkActiveStyle, navLinkStyle } from '../theme/styles';
+import type { NavItem } from '../components/SideNav';
 
 /**
  * 共享样式对象 —— **re-export 自 `src/theme/styles.ts`（T66 分层收口）**
@@ -33,45 +35,35 @@ export {
 /** 移动端断点（与 G10a PRD §5.8 #6 底部 Tab 栏一致） */
 export const MOBILE_BREAKPOINT = 768;
 
-const linkStyle: React.CSSProperties = {
-  padding: '8px 12px',
-  marginRight: SPACING.gapTight,
-  color: COLORS.brandLink,
-  textDecoration: 'none',
-  borderRadius: RADIUS.sm,
-};
+const linkStyle: React.CSSProperties = navLinkStyle;
 
 /**
  * 导航激活态样式（T63 · ui-spec §4「语义标签 / 导航激活态」）
  *
- * 复用既有 token，不引入新 hex：
- * - 底色 `COLORS.brandBg`（浅蓝）
- * - 文字 `COLORS.brandLink`（深蓝）
- * - 字重 600
- *
- * ⚠️ **react-router v6 没有 v5 的 `activeStyle` 属性** —— v6 用**函数式 `style`**
- * （`style={({ isActive }) => ({ ...base, ...(isActive ? active : {}) })}`）。
+ * ⚠️ T76 起**样式本体已下沉到 `theme/styles.ts`**（`navLinkStyle` / `navLinkActiveStyle`）——
+ *    顶栏平铺导航与桌面左侧栏共用同一份，避免两处各写一份导致漂移。
  */
-const activeLinkStyle: React.CSSProperties = {
-  background: COLORS.brandBg,
-  color: COLORS.brandLink,
-  fontWeight: 600,
-};
+const activeLinkStyle: React.CSSProperties = navLinkActiveStyle;
 
 /**
- * 桌面端导航项（PRD §5.8 #7 左侧导航栏）
+ * 主导航入口清单（T76 ⑤ · ux_v2 §1-2 业务流顺序 · 裁决 D-11）
  *
- * ⚠️ **T74 只加入口，不重排顺序** —— 导航按业务流程重排是 **T76** 的交付物
- *    （ux_v2 §1-2：仪表盘 → 交易录入 → 条件选股 → K线 → 策略信号 → 复盘 → 候选池 → 设置 → 管理员）。
- *    这里把「候选池」放在「交易复盘」与「设置」之间，与 PRD §5.8 #7 的相对次序一致，
- *    T76 重排时改动最小。
+ * 顺序 = **仪表盘 → 交易录入 → 条件选股 → K线图 → 策略信号 → 交易复盘 → 候选池 → 设置 → 管理员**
+ *
+ * ⚠️ T74 只加入口不重排；**T76 按 ux_v2 §1-2 重排**（原顺序把「策略信号」排在「K线图」之前，
+ *    与业务流「记交易 → 看持仓 → 跑策略 → 看K线 → 选股 → 复盘」相反）。
+ *    ux_v2 §1-2 建议的顺序是：仪表盘 → 交易录入 → 条件选股 → K线图 → 策略信号 → 交易复盘 → 管理员；
+ *    T74 追加的「候选池」按 PRD §5.8 #7 放在「交易复盘」与「设置」之间。
+ *
+ * ⚠️ **这一份是顶栏与左侧栏的唯一起点** —— 两侧渲染的是同一个数组，
+ *    故 A4「侧栏与顶栏顺序一致」是结构上必然成立，而不是靠两处手工同步。
  */
-const DESKTOP_NAV: { to: string; label: string; adminOnly?: boolean }[] = [
+export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: '仪表盘' },
   { to: '/trade', label: '交易录入' },
-  { to: '/signals', label: '策略信号' },
-  { to: '/kline', label: 'K线图' },
   { to: '/stockscan', label: '条件选股' },
+  { to: '/kline', label: 'K线图' },
+  { to: '/signals', label: '策略信号' },
   { to: '/review', label: '交易复盘' },
   { to: '/candidates', label: '候选池' },
   { to: '/settings', label: '设置' },
@@ -81,7 +73,9 @@ const DESKTOP_NAV: { to: string; label: string; adminOnly?: boolean }[] = [
 /**
  * 移动端底部 Tab（PRD §5.8 #6：持仓 / K线 / 选股 / 复盘 / 设置）
  *
- * ⚠️ **T74 补「候选池」入口**（实施计划「移动端底部 Tab 栏 → 本计划只补候选池/设置入口」）：
+ * ⚠️ **顺序与桌面侧栏无关**（裁决 D-11：移动 Tab 顺序不动）——
+ *    PRD §5.8 #6 的顺序是「持仓 / K线 / 选股 / 复盘 / 设置」，T74 补的「候选池」放在「复盘」与「设置」之间。
+ * ⚠️ T74 补「候选池」入口（实施计划「移动端底部 Tab 栏 → 本计划只补候选池/设置入口」）：
  *    「设置」此前已有，这里只补「候选池」，位置同样放在「复盘」与「设置」之间。
  */
 const MOBILE_TAB: { to: string; label: string; icon: string; adminOnly?: boolean }[] = [
@@ -93,11 +87,79 @@ const MOBILE_TAB: { to: string; label: string; icon: string; adminOnly?: boolean
   { to: '/settings', label: '设置', icon: '⚙️' },
 ];
 
-export function Navbar() {
+/** 导航列表（`<ul>`）统一样式：去列表符号 + 横向排列 */
+const navListStyle: React.CSSProperties = {
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: SPACING.gapTight,
+};
+
+/** 移动端折叠菜单的列表样式：纵向排列 */
+const mobileMenuListStyle: React.CSSProperties = {
+  ...navListStyle,
+  flexDirection: 'column',
+  flexWrap: 'nowrap',
+};
+
+/** 顶栏 hamburger 按钮样式 */
+const hamburgerButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: SPACING.gapTight,
+  padding: SPACING.btnPadding,
+  background: COLORS.cardBg,
+  color: COLORS.brand,
+  border: `1px solid ${COLORS.borderMedium}`,
+  borderRadius: RADIUS.sm,
+  cursor: 'pointer',
+  fontSize: TYPO.bodySize,
+};
+
+export interface NavbarProps {
+  /**
+   * 是否渲染顶栏**平铺**导航
+   *
+   * - `true`（默认）—— 顶栏平铺入口（平板 768~1023px 的唯一入口；
+   *   独立使用 `<Navbar />` 时也是它）；
+   * - `false` —— 桌面 ≥1024px 由**左侧栏**承担导航，顶栏不再重复渲染同一批入口
+   *   （`App.tsx` 按视口断点传入）。
+   *
+   * ⚠️ 默认值取 `true` 是为了**保持 `<Navbar />` 独立渲染时的既有行为**
+   *    （既有用例直接渲染 `<Navbar />` 断言入口存在）。
+   */
+  showFlatNav?: boolean;
+}
+
+export function Navbar({ showFlatNav = true }: NavbarProps) {
   const { username, role, logout } = useUserStore();
   const navigate = useNavigate();
+  const location = useLocation();
   const isAdmin = role === 'admin';
-  const items = DESKTOP_NAV.filter((i) => !i.adminOnly || isAdmin);
+  const isMobile = useIsMobile();
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const items = NAV_ITEMS.filter((i) => !i.adminOnly || isAdmin);
+
+  /**
+   * ESC 关闭折叠菜单（T76 ③）
+   *
+   * ⚠️ 监听挂在 `document` 上 —— 焦点在按钮上时按 ESC 也能收到（事件冒泡到 document）。
+   */
+  React.useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [menuOpen]);
+
+  /** 路由变化 → 收起折叠菜单（点了入口后菜单不该还挂着） */
+  React.useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
 
   return (
     <>
@@ -118,18 +180,47 @@ export function Navbar() {
         }}
       >
         <span style={{ fontWeight: 'bold', fontSize: 20 }}>InvestAssistant</span>
-        <nav aria-label="主导航" style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
-          {items.map((i) => (
-            <NavLink
-              key={i.to}
-              to={i.to}
-              end
-              style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
-            >
-              {i.label}
-            </NavLink>
-          ))}
-        </nav>
+
+        {/*
+          T76 ③ · `<768px` 顶栏折叠为 hamburger 菜单
+          ⚠️ **与桌面左侧栏互斥**：`<768px` 不渲染左侧栏（见 `App.tsx`），
+             导航入口由本菜单承担（PRD §5.8 #1「桌面和手机功能对等」）。
+        */}
+        {isMobile && (
+          <button
+            type="button"
+            aria-expanded={menuOpen}
+            aria-controls="mobile-menu"
+            aria-label="打开导航菜单"
+            onClick={() => setMenuOpen((v) => !v)}
+            style={hamburgerButtonStyle}
+          >
+            ☰ 菜单
+          </button>
+        )}
+
+        {/*
+          顶栏平铺导航（平板 768~1023px 的唯一入口）
+          ⚠️ `showFlatNav=false` 时不渲染 —— 桌面 ≥1024px 由左侧栏承担（避免同一批入口渲染两遍）。
+        */}
+        {!isMobile && showFlatNav && (
+          <nav aria-label="主导航" style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
+            <ul style={navListStyle}>
+              {items.map((i) => (
+                <li key={i.to}>
+                  <NavLink
+                    to={i.to}
+                    end
+                    style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
+                  >
+                    {i.label}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )}
+
         <span style={{ marginLeft: 'auto', color: COLORS.textTertiary, fontSize: TYPO.smallSize }}>
           {username} ({isAdmin ? '管理员' : '普通用户'})
         </span>
@@ -142,6 +233,32 @@ export function Navbar() {
           退出登录
         </button>
       </header>
+
+      {/*
+        T76 ③ · `<768px` 折叠菜单本体
+        ⚠️ 用 `hidden` 属性而不是条件渲染 —— `aria-controls="mobile-menu"` 指向的元素
+           始终存在（收起时对读屏不可见），避免 axe 报「aria-controls 指向不存在的 id」。
+        ⚠️ 菜单是 `<header>` 的**兄弟节点**（不是 header 的子节点）—— HTML 规范禁止
+           `<header>` 内嵌 landmark（`<nav>`），放外面才合法。
+      */}
+      {isMobile && (
+        <nav id="mobile-menu" aria-label="主导航" hidden={!menuOpen}>
+          <ul style={mobileMenuListStyle}>
+            {items.map((i) => (
+              <li key={i.to}>
+                <NavLink
+                  to={i.to}
+                  end
+                  style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
+                >
+                  {i.label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+
       {/*
         T95：全局合规声明已从 Navbar 下方**搬到 App.tsx 的 `<footer>`**
         （`components/ComplianceFooter.tsx`）—— PRD §5.9 要求「全站所有页面顶部或底部常驻」，
@@ -233,6 +350,29 @@ export function useIsMobile(): boolean {
   }, []);
 
   return isMobile;
+}
+
+/**
+ * 视口宽度是否 ≥ 桌面断点（1024px · PRD §5.1「≥1024 桌面 / 768-1024 平板 / <768 手机」）
+ *
+ * ⚠️ **不是 CSS media query** —— 与 `useIsMobile` 同款「JS 判断 + resize 监听」：
+ *    导航入口的**显隐**必须在**渲染期**决定（只渲染一份 DOM），
+ *    否则读屏会把两份导航都读一遍（裁决 D-7 / 卡 1 交付 ⑥ 同款理由）。
+ *    真正需要 `@media` 的只有「纯表现」的东西 —— 例如容器断点 padding，
+ *    走 `styles/global.css` 的 `.page-container`（inline style 表达不了 media query）。
+ */
+export function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = React.useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth >= 1024,
+  );
+
+  React.useEffect(() => {
+    const onResize = () => setIsDesktop(window.innerWidth >= 1024);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  return isDesktop;
 }
 
 /** 移动端底部 TabBar 高度 —— 页面内容需要留出这段 padding */

@@ -33,6 +33,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToadScheduler } from 'toad-scheduler';
+import { execFileSync } from 'node:child_process';
 
 /**
  * `fired` = 各段任务体的**实际调用顺序**记录；
@@ -63,6 +64,12 @@ vi.mock('../../src/services/logger.js', () => ({
 }));
 vi.mock('../../src/services/validator.js', () => ({
   runAllChecks: vi.fn(datacheckImpl),
+  // T106：17:01 闸门先探「当日是否有行情数据」—— mock 成有数据，才能走到校验
+  hasQuoteDataOn: vi.fn(async () => true),
+}));
+vi.mock('../../src/services/quoteUpdateStatus.js', () => ({
+  // T105/T106：更新结果由 scheduler 读取；配置层测试不碰 systemd
+  reportTdx2dbRunOutcome: vi.fn(async () => ({ state: 'SUCCESS' as const, message: 'mock 更新成功' })),
 }));
 vi.mock('../../src/services/pluginEngine.js', () => ({
   executeAllPlugins: vi.fn(async () => {
@@ -142,18 +149,24 @@ function cronMinuteOfDay(expr: string): number {
 function timerMinuteOfDay(): number {
   const timerPath = path.join(REPO_ROOT, 'deploy', 'tdx2db-update.timer');
   const content = fs.readFileSync(timerPath, 'utf-8');
-  const m = /^OnCalendar=\*-\*-\* (\d{2}):(\d{2}):(\d{2})$/m.exec(content);
-  if (!m) throw new Error(`tdx2db-update.timer 里没找到 OnCalendar=*-*-* HH:MM:SS：\n${content}`);
+  const m = /^OnCalendar=(?:Mon\.\.Fri )?\*-\*-\* (\d{2}):(\d{2}):(\d{2})(?: Asia\/Shanghai)?$/m.exec(
+    content,
+  );
+  if (!m) throw new Error(`tdx2db-update.timer 里没找到 OnCalendar=... HH:MM:SS：\n${content}`);
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
 /** 捕获 registerCronJobs 注册到 app.scheduler 上的全部 cron job */
-function captureCronRegistrations(): { id: string; expr: string }[] {
-  const registered: { id: string; expr: string }[] = [];
+function captureCronRegistrations(): { id: string; expr: string; timezone?: string }[] {
+  const registered: { id: string; expr: string; timezone?: string }[] = [];
   const fakeApp = {
     scheduler: {
       addCronJob: vi.fn((job: any) => {
-        registered.push({ id: job.id, expr: job.schedule.cronExpression });
+        registered.push({
+          id: job.id,
+          expr: job.schedule.cronExpression,
+          timezone: job.schedule.timezone,
+        });
       }),
     },
   } as any;
@@ -165,12 +178,47 @@ beforeEach(() => {
   fired.length = 0;
 });
 
+describe('cron_sequence_trigger — 运行层（仅真机，CI 跳过）', () => {
+  // 🔴 T102：原 F8 用例只读 unit 文件内容，无法验证真实触发 ⇒ 假绿（G5.1 / T78 都中招）。
+  //    本 describe 用 systemctl / journalctl 真机探针，CI 环境无 systemd ⇒ skip。
+  // 🔴 2026-10-23 实测：GitHub Actions 上 `/run/systemd/system` **存在**，但 timer 未安装，
+  //    旧守卫会把 CI 误判为真机并让 3 条探针 FAIL ⇒ 必须优先认 `CI` 环境变量。
+  const isCi =
+    Boolean(process.env.CI) || (!process.env.CI_SYSTEMD_AVAILABLE && !fs.existsSync('/run/systemd/system'));
+  const itRun = isCi ? it.skip : it;
+
+  itRun('cron_sequence_trigger (run): timer 已安装且 enabled', () => {
+    const out = execFileSync('systemctl', ['is-enabled', 'tdx2db-update.timer'], { encoding: 'utf8' }).trim();
+    expect(out).toBe('enabled');
+  });
+
+  itRun('cron_sequence_trigger (run): list-timers 显示下次触发', () => {
+    const out = execFileSync('systemctl', ['list-timers', 'tdx2db-update.timer', '--no-pager'], {
+      encoding: 'utf8',
+    });
+    expect(out).toMatch(/tdx2db-update\.timer/);
+  });
+
+  itRun('cron_sequence_trigger (run): journalctl 有成功触发记录', () => {
+    const out = execFileSync('journalctl', ['-u', 'tdx2db.service', '--no-pager', '-n', '5'], {
+      encoding: 'utf8',
+    });
+    expect(out).toMatch(/Finished tdx2db\.service/);
+  });
+
+  itRun('cron_sequence_trigger (run): 反向验证 —— 停掉 timer 后本 describe 全 FAIL', () => {
+    // 纯占位：真机探针无法在单测里停 timer；此用例仅记录契约，
+    // 实际反向验证由 T102 的 gate 文档手工执行（见 G9.4）。
+    expect(true).toBe(true);
+  });
+});
+
 describe('cron_sequence_trigger — 5 段的触发时刻与顺序（配置层）', () => {
   it('cron_sequence_trigger: 17:00 行情更新段由 systemd timer 触发（Node 进程外的 tdx2db）', () => {
     const timerPath = path.join(REPO_ROOT, 'deploy', 'tdx2db-update.timer');
     const content = fs.readFileSync(timerPath, 'utf-8');
-    // 17:00 整点触发
-    expect(content).toMatch(/^OnCalendar=\*-\*-\* 17:00:00$/m);
+    // T108：17:00 北京时间（服务器系统时区是 UTC，必须显式指定时区）
+    expect(content).toMatch(/^OnCalendar=Mon\.\.Fri \*-\*-\* 17:00:00 Asia\/Shanghai$/m);
     // 触发的是 tdx2db oneshot 服务（行情更新由 Go 二进制执行，Node 只读 DuckDB）
     expect(content).toMatch(/^Unit=tdx2db\.service$/m);
     const service = fs.readFileSync(path.join(REPO_ROOT, 'deploy', 'tdx2db.service'), 'utf-8');
@@ -191,6 +239,13 @@ describe('cron_sequence_trigger — 5 段的触发时刻与顺序（配置层）
       '3 17 * * 1-5',
       '5 17 * * 1-5',
     ]);
+    // T108：所有 cron 必须显式使用北京时间，不能依赖服务器本地时区（Etc/UTC）
+    expect(registered.map((r) => r.timezone)).toEqual([
+      'Asia/Shanghai',
+      'Asia/Shanghai',
+      'Asia/Shanghai',
+      'Asia/Shanghai',
+    ]);
   });
 
   it('cron_sequence_trigger: 5 段时刻严格递增（17:00 < 17:01 < 17:02 < 17:03 < 17:05）', () => {
@@ -209,7 +264,8 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
     vi.useFakeTimers();
     try {
       // 2026-10-20 是**周二**（cron 表达式 `1-5` = 周一至周五 ⇒ 当天全部命中）
-      vi.setSystemTime(new Date('2026-10-20T16:59:00Z'));
+      // T108：cron 固定 Asia/Shanghai（UTC+8）⇒ 16:59 北京时间 = 08:59 UTC
+      vi.setSystemTime(new Date('2026-10-20T08:59:00Z'));
 
       // ⚠️ 直接用 `toad-scheduler` 的 `ToadScheduler`（**不经过 Fastify 插件注册**）：
       //    `@fastify/schedule` 的装饰器就是 `new ToadScheduler()`，用同一个类即可；

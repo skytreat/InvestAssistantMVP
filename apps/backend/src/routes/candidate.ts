@@ -28,8 +28,9 @@
  * ⚠️ 与 `routes/watch.ts` 的并存说明：
  *   `watch.ts` 现只注册自选（watch）的 CRUD，候选路由**全部**在本文件 —— 二者不再冲突。
  *
- * 响应体沿用仓库现状的 `{ success, data }` / `{ success: false, error, message }`
- * 约定 —— `lib/envelope.ts`（T89a）尚未落地，不在本任务范围内。
+ * 响应体走统一 envelope（`lib/envelope.ts` · SDD §4.2）：
+ * 成功 `{ code: 0, data, timestamp }` / 失败 `{ code: <错误码>, message, data: null, timestamp, error }`。
+ * ⚠️ T89b 起响应体**不再有 `success` 字段**。
  */
 
 import type { FastifyInstance } from 'fastify';

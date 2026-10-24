@@ -9,7 +9,7 @@ import {
   resolveSignalSymbols,
   SIGNAL_USER_ID,
 } from '../services/signalService.js';
-import { writeSystemLog } from '../services/logger.js';
+import { writeSystemLog, readFallbackLogTail } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
 
@@ -18,8 +18,12 @@ import { defaultMessage } from '../lib/errorMessages.js';
  * - POST /api/admin/run-datacheck   手动触发 C1-C12
  * - POST /api/admin/run-signal      手动触发插件信号生成（含持久化）
  * - GET  /api/admin/system-log      分页查询 system_log
+ * - GET  /api/admin/system-log/fallback  读取降级日志文件尾部（I-13）
  * - POST /api/admin/rerun-quotes    手动触发行情更新补跑（Requirements §5.1）
  */
+
+/** 降级日志回读的最大行数（契约：只回读尾部 N 行，不回传整个文件）*/
+const FALLBACK_TAIL_LINES = 200;
 export async function registerAdminRoutes(app: FastifyInstance) {
   // 手动跑 C1-C12（需要 admin role）
   app.post('/api/admin/datacheck/trigger', async (request, reply) => {
@@ -100,9 +104,21 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         where.push('level = ?');
         params.push(q.level);
       }
-      if (q.trade_date) {
-        where.push('log_date = ?');
-        params.push(q.trade_date);
+      // 🔴 Wave 7 卡 1 · 裁决 D-3：日期过滤是**区间**（起止两个 date 输入），不是单日等值。
+      //   `log_date` 是 `YYYY-MM-DD` 定长格式 → 直接字符串比较即可（区间两端**闭区间**）。
+      //   `trade_date` 是历史遗留的「单日等值」参数 → 保留，并折算成「起止同一天」的区间
+      //   （语义与旧的 `log_date = ?` 完全等价，不破坏既有调用方）。
+      const startDate = q.start_date ?? q.trade_date;
+      const endDate = q.end_date ?? q.trade_date;
+      if (startDate && endDate) {
+        where.push('log_date BETWEEN ? AND ?');
+        params.push(startDate, endDate);
+      } else if (startDate) {
+        where.push('log_date >= ?');
+        params.push(startDate);
+      } else if (endDate) {
+        where.push('log_date <= ?');
+        params.push(endDate);
       }
 
       const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -118,6 +134,25 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       );
     } catch (err) {
       reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
+  });
+
+  // Wave 7 卡 1 · I-13：系统日志的**降级记录**（SQLite 不可用时写入的兜底文件）
+  //   - 仅 admin（与其它 admin 端点一致）
+  //   - 只回读**尾部 N 行**，不回传整个文件
+  //   - ⚠️ **响应体不含文件路径**（路径泄露 = 告诉攻击者去读哪个文件）
+  app.get('/api/admin/system-log/fallback', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', defaultMessage('FORBIDDEN')));
+    try {
+      const tail = readFallbackLogTail(FALLBACK_TAIL_LINES);
+      return reply.send(ok({ exists: tail.exists, lines: tail.lines }));
+    } catch (err) {
+      // ⚠️ **不回传 String(err)**：fs 的错误信息里含**绝对路径**（如 EACCES: ... '/var/log/...'）
+      //   → 只在服务端日志留痕，响应里只给一句中文。
+      console.error('[admin] 读取降级日志失败:', err);
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', '读取降级日志失败'));
     }
   });
 
@@ -202,7 +237,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         logType: 'backup',
         level: 'SUCCESS',
         message: `${user.username} 手动触发备份`,
-        detail: JSON.stringify({ sqlite: result.sqlite.success, duckdb: result.duckdb.success }),
+        detail: JSON.stringify({
+          sqlite: result.sqlite.success,
+          duckdb: result.duckdb.success,
+          duckdb_skipped: result.duckdb.skipped === true,
+        }),
       });
       return reply.send(ok(result));
     } catch (err) {

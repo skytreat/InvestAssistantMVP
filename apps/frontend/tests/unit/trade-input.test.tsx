@@ -759,6 +759,27 @@ describe('T68 · 标的自动补全', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * T79 ⑤：Dashboard 快捷操作 `?type=` 落点
+ * ------------------------------------------------------------------ */
+
+describe('T79 ⑤ · 快捷操作 query 参数', () => {
+  it('`?type=sell` → 业务口径映射为「减仓」Tab', () => {
+    renderWithRouter(<TradeInput />, { initialEntries: ['/trade?type=sell'] });
+    expect(screen.getByRole('tab', { name: '减仓' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('`?type=buy` → 「买入」Tab', () => {
+    renderWithRouter(<TradeInput />, { initialEntries: ['/trade?type=buy'] });
+    expect(screen.getByRole('tab', { name: '买入' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('非法 type 回落到「买入」，不白屏', () => {
+    renderWithRouter(<TradeInput />, { initialEntries: ['/trade?type=not-a-real-type'] });
+    expect(screen.getByRole('tab', { name: '买入' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * 适配层：超卖边界 + 交易类型 → 方向映射
  * ------------------------------------------------------------------ */
 

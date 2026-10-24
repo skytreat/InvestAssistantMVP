@@ -1,9 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
+import { titleStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
+import Breadcrumbs from '../components/Breadcrumbs';
 import KlineParamPanel from '../components/KlineParamPanel';
 import { MOBILE_TABBAR_HEIGHT, useIsMobile } from './_shared';
 import {
@@ -21,6 +24,7 @@ import {
   type IndicatorParams,
 } from '../indicators/chartParams';
 import type { SubIndicatorKind } from '../components/KlineChart';
+import { MA_LINE_STYLES } from '../indicators/chartIndicators';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -114,7 +118,6 @@ const SUB_OPTIONS: ReadonlyArray<{ value: SubIndicatorKind; label: string }> = [
 /** 后端 K 线接口的响应体（envelope 内层）*/
 interface KlineApiResponse {
   code?: number | string;
-  success?: boolean;
   message?: string;
   data?: {
     symbol: string;
@@ -132,18 +135,6 @@ interface KlineApiResponse {
   };
 }
 
-/**
- * 判断 envelope 是否成功
- *
- * ⚠️ `success` 是 T89a 的**过渡字段**（T89b 会删）。故优先看 `code === 0`，
- *    `code` 不存在时回落到 `success === true` —— 两种形态都能判对。
- */
-function isOkEnvelope(body: { code?: number | string; success?: boolean }): boolean {
-  if (typeof body.code === 'number') return body.code === 0;
-  if (typeof body.code === 'string') return body.code === '0';
-  return body.success === true;
-}
-
 /** 周/月 K 需要更多的日线才能聚合成足够的柱子 */
 function fetchDaysFor(days: number, period: KlinePeriod): number {
   const factor = period === 'day' ? 1 : period === 'week' ? 5 : 21;
@@ -156,6 +147,7 @@ export default function Kline() {
 
   const [symbolInput, setSymbolInput] = useState(urlSymbol || DEFAULT_SYMBOL);
   const [symbol, setSymbol] = useState(urlSymbol || DEFAULT_SYMBOL);
+  const [symbolSuggestions, setSymbolSuggestions] = useState<Array<{ symbol: string; name: string }>>([]);
   const [fq, setFq] = useState<'qfq' | 'hfq' | 'bfq'>('qfq');
   const [days, setDays] = useState(120);
   const [period, setPeriod] = useState<KlinePeriod>('day');
@@ -187,6 +179,28 @@ export default function Kline() {
     setSymbolInput(urlSymbol);
     setSymbol(urlSymbol);
   }, [urlSymbol]);
+
+  // 代码输入框 autocomplete：输入变化时查询 /symbols/search
+  useEffect(() => {
+    const kw = symbolInput.trim();
+    if (kw.length === 0) {
+      setSymbolSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/symbols/search', { params: { q: kw } });
+        if (isOkEnvelope(res.data) && Array.isArray(res.data.data)) {
+          setSymbolSuggestions(res.data.data as Array<{ symbol: string; name: string }>);
+        } else {
+          setSymbolSuggestions([]);
+        }
+      } catch {
+        setSymbolSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [symbolInput]);
 
   /** 取数：K 线（**含信号指标明细** `metrics_json` —— T73 起随 K 线一并下发）*/
   const load = useCallback(
@@ -282,7 +296,16 @@ export default function Kline() {
 
   return (
     <div style={{ fontFamily: TYPO.fontFamily }}>
-      <h2 style={{ margin: '0 0 16px 0' }}>K 线图</h2>
+      {/*
+        T76 ⑦（Wave 7 卡 5）：整页标题必须是 **`<h1>`** ——
+        此前是 `<h2>`，真浏览器 axe 的 `page-has-heading-one`（moderate）会判本页无 h1。
+        样式沿用全站统一的 `titleStyle`（`theme/styles.ts`，24px/700）。
+      */}
+      <h1 style={titleStyle}>K 线图</h1>
+      {/* T79 ④：深层页面的面包屑（祖先可点击，当前标的为末项） */}
+      <Breadcrumbs
+        items={[{ label: '仪表盘', to: '/' }, { label: 'K线图', to: '/kline' }, { label: symbol }]}
+      />
 
       <div
         style={{
@@ -308,6 +331,7 @@ export default function Kline() {
               if (e.key === 'Enter') applySymbol();
             }}
             placeholder="如 sh600000"
+            list="kline-symbol-list"
             style={{
               padding: '4px 8px',
               marginLeft: SPACING.gapTight,
@@ -316,6 +340,11 @@ export default function Kline() {
               borderRadius: RADIUS.sm,
             }}
           />
+          <datalist id="kline-symbol-list">
+            {symbolSuggestions.map((s) => (
+              <option key={s.symbol} value={s.symbol} label={s.name} />
+            ))}
+          </datalist>
         </div>
         <div>
           <label htmlFor="kline-select-fq" style={{ fontSize: TYPO.bodySize }}>
@@ -469,20 +498,39 @@ export default function Kline() {
           </div>
         )
       ) : (
-        <Suspense fallback={<Spinner label="加载图表..." />}>
-          <KlineChart
-            symbol={symbol}
-            period={period}
-            bars={bars}
-            dataSignature={dataSignature}
-            params={params}
-            showMa={showMa}
-            subIndicator={subIndicator}
-            height={isMobile ? 420 : 560}
-            mainHeight={isMobile ? 250 : 380}
-            subHeight={isMobile ? 110 : 140}
-          />
-        </Suspense>
+        <>
+          {showMa && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8, fontSize: 12 }}>
+              {params.ma.periods.map((p, i) => (
+                <span key={p} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 16,
+                      height: 2,
+                      background: MA_LINE_STYLES[i]?.color ?? '#999',
+                    }}
+                  />
+                  MA{p}
+                </span>
+              ))}
+            </div>
+          )}
+          <Suspense fallback={<Spinner label="加载图表..." />}>
+            <KlineChart
+              symbol={symbol}
+              period={period}
+              bars={bars}
+              dataSignature={dataSignature}
+              params={params}
+              showMa={showMa}
+              subIndicator={subIndicator}
+              height={isMobile ? 420 : 560}
+              mainHeight={isMobile ? 250 : 380}
+              subHeight={isMobile ? 110 : 140}
+            />
+          </Suspense>
+        </>
       )}
 
       {/* 移动端底部 TabBar 是 `position: fixed` → 页面末尾留出它的高度，避免遮住图表 */}
