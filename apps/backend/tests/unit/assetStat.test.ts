@@ -57,9 +57,10 @@ afterAll(() => {
 /** 造用户，返回 user_id（幂等：已存在则忽略）*/
 function seedUser(username: string): number {
   const db = ConfigStore.getInstance().db;
-  db.prepare(
-    "INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')",
-  ).run(username, 'x');
+  db.prepare("INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')").run(
+    username,
+    'x',
+  );
   return Number(db.prepare('SELECT id FROM user_account WHERE username = ?').get(username)?.id);
 }
 
@@ -91,13 +92,13 @@ function readSnapshot(userId: number, tradeDate: string) {
        FROM user_asset_stat WHERE user_id = ? AND trade_date = ?`,
     )
     .get(userId, tradeDate) as
-      | {
-          total_assets_price_yield: number;
-          total_assets_actual_yield: number;
-          total_profit_price: number;
-          total_profit_actual: number;
-        }
-      | undefined;
+    | {
+        total_assets_price_yield: number;
+        total_assets_actual_yield: number;
+        total_profit_price: number;
+        total_profit_actual: number;
+      }
+    | undefined;
 }
 
 const TRADE_DATE = '2026-10-15';

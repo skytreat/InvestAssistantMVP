@@ -82,9 +82,7 @@ describe('positionPerf — calcAllPositions N+1 回归', () => {
         "INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES ('perf_user2', 'x', 'user')",
       )
       .run();
-    const uid = Number(
-      db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user2'").get()?.id,
-    );
+    const uid = Number(db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user2'").get()?.id);
     seedPositions(uid, 50);
 
     const prepareSpy = vi.spyOn(db.db, 'prepare');
@@ -103,9 +101,7 @@ describe('positionPerf — calcAllPositions N+1 回归', () => {
         "INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES ('perf_user3', 'x', 'user')",
       )
       .run();
-    const uid = Number(
-      db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user3'").get()?.id,
-    );
+    const uid = Number(db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user3'").get()?.id);
 
     const result = calcAllPositions(uid);
     expect(result).toEqual([]);
