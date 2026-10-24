@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 
-import { getLatestMarketSnapshot } from '../services/marketData.js';
+import { getLatestMarketSnapshot, resolveLatestQuoteDate } from '../services/marketData.js';
 import { CHECK_IDS, CHECK_NAMES } from '../services/validator.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
@@ -157,6 +157,18 @@ export async function registerDataCheckRoutes(app: FastifyInstance) {
       //   现走基表 + MAX(date) + 显式前复权（口径逐条一致，见 marketData.ts 的注释）。
       const rows = await getLatestMarketSnapshot(5);
       return reply.send(ok(rows));
+    } catch (err) {
+      return reply
+        .code(502)
+        .send(fail(502, 'DB_UNAVAILABLE', 'DuckDB 不可用（需要先在服务器上执行 tdx2db init）'));
+    }
+  });
+
+  // 全市场最新行情交易日（轻量：只取 MAX(date)）
+  app.get('/api/market/latest-date', async (_request, reply) => {
+    try {
+      const date = await resolveLatestQuoteDate();
+      return reply.send(ok({ date }));
     } catch (err) {
       return reply
         .code(502)

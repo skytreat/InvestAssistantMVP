@@ -24,6 +24,7 @@ import {
   type IndicatorParams,
 } from '../indicators/chartParams';
 import type { SubIndicatorKind } from '../components/KlineChart';
+import { MA_LINE_STYLES } from '../indicators/chartIndicators';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -146,6 +147,7 @@ export default function Kline() {
 
   const [symbolInput, setSymbolInput] = useState(urlSymbol || DEFAULT_SYMBOL);
   const [symbol, setSymbol] = useState(urlSymbol || DEFAULT_SYMBOL);
+  const [symbolSuggestions, setSymbolSuggestions] = useState<Array<{ symbol: string; name: string }>>([]);
   const [fq, setFq] = useState<'qfq' | 'hfq' | 'bfq'>('qfq');
   const [days, setDays] = useState(120);
   const [period, setPeriod] = useState<KlinePeriod>('day');
@@ -177,6 +179,28 @@ export default function Kline() {
     setSymbolInput(urlSymbol);
     setSymbol(urlSymbol);
   }, [urlSymbol]);
+
+  // 代码输入框 autocomplete：输入变化时查询 /symbols/search
+  useEffect(() => {
+    const kw = symbolInput.trim();
+    if (kw.length === 0) {
+      setSymbolSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/symbols/search', { params: { q: kw } });
+        if (isOkEnvelope(res.data) && Array.isArray(res.data.data)) {
+          setSymbolSuggestions(res.data.data as Array<{ symbol: string; name: string }>);
+        } else {
+          setSymbolSuggestions([]);
+        }
+      } catch {
+        setSymbolSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [symbolInput]);
 
   /** 取数：K 线（**含信号指标明细** `metrics_json` —— T73 起随 K 线一并下发）*/
   const load = useCallback(
@@ -307,6 +331,7 @@ export default function Kline() {
               if (e.key === 'Enter') applySymbol();
             }}
             placeholder="如 sh600000"
+            list="kline-symbol-list"
             style={{
               padding: '4px 8px',
               marginLeft: SPACING.gapTight,
@@ -315,6 +340,11 @@ export default function Kline() {
               borderRadius: RADIUS.sm,
             }}
           />
+          <datalist id="kline-symbol-list">
+            {symbolSuggestions.map((s) => (
+              <option key={s.symbol} value={s.symbol} label={s.name} />
+            ))}
+          </datalist>
         </div>
         <div>
           <label htmlFor="kline-select-fq" style={{ fontSize: TYPO.bodySize }}>
@@ -468,7 +498,25 @@ export default function Kline() {
           </div>
         )
       ) : (
-        <Suspense fallback={<Spinner label="加载图表..." />}>
+        <>
+          {showMa && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8, fontSize: 12 }}>
+              {params.ma.periods.map((p, i) => (
+                <span key={p} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: 16,
+                      height: 2,
+                      background: MA_LINE_STYLES[i]?.color ?? '#999',
+                    }}
+                  />
+                  MA{p}
+                </span>
+              ))}
+            </div>
+          )}
+          <Suspense fallback={<Spinner label="加载图表..." />}>
           <KlineChart
             symbol={symbol}
             period={period}
@@ -482,6 +530,7 @@ export default function Kline() {
             subHeight={isMobile ? 110 : 140}
           />
         </Suspense>
+        </>
       )}
 
       {/* 移动端底部 TabBar 是 `position: fixed` → 页面末尾留出它的高度，避免遮住图表 */}
