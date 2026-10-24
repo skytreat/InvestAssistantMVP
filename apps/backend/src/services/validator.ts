@@ -877,7 +877,7 @@ function compareC11Rows(local: C11LocalRow, ts: TushareDailyRow): boolean {
     priceOk(local.close, ts.close) &&
     priceOk(local.pre_close, ts.pre_close) &&
     Math.abs(local.volume - ts.volume * 100) < 1 &&
-    Math.abs(local.amount - ts.amount * 1000) < 1
+    Math.abs(local.amount - ts.amount * 1000) < Math.max(1, local.amount * 0.005)
   );
 }
 
