@@ -99,7 +99,7 @@ const LOG_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'] as const;
 
 /** 日志表列（`key` = 后端列名，`label` = 表头文案） */
 const LOG_COLUMNS: ReadonlyArray<{ key: string; label: string }> = [
-  { key: 'log_date', label: '日期' },
+  { key: 'created_at', label: '时间' },
   { key: 'log_type', label: '类型' },
   { key: 'level', label: '级别' },
   { key: 'check_item', label: '校验项' },
@@ -111,6 +111,7 @@ const LOG_COLUMNS: ReadonlyArray<{ key: string; label: string }> = [
 interface LogRow {
   id?: number;
   log_date?: string;
+  created_at?: string;
   log_type?: string;
   level?: string;
   check_item?: string | null;
@@ -149,7 +150,11 @@ function buildParams(filters: LogFilters, page: number, pageSize: number): Recor
 
 /** 取一行的文本（缺失时给空串，避免渲染出 `undefined`） */
 function textOf(row: LogRow, key: string): string {
-  const v = row[key as keyof LogRow];
+  let v = row[key as keyof LogRow];
+  // created_at 缺失时回退到 log_date（兼容旧数据 / 测试夹具）
+  if ((v === null || v === undefined) && key === 'created_at') {
+    v = row.log_date;
+  }
   return v === null || v === undefined ? '' : String(v);
 }
 
@@ -397,7 +402,7 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
                       color: COLORS.textSecondary,
                     }}
                   >
-                    <span>{textOf(row, 'log_date')}</span>
+                    <span>{textOf(row, 'created_at')}</span>
                     <span>{LOG_TYPE_LABEL[type] ?? type}</span>
                     <span style={{ color: LEVEL_COLOR[level] ?? COLORS.textSecondary, fontWeight: 600 }}>
                       {level}
