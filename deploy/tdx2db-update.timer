@@ -1,8 +1,10 @@
 [Unit]
-Description=每天 17:00 触发 tdx2db 行情更新
+Description=每个交易日 17:00（北京时间）触发 tdx2db 行情更新
 
 [Timer]
-OnCalendar=*-*-* 17:00:00
+# T108：服务器系统时区为 Etc/UTC，必须显式指定 Asia/Shanghai；
+# 否则 17:00 UTC = 北京时间次日 01:00（2026-10-23 生产实测）。
+OnCalendar=Mon..Fri *-*-* 17:00:00 Asia/Shanghai
 Persistent=true
 RandomizedDelaySec=30
 Unit=tdx2db.service

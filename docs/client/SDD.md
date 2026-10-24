@@ -2573,11 +2573,12 @@ WantedBy=multi-user.target
 ```ini
 # /etc/systemd/system/tdx2db-update.timer
 [Unit]
-Description=每日 17:00 触发 tdx2db 行情增量更新
+Description=每个交易日 17:00（北京时间）触发 tdx2db 行情增量更新
 
 [Timer]
-OnCalendar=*-*-* 17:00:00
-# 服务器本地时间（UTC+8），注意与 Fastify cron 时区对齐
+# T108：显式指定 Asia/Shanghai；服务器系统时区是 Etc/UTC
+# （若省略时区，17:00 UTC = 北京时间次日 01:00，2026-10-23 生产实测）
+OnCalendar=Mon..Fri *-*-* 17:00:00 Asia/Shanghai
 Persistent=true          # 错过的触发（服务器离线）恢复后立即补跑
 Unit=tdx2db.service
 

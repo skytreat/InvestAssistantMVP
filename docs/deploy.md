@@ -203,16 +203,25 @@ sudo journalctl -u caddy -f
 
 ## 17:00-17:05 Cron 链路
 
+> ⚠️ **时区（T108）**：服务器系统时区是 `Etc/UTC`，因此 timer 与 4 段 Fastify cron
+> **都显式指定 `Asia/Shanghai`**。不要依赖服务器本地时区；也不要修改系统时区
+> （SQLite 的 `datetime('now','localtime')` 依赖它）。
+
 ```text
-17:00 systemd timer -> tdx2db 增量更新 DuckDB
-17:01 Fastify cron -> C1-C12 数据校验
-17:02 Fastify cron -> 插件信号生成（依赖 DuckDB）
-17:03 Fastify cron -> 除权事件同步
-17:05 Fastify cron -> 热备份（SQLite 恒常执行；DuckDB COPY TO 受 ENABLE_QUOTE_BACKUP 控制）
+17:00（北京时间）systemd timer -> tdx2db 增量更新 DuckDB
+17:01（北京时间）Fastify cron -> 读取 tdx2db 结果并写 system_log，然后 C1-C12 数据校验
+17:02（北京时间）Fastify cron -> 插件信号生成（依赖 DuckDB）
+17:03（北京时间）Fastify cron -> 除权事件同步
+17:05（北京时间）Fastify cron -> 热备份（SQLite 恒常执行；DuckDB COPY TO 受 ENABLE_QUOTE_BACKUP 控制）
 ```
 
 Fastify 在 17:00 窗口内检测到哨兵后会释放 DuckDB 读连接；外部写完成后惰性重建。
 Node 自己触发补跑时走 `rerunQuoteUpdate()` 的主动让锁路径（ADR-012）。
+
+**更新结果可见性（T105/T106）**：17:01 会执行 `systemctl show tdx2db.service`，把
+`Result` / `ExecMainStatus` / 起止时间写入 `system_log`（`log_type=tdx2db_update`）。
+失败或未触发时校验会跳过，但会写 `datacheck/ERROR`，不会再出现「无数据却 ERROR=0 WARN=0」。
+若更新状态为成功但当日无数据，会先自动补跑一次；补跑后仍无数据才判 ERROR。
 
 ## 升级与回滚
 

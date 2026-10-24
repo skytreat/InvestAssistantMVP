@@ -70,19 +70,29 @@ interface DuckDBSingleton {
   /** 进程内写窗口标志：为 true 时 getInstance() **不得**重建 instance
    *  （防止并发查询抢回文件锁 ⇒ 外部写进程 tdx2db 又被挡，见 ADR-012 §2.3.3） */
   writing: boolean;
+  /** 外部写进程（tdx2db）写窗口标志：哨兵存在期间禁止重建 instance（方向 A） */
+  externalWriting: boolean;
+  /** 哨兵轮询定时器（进程内只允许一个） */
+  sentinelWatcher: ReturnType<typeof setInterval> | null;
 }
 
 const GLOBAL_KEY = '__investDuckDBSingleton__';
 
 function singleton(): DuckDBSingleton {
   const g = globalThis as unknown as Record<string, DuckDBSingleton | undefined>;
-  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = { promise: null, writing: false };
-  return g[GLOBAL_KEY] as DuckDBSingleton;
+  if (!g[GLOBAL_KEY]) {
+    g[GLOBAL_KEY] = { promise: null, writing: false, externalWriting: false, sentinelWatcher: null };
+  }
+  const s = g[GLOBAL_KEY] as DuckDBSingleton;
+  // 兼容已存在的旧结构（热更新 / 测试跨文件复用 globalThis 时）
+  if (s.externalWriting === undefined) s.externalWriting = false;
+  if (s.sentinelWatcher === undefined) s.sentinelWatcher = null;
+  return s;
 }
 
 /** 进程内写窗口是否打开（方向 B：Node 主动触发 tdx2db 时置 true） */
 export function isDuckDBWriting(): boolean {
-  return singleton().writing;
+  return singleton().writing || singleton().externalWriting;
 }
 
 /** 打开写窗口：置标志 + 释放 instance，返回 release 函数 */
@@ -104,6 +114,16 @@ async function getInstance(): Promise<DuckDBInstance> {
   // 方向 B：写窗口期间禁止重建 instance（否则并发查询会抢回锁 ⇒ tdx2db 失败）
   if (s.writing) {
     throw new Error('DuckDB 正在被行情更新写入（inProcessWriting），请稍后重试');
+  }
+  // 方向 A：外部 tdx2db 正在写库（哨兵存在）⇒ 禁止重建 instance
+  if (s.externalWriting) {
+    throw new Error('DuckDB 正在被行情更新写入（tdx2db sentinel），请稍后重试');
+  }
+  // 竞态兜底：watcher 还没看到哨兵时，查询也不能抢锁
+  if (isDuckDBWriteSentinelPresent()) {
+    s.externalWriting = true;
+    await closeDuckDBInstance();
+    throw new Error('DuckDB 正在被行情更新写入（tdx2db sentinel），请稍后重试');
   }
   if (!s.promise) {
     // access_mode: 'READ_ONLY' —— 落实 AGENTS.md:376「Fastify 对 DuckDB 只有 SELECT 权限」
@@ -131,17 +151,64 @@ export async function closeDuckDBInstance(): Promise<void> {
   }
 }
 
-/** 哨兵文件路径（可 env 覆盖）—— 方向 A 的信号源 */
-export const DUCKDB_WRITE_SENTINEL =
-  process.env.TDX2DB_WRITE_SENTINEL ?? '/opt/invol/IA_Prod/.tdx2db-writing';
+/** 哨兵文件路径（惰性读 env，供方向 A 使用） */
+export function getDuckDBWriteSentinelPath(): string {
+  return process.env.TDX2DB_WRITE_SENTINEL ?? '/opt/invol/IA_Prod/.tdx2db-writing';
+}
 
 /** 检查哨兵是否存在（方向 A：外部写进程在写库） */
 export function isDuckDBWriteSentinelPresent(): boolean {
   try {
-    return fs.existsSync(DUCKDB_WRITE_SENTINEL);
+    return fs.existsSync(getDuckDBWriteSentinelPath());
   } catch {
     return false;
   }
+}
+
+/**
+ * 检查一次哨兵并切换外部写窗口（方向 A 的核心动作）。
+ *
+ * - 哨兵出现：置 externalWriting=true 并**立即释放 instance**，让出文件锁给 tdx2db；
+ * - 哨兵消失：清 externalWriting，下一次查询惰性重建 instance。
+ *
+ * @returns 当前哨兵是否存在
+ */
+export async function syncDuckDBWriteSentinel(): Promise<boolean> {
+  const s = singleton();
+  const present = isDuckDBWriteSentinelPresent();
+  if (present && !s.externalWriting) {
+    s.externalWriting = true;
+    await closeDuckDBInstance();
+  } else if (!present && s.externalWriting) {
+    s.externalWriting = false;
+  }
+  return present;
+}
+
+/**
+ * 启动方向 A 哨兵轮询（进程内幂等）。
+ *
+ * 17:00 的 tdx2db 是**独立进程**，不会经过 Node，因此 Node 必须主动轮询哨兵，
+ * 在写窗口开始时释放 DuckDB instance；否则 tdx2db 会因文件锁冲突直接失败
+ * （2026-10-23 生产实测：`Conflicting lock is held in /usr/bin/node`）。
+ */
+export function startDuckDBWriteSentinelWatcher(pollMs = 1_000): void {
+  const s = singleton();
+  if (s.sentinelWatcher) return;
+  s.sentinelWatcher = setInterval(() => {
+    void syncDuckDBWriteSentinel();
+  }, pollMs);
+  // 不因轮询定时器阻止进程退出（测试 / 优雅关闭）
+  s.sentinelWatcher.unref?.();
+}
+
+/** 停止方向 A 哨兵轮询（幂等） */
+export function stopDuckDBWriteSentinelWatcher(): void {
+  const s = singleton();
+  if (!s.sentinelWatcher) return;
+  clearInterval(s.sentinelWatcher);
+  s.sentinelWatcher = null;
+  s.externalWriting = false;
 }
 
 /**

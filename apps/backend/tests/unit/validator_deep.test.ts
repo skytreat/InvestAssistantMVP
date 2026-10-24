@@ -148,44 +148,78 @@ describe('validator_deep — C7 日线价格合理性（T85 重写）', () => {
   });
 });
 
-describe('validator_deep — C8 行情更新执行时长（T85 重写）', () => {
+describe('validator_deep — C8 行情更新执行时长（T107 改查 SQLite）', () => {
   afterEach(() => {
     cleanup();
   });
 
-  it('无 tdx2db_update 日志 → SKIP（不得计为 PASS）', async () => {
+  async function mockQuoteProbe() {
     const mockMod = await import('../../src/db/duckdb.js');
     vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
-      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
-      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
+      // T85b ②：runAllChecks 的「当日有无行情数据」探针
       if ((sql as string).includes('quote_rows')) {
         return [{ quote_rows: 5000 }];
       }
-      if ((sql as string).includes('tdx2db_update')) {
-        return [{ started_at: null, has_row: 'SKIP' as const }];
-      }
       return [];
     });
+    return mockMod;
+  }
+
+  it('无 tdx2db_update 日志 → SKIP（不得计为 PASS）', async () => {
+    const mockMod = await mockQuoteProbe();
     const summaries = await runAllChecks('2026-10-15');
     expect(summaries.find((s) => s.checkId === 'C8')!.result).toBe('SKIP');
     mockMod.queryDuckDB.mockRestore();
   });
 
-  it('时间戳格式异常 → WARN', async () => {
-    const mockMod = await import('../../src/db/duckdb.js');
-    vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
-      // T85b ②：runAllChecks 的「当日有无行情数据」探针（SELECT COUNT(*) AS quote_rows）
-      // 闸门用它在无数据时把 C1/C3-C10 判 SKIP —— mock 必须应答，否则闸门会吞掉被测分支
-      if ((sql as string).includes('quote_rows')) {
-        return [{ quote_rows: 5000 }];
-      }
-      if ((sql as string).includes('tdx2db_update')) {
-        return [{ started_at: 'not-a-timestamp', has_row: 'PASS' as const }];
-      }
-      return [];
-    });
+  it('duration_s=40 → PASS', async () => {
+    ConfigStore.getInstance().writeLog(
+      'tdx2db_update',
+      'SUCCESS',
+      '17:00 行情更新成功（耗时 40s）',
+      JSON.stringify({ state: 'SUCCESS', duration_s: 40 }),
+      undefined,
+      '2026-10-15',
+    );
+    const mockMod = await mockQuoteProbe();
     const summaries = await runAllChecks('2026-10-15');
-    expect(summaries.find((s) => s.checkId === 'C8')!.result).toBe('WARN');
+    const c8 = summaries.find((s) => s.checkId === 'C8')!;
+    expect(c8.result).toBe('PASS');
+    expect(c8.detail).toContain('40s');
+    mockMod.queryDuckDB.mockRestore();
+  });
+
+  it('duration_s=300 → WARN（执行时长超阈值）', async () => {
+    ConfigStore.getInstance().writeLog(
+      'tdx2db_update',
+      'SUCCESS',
+      '17:00 行情更新成功（耗时 300s）',
+      JSON.stringify({ state: 'SUCCESS', duration_s: 300 }),
+      undefined,
+      '2026-10-15',
+    );
+    const mockMod = await mockQuoteProbe();
+    const summaries = await runAllChecks('2026-10-15');
+    const c8 = summaries.find((s) => s.checkId === 'C8')!;
+    expect(c8.result).toBe('WARN');
+    expect(c8.detail).toContain('行情更新耗时');
+    mockMod.queryDuckDB.mockRestore();
+  });
+
+  it('detail 非法 JSON → WARN', async () => {
+    ConfigStore.getInstance().writeLog(
+      'tdx2db_update',
+      'SUCCESS',
+      'bad detail',
+      'not-json',
+      undefined,
+      '2026-10-15',
+    );
+    const mockMod = await mockQuoteProbe();
+    const summaries = await runAllChecks('2026-10-15');
+    const c8 = summaries.find((s) => s.checkId === 'C8')!;
+    expect(c8.result).toBe('WARN');
+    expect(c8.detail).toContain('不是合法 JSON');
     mockMod.queryDuckDB.mockRestore();
   });
 });
