@@ -44,7 +44,7 @@ export default function Admin() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await api.get('/api/market/latest-date');
+        const res = await api.get('/market/latest-date');
         if (cancelled) return;
         if (isOkEnvelope(res.data)) {
           const d = (res.data.data as { date?: string | null } | null)?.date ?? null;
