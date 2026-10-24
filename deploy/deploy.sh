@@ -390,6 +390,19 @@ install -m 644 "$SCRIPT_DIR/tdx2db-update.timer" /etc/systemd/system/tdx2db-upda
 install -m 644 "$SCRIPT_DIR/invest-assistant.service" /etc/systemd/system/invest-assistant.service
 systemctl daemon-reload
 systemctl disable tdx2db.service >/dev/null 2>&1 || true
+# 允许 Fastify 运行用户（invol）无交互管理 tdx2db.service，供 rerun 降级链使用
+if [ -d /etc/polkit-1/rules.d ]; then
+    cat > /etc/polkit-1/rules.d/50-invest-tdx2db.rules <<'POLKIT'
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        subject.user === "invol" &&
+        action.lookup("unit") === "tdx2db.service") {
+        return polkit.Result.YES;
+    }
+});
+POLKIT
+    systemctl restart polkit >/dev/null 2>&1 || true
+fi
 systemctl enable tdx2db-update.timer
 systemctl enable --now tdx2db-update.timer
 systemctl restart tdx2db-update.timer

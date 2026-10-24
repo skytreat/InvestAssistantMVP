@@ -25,6 +25,9 @@ const execFileAsync = promisify(execFile);
 /** 单次补跑超时（SDD：5 分钟） */
 const RERUN_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_TIMEOUT_MS ?? 300_000);
 
+/** systemctl 补跑的轮询上限（对齐 tdx2db.service 的 TimeoutStartSec=1800） */
+const RERUN_SYSTEMCTL_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_SYSTEMCTL_TIMEOUT_MS ?? 1_800_000);
+
 /** 补跑后等待落库稳定的最长时间 */
 const RETRY_SETTLE_MS = Number(process.env.TDX2DB_RERUN_SETTLE_MS ?? 3_000);
 
@@ -60,9 +63,9 @@ async function _trySystemdRun(): Promise<RerunResult | null> {
     // systemd-run 不存在 / 无权限 / tdx2db 失败 → 交给下一级
     writeSystemLog({
       logType: 'tdx2db_update',
-      level: 'WARN',
-      message: 'systemd-run 补跑未成功，尝试降级方式',
-      detail: String(err).slice(0, 300),
+      level: 'INFO',
+      message: 'systemd-run 不可用，降级到 systemctl',
+      detail: String(err?.stderr || err?.stdout || err).slice(0, 500),
     });
     return null;
   }
@@ -72,7 +75,7 @@ async function _trySystemctl(): Promise<RerunResult | null> {
   try {
     await execFileAsync('systemctl', ['start', 'tdx2db.service'], { timeout: 30_000 });
     // 异步启动，轮询等待 oneshot 结束
-    const deadline = Date.now() + RERUN_TIMEOUT_MS;
+    const deadline = Date.now() + RERUN_SYSTEMCTL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 3_000));
       const { stdout } = await execFileAsync(
@@ -138,7 +141,7 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
         code === 'ENOENT'
           ? 'tdx2db 二进制不存在，跳过补跑（本地开发环境正常现象）'
           : 'tdx2db 直接 exec 补跑失败',
-      detail: String(err).slice(0, 300),
+      detail: String(err?.stderr || err?.stdout || err).slice(0, 500),
     });
     return null;
   }
