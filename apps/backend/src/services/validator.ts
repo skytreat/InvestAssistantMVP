@@ -9,7 +9,7 @@ import { resolveTargetTradeDate } from './marketData.js';
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
 
 /** 该日是否有任何行情数据（DuckDB 不可用时保守返回 false） */
-async function hasQuoteDataOn(date: string): Promise<boolean> {
+export async function hasQuoteDataOn(date: string): Promise<boolean> {
   try {
     const rows = await queryDuckDB<{ quote_rows: number }>(
       'SELECT COUNT(*) AS quote_rows FROM v_stock_qfq WHERE date = ?',

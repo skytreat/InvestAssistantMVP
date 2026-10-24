@@ -4,7 +4,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { CronJob, AsyncTask } from 'toad-scheduler';
-import { runAllChecks } from './validator.js';
+import { runAllChecks, hasQuoteDataOn } from './validator.js';
 import { executeAllPlugins } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
@@ -14,6 +14,7 @@ import { isDuckDBWriteSentinelPresent } from '../db/duckdb.js';
 import { runFullBackup } from './backup.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
+import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
 
 /**
  * G3a — WARN/ERROR 自动补跑 + 重新校验（PRD D3 自愈闭环 + SDD §5.1 Step 3）
@@ -78,6 +79,123 @@ export async function runDatacheckWithRerun(date: string): Promise<{
   return { summaries: after, reran: true, rerunOk: true };
 }
 
+export interface ScheduledDatacheckResult {
+  date: string;
+  action:
+    | 'CHECKED'
+    | 'WAIT_TIMEOUT'
+    | 'UPDATE_RUNNING'
+    | 'UPDATE_FAILED'
+    | 'NO_DATA_AFTER_RERUN';
+  updateState?: Tdx2dbRunState;
+  summaries?: Awaited<ReturnType<typeof runAllChecks>>;
+  reran?: boolean;
+  rerunOk?: boolean;
+}
+
+/**
+ * 17:01 校验段的完整入口（T106：更新结果 → 数据闸门 → 校验/补跑）。
+ *
+ * 三类「无行情数据」必须区分，不能都汇总成 `ERROR=0 WARN=0`：
+ *   1. 非交易日：`resolveTargetTradeDate()` 会回退到最近交易日，通常**有数据**，
+ *      因此不会走到本函数的无数据分支；
+ *   2. 交易日 + 更新失败 / 未触发：行情更新日志写 ERROR，校验跳过并汇总 ERROR；
+ *   3. 交易日 + 更新「成功」但无数据：先补跑一次，补跑后仍无数据 → ERROR。
+ *
+ * 只有「无新数据」时才跳过校验（ADR-004：数据源缺失 ≠ 校验通过），
+ * 但**跳过本身必须留下 ERROR 证据**，否则管理端会误以为链路健康。
+ */
+export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult> {
+  // 方向 A（ADR-012 §2.1）：外部写进程正在写库时，先等它写完再校验
+  const waitMs = Number(process.env.TDX2DB_SENTINEL_WAIT_MS ?? 120_000);
+  const pollMs = Number(process.env.TDX2DB_SENTINEL_POLL_MS ?? 1_000);
+  const waitStart = Date.now();
+  let announced = false;
+  while (isDuckDBWriteSentinelPresent() && Date.now() - waitStart < waitMs) {
+    if (!announced) {
+      writeSystemLog({
+        logType: 'datacheck',
+        level: 'INFO',
+        message: '检测到 tdx2db 写窗口，等待其完成后再校验',
+      });
+      announced = true;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  if (isDuckDBWriteSentinelPresent()) {
+    writeSystemLog({
+      logType: 'datacheck',
+      level: 'WARN',
+      message: `等待 tdx2db 写窗口超时（${Math.round(waitMs / 1000)}s），跳过本轮校验`,
+    });
+    return { date: '', action: 'WAIT_TIMEOUT' };
+  }
+
+  // T105：把 systemd oneshot 的真实执行结果落库，供管理端 / C8 / 本函数使用
+  const update = await reportTdx2dbRunOutcome();
+  const date = (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
+
+  if (update.state === 'RUNNING') {
+    writeSystemLog({
+      logType: 'datacheck',
+      level: 'WARN',
+      message: '行情更新仍在运行，跳过本轮 C1-C12 校验',
+      detail: update.message,
+    });
+    return { date, action: 'UPDATE_RUNNING', updateState: update.state };
+  }
+
+  let hasData = await hasQuoteDataOn(date);
+  if (!hasData && update.state !== 'SUCCESS') {
+    writeSystemLog({
+      logType: 'datacheck',
+      level: 'ERROR',
+      message: `行情更新未生效（state=${update.state}），跳过 ${date} 的 C1-C12 校验`,
+      detail: update.message,
+    });
+    return { date, action: 'UPDATE_FAILED', updateState: update.state };
+  }
+
+  if (!hasData) {
+    writeSystemLog({
+      logType: 'datacheck',
+      level: 'WARN',
+      message: `行情更新状态为成功，但 ${date} 仍无行情数据，触发补跑`,
+      detail: update.message,
+    });
+    const rerun = await rerunQuoteUpdate(`行情更新成功但 ${date} 无数据`);
+    if (rerun.status !== 'SUCCESS') {
+      writeSystemLog({
+        logType: 'datacheck',
+        level: 'ERROR',
+        message: `行情更新成功但无数据，补跑失败，跳过 ${date} 的 C1-C12 校验`,
+        detail: `rerun=${rerun.status} method=${rerun.method} msg=${rerun.message}`,
+      });
+      return { date, action: 'NO_DATA_AFTER_RERUN', updateState: update.state, reran: true, rerunOk: false };
+    }
+    hasData = await hasQuoteDataOn(date);
+    if (!hasData) {
+      writeSystemLog({
+        logType: 'datacheck',
+        level: 'ERROR',
+        message: `补跑后 ${date} 仍无行情数据，跳过 C1-C12 校验`,
+        detail: update.message,
+      });
+      return { date, action: 'NO_DATA_AFTER_RERUN', updateState: update.state, reran: true, rerunOk: true };
+    }
+  }
+
+  const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
+  const errors = summaries.filter((s) => s.result === 'ERROR').length;
+  const warns = summaries.filter((s) => s.result === 'WARN').length;
+  writeSystemLog({
+    logType: 'datacheck',
+    level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
+    message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
+  });
+  return { date, action: 'CHECKED', updateState: update.state, summaries, reran, rerunOk };
+}
+
 /**
  * 注册所有 cron 任务（由 server.ts 在 Fastify 启动后调用）
  *
@@ -109,37 +227,9 @@ export function registerCronJobs(app: FastifyInstance): void {
           level: 'INFO',
           message: 'C1-C12 校验开始',
         });
-        // 方向 A（ADR-012 §2.1）：外部写进程正在写库时，先等它写完再校验
-        const SENTINEL_WAIT_MS = 120_000;
-        const SENTINEL_POLL_MS = 1_000;
-        const waitStart = Date.now();
-        while (isDuckDBWriteSentinelPresent() && Date.now() - waitStart < SENTINEL_WAIT_MS) {
-          writeSystemLog({
-            logType: 'datacheck',
-            level: 'INFO',
-            message: '检测到 tdx2db 写窗口，等待其完成后再校验',
-          });
-          await new Promise((r) => setTimeout(r, SENTINEL_POLL_MS));
-        }
-        if (isDuckDBWriteSentinelPresent()) {
-          writeSystemLog({
-            logType: 'datacheck',
-            level: 'WARN',
-            message: '等待 tdx2db 写窗口超时（120s），跳过本轮校验',
-          });
-          return;
-        }
-        // 单一事实源（T85b ②）：日历口径的当前交易日（数据陈旧会如实暴露，不会假绿）
-        const date = (await resolveTargetTradeDate()) ?? new Date().toISOString().slice(0, 10);
+        // 方向 A 等待 + T105 更新结果 + T106 数据闸门/补跑全部在 runScheduledDatacheck 内
         try {
-          const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
-          const errors = summaries.filter((s) => s.result === 'ERROR').length;
-          const warns = summaries.filter((s) => s.result === 'WARN').length;
-          writeSystemLog({
-            logType: 'datacheck',
-            level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
-            message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
-          });
+          await runScheduledDatacheck();
         } catch (err: any) {
           writeSystemLog({
             logType: 'datacheck',

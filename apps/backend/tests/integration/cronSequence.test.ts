@@ -64,6 +64,12 @@ vi.mock('../../src/services/logger.js', () => ({
 }));
 vi.mock('../../src/services/validator.js', () => ({
   runAllChecks: vi.fn(datacheckImpl),
+  // T106：17:01 闸门先探「当日是否有行情数据」—— mock 成有数据，才能走到校验
+  hasQuoteDataOn: vi.fn(async () => true),
+}));
+vi.mock('../../src/services/quoteUpdateStatus.js', () => ({
+  // T105/T106：更新结果由 scheduler 读取；配置层测试不碰 systemd
+  reportTdx2dbRunOutcome: vi.fn(async () => ({ state: 'SUCCESS' as const, message: 'mock 更新成功' })),
 }));
 vi.mock('../../src/services/pluginEngine.js', () => ({
   executeAllPlugins: vi.fn(async () => {
