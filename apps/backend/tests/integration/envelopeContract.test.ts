@@ -129,6 +129,7 @@ const ROUTE_CASES: RouteCase[] = [
     payload: { username: 't89b_seeded', password: 'pw-123456', role: 'user' },
   },
   { method: 'GET', url: '/api/market/latest', timeout: 60_000 },
+  { method: 'GET', url: '/api/market/latest-date', timeout: 60_000 },
 
   // ── 交易 ──
   { method: 'POST', url: '/api/trade', payload: TRADE_PAYLOAD },

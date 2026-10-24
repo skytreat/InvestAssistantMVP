@@ -517,19 +517,19 @@ export default function Kline() {
             </div>
           )}
           <Suspense fallback={<Spinner label="加载图表..." />}>
-          <KlineChart
-            symbol={symbol}
-            period={period}
-            bars={bars}
-            dataSignature={dataSignature}
-            params={params}
-            showMa={showMa}
-            subIndicator={subIndicator}
-            height={isMobile ? 420 : 560}
-            mainHeight={isMobile ? 250 : 380}
-            subHeight={isMobile ? 110 : 140}
-          />
-        </Suspense>
+            <KlineChart
+              symbol={symbol}
+              period={period}
+              bars={bars}
+              dataSignature={dataSignature}
+              params={params}
+              showMa={showMa}
+              subIndicator={subIndicator}
+              height={isMobile ? 420 : 560}
+              mainHeight={isMobile ? 250 : 380}
+              subHeight={isMobile ? 110 : 140}
+            />
+          </Suspense>
         </>
       )}
 
