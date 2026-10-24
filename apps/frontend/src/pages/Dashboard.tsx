@@ -614,9 +614,7 @@ export default function Dashboard() {
       <div style={pageContainerStyle}>
         <h1 style={titleStyle}>仪表盘</h1>
         {latestQuoteDate && (
-          <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
-            最新行情日期：{latestQuoteDate}
-          </div>
+          <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>最新行情日期：{latestQuoteDate}</div>
         )}
 
         {/* T79 ⑤：概览四块之一 —— 资产汇总（总资产卡 + 资产组成） */}

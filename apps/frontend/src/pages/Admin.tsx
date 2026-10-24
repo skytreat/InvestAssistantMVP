@@ -66,9 +66,7 @@ export default function Admin() {
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>管理员面板</h1>
       {latestQuoteDate && (
-        <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
-          最新行情日期：{latestQuoteDate}
-        </div>
+        <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>最新行情日期：{latestQuoteDate}</div>
       )}
 
       {/*
