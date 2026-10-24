@@ -55,7 +55,7 @@ function seedPositions(userId: number, assetCount: number): void {
 }
 
 describe('positionPerf — calcAllPositions N+1 回归', () => {
-  it('10 个持仓标的 → DB 查询次数 ≤ 2（1 次全量 + 最多 1 次兜底）', () => {
+  it('10 个持仓标的 → DB prepare 次数 ≤ 2（不随标的数增长）', () => {
     db.db
       .prepare(
         "INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES ('perf_user', 'x', 'user')",
@@ -76,13 +76,15 @@ describe('positionPerf — calcAllPositions N+1 回归', () => {
     expect(prepareCalls).toBeLessThanOrEqual(2);
   });
 
-  it('50 个持仓标的 → DB 查询次数仍 ≤ 2（不随标的数增长）', () => {
+  it('50 个持仓标的 → DB prepare 次数仍 ≤ 2（不随标的数增长）', () => {
     db.db
       .prepare(
         "INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES ('perf_user2', 'x', 'user')",
       )
       .run();
-    const uid = Number(db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user2'").get()?.id);
+    const uid = Number(
+      db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user2'").get()?.id,
+    );
     seedPositions(uid, 50);
 
     const prepareSpy = vi.spyOn(db.db, 'prepare');
@@ -101,7 +103,9 @@ describe('positionPerf — calcAllPositions N+1 回归', () => {
         "INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES ('perf_user3', 'x', 'user')",
       )
       .run();
-    const uid = Number(db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user3'").get()?.id);
+    const uid = Number(
+      db.db.prepare("SELECT id FROM user_account WHERE username = 'perf_user3'").get()?.id,
+    );
 
     const result = calcAllPositions(uid);
     expect(result).toEqual([]);
