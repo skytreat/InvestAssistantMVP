@@ -17,6 +17,15 @@ import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
 
 /**
+ * 全部收盘后 cron 的时区（T108）。
+ *
+ * 服务器系统时区是 Etc/UTC；若 cron 不显式指定时区，`1 17 * * 1-5` 会在
+ * 北京时间**次日 01:01** 触发（2026-10-23 生产实测）。这里与 systemd timer 的
+ * `Asia/Shanghai` 保持一致，**不修改系统时区**（SQLite 的 localtime 默认值依赖它）。
+ */
+export const CRON_TIMEZONE = 'Asia/Shanghai';
+
+/**
  * G3a — WARN/ERROR 自动补跑 + 重新校验（PRD D3 自愈闭环 + SDD §5.1 Step 3）
  *
  * 判定口径（SDD §7.2 三层防线 + Requirements §6 C1-C10 处置列）：
@@ -220,7 +229,7 @@ export function registerCronJobs(app: FastifyInstance): void {
   // === 17:01 数据校验 C1-C12 ===
   app.scheduler.addCronJob(
     new CronJob(
-      { cronExpression: '1 17 * * 1-5' },
+      { cronExpression: '1 17 * * 1-5', timezone: CRON_TIMEZONE },
       new AsyncTask('datacheck-c1-c12', async () => {
         writeSystemLog({
           logType: 'datacheck',
@@ -246,7 +255,7 @@ export function registerCronJobs(app: FastifyInstance): void {
   // === 17:02 插件信号生成 ===
   app.scheduler.addCronJob(
     new CronJob(
-      { cronExpression: '2 17 * * 1-5' },
+      { cronExpression: '2 17 * * 1-5', timezone: CRON_TIMEZONE },
       new AsyncTask('signal-generate', async () => {
         writeSystemLog({
           logType: 'signal_generate',
@@ -321,7 +330,7 @@ export function registerCronJobs(app: FastifyInstance): void {
   // === 17:03 除权自动导入 ===
   app.scheduler.addCronJob(
     new CronJob(
-      { cronExpression: '3 17 * * 1-5' },
+      { cronExpression: '3 17 * * 1-5', timezone: CRON_TIMEZONE },
       new AsyncTask('dividend-import', async () => {
         writeSystemLog({
           logType: 'dividend_import',
@@ -352,7 +361,7 @@ export function registerCronJobs(app: FastifyInstance): void {
   // === 17:05 备份（SQLite 恒常；DuckDB 受 ENABLE_QUOTE_BACKUP 控制）===
   app.scheduler.addCronJob(
     new CronJob(
-      { cronExpression: '5 17 * * 1-5' },
+      { cronExpression: '5 17 * * 1-5', timezone: CRON_TIMEZONE },
       new AsyncTask('backup', async () => {
         writeSystemLog({
           logType: 'backup',
