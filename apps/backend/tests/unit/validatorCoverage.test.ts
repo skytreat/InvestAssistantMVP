@@ -95,12 +95,15 @@ describe('validator 覆盖 — DuckDB 无返回行 → SKIP', () => {
 });
 
 describe('validator 覆盖 — SQL 抛异常 → ERROR / WARN', () => {
-  it('C1/C9/C10 判 ERROR，C3-C8 判 WARN（C2 判 ERROR）', async () => {
+  it('C1/C9/C10 判 ERROR，C3-C7 判 WARN（C2 判 ERROR；C8 改查 SQLite 不再受 DuckDB 影响）', async () => {
+    ConfigStore.getInstance()
+      .db.prepare("DELETE FROM system_log WHERE log_date = '2026-10-15' AND log_type = 'tdx2db_update'")
+      .run();
     await mockSqlError();
     const summaries = await runAllChecks('2026-10-15');
 
     const expectError = ['C1', 'C2', 'C9', 'C10'];
-    const expectWarn = ['C3', 'C4', 'C5', 'C6', 'C7', 'C8'];
+    const expectWarn = ['C3', 'C4', 'C5', 'C6', 'C7'];
 
     for (const id of expectError) {
       const s = summaries.find((x) => x.checkId === id);
@@ -114,6 +117,8 @@ describe('validator 覆盖 — SQL 抛异常 → ERROR / WARN', () => {
       expect(s!.result, `${id} 应判 WARN`).toBe('WARN');
       expect(s!.detail).toContain('SQL 异常');
     }
+    const c8 = summaries.find((x) => x.checkId === 'C8');
+    expect(c8!.result).toBe('SKIP');
   }, 60_000);
 });
 
@@ -147,35 +152,42 @@ describe('validator 覆盖 — C5 板块表为空的提示', () => {
   }, 60_000);
 });
 
-describe('validator 覆盖 — C8 时间戳格式', () => {
-  it('tdx2db_update 时间戳无法解析 → WARN', async () => {
-    const mockMod = await import('../../src/db/duckdb.js');
-    vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
-      if (sql.includes('quote_rows')) return [{ quote_rows: 5000 }];
-      if (sql.includes('tdx2db_update')) {
-        return [{ started_at: '2026/10/15 09:00:00', has_row: 'PASS' as const }];
-      }
-      return [];
-    });
+describe('validator 覆盖 — C8 结构化耗时日志（T107 改查 SQLite）', () => {
+  it('detail 为空 → WARN', async () => {
+    ConfigStore.getInstance()
+      .db.prepare("DELETE FROM system_log WHERE log_date = '2026-10-15' AND log_type = 'tdx2db_update'")
+      .run();
+    ConfigStore.getInstance().writeLog(
+      'tdx2db_update',
+      'SUCCESS',
+      '无 detail',
+      undefined,
+      undefined,
+      '2026-10-15',
+    );
+    await mockNoRows();
     const summaries = await runAllChecks('2026-10-15');
     const c8 = summaries.find((s) => s.checkId === 'C8');
     expect(c8!.result).toBe('WARN');
-    expect(c8!.detail).toContain('时间戳格式异常');
+    expect(c8!.detail).toContain('缺少 detail');
   }, 60_000);
 
-  it('tdx2db_update 时间戳合法且耗时超上限 → WARN（执行时长超阈值）', async () => {
-    const mockMod = await import('../../src/db/duckdb.js');
-    vi.spyOn(mockMod, 'queryDuckDB').mockImplementation(async (sql: string) => {
-      if (sql.includes('quote_rows')) return [{ quote_rows: 5000 }];
-      if (sql.includes('tdx2db_update')) {
-        // 2020 年 ⇒ 距今远超 120s 上限
-        return [{ started_at: '2020-01-01 09:00:00', has_row: 'PASS' as const }];
-      }
-      return [];
-    });
+  it('detail 缺少 duration_s → WARN', async () => {
+    ConfigStore.getInstance()
+      .db.prepare("DELETE FROM system_log WHERE log_date = '2026-10-15' AND log_type = 'tdx2db_update'")
+      .run();
+    ConfigStore.getInstance().writeLog(
+      'tdx2db_update',
+      'SUCCESS',
+      '无耗时',
+      JSON.stringify({ state: 'SUCCESS' }),
+      undefined,
+      '2026-10-15',
+    );
+    await mockNoRows();
     const summaries = await runAllChecks('2026-10-15');
     const c8 = summaries.find((s) => s.checkId === 'C8');
     expect(c8!.result).toBe('WARN');
-    expect(c8!.detail).toContain('行情更新开始于');
+    expect(c8!.detail).toContain('duration_s');
   }, 60_000);
 });

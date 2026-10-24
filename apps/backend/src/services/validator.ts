@@ -4,6 +4,7 @@
 import { queryDuckDB } from '../db/duckdb.js';
 import { writeSystemLog } from './logger.js';
 import { resolveTargetTradeDate } from './marketData.js';
+import { queryLatestTdx2dbTiming } from './quoteUpdateStatus.js';
 
 /** 校验结果三值（扩展 SKIP 用于 C11/C12 MVP） */
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
@@ -558,73 +559,68 @@ async function checkC7(tradeDate: string): Promise<CheckSummary> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// C8：除权日价格跳变率交叉验证
-// SQL 原样来自 SDD §5.7 C8
-// ─────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────
 // C8：行情更新执行时长（Requirements §7.1：≤ 120s，WARN）
 // ⚠️ T85：初稿此处实现的是「数据滞后天数」—— 那是 SDD 的扩展校验，已移出。
-//    现按需求读 system_log 的 tdx2db_update 时间戳差。
-//    无该日志行（新库 / 从未跑过 tdx2db）→ SKIP，不得计为 PASS（ADR-004）。
+// ⚠️ T107（2026-10-24）：system_log 是 **SQLite** 表，原实现用 queryDuckDB 查询
+//    ⇒ 生产环境必然 `Catalog Error: Table with name system_log does not exist`，
+//    且 SQL 里的 `?::date` 是 PostgreSQL 语法，SQLite 不支持。
+//    现改为读 SQLite，并使用 T105 写入的 `duration_s`（真实执行耗时）。
+//    无结构化日志（新库 / 从未跑过 tdx2db）→ SKIP，不得计为 PASS（ADR-004）。
 // ─────────────────────────────────────────────────────────────────
-
-const C8_SQL = `
-SELECT
-    MAX(created_at) AS started_at,
-    CASE WHEN COUNT(*) = 0 THEN 'SKIP' ELSE 'PASS' END AS has_row
-FROM system_log
-WHERE log_type = 'tdx2db_update'
-  AND log_date = ?::date
-`;
-
-interface C8Row {
-  started_at: string | null;
-  has_row: CheckResult;
-}
-
-/** 把 system_log 的 'YYYY-MM-DD HH:MM:SS' 转成 Date（按本地时区） */
-function parseLocalTs(ts: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(ts);
-  if (!m) return null;
-  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-}
 
 async function checkC8(tradeDate: string): Promise<CheckSummary> {
   const start = Date.now();
   try {
-    const row = firstRow(await queryDuckDB<C8Row>(C8_SQL, [tradeDate]));
-    if (!row || row.has_row !== 'PASS' || !row.started_at) {
+    const row = queryLatestTdx2dbTiming(tradeDate);
+    if (!row) {
       return {
         checkId: 'C8',
         result: 'SKIP',
-        detail: `无 ${tradeDate} 的 tdx2db_update 日志（无法判定执行时长）`,
+        detail: `无 ${tradeDate} 的结构化 tdx2db_update 日志（无法判定执行时长）`,
         durationMs: Date.now() - start,
       };
     }
-    const started = parseLocalTs(row.started_at);
-    if (!started) {
+    if (!row.detail) {
       return {
         checkId: 'C8',
         result: 'WARN',
-        detail: `tdx2db_update 时间戳格式异常：${row.started_at}`,
+        detail: 'tdx2db_update 日志缺少 detail（无法判定执行时长）',
         durationMs: Date.now() - start,
       };
     }
-    // 执行时长 = 校验时刻 - 行情更新开始时刻（本库无 tdx2db 结束日志，取近似上界）
-    const elapsedSec = Math.round((Date.now() - started.getTime()) / 1000);
-    const result: CheckResult = elapsedSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.detail);
+    } catch {
+      return {
+        checkId: 'C8',
+        result: 'WARN',
+        detail: `tdx2db_update.detail 不是合法 JSON：${row.detail.slice(0, 120)}`,
+        durationMs: Date.now() - start,
+      };
+    }
+    const durationSec = Number((parsed as { duration_s?: unknown })?.duration_s);
+    if (!Number.isFinite(durationSec) || durationSec < 0) {
+      return {
+        checkId: 'C8',
+        result: 'WARN',
+        detail: `tdx2db_update.detail 缺少合法的 duration_s：${row.detail.slice(0, 120)}`,
+        durationMs: Date.now() - start,
+      };
+    }
+    const result: CheckResult =
+      durationSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
     return {
       checkId: 'C8',
       result,
-      detail: `行情更新开始于 ${row.started_at}，至校验时已过 ${elapsedSec}s（上限 ${TOLERANCES.MAX_UPDATE_SECONDS}s）`,
+      detail: `行情更新耗时 ${durationSec}s（上限 ${TOLERANCES.MAX_UPDATE_SECONDS}s，日志时间 ${row.createdAt}）`,
       durationMs: Date.now() - start,
     };
   } catch (err) {
     return {
       checkId: 'C8',
       result: 'WARN',
-      detail: `SQL 异常: ${String(err)}`,
+      detail: `读取 system_log 异常: ${String(err)}`,
       durationMs: Date.now() - start,
     };
   }

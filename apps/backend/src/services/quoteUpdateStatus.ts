@@ -219,17 +219,30 @@ export async function reportTdx2dbRunOutcome(
 }
 
 /**
- * 读取某交易日最近一条**带结构化耗时**的 tdx2db_update 日志。
+ * 读取某交易日最近一条 **tdx2db_update** 日志。
  *
- * 只认 detail 里含 `"duration_s"` 的行：
- *   - T105 写入的行带 duration_s（真实执行耗时）
- *   - 补跑（quoteRerun）写入的行没有 duration_s，不能用来算 C8
+ * 优先返回带结构化 `duration_s` 的行（T105 写入的真实执行耗时）；
+ * 若最新一条是补跑日志（quoteRerun 写入，无 duration_s），则回退到最近一条带
+ * duration_s 的行；两者都没有时返回最新一条，供 C8 区分「无日志 / 日志缺字段」。
  */
 export function queryLatestTdx2dbTiming(
   tradeDate: string,
 ): { createdAt: string; detail: string | null } | null {
   const db = ConfigStore.getInstance().db;
-  const row = db
+  const latest = db
+    .prepare(
+      `SELECT created_at AS createdAt, detail AS detail
+       FROM system_log
+       WHERE log_type = 'tdx2db_update'
+         AND log_date = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get(tradeDate) as { createdAt: string; detail: string | null } | undefined;
+  if (!latest) return null;
+  if (latest.detail?.includes('"duration_s"')) return latest;
+
+  const structured = db
     .prepare(
       `SELECT created_at AS createdAt, detail AS detail
        FROM system_log
@@ -240,5 +253,5 @@ export function queryLatestTdx2dbTiming(
        LIMIT 1`,
     )
     .get(tradeDate) as { createdAt: string; detail: string | null } | undefined;
-  return row ?? null;
+  return structured ?? latest;
 }
