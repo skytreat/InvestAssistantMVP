@@ -197,8 +197,8 @@ function installFetchRouter(routes: FetchRoutes): FetchCounters {
           px(row.low),
           px(row.close),
           px(row.pre_close),
-          px(row.volume),
-          px(row.amount),
+          px(row.volume / 100), // Tushare vol 单位：手（1手=100股）
+          px(row.amount / 1000), // Tushare amount 单位：千元
         ],
       ];
       return new Response(JSON.stringify({ code: 0, data: { fields, items } }), { status: 200 });
