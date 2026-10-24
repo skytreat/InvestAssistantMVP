@@ -395,7 +395,27 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 
 ---
 
+### Wave 11 — 行情更新链路 P0 修复（2026-10-24 生产事故复盘）
+
+> 🚦 **出口门槛 G11**（§12.7）—— **17:00 行情更新必须真实成功，失败必须可见，无数据不得假绿**。
+> 触发事故：2026-10-23 17:00 tdx2db 因 DuckDB 文件锁冲突失败（`Conflicting lock is held in /usr/bin/node`），
+> 17:01 校验因无数据全部 SKIP，汇总日志 `ERROR=0 WARN=0`；同时 Caddy 把 `/api/*` 重写成 index.html，登录报「网络错误」。
+> 根因与修复清单见 `docs/audit/wave-11-audit.md`。
+
+| ID | 状态 | 任务 | 交付物 | 测试要点 | 卡点 |
+|---|---|---|---|---|---|
+| **T104** ⚠️新增 | ✅ 完成（本 PR） | **DuckDB 方向 A 哨兵让锁** | `db/duckdb.ts`：新增 `externalWriting` 状态 + `syncDuckDBWriteSentinel()` + `start/stopDuckDBWriteSentinelWatcher()`；`getInstance()` 在哨兵存在时先释放 instance 再拒绝查询；`server.ts` 启动 watcher、SIGTERM/SIGINT 停止 | 哨兵出现 → instance 释放 + 查询拒绝；哨兵消失 → 自动恢复；watcher 幂等；不依赖模块顶层 env | 方向 B（Node 主动补跑）保持不变；哨兵路径惰性读 env |
+| **T105** ⚠️新增 | ✅ 完成（本 PR） | **17:00 tdx2db 结果归集（方案 A）** | `services/quoteUpdateStatus.ts`：`systemctl show tdx2db.service` 读取 `Result/ExecMainStatus/ExecMainStartTimestamp/ExecMainExitTimestamp/ActiveState`；最近运行超过 30 分钟 → `NOT_RUN`；写 `system_log(tdx2db_update)`（SUCCESS/ERROR/WARN/SKIP） | 成功/失败/未触发/仍在运行/无 systemd 五分支；写入 `duration_s` 结构化 detail；不依赖 journalctl | 不新增 HTTP 回调；无 systemd（本地/CI）→ SKIP 不误报 |
+| **T106** ⚠️新增 | ✅ 完成（本 PR） | **校验闸门语义 + 补跑触发** | `scheduler.ts` 抽出 `runScheduledDatacheck()`：更新失败/未触发 + 无数据 → datacheck **ERROR** 并跳过；更新成功 + 无数据 → 先补跑，补跑后仍无数据 → ERROR；更新仍在运行 → WARN 跳过 | 9 个矩阵用例（失败/未触发/运行中/成功无数据补跑成功/补跑失败/成功有数据/失败有数据/等待超时） | 跳过校验仍必须留 ERROR 证据；补跑成功且数据到位才继续校验 |
+| **T107** ⚠️新增 | ✅ 完成（本 PR） | **C8 改读 SQLite** | `validator.ts`：C8 改用 `queryLatestTdx2dbTiming()` 读 SQLite `system_log`，删除 `queryDuckDB` 与 `?::date`；优先取带 `duration_s` 的行，补跑日志不覆盖真实耗时 | 无日志 SKIP / duration 40 PASS / 300 WARN / detail 缺失或非法 JSON WARN | system_log 是 SQLite 表，禁止再走 DuckDB；测试不得只 mock queryDuckDB |
+| **T108** ⚠️新增 | ✅ 完成（本 PR） | **收盘后链路时区对齐** | `deploy/tdx2db-update.timer`：`OnCalendar=Mon..Fri *-*-* 17:00:00 Asia/Shanghai`；`scheduler.ts`：4 个 CronJob 均传 `timezone: 'Asia/Shanghai'`（导出 `CRON_TIMEZONE`） | `systemd-analyze calendar` 显示 17:00 CST；fake timers 在 09:01 UTC 触发；cron 注册断言时区 | **不修改系统时区**（SQLite `datetime('now','localtime')` 依赖） |
+| **T109** ⚠️新增 | ✅ 完成（本 PR） | **Caddy IP 安装脚本修复** | `deploy/install_caddy_ip.sh`：`handle /api/*` 反代 + SPA `try_files` 仅放兜底 `handle`；`CADDY_IP` 必填；`sudo tee` 写配置 | 脚本语法 + 生成的 Caddyfile 含 `/api/*` 与 `reverse_proxy 127.0.0.1:8080` | 修复前顶层 `try_files` 会吞掉全部 `/api/*`；`deploy/Caddyfile` 模板保持同结构 |
+
+---
+
 ## 6. 任务汇总与工作量
+
+
 
 | Wave | 状态 | 任务 | 范围 | 后端 | core | 前端 | 小计 |
 |------|------|------|------|------|------|------|------|
@@ -409,7 +429,8 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 | 8 | ⚠️ **G8 PASS（G8.1/2/3 全过）**（T77 ✅ / T86b ✅ / T89b ✅ / **T78 ✅ 已交付，§12.6 全局判定 ⚠️ COND**） | T77-T78 + **T86b** + **T89b** | smoke-m5 + **覆盖率门槛恢复**（✅ T86b 已交付）+ **删 `success` 字段** + 最终审计 | **1.0d** | 0 | 0.5d | **2.0d** |
 | 9 | ✅ 完成（G9 8/8 PASS） | **T99 / T100 / T102** 🔒 | **行情更新链路修复**（DuckDB 只读 + 写窗口让锁 / 部署态落地 + 数据回填 / F8 验收真触发）<br>⚠️ 遗留：备份覆盖面未补（`raw_gbbq` 等）+ T102 反向验证为手工 gate | **1.5d** | 0 | 0 | **1.5d** |
 | 10 | ✅ **完成**（**T103 ✅ G10 PASS**；**T79 ✅ ②~⑥**） | **T103** ⚠️新增 + **T79** ⚠️ | **行情库备份可关闭开关（DEC-13）** + **响应式 Phase 2/3 + P2 体验收尾**（T79 ① 已随 T69/T73/T75 交付；本波只剩 ②~⑥） | **0.5d** | 0 | **4.2d** | **4.7d** |
-| | — | **合计** | **57 个任务**（T89 拆为 T89a/T89b；T85 / T97 卡内分 a/b 两段；**T85b 为 2026-10-18 动态审计新增**；**T99/T100/T102/T103 为 Wave 9-10 新增**） | **27.0d** | **3.5d** | **31.8d** | **~67.8 人天** |
+| 11 | 🟡 **本 PR**（G11 见 `docs/audit/wave-11-audit.md`） | **T104-T109** ⚠️新增 | **行情更新链路 P0 修复**（方向 A 让锁 / 更新结果归集 / 校验闸门 / C8 / 时区 / Caddy 脚本） | **1.0d** | 0 | 0 | **1.0d** |
+| | — | **合计** | **63 个任务**（T89 拆为 T89a/T89b；T85 / T97 卡内分 a/b 两段；**T85b 为 2026-10-18 动态审计新增**；**T99/T100/T102/T103 为 Wave 9-10 新增；T104-T109 为 Wave 11 新增**） | **28.0d** | **3.5d** | **31.8d** | **~68.8 人天** |
 
 > **Wave 1 状态（2026-10-20 更新）**：**已全部完成并合入 `main`** —— 验收落档见 `docs/audit/wave-1-audit.md`（G1 判定 **9/9 PASS**，PR #17）。
 > 原「Wave 1 后续未开始：T49 加仓 / T50 / … / T94」注记**已作废**（那是 Wave 1 开工前的快照）。
@@ -418,6 +439,7 @@ AGENTS.md §3 现写「`packages/core` …… **零业务依赖**」以及「黄
 > **Wave 2 状态（2026-10-20 更新）**：**已全部完成** —— 验收落档见 `docs/audit/wave-2-audit.md`（G2 判定 **6/6 PASS**）。
 > **Wave 9 状态（2026-10-23 更新）**：**已完成** —— 验收落档见 `docs/audit/wave-9-audit.md`（G9 判定 **8/8 PASS**）。⚠️ 两项遗留（备份覆盖面未补 / T102 反向验证为手工 gate）见 §5 Wave 10 前言，不得视为已关闭。
 > **Wave 10 状态（2026-10-23 更新）**：**已完成** —— **T103** G10 判定 **5/5 PASS**，**T79 ②~⑥** P2 体验收尾已完成（落档 [`docs/audit/wave-10-audit.md`](../audit/wave-10-audit.md) §7）。
+> **Wave 11 状态（2026-10-24 更新）**：🟡 **本 PR 交付** —— 2026-10-23 生产事故（tdx2db 锁冲突 + 登录「网络错误」）的 P0 修复；T104-T109 代码与单测已落地，G11 判定见 [`docs/audit/wave-11-audit.md`](../audit/wave-11-audit.md)。
 
 > ⚠️ **T85 与 T97 必须同批或紧邻**：T85 定「检什么」，T97 定「怎么执行」（抽样数 / 节流 / 重试 / SKIP 降级）。**T97 是唯一承载 C11=100ms、C12=500ms 两个不同节流值的任务 —— 勿统一成一个值**（C11 走 Tushare 有 500 次/日限额，C12 走东财无限次但会限流）。
 > ⚠️ **T89a + T90 必须同批**（都改全部路由文件，共 63 处 `reply.code(...)`），且**前端 36 处改读 `message` 需一并交付**，否则前端全量 404 / 白屏。**T89b（删 `success`）在 Wave 8，且必须等 T61 前端测试基座落地**。
@@ -541,6 +563,7 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **DEC-12** | **§13 所有者裁决（2026-10-17，共 13 项阻断全裁）**：B-1 实现 C4/C5；B-3 插件 50ms **不计入**行情查询；B-4 补测试映射与缺失测试；B-5 覆盖率门槛**暂缓下调、由 T86b 补回**；B-6 **补 Wave 2 lint 任务**；B-7 候选池迁移**只打标记不建关联**；B-8 **补齐插件契约字段**；B-9 **改代码**采纳 SDD §4.2 envelope；B-10 `HOLDING_INSUFFICIENT` 用 **409**；B-11 交易改**追加** + `trade_time` 进主键（**份额不进**）；B-12 路由**以 SDD §4.4 为准**；B-13 `/api/strategy/reload` **属 MVP** | 裁决优先于本计划此前的任何推断；对应 T85-T94。**§13.5 裁决收口** | T85-T94 |
 | **DEC-12** | **过期审计文档归档到 `docs/archive/`** + 顶部加失效声明横幅 | ✅ **本次已执行**：`frontend_ux_v2.md` → `docs/archive/frontend_ux_v2_SUPERSEDED-2026-10-16.md`；`frontend-gap-audit-2026-10-16.md` → `docs/archive/frontend-gap-audit_SUPERSEDED-2026-10-16.md`。两份均加了失效原因 + 仍有效部分 + 指向本文档的链接 | — |
 | **DEC-13** | **行情库备份允许配置关闭**（2026-10-23 所有者裁决）：新增 env `ENABLE_QUOTE_BACKUP`（默认 `true`；仅 `false` 关闭）。行情库可由 tdx2db 重建，故允许跳过其每日 parquet 备份；**SQLite 业务库不可重建，备份恒常执行、不受开关影响**。本任务只做部署配置（env），不做 UI 开关 | 配置语义、默认值与影响范围按本行执行；L1/L3/L5 文档须同步（T103 ⑥） | T103 |
+| **DEC-14** | **收盘后链路统一按北京时间（Asia/Shanghai）调度，且 tdx2db 结果由 Node 归集**（2026-10-24 生产事故裁决）：systemd timer 与 4 段 CronJob 均显式指定 `Asia/Shanghai`；**不修改服务器系统时区**（SQLite `datetime('now','localtime')` 依赖）。17:01 由 Node 执行 `systemctl show tdx2db.service` 写 `system_log(tdx2db_update)`；无数据时校验可跳过但**必须留 ERROR 证据**，更新「成功」却无数据时先补跑一次 | 事故证据与实测见 `docs/audit/wave-11-audit.md`；实现 T104-T109 | T104-T109 |
 
 ### 9.2 待确认
 
@@ -912,6 +935,18 @@ DEC-12(已定, §13.4) ──→ T85-T94
 | **G10.3** | **日志与前端语义正确** —— `system_log` 记 `duckdb=SKIP` 且 `level != ERROR`；Admin 手动备份显示「已跳过」而非成功/失败 | 单测 + 前端组件用例 |
 | **G10.4** | **恢复演练不误报** —— `restore-drill.sh` 在无 parquet 时 WARN 跳过行情段、SQLite 段仍完整校验并 EXIT=0；缺 SQLite 备份时 EXIT≠0 | 脚本用例（临时目录） |
 | **G10.5** | **文档同步无残留** —— L1 Requirements §4.2 #12/#13、L3 SDD §6.5 + §4.4 备份 API、L5 `docs/deploy.md` 环境变量表均写明开关语义；全局 grep 不再出现「无条件双库备份」的旧表述 | 文档 diff + grep 断言 |
+
+#### G11 · Wave 11 出口（行情更新链路 P0）
+
+| # | 门槛 | 验证方式 |
+|---|---|---|
+| 🔒 **G11.1** | **方向 A 让锁生效** —— 哨兵出现时 Node 释放 DuckDB instance，外部进程可打开同库；哨兵消失后查询自动恢复 | 单测（`duckdbSentinel.test.ts`，临时库）+ 部署后 17:00 真机 `journalctl` 无 `Conflicting lock` |
+| 🔒 **G11.2** | **更新失败可见** —— 17:00 失败/未触发时 `system_log` 必有 `tdx2db_update/ERROR`；17:01 汇总不得再是 `ERROR=0 WARN=0` | 单测（`quoteUpdateStatus.test.ts` / `schedulerGate.test.ts`）+ 部署后真机日志 |
+| 🔒 **G11.3** | **无数据不假绿** —— 更新失败 + 无数据 → datacheck ERROR 且跳过；更新成功 + 无数据 → 补跑一次，仍无数据 → ERROR | `schedulerGate.test.ts` 9 个矩阵用例 |
+| **G11.4** | **C8 生产可用** —— 不再出现 `system_log` 走 DuckDB 的 SQL 异常；按 `duration_s` 判定 120s 阈值 | `validator_deep.test.ts` / `validatorCoverage.test.ts` + 真机日志 |
+| **G11.5** | **时区对齐** —— timer 的 `OnCalendar` 含 `Asia/Shanghai`；4 个 CronJob 均带 `timezone`；fake timers 在 09:01 UTC（17:01 CST）触发 | `cronSequence.test.ts` + `systemd-analyze calendar` |
+| **G11.6** | **登录经 Caddy 可达** —— `/api/health` 返回 JSON（不是 index.html） | 部署后 `curl http://127.0.0.1/api/health`；脚本静态断言 |
+| **G11.7** | **文档同步** —— 本计划 Wave 11 + DEC-14 + `docs/deploy.md` 时区/日志说明 | 文档 diff |
 
 ---
 
