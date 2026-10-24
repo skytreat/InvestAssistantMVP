@@ -2,7 +2,11 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import schedule from '@fastify/schedule';
 import { ConfigStore } from './config/configStore.js';
-import { duckdbHealthCheck, startDuckDBWriteSentinelWatcher, stopDuckDBWriteSentinelWatcher } from './db/duckdb.js';
+import {
+  duckdbHealthCheck,
+  startDuckDBWriteSentinelWatcher,
+  stopDuckDBWriteSentinelWatcher,
+} from './db/duckdb.js';
 import { registerRoutes } from './routes/index.js';
 import { registerCronJobs } from './services/scheduler.js';
 

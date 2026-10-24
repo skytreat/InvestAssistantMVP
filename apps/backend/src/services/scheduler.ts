@@ -90,12 +90,7 @@ export async function runDatacheckWithRerun(date: string): Promise<{
 
 export interface ScheduledDatacheckResult {
   date: string;
-  action:
-    | 'CHECKED'
-    | 'WAIT_TIMEOUT'
-    | 'UPDATE_RUNNING'
-    | 'UPDATE_FAILED'
-    | 'NO_DATA_AFTER_RERUN';
+  action: 'CHECKED' | 'WAIT_TIMEOUT' | 'UPDATE_RUNNING' | 'UPDATE_FAILED' | 'NO_DATA_AFTER_RERUN';
   updateState?: Tdx2dbRunState;
   summaries?: Awaited<ReturnType<typeof runAllChecks>>;
   reran?: boolean;

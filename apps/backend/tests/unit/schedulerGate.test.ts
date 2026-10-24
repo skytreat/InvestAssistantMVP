@@ -80,9 +80,7 @@ describe('T106 校验闸门', () => {
 
   it('更新成功 + 无数据 → 补跑一次；补跑后有数据则继续校验', async () => {
     vi.spyOn(quoteStatusNs, 'reportTdx2dbRunOutcome').mockResolvedValue(status('SUCCESS'));
-    vi.spyOn(validatorNs, 'hasQuoteDataOn')
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
+    vi.spyOn(validatorNs, 'hasQuoteDataOn').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
     const result = await runScheduledDatacheck();
 
@@ -140,9 +138,7 @@ describe('T106 校验闸门', () => {
     process.env.TDX2DB_SENTINEL_WAIT_MS = '20';
     process.env.TDX2DB_SENTINEL_POLL_MS = '5';
     vi.spyOn(duckdbNs, 'isDuckDBWriteSentinelPresent').mockReturnValue(true);
-    const reportSpy = vi
-      .spyOn(quoteStatusNs, 'reportTdx2dbRunOutcome')
-      .mockResolvedValue(status('SUCCESS'));
+    const reportSpy = vi.spyOn(quoteStatusNs, 'reportTdx2dbRunOutcome').mockResolvedValue(status('SUCCESS'));
 
     const result = await runScheduledDatacheck();
     expect(result.action).toBe('WAIT_TIMEOUT');

@@ -149,7 +149,9 @@ function cronMinuteOfDay(expr: string): number {
 function timerMinuteOfDay(): number {
   const timerPath = path.join(REPO_ROOT, 'deploy', 'tdx2db-update.timer');
   const content = fs.readFileSync(timerPath, 'utf-8');
-  const m = /^OnCalendar=(?:Mon\.\.Fri )?\*-\*-\* (\d{2}):(\d{2}):(\d{2})(?: Asia\/Shanghai)?$/m.exec(content);
+  const m = /^OnCalendar=(?:Mon\.\.Fri )?\*-\*-\* (\d{2}):(\d{2}):(\d{2})(?: Asia\/Shanghai)?$/m.exec(
+    content,
+  );
   if (!m) throw new Error(`tdx2db-update.timer 里没找到 OnCalendar=... HH:MM:SS：\n${content}`);
   return Number(m[1]) * 60 + Number(m[2]);
 }

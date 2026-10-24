@@ -608,8 +608,7 @@ async function checkC8(tradeDate: string): Promise<CheckSummary> {
         durationMs: Date.now() - start,
       };
     }
-    const result: CheckResult =
-      durationSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
+    const result: CheckResult = durationSec <= TOLERANCES.MAX_UPDATE_SECONDS ? 'PASS' : 'WARN';
     return {
       checkId: 'C8',
       result,

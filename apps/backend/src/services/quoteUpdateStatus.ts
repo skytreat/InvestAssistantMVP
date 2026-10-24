@@ -188,9 +188,7 @@ export async function readTdx2dbRunStatus(opts: ReadTdx2dbStatusOptions = {}): P
  * 读取结果并写入 system_log(tdx2db_update)。
  * 返回结论供调用方（校验闸门）决定「是否跳过 / 是否补跑」。
  */
-export async function reportTdx2dbRunOutcome(
-  opts: ReadTdx2dbStatusOptions = {},
-): Promise<Tdx2dbRunStatus> {
+export async function reportTdx2dbRunOutcome(opts: ReadTdx2dbStatusOptions = {}): Promise<Tdx2dbRunStatus> {
   const status = await readTdx2dbRunStatus(opts);
   const level =
     status.state === 'SUCCESS'
