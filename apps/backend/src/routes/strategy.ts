@@ -6,7 +6,7 @@
 // 归为同一族；两者行为完全一致（SDD 里没有的路径不留残路由，故别名只做兼容不做弃用标记）。
 //
 // 底层能力（services/pluginEngine.ts）本就已实装，本任务只补 HTTP 入口：
-//   - PLUGIN_ALLOWED_PATH（/opt/invol/plugins/strategies，AGENTS.md 口径，非 SDD §5.3 的 /opt/invest/）
+//   - PLUGIN_ALLOWED_PATH（/opt/invol/IA_Prod/plugins/strategies，AGENTS.md 口径，非 SDD §5.3 的 /opt/invest/）
 //   - loadPluginsFromDir()：目录不存在 → 返回 []；单文件失败 try/catch 隔离，不影响其他插件
 //   - createPluginSandbox()：Proxy 屏蔽 globalThis，global/process/require/fetch 等置 undefined
 //

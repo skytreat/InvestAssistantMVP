@@ -13,11 +13,11 @@ import { writeSystemLog } from './logger.js';
  * DuckDB：COPY v_stock_qfq TO parquet（本质 SELECT 导出，不写 DuckDB 本身，符合只读硬约束）
  *   - 服务器实测全量 821MB parquet 几秒跑完
  *
- * 保留策略：本地 /opt/invol/backup/ 保留 3 天，清理过期文件
+ * 保留策略：本地 /opt/invol/IA_Prod/backup/ 行情 7 天 / 业务 30 天，清理过期文件
  * OCI Object Storage rclone copyto：MVP 简化——备份到本地足够（用户手动跑 cron mount 后再扩）
  */
 
-// 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/backup 覆盖）
+// 默认备份目录：用相对路径 data/backup（Windows 能跑；服务器部署时 export BACKUP_DIR=/opt/invol/IA_Prod/backup 覆盖）
 export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.resolve('data', 'backup');
 // ⚠️ **分级保留期**（D-6 裁决 L2：b）—— Requirements §4.2 #13 / SDD §6.5：
 //   行情数据（可重建）保留 7 天；业务数据（不可重建）保留 30 天。

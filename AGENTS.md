@@ -382,8 +382,8 @@ Wave 1-8 合计 52 个任务 / ~64 人天，**人工逐任务 review 不现实**
 1. `execute()` 硬限制 **50ms**（Promise.race + reject），禁止死循环/阻塞操作；
 2. 沙盒禁止清单：`global` / `process` / `require` 全部不可访问；禁止文件系统 / 网络操作；
 3. `paramSchema` 声明的参数类型 + 范围，调用前必须先 validate（SDD §5.3 ParamField interface）；
-4. 自定义插件只能放 `/opt/invol/plugins/strategies/` 且仅限 `.js`；禁止动态 eval 用户上传的代码。
-   > ⚠️ **2026-10-18 修订**：该目录路径支持 env 覆盖 —— `PLUGIN_ALLOWED_PATH`（默认 `/opt/invol/plugins/strategies`）。改动的是**路径**，不是**约束**：仍只允许 `.js`、仍禁止 eval、仍做路径逃逸前缀校验。开发机无 `/opt/invol` 写权限时设 `PLUGIN_ALLOWED_PATH=<可写目录>` 即可，无需改代码。
+4. 自定义插件只能放 `/opt/invol/IA_Prod/plugins/strategies/` 且仅限 `.js`；禁止动态 eval 用户上传的代码。
+   > ⚠️ **2026-10-18 修订**：该目录路径支持 env 覆盖 —— `PLUGIN_ALLOWED_PATH`（默认 `/opt/invol/IA_Prod/plugins/strategies`）。改动的是**路径**，不是**约束**：仍只允许 `.js`、仍禁止 eval、仍做路径逃逸前缀校验。开发机无 `/opt/invol` 写权限时设 `PLUGIN_ALLOWED_PATH=<可写目录>` 即可，无需改代码。
 
 ## 📐 编码、命名、测试简要约束（完整详见 docs/coding‑standards.md）
 1. 命名：TS/JS 遵循通用TS约定；数据库表、字段全部`snake_case`；接口RESTful；常量全大写SNAKE_CASE。
