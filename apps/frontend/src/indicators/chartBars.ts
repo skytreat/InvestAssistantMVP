@@ -252,7 +252,10 @@ export function buildChartBars(
     d: kdj.d[i] ?? NaN,
     j: kdj.j[i] ?? NaN,
     signal: signalByDate.get(bar.date) ?? null,
-    changePct: i > 0 && aggregated[i - 1].close ? ((bar.close - aggregated[i - 1].close) / aggregated[i - 1].close) * 100 : null,
+    changePct:
+      i > 0 && aggregated[i - 1].close
+        ? ((bar.close - aggregated[i - 1].close) / aggregated[i - 1].close) * 100
+        : null,
   }));
 }
 
