@@ -84,7 +84,7 @@ export function modelRepoCashFlow(
      * ④ 都不满足 ⇒ unpairedCloses（数据不全，单列报告）。
      * 1 天期利息 ≤ 本金×4%/365 + 微费 ⇒ 单笔 收回/出资 ∈ [0.9999, 1.0002]，带宽取 [0.995, 1.02] 容差。
      */
-    const opens: Array<{ date: string; time: string | null; amount: number; matched: boolean }> = [];
+    const opens: Array<{ date: string; time: string; amount: number; matched: boolean }> = [];
     for (const r of syms) {
       if (isOpenLeg(r)) {
         opens.push({
