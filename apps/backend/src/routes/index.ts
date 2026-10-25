@@ -16,6 +16,7 @@ import { registerReviewRoutes } from './review.js';
 import { registerPluginRoutes } from './plugin.js';
 import { registerStrategyRoutes } from './strategy.js';
 import { registerExDividendRoutes } from './exDividend.js';
+import { registerBrokerImportRoutes } from './brokerImport.js';
 import { extractToken, verifyToken } from '../services/auth.js';
 import { fail } from '../lib/envelope.js';
 
@@ -99,6 +100,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerPluginRoutes(app);
   // T67：除权导入的**读取侧**（普通用户可读，Dashboard「今日除权导入」块用）
   await registerExDividendRoutes(app);
+  await registerBrokerImportRoutes(app);
   // 🔴 T94 的 reload 路由此前**从未被注册**（PR#15 实现了 handler 但漏了接线）
   //    → SDD §4.4:1383 的 `POST /api/strategy/reload` 实测 404。本波补上。
   await registerStrategyRoutes(app);

@@ -167,6 +167,86 @@ CREATE TABLE IF NOT EXISTS asset_class (
 );
 CREATE INDEX IF NOT EXISTS idx_asset_class_kind ON asset_class(asset_class);
 
+-- V3（T122，SDD_v3 §11.1.1）事实层：券商原始记录。
+-- 幂等键 = row_hash（归一化内容 SHA-256）+ content_seq（同哈希在批次内出现序号，
+--   「同内容多笔」不被误判为重复，「同文件重复上传」被识别为重复，INV-S2-39）。
+-- raw_row_json 必存（INV-S2-6）：解析缺陷可重放，无需用户重新上传；敏感字段不入库（§3.6）。
+CREATE TABLE IF NOT EXISTS broker_trade_record (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL,
+    import_batch_id     INTEGER NOT NULL,
+    broker_code         TEXT NOT NULL,
+    source_kind         TEXT NOT NULL CHECK (source_kind IN ('broker', 'manual_sheet')),
+    event_type          TEXT NOT NULL,
+    asset_code          TEXT,
+    trade_date          TEXT,
+    trade_time          TEXT,
+    price               REAL,
+    quantity            REAL,
+    amount              REAL,
+    cash_flow           REAL,
+    fee_total           REAL,
+    fee_breakdown_json  TEXT,
+    balance_after       REAL,
+    cash_balance_after  REAL,
+    market              TEXT,
+    raw_symbol          TEXT,
+    raw_name            TEXT,
+    raw_event_type      TEXT,
+    raw_row_json        TEXT NOT NULL,
+    source_file         TEXT,
+    source_row_no       INTEGER,
+    match_status        TEXT NOT NULL CHECK (match_status IN
+                            ('MATCHED','FUZZY','MISSING','EXCLUDED','CONFLICT')),
+    matched_trade_record_id INTEGER,
+    exclude_reason      TEXT,
+    match_confidence    TEXT,
+    row_hash            TEXT NOT NULL,
+    content_seq         INTEGER NOT NULL DEFAULT 0,
+    is_deleted          INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES user_account(id)
+);
+CREATE INDEX IF NOT EXISTS idx_btr_hash    ON broker_trade_record(user_id, row_hash);
+CREATE INDEX IF NOT EXISTS idx_btr_batch   ON broker_trade_record(user_id, import_batch_id);
+CREATE INDEX IF NOT EXISTS idx_btr_match   ON broker_trade_record(user_id, broker_code, match_status);
+CREATE INDEX IF NOT EXISTS idx_btr_key     ON broker_trade_record(user_id, broker_code, asset_code, trade_date);
+
+-- V3（T122，SDD_v3 §11.1.2）导入批次
+CREATE TABLE IF NOT EXISTS broker_import_batch (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL,
+    broker_code      TEXT NOT NULL,
+    file_kind        TEXT NOT NULL CHECK (file_kind IN ('settlement','trade')),
+    encoding         TEXT,
+    file_name        TEXT,
+    file_hash        TEXT NOT NULL,
+    file_size        INTEGER,
+    template_id      INTEGER,
+    parser_version   TEXT NOT NULL,
+    row_total        INTEGER NOT NULL DEFAULT 0,
+    row_inserted     INTEGER NOT NULL DEFAULT 0,
+    row_deduped      INTEGER NOT NULL DEFAULT 0,
+    row_excluded     INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL CHECK (status IN ('pending','parsed','imported','revoked')),
+    is_deleted       INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES user_account(id)
+);
+CREATE INDEX IF NOT EXISTS idx_batch_hash ON broker_import_batch(user_id, file_hash);
+
+-- V3（T122，SDD_v3 §11.1.3）列映射模板（按 券商 × 文件类型 维度，UNIQUE 幂等）
+CREATE TABLE IF NOT EXISTS broker_import_template (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    broker_code   TEXT NOT NULL,
+    file_kind     TEXT NOT NULL CHECK (file_kind IN ('settlement','trade')),
+    mapping_json  TEXT NOT NULL,
+    is_deleted    INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(user_id, broker_code, file_kind)
+);
+
 -- 系统日志（所有 cron 任务结果写入此表）
 CREATE TABLE IF NOT EXISTS system_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
