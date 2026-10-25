@@ -90,7 +90,7 @@ export function classifySymbol(input: ClassifyInput): ClassifyResult {
     latestClose >= NEAR_PAR.closeBandLo &&
     latestClose <= NEAR_PAR.closeBandHi &&
     bars >= NEAR_PAR.minBars &&
-    ((winHi - winLo) / ((winHi + winLo) / 2)) <= NEAR_PAR.maxAmpRel;
+    (winHi - winLo) / ((winHi + winLo) / 2) <= NEAR_PAR.maxAmpRel;
 
   if (inBand) {
     const named = name !== undefined && CASH_ETF_NAME_KEYWORDS.some((k) => name.includes(k));
