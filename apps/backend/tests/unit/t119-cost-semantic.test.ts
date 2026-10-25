@@ -17,17 +17,16 @@ const tmpDbPath = path.join(os.tmpdir(), `invest-t119-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
 
 import { ConfigStore } from '../../src/config/configStore.js';
-import {
-  calcPosition,
-  calcClosedTradePnLs,
-} from '../../src/services/positionCalculator.js';
+import { calcPosition, calcClosedTradePnLs } from '../../src/services/positionCalculator.js';
 import { getHoldingBeforeDate } from '../../src/services/exDividendSync.js';
 
 let store: ReturnType<typeof ConfigStore.getInstance>;
 
 function seedUser(uid: number): void {
   store.db
-    .prepare(`INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`)
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    )
     .run(uid, `user_${uid}`, 'dummy-hash');
 }
 
