@@ -29,12 +29,12 @@
 ## G-D5 追溯闭合
 
 - `traceability.md` §7bis：V3 四层 / 决策→依据 / 能力→任务 / 不变量→测试载体
-- ADR README 索引含 ADR-013~012
+- ADR README 索引含 ADR-013~017
 - 每份 V3 文档头部声明**上游文档**与**基线版本**
 
 ## G-D6 任务号连续
 
-T100 ~ T118 共 19 个，无缺号
+T119 ~ T137 共 19 个，无缺号
 
 ## G-D7 与 V1 边界清晰
 
@@ -45,7 +45,7 @@ T100 ~ T118 共 19 个，无缺号
 ## G-D8 未决事项已登记而非隐藏
 
 - Requirements §11：Q8（可选）
-- plan_v3 §6：Q1~Q7（Q1 阻塞 T109/T110）
+- plan_v3 §6：Q1~Q7（Q1 阻塞 T128/T129）
 - plan_v3 §5：偏差登记 V3-B1~B6
 
 ---
@@ -59,8 +59,10 @@ T100 ~ T118 共 19 个，无缺号
 | G-D3 敏感信息零出现 | **PASS** |
 | G-D4 编码健康（U+FFFD=0） | **PASS** |
 | G-D5 追溯闭合（traceability + ADR 索引 + 头部声明） | **PASS** |
-| G-D6 任务号连续 T100~T118 | **PASS** |
+| G-D6 任务号连续 T119~T137 | **PASS** |
 | G-D7 与 V1 边界清晰 | **PASS** |
 | G-D8 未决事项已登记 | **PASS** |
 
 **Gate 结论：8/8 PASS**
+
+> **2026-10-24 复跑记录**（重编号后）：旧编号 `T100~T118` 残留 = 0（plan_v3 / PRD_v3 / SDD_v3 / Requirements_v3 / traceability / ADR-013~017 / 本文件）；敏感信息（资金账号 18057491 / 股东代码 / 用户名 / 营业部）在 V3 文档内 = 0；U+FFFD = 0。同步变更：ADR-017（任务编号顺延）、V3-B1/Q7 关闭（U15 5 档 owner 确认）、V3-B7 登记（样本入库 `apps/backend/tests/fixtures/broker-samples/` + 脱敏标准）、Q1 前置满足（v2 Wave 1-12 已全部合入）。自决事项登记见 `docs/audit/v3-pending-decisions.md`。

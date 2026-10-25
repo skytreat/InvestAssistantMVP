@@ -25,16 +25,17 @@
 | [ADR-010](ADR-010-dec7-frontend-core-adapter-copy.md) | DEC-6 / DEC-7 收口 —— 前端复制一份适配层，AGENTS.md 不修订 | T78 最终审计（Wave 8 收口） | 无新任务（Wave 5 已落地） |
 | [ADR-011](ADR-011-dec8-macd-warmup-drift.md) | DEC-8 收口 —— 接受 MACD warm-up 瞬态漂移，不做数据订正 | T78 最终审计（Wave 8 收口） | 无新任务（口径归档） |
 | [ADR-012](ADR-012-market-update-write-window.md) | 行情更新链路的跨进程写窗口协调协议 —— DuckDB 只读 + systemd 哨兵 + Node 惰性让锁 | §13.1 B-15、§13.2 I-34/I-35/I-36 | T99、T100、T102 |
-| [ADR-013](ADR-013-broker-fact-layer-separation.md) | 券商流水事实层与业务记录层分离（三维度：进交易/进事实层/参与收益） | V3 §2.4.3 | T103-T110 |
-| [ADR-014](ADR-014-cross-file-dedup-and-time-backfill.md) | 跨文件去重 + 成交时间回填（三级降级匹配） | V3 §2.9.4-2.9.5 | T105 |
-| [ADR-015](ADR-015-fund-check-line-level-only.md) | 资金校验只做行内自洽，不做账户级闭合 | V3 §2.9.3 | T106 |
-| [ADR-016](ADR-016-cash-like-asset-modeling.md) | 现金类资产建模（逆回购为债权、货币 ETF 不按百分比计收益） | V3 §3.5 | T101/T108/T113 |
+| [ADR-013](ADR-013-broker-fact-layer-separation.md) | 券商流水事实层与业务记录层分离（三维度：进交易/进事实层/参与收益） | V3 §2.4.3 | T122-T129 |
+| [ADR-014](ADR-014-cross-file-dedup-and-time-backfill.md) | 跨文件去重 + 成交时间回填（三级降级匹配） | V3 §2.9.4-2.9.5 | T124 |
+| [ADR-015](ADR-015-fund-check-line-level-only.md) | 资金校验只做行内自洽，不做账户级闭合 | V3 §2.9.3 | T125 |
+| [ADR-016](ADR-016-cash-like-asset-modeling.md) | 现金类资产建模（逆回购为债权、货币 ETF 不按百分比计收益） | V3 §3.5 | T120/T127/T132 |
+| [ADR-017](ADR-017-v3-task-renumbering.md) | V3 任务编号整体顺延 T119~T137（解除与 v2 计划 T100~T111 的撞号） | 2026-10-24 实查 git 历史撞号 | plan_v3 全量 + traceability §7bis + ADR-013~016 关联行 |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 
 **实施期新增**：ADR-008 来自 Wave 5 实施期的性能诊断与 owner 裁决（非 §13.1 阻断项）。
 
-**🔴 编号空间（2026-10-21 修正）**：Wave 8 收口后 `main` 已占用 **ADR-009 ~ ADR-012**（CO1 权限目标 / DEC-7 前端复制适配层 / DEC-8 MACD warm-up / 行情更新写窗口）。⇒ 本分支原拟用 ADR-009~012 的 4 份 V3 ADR **整体顺延为 ADR-013 ~ ADR-016**（见 `docs/audit/v3-spec-gate.md`）。
+**🔴 编号空间（2026-10-21 修正）**：Wave 8 收口后 `main` 已占用 **ADR-009 ~ ADR-012**（CO1 权限目标 / DEC-7 前端复制适配层 / DEC-8 MACD warm-up / 行情更新写窗口）。⇒ 本分支原拟用 ADR-009~012 的 4 份 V3 ADR **整体顺延为 ADR-013 ~ ADR-016**（见 `docs/audit/v3-spec-gate.md`）。2026-10-24 新增 **ADR-017**（V3 任务编号顺延，见其「被否决备选」）。
 
 ## 文档分层（各文档的职责边界）
 

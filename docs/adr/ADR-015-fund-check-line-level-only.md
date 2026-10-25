@@ -5,7 +5,7 @@
 > **状态**：已接受
 > **日期**：2026-10-20
 > **决策者**：owner
-> **关联**：Requirements §2.9.3 / SDD_v3 §6 / plan T106
+> **关联**：Requirements §2.9.3 / SDD_v3 §6 / plan T125
 
 ---
 
