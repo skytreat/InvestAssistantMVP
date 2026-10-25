@@ -154,6 +154,19 @@ CREATE TABLE IF NOT EXISTS user_asset_stat (
     FOREIGN KEY (user_id) REFERENCES user_account(id)
 );
 
+-- 资产分类（T120，V3 SDD_v3 §2.2）：风险 vs 现金。
+-- 不复用行情层 raw_symbol_class（那是行情层事实，业务侧不可改写，且分不出货币 ETF）。
+-- rule_hit 记录初判规则标识；人工修正（source='manual'）后保留原值，可回溯。
+CREATE TABLE IF NOT EXISTS asset_class (
+    symbol        TEXT PRIMARY KEY,
+    asset_class   TEXT NOT NULL CHECK (asset_class IN ('risk', 'cash')),
+    rule_hit      TEXT,
+    source        TEXT NOT NULL CHECK (source IN ('rule', 'manual')),
+    updated_by    INTEGER REFERENCES user_account(id),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_asset_class_kind ON asset_class(asset_class);
+
 -- 系统日志（所有 cron 任务结果写入此表）
 CREATE TABLE IF NOT EXISTS system_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
