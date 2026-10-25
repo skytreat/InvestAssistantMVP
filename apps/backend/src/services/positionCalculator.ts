@@ -49,8 +49,28 @@ function mapToCoreTrade(row: DbTradeRow): CoreTrade | null {
         price: row.price,
         fee: row.fee,
       };
+    // T119（V3.0）：dividend / bonus 不再忽略 —— 口径统一到 core（SDD_v3 §8.5）。
+    // dividend：quantity = 股数，price = 每股分红额（exDividendSync 即按此写入）
+    // bonus：quantity = 送股数，price = 0（送股只摊薄均价，不产生价差盈亏）
+    // transfer 仍忽略：转托管不改变总持仓与成本
+    case 'dividend':
+      return {
+        date: row.trade_date,
+        direction: 'dividend',
+        quantity: row.quantity,
+        price: row.price,
+        fee: row.fee,
+      };
+    case 'bonus':
+      return {
+        date: row.trade_date,
+        direction: 'bonus',
+        quantity: row.quantity,
+        price: 0,
+        fee: row.fee,
+      };
     default:
-      return null; // dividend/bonus/transfer 不参与移动加权（MVP 初版）
+      return null; // 其它类型（transfer 等）不参与移动加权
   }
 }
 
@@ -197,17 +217,19 @@ export interface ClosedTradePnl {
 /**
  * 按时间顺序回放所有标的的买卖，输出每笔平仓（sell/reduce/clear）的已实现盈亏
  *
- * 与 calcPosition 相同的映射口径：dividend/bonus/transfer 不参与成本回放
+ * 与 calcPosition 相同的映射口径（T119 起）：dividend/bonus 参与回放 ——
+ * bonus 摊薄均价（股数 +n、成本基不变），dividend 只进 cashReceived（不影响价差）；
+ * transfer 仍忽略。T38 胜率/盈亏比的数据口径随 T119 与持仓口径统一。
  */
 export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
   const db = ConfigStore.getInstance().db;
   const rows = db
     .prepare(
       `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
-     FROM user_trade_record
-     WHERE user_id = ? AND is_deleted = 0
-       AND trade_type IN ('buy','add','reduce','clear')
-     ORDER BY trade_date ASC, trade_time ASC, id ASC`,
+      FROM user_trade_record
+      WHERE user_id = ? AND is_deleted = 0
+        AND trade_type IN ('buy','add','reduce','clear','bonus')
+      ORDER BY trade_date ASC, trade_time ASC, id ASC`,
     )
     .all(userId) as Array<Omit<ClosedTradePnl, 'realized_pnl'> & { fee: number }>;
 
@@ -224,6 +246,9 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
     //   与上方 `mapToCoreTrade` 的 `case 'buy': case 'add':` 共用分支保持同口径。
     if (row.trade_type === 'buy' || row.trade_type === 'add') {
       st.costBasis += row.quantity * row.price + row.fee;
+      st.qty += row.quantity;
+    } else if (row.trade_type === 'bonus') {
+      // T119：送股 → 股数 +n、成本基不变（均价摊薄），与 core bonus 分支同口径
       st.qty += row.quantity;
     } else {
       if (st.qty <= 0) continue; // 空仓卖出跳过（脏数据，POS 校验理论上已拦）

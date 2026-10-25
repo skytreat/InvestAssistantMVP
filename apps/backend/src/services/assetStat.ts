@@ -15,8 +15,9 @@ import { batchGetDaily } from './marketData.js';
 /**
  * 查用户累计收到的除权福利（分红 + 送转 + 配股）
  * SDD §5.8：exDividendSync 17:03 往 user_trade_record 写 trade_type IN ('dividend','bonus','transfer')
- * positionCalculator.mapToCoreTrade 过滤了这些类型 → 不影响 price 口径 costBasis
- * 这里汇总它们 = actual 口径需要加回的分红金额
+ * T119 起：positionCalculator.mapToCoreTrade 已把 dividend/bonus 映射进 core（bonus 摊薄均价、
+ * dividend 进 cashReceived）→ totalCostBasis/totalQuantity 已含送股效应；
+ * 这里仍单独汇总 price×quantity（bonus 行 price=0 天然不贡献）= actual 口径需要加回的分红金额
  */
 function getTotalDividends(userId: number): number {
   const db = ConfigStore.getInstance().db;
@@ -54,7 +55,7 @@ export async function insertAssetStatSnapshots(tradeDate: string): Promise<{ ins
   let inserted = 0;
 
   for (const user of users) {
-    // 2. 算持仓（positionCalculator 过滤了除权交易 → costBasis = 纯买入成本）
+    // 2. 算持仓（T119 起 costBasis 含送股摊薄效应；dividend 不进 costBasis，经 totalDividends 加回 actual 口径）
     const positions = calcAllPositions(user.id);
     // 3. 查累计除权福利
     const totalDividends = getTotalDividends(user.id);

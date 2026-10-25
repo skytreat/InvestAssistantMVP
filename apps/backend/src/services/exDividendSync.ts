@@ -50,6 +50,13 @@ export async function fetchDividendEvents(exDate: string): Promise<DividendEvent
  *   减少类型：reduce / clear → -quantity
  *   dividend / transfer 不影响持仓（分红不增股，转股需要独立处理，这里按简化规则）
  * trade_date < exDate 保证只用除权日前的交易记录
+ *
+ * T119 口径对齐（SDD_v3 §8.5）：本 SQL 的「bonus → +quantity」与 core
+ * `calculateMovingWeightedCost` 的 bonus 分支（股数 +n、成本基不变）**净效果一致**，
+ * 两处不再相反 —— 上层 mapToCoreTrade 已把 bonus/dividend 映射进 core。
+ * 此处的 CASE 是「除权前股数基数」的独立快路径（只取净股数，不算成本），
+ * 保留 SQL 形式（O(1) 聚合），语义跟随 T119；SDD_v3 §8.5 原文「删除该分支」
+ * 系按 T119 前的假设状态撰写，见 docs/audit/v3-pending-decisions.md D-11。
  */
 export function getHoldingBeforeDate(
   db: Database.Database,
