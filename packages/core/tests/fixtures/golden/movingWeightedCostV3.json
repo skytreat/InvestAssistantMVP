@@ -1,0 +1,98 @@
+{
+  "note": "T119（V3.0）送股 / 现金分红成本语义 5 场景（SDD_v3 §8.3 计算规则表）。口径：bonus = 股数 +n、总成本不变、均价摊薄、不产生价差盈亏；dividend = 股数与成本不变、cashReceived += 股数×每股分红额、不产生价差盈亏；同日先送股后分红（分红基数为送股后股数，顺序由 core 保证，与输入顺序无关）；双口径呈现：realizedPnL（价差，不含分红）与 cashReceived 分别给，含分红净利 = realizedPnL + cashReceived。",
+  "scenarios": [
+    {
+      "id": "B1",
+      "name": "送股：股数 +60、总成本不变、均价 10 → 6.25 摊薄",
+      "trades": [
+        { "date": "2026-10-10", "direction": "buy", "quantity": 100, "price": 10, "fee": 0 },
+        { "date": "2026-10-30", "direction": "bonus", "quantity": 60, "price": 0, "fee": 0 }
+      ],
+      "expected": {
+        "totalQuantity": 160,
+        "avgCost": 6.25,
+        "totalCostBasis": 1000,
+        "realizedPnL": 0,
+        "totalFee": 0,
+        "cashReceived": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "B2",
+      "name": "现金分红：股数与均价不变，cashReceived = 100 × 0.5",
+      "trades": [
+        { "date": "2026-10-10", "direction": "buy", "quantity": 100, "price": 10, "fee": 0 },
+        { "date": "2026-10-30", "direction": "dividend", "quantity": 100, "price": 0.5, "fee": 0 }
+      ],
+      "expected": {
+        "totalQuantity": 100,
+        "avgCost": 10,
+        "totalCostBasis": 1000,
+        "realizedPnL": 0,
+        "totalFee": 0,
+        "cashReceived": 50,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "B3",
+      "name": "同日先送股后分红（输入故意倒序：dividend 在前 ⇒ core 必须重排）：分红基数 = 送股后 160 股",
+      "trades": [
+        { "date": "2026-10-10", "direction": "buy", "quantity": 100, "price": 10, "fee": 0 },
+        { "date": "2026-10-30", "direction": "dividend", "quantity": 160, "price": 0.5, "fee": 0 },
+        { "date": "2026-10-30", "direction": "bonus", "quantity": 60, "price": 0, "fee": 0 }
+      ],
+      "expected": {
+        "totalQuantity": 160,
+        "avgCost": 6.25,
+        "totalCostBasis": 1000,
+        "realizedPnL": 0,
+        "totalFee": 0,
+        "cashReceived": 80,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "B4",
+      "name": "摊薄后均价用于后续卖出的已实现盈亏：送股 100 → 均价 5，卖出 100@12 ⇒ 价差 700",
+      "trades": [
+        { "date": "2026-10-10", "direction": "buy", "quantity": 100, "price": 10, "fee": 0 },
+        { "date": "2026-10-30", "direction": "bonus", "quantity": 100, "price": 0, "fee": 0 },
+        { "date": "2026-11-10", "direction": "sell", "quantity": 100, "price": 12, "fee": 0 }
+      ],
+      "expected": {
+        "totalQuantity": 100,
+        "avgCost": 5,
+        "totalCostBasis": 500,
+        "realizedPnL": 700,
+        "totalFee": 0,
+        "cashReceived": 0,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    },
+    {
+      "id": "B5",
+      "name": "双口径呈现 + 费用不串扰：分红不进 realizedPnL；含分红净利 = 492 + 50 = 542",
+      "trades": [
+        { "date": "2026-10-10", "direction": "buy", "quantity": 100, "price": 10, "fee": 5 },
+        { "date": "2026-10-30", "direction": "dividend", "quantity": 100, "price": 0.5, "fee": 0 },
+        { "date": "2026-11-10", "direction": "sell", "quantity": 100, "price": 15, "fee": 3 }
+      ],
+      "expected": {
+        "totalQuantity": 0,
+        "avgCost": 0,
+        "totalCostBasis": 0,
+        "realizedPnL": 492,
+        "totalFee": 8,
+        "cashReceived": 50,
+        "hasOversell": false,
+        "oversellDetail": null
+      }
+    }
+  ]
+}
