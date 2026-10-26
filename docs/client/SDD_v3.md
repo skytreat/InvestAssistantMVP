@@ -965,6 +965,34 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 
 见 §2.2。
 
+#### 11.1.6 费用模型配置（V3.7 T140）
+
+> 权威源 = `apps/backend/src/config/configStore.ts`（`DDL_SQL` 注释 `-- T140（V3.7）费用模型配置（INV-S4-3~5）`），DDL 原样如下。
+
+```sql
+-- T140（V3.7）费用模型配置（INV-S4-3~5）
+CREATE TABLE IF NOT EXISTS user_fee_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    broker_code TEXT,
+    asset_class TEXT CHECK (asset_class IS NULL OR asset_class IN ('risk','cash')),
+    commission_rate REAL NOT NULL DEFAULT 0.0003,
+    min_commission REAL NOT NULL DEFAULT 5,
+    stamp_tax_rate REAL NOT NULL DEFAULT 0.001,
+    transfer_fee_rate REAL NOT NULL DEFAULT 0.00002,
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES user_account(id)
+);
+CREATE INDEX IF NOT EXISTS idx_fee_config_user ON user_fee_config(user_id, broker_code);
+```
+
+**语义说明**：
+
+- `broker_code` / `asset_class` 均可空 ⇒ 费率（`commission_rate`）/ 最低佣金（`min_commission`）/ 印花税（`stamp_tax_rate`）/ 过户费（`transfer_fee_rate`）可按 **券商 / 资产类** 两个维度配置（NULL = 回落到账户级默认值）。
+- **取数规则**（D-46）：源文件 `fee_total` **优先**；缺失才按本配置反算，并标 `user_trade_record.fee_estimated=1`（反算是兜底不是替代，源数据绝不覆盖）。见 `docs/audit/v3-pending-decisions.md` D-46。
+
 ### 11.2 `user_trade_record` 的改造（**已定稿**，T128）
 
 > ✅ **定稿**（2026-10-26，`v3-pending-decisions.md` D-7/D-34）：Wave 1-12 已全部合入，该表自 T49/T87b 后无未决改动。
@@ -1003,6 +1031,43 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 
 **约束提醒**：`CREATE TABLE IF NOT EXISTS` 对已存在的表**无效** → 改 UNIQUE / CHECK 必须走**幂等表重建**，
 且**与 T87/T49 的重建历史合并考虑**，不得叠加多次重建。
+
+#### V3.7（T140）新增列
+
+```sql
+fee_estimated INTEGER NOT NULL DEFAULT 0 CHECK (fee_estimated IN (0, 1))
+```
+
+- 源文件费用（`fee_total`）**缺失时**按 `user_fee_config`（§11.1.6）反算并置 `1`；源数据有费用则直接用（置 `0`）。取数规则见 `docs/audit/v3-pending-decisions.md` D-46。
+- 迁移：存量表补列走 `_ensureTradeRecordReviewColumns()` 的 `ALTER TABLE ADD COLUMN`（configStore.ts，幂等，不重建表）。
+
+#### V3.3（T131）复盘列（同补入本表）
+
+```sql
+buy_reason TEXT,
+sell_reason TEXT,
+emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度兴奋','兴奋','平静','焦虑','恐慌'))
+```
+
+- `buy_reason` / `sell_reason`（INV-S6-2）：买入 / 卖出逻辑**两列分离**，允许只填其一（历史 `trade_reason` 列保留在表内）。
+- `emotion_status`（INV-S6-3）：**5 档固定枚举**（极度兴奋 / 兴奋 / 平静 / 焦虑 / 恐慌，Q7 2026-10-24 定稿：落库后不可改语义，新增档位可以）。
+
+#### `user_strategy_signal` V3.4~V3.7 生命周期列（T134/T141）
+
+> 该表基础结构在 `SDD.md` §3.2，SDD_v3 不复述；此处仅列 V3 新增列（configStore.ts `DDL_SQL` / `_ensureSignalLifecycleColumns()` 原文）。
+
+| 列 | 约束 | 任务 | 语义 |
+|---|---|---|---|
+| `grade` | `TEXT CHECK (grade IS NULL OR grade IN ('strong','medium','weak'))` | T134 | 信号分级（强 / 中 / 弱，每日 Top N 摘要） |
+| `expires_at` | `TEXT` | T134 | 过期时间（过期标灰不删） |
+| `snapshot_json` | `TEXT` | T134 | 触发快照（当时 K 线与指标值） |
+| `adopted` | `INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))` | T134 | 采纳标注 |
+| `ignored` | `INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))` | T134 | 忽略标注 |
+| `adopted_at` | `TEXT` | T134 | 采纳时间 |
+| `cooldown_until` | `TEXT` | T134 | 冷却期（同策略 / 同标的 / 同方向至此不重复出信号；MVP 先按日线） |
+| `linked_trade_id` | `INTEGER REFERENCES user_trade_record(id)` | T141 | 手动关联交易记录（跳转复盘，INV-S3-15/16） |
+
+> 迁移：存量表逐列 `ALTER TABLE ADD COLUMN` 由 `_ensureSignalLifecycleColumns()` 补齐（幂等，不重建表）。
 
 ---
 
@@ -1099,3 +1164,4 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 |---|---|---|
 | 2026-10-20 | V3.0-1 | 初稿（第 1 部分）。基于 6 份真实券商文件（1627 行）的实测分析。DDL 覆盖新增 5 表；`user_trade_record` 改造留白（依赖 Wave 1-8 稳定） |
 | 2026-10-26 | V3.2-1 | 交叉审计补全：§11.2 T128/T129 定稿回填；§12 补 V3.7 不变量映射（T138~T141）；**新增 §13 前端 V3 架构**（V3.8 T142~T150 页面规格）；§11 新增 `user_fee_config`（T140，见 §13/plan V3.7） |
+| 2026-10-26 | V3.3-1 | §11 DDL 同步：user_trade_record 复盘/费用列、user_strategy_signal 生命周期列、user_fee_config 表（与 configStore.ts 权威源对齐） |
