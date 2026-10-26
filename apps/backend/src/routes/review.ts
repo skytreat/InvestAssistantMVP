@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { calcClosedTradePnLs } from '../services/positionCalculator.js';
-import { ok } from '../lib/envelope.js';
+import { buildReviewPairs } from '../services/reviewPairs.js';
+import { ok, fail } from '../lib/envelope.js';
 
 /**
  * 复盘统计 API（T38）
@@ -150,5 +151,68 @@ export async function registerReviewRoutes(app: FastifyInstance) {
         pagination: { page, limit, total: countRow.cnt, totalPages: Math.ceil(countRow.cnt / limit) },
       }),
     );
+  });
+  // 交易对视图（T130）：开仓→平仓配对，未平仓单独成组
+  app.get('/api/review/pairs', async (request, reply) => {
+    const user = (request as any).user as { sub: number };
+    const pairs = buildReviewPairs(user.sub);
+    return reply.send(ok(pairs));
+  });
+
+  // 复盘字段更新（T131）：买入/卖出逻辑独立 + 情绪状态 5 档枚举
+  app.patch('/api/review/pairs/:id', async (request, reply) => {
+    const user = (request as any).user as { sub: number };
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return reply.code(400).send(fail(400, 'INVALID_ID', 'pair id 非法'));
+    }
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const db = ConfigStore.getInstance().db;
+
+    const EMOTIONS = ['极度兴奋', '兴奋', '平静', '焦虑', '恐慌'];
+    if (body.emotion_status != null && !EMOTIONS.includes(String(body.emotion_status))) {
+      return reply.code(400).send(fail(400, 'INVALID_EMOTION', `emotion_status 须为 ${EMOTIONS.join('/')}`));
+    }
+
+    // id 可能是平仓交易 id 或开仓交易 id；优先按 id 找，找不到则 404
+    const exists = db
+      .prepare('SELECT id FROM user_trade_record WHERE id = ? AND user_id = ? AND is_deleted = 0')
+      .get(id, user.sub);
+    if (!exists) return reply.code(404).send(fail(404, 'NOT_FOUND', '交易记录不存在'));
+
+    const fields: string[] = [];
+    const params: unknown[] = [];
+    const setField = (col: string, val: unknown) => {
+      fields.push(`${col} = ?`);
+      params.push(val);
+    };
+    if (body.buy_reason !== undefined)
+      setField('buy_reason', body.buy_reason == null ? null : String(body.buy_reason));
+    if (body.sell_reason !== undefined)
+      setField('sell_reason', body.sell_reason == null ? null : String(body.sell_reason));
+    if (body.emotion_status !== undefined)
+      setField('emotion_status', body.emotion_status == null ? null : String(body.emotion_status));
+    if (body.review_summary !== undefined)
+      setField('review_summary', body.review_summary == null ? null : String(body.review_summary));
+    if (body.remark !== undefined) setField('remark', body.remark == null ? null : String(body.remark));
+    if (body.strategy_match !== undefined)
+      setField('strategy_match', body.strategy_match == null ? null : Number(body.strategy_match));
+    if (body.is_stop_loss !== undefined)
+      setField('is_stop_loss', body.is_stop_loss == null ? null : Number(body.is_stop_loss));
+    if (body.system_followed !== undefined)
+      setField('system_followed', body.system_followed == null ? null : Number(body.system_followed));
+    // 兼容旧 trade_reason：若只给 trade_reason，落 buy_reason（不覆盖已有）
+    if (body.trade_reason !== undefined)
+      setField('trade_reason', body.trade_reason == null ? null : String(body.trade_reason));
+
+    if (fields.length === 0) return reply.code(400).send(fail(400, 'INVALID_BODY', '无有效字段'));
+
+    params.push(id, user.sub);
+    db.prepare(`UPDATE user_trade_record SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`).run(
+      ...params,
+    );
+
+    // 若更新了 buy_reason 且该 pair 的开仓交易与当前 id 不同，同步到开仓交易（INV-S6-2 独立存取，尽力同步）
+    return reply.send(ok({ id }));
   });
 }

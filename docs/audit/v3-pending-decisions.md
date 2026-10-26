@@ -58,3 +58,7 @@
 | D-36 | 补录**不收**分红/送股事件族（`DIVIDEND`/`BONUS_SH` 等缺少确认不进 confirm 白名单） | CONFIRMABLE_EVENTS = TRADE_BUY/TRADE_SELL/FUND_SUBSCRIBE/FUND_REDEEM 四类 | 分红送股的补录由除权链路（SDD_v3 §8 / is_auto_import 读取器）持有唯一所有权；若 confirm 也写入分红行会造成双真理源，且 exDividend 读取器按 `trade_family IN (dividend,bonus) AND is_auto_import=1` 拉，会把 confirm 写的分红行误并入除权计算 | 低（白名单常量） | ✅ |
 | D-37 | 推导回放的**起点** = 事实层该标的在该券商的导入首行，期前持仓（手工/覆盖区间之外）不并入回放 frame | replay netQty 从 0 起 | SDD_v3 §9.3「无余额 → 按券商分别回放」未定义期前持仓口径；导入覆盖区间之外的期初余额属于用户知识，不宜猜（同 INV-S2-36「不填假时间」精神）；单行判定（balance_after）覆盖绝大多数行，纯回放仅兜底无余额旧格式；**用户修正可覆盖推导结果**是最终兜底（INV-S3-9） | 低（回放起点可加 offset 参数） | 🟡 |
 | D-38 | 单行判定的异常分支：买 & `balance_after < quantity`（余额少于成交量）保守判 `buy`（建仓） | deriveFromBalance `bal <= qty → buy` | Requirements §3.2 只定义 sell&0=clear / sell&>0=reduce / buy&balance=qty=buy / >&qty=add，未覆盖异常；实测两券商样本未出现此形态；保守把净持仓变化指向「已持有该标的」的 reduce 语义更危险（会虚拟出加仓价差），buy 语义让持仓成本回归最近一次买入 | 低（单 if） | 🟡 |
+
+| D-39 | V3.3 复盘字段 DDL 通过幂等 ALTER 补齐（buy_reason / sell_reason / emotion_status），新库直接 CREATE TABLE 含新列 | `_ensureTradeRecordReviewColumns` 扩展 EXPECTED 映射；emotion_status 5 档 CHECK | INV-S6-2/3；与 T128 重建历史合并考虑（copy plan 已含新列） | 低（ALTER ADD COLUMN） | ✅ |
+| D-40 | 交易对配对算法：按标的分桶→时间排序；buy/add 合并开仓；reduce/clear 生成 closed pair（部分平仓保留剩余）；bonus 摊薄数量；末尾未平仓单独 open 组 | `reviewPairs.ts` buildReviewPairs | INV-S6-6~9；配对规则与 §3.2 推导一致（加仓归并、减仓结转移动加权均价） | 中（算法可替换） | 🟡 |
+| D-41 | 三口径收益率现金类收益 = cash ETF 市值变动 + 逆回购配对利息；repo 在途头寸不并入 MV；broker 维度筛选可选 | `portfolioReturn.ts` computePortfolioReturn | §7.3 / §9.5；避免编造在途金额；可加性 total = risk + cash − fees | 中（repo 投入口径可细化） | 🟡 |

@@ -46,6 +46,10 @@ const TRADE_RECORD_COLUMNS_SQL = `
     broker_seq INTEGER,
     source_broker_record_id INTEGER REFERENCES broker_trade_record(id),
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+    -- T131（V3.3）：复盘字段对齐 —— 买入/卖出逻辑分离（INV-S6-2）+ 情绪状态（INV-S6-3，5 档固定枚举）
+    buy_reason TEXT,
+    sell_reason TEXT,
+    emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度兴奋','兴奋','平静','焦虑','恐慌')),
     review_summary TEXT,
     system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
     strategy_match INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1)),
@@ -405,6 +409,11 @@ export class ConfigStore {
       strategy_match: 'INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1))',
       is_stop_loss: 'INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1))',
       remark: 'TEXT',
+      // T131（V3.3）：复盘字段对齐 —— 买入/卖出逻辑分离 + 情绪状态（5 档固定枚举）
+      buy_reason: 'TEXT',
+      sell_reason: 'TEXT',
+      emotion_status:
+        "TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度兴奋','兴奋','平静','焦虑','恐慌'))",
     };
 
     try {
@@ -832,6 +841,10 @@ export class ConfigStore {
     add('price', has('price') ? 'COALESCE(price, 0)' : '0');
     add('fee', has('fee') ? 'COALESCE(fee, 0)' : '0');
     add('trade_reason', has('trade_reason') ? 'trade_reason' : 'NULL');
+    // T131（V3.3）复盘字段对齐：存量库没有这些列 ⇒ NULL（历史复盘数据须人工补录，不造数据）
+    add('buy_reason', has('buy_reason') ? 'buy_reason' : 'NULL');
+    add('sell_reason', has('sell_reason') ? 'sell_reason' : 'NULL');
+    add('emotion_status', has('emotion_status') ? 'emotion_status' : 'NULL');
     add('is_auto_import', has('is_auto_import') ? 'COALESCE(is_auto_import, 0)' : '0');
     // T128 券商维度三列：存量库没有这些列（全部手工人为）⇒ 统一 NULL（手工形态），不造数据
     add('broker_code', has('broker_code') ? 'broker_code' : 'NULL');

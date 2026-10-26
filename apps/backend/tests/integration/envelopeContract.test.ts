@@ -165,6 +165,9 @@ const ROUTE_CASES: RouteCase[] = [
   // ── 复盘 / 资产统计 ──
   { method: 'GET', url: '/api/review/yield' },
   { method: 'GET', url: '/api/review/trades' },
+  { method: 'GET', url: '/api/review/pairs' },
+  { method: 'PATCH', url: '/api/review/pairs/:id', payload: {} },
+  { method: 'GET', url: '/api/portfolio/return' },
   { method: 'GET', url: '/api/asset-stat/latest' },
   { method: 'GET', url: '/api/asset-stat/history' },
 

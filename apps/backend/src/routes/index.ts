@@ -13,6 +13,7 @@ import { registerStockScanRoutes } from './stockscan.js';
 import { registerSymbolSearchRoutes } from './symbolSearch.js';
 import { registerAssetStatRoutes } from './assetStat.js';
 import { registerReviewRoutes } from './review.js';
+import { registerPortfolioRoutes } from './portfolio.js';
 import { registerPluginRoutes } from './plugin.js';
 import { registerStrategyRoutes } from './strategy.js';
 import { registerExDividendRoutes } from './exDividend.js';
@@ -98,6 +99,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerSymbolSearchRoutes(app);
   await registerAssetStatRoutes(app);
   await registerReviewRoutes(app);
+  await registerPortfolioRoutes(app);
   await registerPluginRoutes(app);
   // T67：除权导入的**读取侧**（普通用户可读，Dashboard「今日除权导入」块用）
   await registerExDividendRoutes(app);
