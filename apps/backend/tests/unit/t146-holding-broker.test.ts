@@ -34,7 +34,9 @@ beforeAll(async () => {
   (ConfigStore as unknown as { _instance: unknown })._instance = null;
   const store = ConfigStore.getInstance();
   store.db
-    .prepare(`INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, 't146_user', 'x', 'user')`)
+    .prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, 't146_user', 'x', 'user')`,
+    )
     .run(UID);
 
   const ins = store.db.prepare(
@@ -52,7 +54,9 @@ beforeAll(async () => {
 
   // 现金类分类（T120 表）
   store.db
-    .prepare(`INSERT OR IGNORE INTO asset_class (symbol, asset_class, rule_hit, source) VALUES ('sh511880', 'cash', 'cash_etf_name', 'rule')`)
+    .prepare(
+      `INSERT OR IGNORE INTO asset_class (symbol, asset_class, rule_hit, source) VALUES ('sh511880', 'cash', 'cash_etf_name', 'rule')`,
+    )
     .run();
 
   app = Fastify({ logger: false });
@@ -75,7 +79,11 @@ describe('T146 /api/holding 券商维度 + 现金类 enrich', () => {
   it('asset_class / broker_code 逐标的正确（单券商 / mixed / 手工 / 无记录默认 risk）', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/holding' });
     expect(res.statusCode).toBe(200);
-    const rows = res.json().data as Array<{ asset_code: string; asset_class: string; broker_code: string | null }>;
+    const rows = res.json().data as Array<{
+      asset_code: string;
+      asset_class: string;
+      broker_code: string | null;
+    }>;
     const byCode = new Map(rows.map((r) => [r.asset_code, r]));
 
     expect(byCode.get('sh600001')).toMatchObject({ asset_class: 'risk', broker_code: null }); // 无记录 → risk；纯手工 → null
