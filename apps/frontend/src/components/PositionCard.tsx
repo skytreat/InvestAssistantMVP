@@ -189,6 +189,30 @@ export function PositionCard({
                 ETF
               </span>
             )}
+            {/* V3.8 T146：现金类标签（SDD_v3 §2：现金类不进涨跌幅/信号，标签化呈现） */}
+            {position.asset_class === 'cash' && (
+              <span
+                data-testid="position-card-cash"
+                style={{
+                  color: COLORS.textMuted,
+                  border: `1px solid ${COLORS.borderLight}`,
+                  borderRadius: RADIUS.sm,
+                  padding: '0 6px',
+                  fontSize: TYPO.captionSize,
+                }}
+              >
+                现金类
+              </span>
+            )}
+            {/* V3.8 T146：券商维度（T128 起 user_trade_record 带 broker_code）；纯手工显「手工」 */}
+            {(position.broker_code || position.broker_code === null) && (
+              <span
+                data-testid="position-card-broker"
+                style={{ color: COLORS.textMuted, fontSize: TYPO.captionSize }}
+              >
+                券商：{position.broker_code === 'mixed' ? '多券商' : (position.broker_code ?? '手工')}
+              </span>
+            )}
           </div>
           <div style={{ marginTop: 2 }}>{nameNode}</div>
         </div>
