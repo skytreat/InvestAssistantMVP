@@ -110,22 +110,21 @@ function handCalcSpec(trades: RawTrade[]): HandResult {
 
 /**
  * 手写计算器 —— **当前实现口径**（src/services/positionCalculator.ts mapToCoreTrade）
- *   - buy                → 增加持仓与成本
- *   - add / reduce / clear → 一律按**卖出**处理
- *   - dividend / bonus / transfer → 不参与移动加权（直接被过滤掉）
+ *   - buy / add             → 增加持仓与成本
+ *   - reduce / clear        → 按卖出处理
+ *   - bonus                 → 送转：股数 +n、成本基不变（均价摊薄）
+ *   - dividend / transfer   → 不参与移动加权（dividend 只进 cashReceived）
  *
- * ⚠️ 与 handCalcSpec 剩余**一处**差异是**已取证的实现偏差**（bonus 送转不计入，
- *    见本文件末尾「偏差记录」describe + §4-K 业务口径裁决），
- *    本函数只用于把当前行为钉住，不代表规格。
+ * ✅ T119（V3.0）已消除 bonus 送转的偏差（§4-K 口径裁决落地，SDD_v3 §8.5）：
+ *    送转现计入移动加权（股数 +n、均价摊薄），本函数与 handCalcSpec 已**无差异** ——
+ *    保留本函数仅为「与实现口径逐一对照」的取证用途。
  */
 function handCalcCurrent(trades: RawTrade[]): HandResult {
   let quantity = 0;
   let costBasis = 0;
   let realizedPnL = 0;
   for (const t of trades) {
-    // ✅ `add`（加仓）现按 buy 处理（§4-A P0 已修）—— 与 handCalcSpec 在这一点上已一致。
-    //    ⚠️ 剩余**唯一**差异是 `bonus`（送转）：spec 计入（股数增加、均价稀释），
-    //    当前实现**不计** —— 属 §4-K 业务口径裁决（未拍板），故此处保持差异不动。
+    // ✅ `add`（加仓）按 buy 处理（§4-A P0 已修）—— 与 handCalcSpec 一致。
     if (t.tradeType === 'buy' || t.tradeType === 'add') {
       costBasis += t.quantity * t.price + t.fee;
       quantity += t.quantity;
@@ -140,6 +139,9 @@ function handCalcCurrent(trades: RawTrade[]): HandResult {
         quantity = 0;
         costBasis = 0;
       }
+    } else if (t.tradeType === 'bonus' && quantity > 0) {
+      // T119：送转 股数 +n、成本基不变（均价摊薄），与 handCalcSpec 一致
+      quantity += t.quantity;
     }
   }
   return { quantity, avgCost: quantity > 0 ? costBasis / quantity : 0, costBasis, realizedPnL };
@@ -328,7 +330,7 @@ describe('avg_cost_calc_5_scenarios — SDD §12.3 A1-A5 五个场景', () => {
     expectAvgCostMatches(pos.realizedPnL, 200, '场景 4 已实现盈亏固定值');
   });
 
-  it('场景 5 · 送转股（除权自动导入）：当前实现不计入移动加权（⚠️ 与 SDD §12.3 A5 存在偏差，见「偏差记录」）', () => {
+  it('场景 5 · 送转股（除权自动导入）：T119（V3.0）起计入移动加权 —— 股数 +n、均价摊薄', () => {
     const uid = createUser();
     const code = 'sh600005';
     const trades: RawTrade[] = [
@@ -344,17 +346,17 @@ describe('avg_cost_calc_5_scenarios — SDD §12.3 A1-A5 五个场景', () => {
     const current = handCalcCurrent(trades);
     const spec = handCalcSpec(trades);
 
-    // 当前实现（mapToCoreTrade 把 bonus 直接过滤掉）：股数不变、均价不变
+    // T119（V3.0，§4-K 口径裁决落地，SDD_v3 §8.5）：送转 10 股 → 110 股，
+    // 成本基不变（1000），均价摊薄到 1000/110 = 9.090909…
+    expect(pos.totalQuantity).toBe(110);
+    expectAvgCostMatches(pos.avgCost, 1000 / 110, '场景 5（T119 实现口径：送转摊薄）');
+    expectAvgCostMatches(pos.realizedPnL, 0, '场景 5 送转不产生已实现盈亏');
+
+    // 与手算（规格/当前实现口径，T119 后二者一致）对齐
+    expect(pos.totalQuantity).toBe(spec.quantity);
+    expectAvgCostMatches(pos.avgCost, spec.avgCost, '场景 5（规格口径手算）');
     expect(pos.totalQuantity).toBe(current.quantity);
     expectAvgCostMatches(pos.avgCost, current.avgCost, '场景 5（当前实现口径）');
-    expect(pos.totalQuantity).toBe(100);
-    expectAvgCostMatches(pos.avgCost, 10, '场景 5（当前实现口径）');
-
-    // SDD §12.3 A5 的规格期望：送转 10 股 → 110 股，均价稀释到 1000/110 = 9.090909
-    // → 当前实现与规格的差额（取证用，不做修复）
-    expect(spec.quantity).toBe(110);
-    expectAvgCostMatches(spec.avgCost, 1000 / 110, '场景 5（规格口径手算）');
-    expect(pos.totalQuantity - spec.quantity).toBe(-10);
   });
 });
 

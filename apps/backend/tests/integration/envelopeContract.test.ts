@@ -188,6 +188,20 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'POST', url: '/api/strategy/reload' },
   { method: 'POST', url: '/api/strategy/plugins/reload' },
 
+  // ── 券商对账（V3.1：T122 导入 + T126 对账）──
+  // ⚠️ POST 路由读 request.body：至少给 `{}`（`toInput(undefined)` 会 500，非 envelope 体）。
+  //    缺参时各路由返回 4xx 错误 envelope（码为字符串 + data=null），符合 T89b 契约。
+  { method: 'POST', url: '/api/broker-import/upload', payload: {} },
+  { method: 'POST', url: '/api/broker-import/preview', payload: {} },
+  { method: 'POST', url: '/api/broker-import/confirm', payload: {} },
+  { method: 'GET', url: '/api/broker-import/batches' },
+  { method: 'POST', url: '/api/broker-import/batches/:id/revoke', payload: {} },
+  { method: 'GET', url: '/api/broker-import/templates' },
+  { method: 'POST', url: '/api/broker-import/templates', payload: {} },
+  { method: 'POST', url: '/api/broker-reconcile/run', payload: { brokerCode: 't89b' } },
+  { method: 'GET', url: '/api/broker-reconcile/latest', query: { brokerCode: 't89b' } },
+  { method: 'GET', url: '/api/broker-reconcile/diff', query: { brokerCode: 't89b' } },
+
   // ── 管理员 ──
   { method: 'GET', url: '/api/admin/datacheck/result' },
   { method: 'POST', url: '/api/admin/datacheck/trigger', timeout: 60_000 },

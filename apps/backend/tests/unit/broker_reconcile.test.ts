@@ -38,7 +38,12 @@ const GUOTAI_FILES = [
   '2026-10-20-国泰股票成交.xlsx',
 ];
 
-/** shuffle 守卫：两个用例共享 user 7101 的国泰数据 ⇒ 谁先跑谁导入（文件级幂等兜底） */
+/**
+ * shuffle 守卫：每个断言回填计数的用例使用专属 userId（7101 / 7104 等），互不共享
+ * ⇒ backfillTradeTime 是一次性操作（trade_time 已填则 totalNeeded=0），共享用户会随
+ *    用例顺序翻转（2026-10-25 实测：standalone 3 跑 2 红），专属用户后顺序无关。
+ * 导入本身仍幂等（文件级 file_hash 拦截）。
+ */
 async function ensureGuotai(uid: number): Promise<void> {
   const n = (
     db
@@ -50,23 +55,12 @@ async function ensureGuotai(uid: number): Promise<void> {
   }
 }
 
-/** 幂等导入（shuffle 守卫下用例间可能重复导入；文件级幂等 ⇒ 重复 0 新行） */
-async function ensureImported(userId: number, brokerCode: string, files: string[]): Promise<void> {
-  for (const f of files) {
-    const r = await importBrokerFile(db, userId, brokerCode, {
-      buffer: fs.readFileSync(path.join(FIX, f)),
-      filename: f,
-    });
-    expect(r.duplicateFile || r.rowInserted > 0, f).toBe(true);
-  }
-}
-
 beforeAll(async () => {
   db = ConfigStore.getInstance().db;
   const seed = db.prepare(
     `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
   );
-  for (const uid of [7101, 7102, 7103]) seed.run(uid, `user_${uid}`, 'x');
+  for (const uid of [7101, 7102, 7103, 7104]) seed.run(uid, `user_${uid}`, 'x');
 });
 
 afterAll(() => {
@@ -88,8 +82,9 @@ afterAll(() => {
 
 describe('T124 · gate G5：成交时间回填命中 100%（125/125 + 12/12）', () => {
   it('国泰 4 份（ETF + 股票 双账户）：可回填行 100% 命中，0 低置信度，成交独有 0 行', async () => {
-    await ensureGuotai(7101);
-    const r = backfillTradeTime(db, 7101, '国泰');
+    // 专属用户 7104：本用例断言回填计数（matched=109），不得与其他用例共享回填状态
+    await ensureGuotai(7104);
+    const r = backfillTradeTime(db, 7104, '国泰');
     // 交割侧 TRADE 事件 109 行（= 125 ETF + 12 股票 中剔除货币 ETF 等非成交事件后的可回填量）全部命中
     expect(r.unmatched).toBe(0);
     expect(r.matched).toBe(r.totalNeeded);
@@ -103,12 +98,12 @@ describe('T124 · gate G5：成交时间回填命中 100%（125/125 + 12/12）',
           `SELECT COUNT(*) AS c FROM (
              SELECT 1
                FROM broker_trade_record t JOIN broker_import_batch tf ON tf.id = t.import_batch_id
-              WHERE t.user_id = 7101 AND tf.file_kind = 'trade' AND t.is_deleted = 0
+              WHERE t.user_id = 7104 AND tf.file_kind = 'trade' AND t.is_deleted = 0
                 AND t.event_type IN ('TRADE_BUY','TRADE_SELL')
               GROUP BY t.asset_code, t.trade_date, t.price, t.quantity
               HAVING NOT EXISTS (
                 SELECT 1 FROM broker_trade_record s JOIN broker_import_batch sf ON sf.id = s.import_batch_id
-                 WHERE s.user_id = 7101 AND sf.file_kind = 'settlement' AND s.is_deleted = 0
+                 WHERE s.user_id = 7104 AND sf.file_kind = 'settlement' AND s.is_deleted = 0
                    AND s.asset_code = t.asset_code AND s.trade_date = t.trade_date
                    AND s.price = t.price AND s.quantity = t.quantity)
            )`,
@@ -123,8 +118,8 @@ describe('T124 · gate G5：成交时间回填命中 100%（125/125 + 12/12）',
         `SELECT CASE WHEN b.asset_code LIKE '6%' OR b.asset_code LIKE '0%' THEN 'stock' ELSE 'etf' END AS kind,
                 COUNT(*) AS n
            FROM broker_trade_record b JOIN broker_import_batch f ON f.id = b.import_batch_id
-          WHERE b.user_id = 7101 AND f.file_kind = 'settlement' AND b.match_status = 'MATCHED' AND b.is_deleted = 0
-          GROUP BY 1`,
+           WHERE b.user_id = 7104 AND f.file_kind = 'settlement' AND b.match_status = 'MATCHED' AND b.is_deleted = 0
+           GROUP BY 1`,
       )
       .all() as Array<{ kind: string; n: number }>;
     expect(split.find((x) => x.kind === 'stock')?.n).toBe(12);
