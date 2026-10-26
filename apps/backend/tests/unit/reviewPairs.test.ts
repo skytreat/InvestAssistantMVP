@@ -2,7 +2,6 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import Database from 'better-sqlite3';
 
 const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-v33-'));
 const ORIG = process.env.SQLITE_DB_PATH;
