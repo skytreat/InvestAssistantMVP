@@ -272,6 +272,43 @@ function installApiMock(): void {
           total: { pnl: 1500, cost: 70000, rate: 2.1, assets: 71500, invested: 70000, fees: 350 },
           caliberNote: '成本口径（测试假数据）',
         });
+      // V3.8 T150：组合体检（四指标 + 行业分布，分母排除现金类）
+      case '/portfolio/risk-check':
+        return ok({
+          singleStockMaxWeight: 12.5,
+          top10Concentration: 55,
+          availableCashRatio: 20,
+          maxDrawdown: 8.4,
+          industryDistribution: [
+            { industry: '60', weight: 60 },
+            { industry: '00', weight: 40 },
+          ],
+          cashExcluded: true,
+        });
+      // V3.8 T130：交易对视图（复盘页「交易对」tab）
+      case '/review/pairs':
+        return ok([
+          {
+            id: 1,
+            asset_code: 'sh600000',
+            open_trade_id: 10,
+            close_trade_id: 11,
+            open_date: '2024-01-05',
+            close_date: '2024-02-05',
+            open_price: 10,
+            close_price: 11,
+            open_quantity: 100,
+            closed_quantity: 100,
+            remaining_quantity: 0,
+            realized_pnl: 100,
+            holding_days: 31,
+            buy_reason: '测试',
+            sell_reason: '测试',
+            emotion_status: '平静',
+            broker_code: null,
+            status: 'closed',
+          },
+        ]);
       case '/broker-import/batches':
         return ok({ batches: [{ broker_code: 'gt' }] });
       case '/strategy/plugins':
@@ -327,6 +364,10 @@ const PAGES: PageCase[] = [
   { key: 'broker-reconcile', path: '/broker/reconcile', admin: true },
   // V3.8 T147：收益页（三口径 + 口径说明，PRD_v3 §3.4.2）
   { key: 'portfolio-return', path: '/portfolio/return' },
+  // V3.8 T148/T150：策略配置 / 有效性 / 组合体检（PRD_v3 §4/§5）
+  { key: 'strategy-config', path: '/strategy/config' },
+  { key: 'strategy-effectiveness', path: '/strategy/effectiveness' },
+  { key: 'risk-check', path: '/portfolio/risk-check' },
   { key: 'notfound', path: '/__a11y_unknown_route__' },
 ];
 
@@ -353,6 +394,9 @@ const KNOWN_VIOLATIONS: Record<string, ReadonlyArray<readonly [string, string, s
   'broker-import': [],
   'broker-reconcile': [],
   'portfolio-return': [],
+  'strategy-config': [],
+  'strategy-effectiveness': [],
+  'risk-check': [],
   notfound: [],
 };
 

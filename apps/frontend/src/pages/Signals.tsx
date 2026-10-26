@@ -134,6 +134,43 @@ export default function Signals() {
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
+  // ── V3.8 T149：信号生命周期操作（采纳/忽略/关联交易）────────────────
+  const [actMsg, setActMsg] = useState<string | null>(null);
+
+  const signalAction = async (id: number, kind: 'adopt' | 'ignore') => {
+    setActMsg(null);
+    try {
+      const res = await api.patch(`/signal/${id}/${kind}`);
+      if (isOkEnvelope(res.data)) {
+        setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [`${kind}ed`]: 1 } : r)));
+        setActMsg(kind === 'adopt' ? '已采纳' : '已忽略');
+      } else {
+        setActMsg(String(res.data?.message ?? '操作失败'));
+      }
+    } catch (e) {
+      setActMsg(extractErrorMessage(e, '操作失败'));
+    }
+  };
+
+  /** 关联既有交易记录（INV-S3-15/16、INV-S6-4）：输入 tradeRecordId → 后端校验归属+标的 */
+  const linkTrade = async (id: number) => {
+    setActMsg(null);
+    const raw = window.prompt('输入要关联的交易记录 id（user_trade_record.id）：');
+    if (raw == null) return; // 用户取消
+    const tradeRecordId = Number(raw.trim());
+    if (!Number.isFinite(tradeRecordId) || tradeRecordId <= 0) {
+      setActMsg('交易记录 id 非法');
+      return;
+    }
+    try {
+      const res = await api.patch(`/signal/${id}/link-trade`, { tradeRecordId });
+      if (isOkEnvelope(res.data)) setActMsg('已关联交易');
+      else setActMsg(String(res.data?.message ?? '关联失败'));
+    } catch (e) {
+      setActMsg(extractErrorMessage(e, '关联失败'));
+    }
+  };
+
   /**
    * 拉取信号
    *
@@ -322,6 +359,20 @@ export default function Signals() {
       </div>
 
       {error && <div style={errorStyle}>{error}</div>}
+      {/* V3.8 T149：操作反馈（采纳/忽略/关联） */}
+      {actMsg && (
+        <div
+          style={{
+            fontSize: TYPO.smallSize,
+            color:
+              actMsg === '已关联交易' || actMsg === '已采纳' || actMsg === '已忽略'
+                ? COLORS.success
+                : COLORS.danger,
+          }}
+        >
+          {actMsg}
+        </div>
+      )}
 
       <div style={cardStyle} aria-busy={loading}>
         {loading && rows.length === 0 ? (
@@ -391,6 +442,10 @@ export default function Signals() {
                     <th scope="col" style={thStyle}>
                       交易日期
                     </th>
+                    {/* V3.8 T149：信号生命周期操作（采纳/忽略/关联交易，PRD_v3 §4.2） */}
+                    <th scope="col" style={thStyle}>
+                      操作
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -430,6 +485,33 @@ export default function Signals() {
                         </td>
                         <td style={thTdStyle}>
                           {typeof row.trade_date === 'string' ? row.trade_date : '--'}
+                        </td>
+                        {/* V3.8 T149：采纳/忽略/关联交易（过期信号仍可标注，标灰由后端 T134 的 expires_at 承担） */}
+                        <td style={thTdStyle}>
+                          {typeof row.id === 'number' ? (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button
+                                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                                disabled={Boolean(row.adopted)}
+                                onClick={() => void signalAction(row.id!, 'adopt')}
+                              >
+                                {row.adopted ? '已采纳' : '采纳'}
+                              </button>
+                              <button
+                                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                                disabled={Boolean(row.ignored)}
+                                onClick={() => void signalAction(row.id!, 'ignore')}
+                              >
+                                {row.ignored ? '已忽略' : '忽略'}
+                              </button>
+                              <button
+                                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                                onClick={() => void linkTrade(row.id!)}
+                              >
+                                关联交易
+                              </button>
+                            </div>
+                          ) : null}
                         </td>
                       </tr>
                     );

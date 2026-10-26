@@ -70,6 +70,10 @@ export const NAV_ITEMS: NavItem[] = [
   // V3.8 T143/T144：券商对账域（PRD_v3 §3 导航「数据 → 券商对账」；仅 admin 可见，SDD_v3 §10.3）
   { to: '/broker/reconcile', label: '券商对账', adminOnly: true },
   { to: '/settings', label: '设置' },
+  // V3.8 策略域 / 组合域（PRD_v3 §4/§5）
+  { to: '/strategy/config', label: '策略配置' },
+  { to: '/strategy/effectiveness', label: '策略有效性' },
+  { to: '/portfolio/risk-check', label: '组合体检' },
   { to: '/admin', label: '管理员', adminOnly: true },
 ];
 

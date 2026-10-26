@@ -10,6 +10,9 @@ import Review from './pages/Review';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import PortfolioReturn from './pages/PortfolioReturn';
+import StrategyConfig from './pages/StrategyConfig';
+import StrategyEffectiveness from './pages/StrategyEffectiveness';
+import RiskCheck from './pages/RiskCheck';
 import { useUserStore } from './store/user';
 import { NAV_ITEMS, Navbar, useIsDesktop } from './pages/_shared';
 import ComplianceFooter from './components/ComplianceFooter';
@@ -234,6 +237,10 @@ export default function App() {
             }
           />
           <Route path="/portfolio/return" element={<PortfolioReturn />} />
+          {/* V3.8 T148/T150：策略配置 / 有效性 / 组合体检（PRD_v3 §4.1/§4.3/§5.3） */}
+          <Route path="/strategy/config" element={<StrategyConfig />} />
+          <Route path="/strategy/effectiveness" element={<StrategyEffectiveness />} />
+          <Route path="/portfolio/risk-check" element={<RiskCheck />} />
           <Route path="/settings" element={<Settings />} />
           {/* T98：管理员路由受 AdminGuard 保护 —— 非 admin 不挂载 <Admin />，故不发 admin 请求 */}
           <Route path="/admin" element={<AdminRoute />} />

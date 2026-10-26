@@ -36,12 +36,13 @@ interface ApiGetConfig {
   params?: Record<string, unknown>;
 }
 
-/** 全局 mock：`api.get` */
-const { getMock } = vi.hoisted(() => ({
+/** 全局 mock：`api.get` / `api.patch`（V3.8 T149 信号生命周期操作） */
+const { getMock, patchMock } = vi.hoisted(() => ({
   getMock: vi.fn<(url: string, cfg?: ApiGetConfig) => Promise<unknown>>(),
+  patchMock: vi.fn(),
 }));
 
-vi.mock('../../src/api/client', () => ({ api: { get: getMock } }));
+vi.mock('../../src/api/client', () => ({ api: { get: getMock, patch: patchMock } }));
 
 /** 一行信号（字段名与后端 `user_strategy_signal` 一致）*/
 interface SignalFixture {
@@ -100,6 +101,7 @@ const BUY_ROW: SignalFixture = {
 
 beforeEach(() => {
   getMock.mockReset();
+  patchMock.mockReset();
 });
 
 describe('T72 ① · 进页自动加载', () => {
@@ -375,5 +377,26 @@ describe('T79 ③ · 信号空态引导', () => {
 
     await screen.findByTestId('signals-empty');
     expect(screen.queryByTestId('signals-run-now')).not.toBeInTheDocument();
+  });
+});
+
+/** V3.8 T149 · 信号生命周期操作（采纳/忽略/关联交易，PRD_v3 §4.2） */
+describe('T149 · 信号操作列（采纳/忽略 → PATCH /signal/:id/{adopt|ignore}）', () => {
+  it('点「采纳」→ PATCH /signal/1/adopt，成功后按钮变「已采纳」', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    patchMock.mockResolvedValue(mockResponse({}));
+    renderWithRouter(<Signals />);
+    const btn = await screen.findByRole('button', { name: '采纳' });
+    await userEvent.click(btn);
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith('/signal/1/adopt'));
+    expect((await screen.findAllByRole('button', { name: '已采纳' })).length).toBeGreaterThan(0);
+  });
+
+  it('点「忽略」→ PATCH /signal/1/ignore', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    patchMock.mockResolvedValue(mockResponse({}));
+    renderWithRouter(<Signals />);
+    await userEvent.click(await screen.findByRole('button', { name: '忽略' }));
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith('/signal/1/ignore'));
   });
 });
