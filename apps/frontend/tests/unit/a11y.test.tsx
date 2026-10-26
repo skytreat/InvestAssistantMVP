@@ -264,6 +264,16 @@ function installApiMock(): void {
         return ok(REVIEW_TRADES, { pagination: { total: 1, totalPages: 1 } });
       case '/asset-stat/history':
         return ok(ASSET_HISTORY);
+      // V3.8 T147：收益页（三口径 + 口径说明）
+      case '/portfolio/return':
+        return ok({
+          risk: { pnl: 1200, cost: 20000, rate: 6, realized: 800, dividend: 200, fees: 350 },
+          cash: { pnl: 300, cost: 50000, rate: 0.6, repoInterest: 260, cashEtfChange: 40 },
+          total: { pnl: 1500, cost: 70000, rate: 2.1, assets: 71500, invested: 70000, fees: 350 },
+          caliberNote: '成本口径（测试假数据）',
+        });
+      case '/broker-import/batches':
+        return ok({ batches: [{ broker_code: 'gt' }] });
       case '/strategy/plugins':
         return ok(PLUGINS);
       case '/stockscan/plugins':
@@ -315,6 +325,8 @@ const PAGES: PageCase[] = [
   // V3.8 T143/T144：券商对账域（仅 admin，SDD_v3 §10.3）
   { key: 'broker-import', path: '/broker/import', admin: true },
   { key: 'broker-reconcile', path: '/broker/reconcile', admin: true },
+  // V3.8 T147：收益页（三口径 + 口径说明，PRD_v3 §3.4.2）
+  { key: 'portfolio-return', path: '/portfolio/return' },
   { key: 'notfound', path: '/__a11y_unknown_route__' },
 ];
 
@@ -340,6 +352,7 @@ const KNOWN_VIOLATIONS: Record<string, ReadonlyArray<readonly [string, string, s
   admin: [],
   'broker-import': [],
   'broker-reconcile': [],
+  'portfolio-return': [],
   notfound: [],
 };
 

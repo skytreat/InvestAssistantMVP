@@ -678,8 +678,52 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           positions.map((p) => p.asset_code),
         );
       } catch (err: any) {
-        // 信号查询失败不阻塞持仓展示，前端降级为"无信号标记"
+        // 信号查询失败不阻塞持仓展示，前端降级为「无信号标记」
         app.log.warn({ err }, '持仓信号查询失败，降级为无信号标记');
+      }
+
+      // V3.8 T146：资产分类（风险/现金）+ 券商维度 enrich（各 1 次批量查询，禁逐标的循环）
+      const assetCodes = positions.map((p) => p.asset_code);
+      const ph = assetCodes.map(() => '?').join(',');
+      const dbHolding = ConfigStore.getInstance().db;
+      let classMap = new Map<string, string>();
+      const brokerMap = new Map<string, string | null>();
+      if (assetCodes.length > 0) {
+        const classRows = dbHolding
+          .prepare(`SELECT symbol, asset_class FROM asset_class WHERE symbol IN (${ph})`)
+          .all(...assetCodes) as Array<{ symbol: string; asset_class: string }>;
+        classMap = new Map(classRows.map((r) => [r.symbol, r.asset_class]));
+        // 每标的「最近一条带券商维度的交易」：单券商 → 该编码；多券商 → 'mixed'；无 → null（= 纯手工）
+        const brokerRows = dbHolding
+          .prepare(
+            `SELECT t.asset_code AS asset_code, t.broker_code AS broker_code
+             FROM user_trade_record t
+             WHERE t.user_id = ? AND t.asset_code IN (${ph}) AND t.is_deleted = 0 AND t.broker_code IS NOT NULL
+               AND t.id = (SELECT MAX(t2.id) FROM user_trade_record t2
+                           WHERE t2.user_id = ? AND t2.asset_code = t.asset_code
+                             AND t2.is_deleted = 0 AND t2.broker_code IS NOT NULL)
+             GROUP BY t.asset_code`,
+          )
+          .all(user.sub, ...assetCodes, user.sub) as Array<{
+          asset_code: string;
+          broker_code: string;
+        }>;
+        // 上面 GROUP BY 取每标的最新一条；同一标的历史上多券商时用「是否出现过第二券商」判 mixed
+        const multiBroker = new Set(
+          (
+            dbHolding
+              .prepare(
+                `SELECT asset_code FROM user_trade_record
+                 WHERE user_id = ? AND is_deleted = 0 AND broker_code IS NOT NULL
+                   AND asset_code IN (${ph})
+                 GROUP BY asset_code HAVING COUNT(DISTINCT broker_code) > 1`,
+              )
+              .all(user.sub, ...assetCodes) as Array<{ asset_code: string }>
+          ).map((r) => r.asset_code),
+        );
+        for (const r of brokerRows) {
+          brokerMap.set(r.asset_code, multiBroker.has(r.asset_code) ? 'mixed' : r.broker_code);
+        }
       }
 
       // 市值合计 → 每只标的的仓位占比
@@ -704,6 +748,16 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           signal: signals.get(p.asset_code) ?? null,
           /** 中文名（`raw_symbol_name.name`）；查不到 → null（覆盖率约 70%，缺失是常态） */
           name: names.get(p.asset_code) ?? null,
+          /**
+           * V3.8 T146：资产分类（SDD_v3 §2，INV-S4-8~13）
+           * 无 asset_class 记录 = 'risk'（安全侧默认，漏判现金类宁可进风险指标）
+           */
+          asset_class: (classMap.get(p.asset_code) ?? 'risk') as 'risk' | 'cash',
+          /**
+           * V3.8 T146：券商维度（T128 起 user_trade_record 带 broker_code）
+           * 单券商 → 该编码；多券商 → 'mixed'；纯手工 → null（前端显示「手工」）
+           */
+          broker_code: brokerMap.has(p.asset_code) ? (brokerMap.get(p.asset_code) as string | null) : null,
           /**
            * 行业（**契约预留字段，当前恒为 null**）
            *

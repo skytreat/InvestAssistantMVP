@@ -79,6 +79,10 @@ export interface Position {
   name: string | null;
   /** 行业（**当前恒为 null**，见上方说明）*/
   industry: string | null;
+  /** V3.8 T146：资产分类（SDD_v3 §2）；旧接口/未返回时缺省，前端按 risk 渲染 */
+  asset_class?: 'risk' | 'cash' | null;
+  /** V3.8 T146：券商维度；'mixed' = 多券商；null/缺省 = 纯手工 */
+  broker_code?: string | null;
 }
 
 /** 信号方向 → 中文（信号表与卡 7 的理由文案共用这一份）*/

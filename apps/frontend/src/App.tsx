@@ -9,6 +9,7 @@ import Candidates from './pages/Candidates';
 import Review from './pages/Review';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
+import PortfolioReturn from './pages/PortfolioReturn';
 import { useUserStore } from './store/user';
 import { NAV_ITEMS, Navbar, useIsDesktop } from './pages/_shared';
 import ComplianceFooter from './components/ComplianceFooter';
@@ -232,6 +233,7 @@ export default function App() {
               </AdminGuard>
             }
           />
+          <Route path="/portfolio/return" element={<PortfolioReturn />} />
           <Route path="/settings" element={<Settings />} />
           {/* T98：管理员路由受 AdminGuard 保护 —— 非 admin 不挂载 <Admin />，故不发 admin 请求 */}
           <Route path="/admin" element={<AdminRoute />} />
