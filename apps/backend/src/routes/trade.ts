@@ -137,7 +137,11 @@ export interface TradeTimeOccupancy {
  *   带条件才是 `SEARCH ... USING INDEX idx_user_trade_record_unique_live`（等值 seek，不扫表）。
  */
 export const TRADE_TIME_OCCUPANCY_SQL = `SELECT id, created_at, is_deleted FROM user_trade_record
-   WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND trade_date = ? AND trade_time = ? AND is_deleted = 0`;
+   WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND trade_date = ? AND trade_time = ? AND is_deleted = 0
+     AND broker_code IS NULL`;
+// ⚠️ T128（V3.2）：预检只看**手工记录**的占用 —— 部分唯一索引 A 的谓词收窄为 `broker_code IS NULL`
+//    后，查询必须带同一谓词才能命中该索引（否则 planner 退回普通索引/扫表）。
+//    语义同步：券商导入的同秒多笔不构成手工录入的「同刻占用」）。
 
 /**
  * 查「该用户 + 该标的 + 该类型 + 该日 + 该时刻」是否已被占用

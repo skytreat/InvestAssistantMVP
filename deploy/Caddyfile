@@ -1,5 +1,10 @@
 # 由 deploy/deploy.sh 渲染：__CADDY_DOMAIN__ / __CADDY_EMAIL__
 # 不要直接复制本文件；脚本会校验并安装到 /etc/caddy/Caddyfile。
+:80 {
+	# HTTP 明文入口 → 一律 301 到 HTTPS（SDD §10.3 SE1）
+	redir https://__CADDY_DOMAIN__{uri} permanent
+}
+
 __CADDY_DOMAIN__ {
 	tls __CADDY_EMAIL__
 

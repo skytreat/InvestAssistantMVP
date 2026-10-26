@@ -74,14 +74,18 @@ describe('T87 trade_time 格式校验', () => {
 });
 
 describe('T87 DDL：trade_time 列与 UNIQUE 约束', () => {
-  it('trade_time 列为 NOT NULL', () => {
+  // T128（INV-S3-11）期望过期更新：DDL 层 trade_time 放宽为**可空**
+  //   —— 导入补录（B 类文件）无成交时间时必须留空，不得填假时间；
+  //   手工录入「必填」仍由服务层校验（validateTradeTime，见上方 describe），
+  //   且同刻唯一约束只作用于非空成交时间（INV-S3-12）+ 手工记录（broker_code IS NULL）。
+  it('trade_time 列可空（T128 由 NOT NULL 放宽；手工必填在服务层）', () => {
     const cols = db.db.prepare('PRAGMA table_info(user_trade_record)').all() as Array<{
       name: string;
       notnull: number;
     }>;
     const col = cols.find((c) => c.name === 'trade_time');
     expect(col).toBeTruthy();
-    expect(col!.notnull).toBe(1);
+    expect(col!.notnull).toBe(0);
   });
 
   it('唯一键 = 5 列**部分唯一索引**（WHERE is_deleted = 0），表级 UNIQUE 已移除', () => {

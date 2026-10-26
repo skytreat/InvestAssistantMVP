@@ -14,7 +14,7 @@
 | D-4 | V3 第一个 PR 的范围 | **V3.0 + V3.0b + V3.1 合成一个 PR**（T119+T120+T121~T127 + fixtures 提交） | plan_v3 §2.1 明文建议（三者互为前提，拆开产生中间态） | 中（拆 PR 需重排依赖） | 🟡（按 plan 建议执行，若 owner 要求拆，在 T121 提交前仍可拆） |
 | D-5 | 阶段审计文件命名 | `docs/audit/v3-1-audit.md` / `v3-2-audit.md` …（plan 4.5 G4 规定 `v3-N-audit.md`，N = 阶段序号） | 与 v2 的 `wave-N-audit.md` 同构且 plan 已定 | 低 | ✅（plan 已定稿，仅登记） |
 | D-6 | 文档 PR（#25）的验收落档名 | `docs/audit/v3-spec-gate.md` 内「实测结果」节**原地复跑更新**（不加新文件），gate 8/8 PASS + 本轮重编号后重新扫描 | gate 定义与结果同档，纯文档 PR 不必再开第二份 | 低 | 🟡 |
-| D-7 | V3.2（T128/T129）的 DDL 定稿 | 前置条件已满足：v2 Wave 1-12 全部合入，`user_trade_record` 自 T49/T87 重建后无未决改动 ⇒ **V3-B3/B4 在 V3-2 开工时由 agent 依 SDD_v3 §11.2 留白直接定稿**，定稿随 T128 commit 落档 | plan §1.3 的阻塞项是「Wave 1-8 对该表改动稳定」，现已稳定 | 中（DDL 定稿后返工 = 再一次幂等表重建） | 🟡 |
+| D-7 | V3.2（T128/T129）的 DDL 定稿 | ✅ **已定稿（2026-10-26，T128）**：`broker_code TEXT`（可空=手工）、`broker_seq INTEGER`（=事实层 content_seq）、`source_broker_record_id INTEGER REFERENCES broker_trade_record(id)`、`trade_time` 放宽可空、**三条部分唯一索引**（手工 A / 源锚 B / 身份 C）；asset_class 不加列（靠 asset_code 关联 asset_class 表）；与 T87b/T49 重建历史**合并为一次**幂等重建（`_ensureTradeRecordUniqueConstraint` 四态 ready/missing-index/stale-index/legacy） | Wave 1-12 已合入，该表自 T49/T87b 后无未决改动；三索引取舍细节见 SDD_v3 §11.2 与 D-34 | 中（DDL 定稿后返工 = 再一次幂等表重建） | ✅ |
 | D-8 | V3 各 PR 的 CI 判定口径 | `gh pr checks` 全绿 + 本 PR gate audit 全 PASS（🔒 门槛不可豁免）→ `gh pr merge --squash`；任一 FAIL 就地修复重跑，**不 merge** | AGENTS.md「CI 是必要条件，gate 是充分条件，两者都过才 merge」 | — | ✅（规则既定，仅登记） |
 | D-9 | 后续未决 Q2/Q3/Q4/Q5/Q6 | 不预先定，**到对应阶段开工时实测后定**（Q2 逆回购品种段 → T127；Q3/Q4 快照同步与拼音库 → T136；Q5 基准标的 / Q6 净值曲线 → T135/T137） | 早定无实测依据，违反 AGENTS「实现前必须实测」铁律 | — | ✅（节奏既定，仅登记） |
 
@@ -50,3 +50,11 @@
 | D-33 | **文档曾复述原始敏感值 / 实测交易细节**（反查表 + 真实交易明细 ⇒ 脱敏失效） | 2026-10-26 两轮复核（owner 两次指出）：① `broker-samples/README.md` 映射表「原值」列、`v3-pending-decisions.md` D-3、`v3-spec-gate.md` 复跑记录共 3 处把 8 个原始敏感标识（资金账号/股东代码/营业部/用户名）写进仓库；② D-21/D-24 的实测理由把**真实逆回购交易明细**（出资腿金额、收回/开仓日期、时刻）写进决策文档。本次全部脱敏：README 映射表改「列+格式+占位值」（不列原值）；D-3 / v3-spec-gate.md 删标识枚举；D-21/D-24 交易明细**泛化**（保留决策结论 + gate 基线 180/180、利息 7501.46，去掉具体金额/日期/时刻）。G8 判定口径收紧为「全仓（含 md）grep 原值 = 0」 | AGENTS「敏感配置/token 禁止明文」同理：脱敏的意义是仓库可共享；文档列原值/交易明细 = 反查表 + 个人财务数据。决策记录应保留「选了什么 + 为什么」，不需逐笔实盘数字 | 低（纯文档脱敏，不影响任何测试/数值基线；gate 数值由测试/fixture 断言，不依赖文档 prose） | ✅ |
 
 <!-- D-34+ -->
+
+| # | 事项 | 自决值 | 理由 | 推翻成本 | 状态 |
+|---|---|---|---|---|---|
+| D-34 | T128 物理形态三处自决（SDD 留白期未钉死） | ① 券商维度用 **`broker_code TEXT`**（不建 broker_account 表/外键）；② **三条部分唯一索引**（SDD 原留白写「两个」：A 手工 / C 身份，agent **追加 B 源锚** `UNIQUE(user_id, source_broker_record_id)`）；③ `user_trade_record` **不加** `asset_class` 冗余列 | ② 原因：SQLite 唯一索引把 NULL 视为互异 —— 导入行 trade_time 可空（INV-S2-36），C 键含 trade_time，对「同一事实行被补录两次且两次时间均 NULL」**不生效** ⇒ 必须由不含可空列的 B 兜底（回溯幂等 + 软删释放=INV-S2-35 可重新补录）；C 仍保留（跨批次同内容 seq 同值时拦截）。① MVP 无券商账户管理需求，编码与 broker_import_batch 同源；③ 分类规则/人工修正热改，冗余列反而造成双真理源 | 中（索引可 DROP 重建，列名契约一旦入业务层则翻难;B 去掉需在 confirm 服务层加显式预检） | 🟡 |
+| D-35 | T122 写路由缺 admin 门（SDD §10.3「导入与补录仅 admin」在 v3.1 **未实施**），T129 补位 | `broker-import/confirm`、`/batches/:id/revoke`、`/templates` POST 三端点补 `403 FORBIDDEN`；`upload`/`preview`（无副作用）与 GET 保持登录即可访问 | SDD §10.3 明文；v3.1 audit 未把它列为显式 gate 项 ⇒ 漏检。owner（首个注册用户）自动 admin，不影响本人使用 | 低（两行 if + 测试） | ✅ |
+| D-36 | 补录**不收**分红/送股事件族（`DIVIDEND`/`BONUS_SH` 等缺少确认不进 confirm 白名单） | CONFIRMABLE_EVENTS = TRADE_BUY/TRADE_SELL/FUND_SUBSCRIBE/FUND_REDEEM 四类 | 分红送股的补录由除权链路（SDD_v3 §8 / is_auto_import 读取器）持有唯一所有权；若 confirm 也写入分红行会造成双真理源，且 exDividend 读取器按 `trade_family IN (dividend,bonus) AND is_auto_import=1` 拉，会把 confirm 写的分红行误并入除权计算 | 低（白名单常量） | ✅ |
+| D-37 | 推导回放的**起点** = 事实层该标的在该券商的导入首行，期前持仓（手工/覆盖区间之外）不并入回放 frame | replay netQty 从 0 起 | SDD_v3 §9.3「无余额 → 按券商分别回放」未定义期前持仓口径；导入覆盖区间之外的期初余额属于用户知识，不宜猜（同 INV-S2-36「不填假时间」精神）；单行判定（balance_after）覆盖绝大多数行，纯回放仅兜底无余额旧格式；**用户修正可覆盖推导结果**是最终兜底（INV-S3-9） | 低（回放起点可加 offset 参数） | 🟡 |
+| D-38 | 单行判定的异常分支：买 & `balance_after < quantity`（余额少于成交量）保守判 `buy`（建仓） | deriveFromBalance `bal <= qty → buy` | Requirements §3.2 只定义 sell&0=clear / sell&>0=reduce / buy&balance=qty=buy / >&qty=add，未覆盖异常；实测两券商样本未出现此形态；保守把净持仓变化指向「已持有该标的」的 reduce 语义更危险（会虚拟出加仓价差），buy 语义让持仓成本回归最近一次买入 | 低（单 if） | 🟡 |
