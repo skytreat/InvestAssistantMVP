@@ -693,36 +693,35 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           .prepare(`SELECT symbol, asset_class FROM asset_class WHERE symbol IN (${ph})`)
           .all(...assetCodes) as Array<{ symbol: string; asset_class: string }>;
         classMap = new Map(classRows.map((r) => [r.symbol, r.asset_class]));
-        // 每标的「最近一条带券商维度的交易」：单券商 → 该编码；多券商 → 'mixed'；无 → null（= 纯手工）
+        // V3.8 T146 券商维度（**1 次合并查询**，保住 holding-nplus1 的 SQLite 常量次数上限）：
+        // 每标的「最近一条带券商交易」(MAX id) + 该标的历史不同券商数（>1 → 'mixed'）
         const brokerRows = dbHolding
           .prepare(
-            `SELECT t.asset_code AS asset_code, t.broker_code AS broker_code
+            `SELECT t.asset_code AS asset_code,
+                    t.broker_code AS latest_broker,
+                    b.nbrokers
              FROM user_trade_record t
-             WHERE t.user_id = ? AND t.asset_code IN (${ph}) AND t.is_deleted = 0 AND t.broker_code IS NOT NULL
-               AND t.id = (SELECT MAX(t2.id) FROM user_trade_record t2
-                           WHERE t2.user_id = ? AND t2.asset_code = t.asset_code
-                             AND t2.is_deleted = 0 AND t2.broker_code IS NOT NULL)
-             GROUP BY t.asset_code`,
+             JOIN (
+               SELECT asset_code, COUNT(DISTINCT broker_code) AS nbrokers
+               FROM user_trade_record
+               WHERE user_id = ? AND is_deleted = 0 AND broker_code IS NOT NULL
+               GROUP BY asset_code
+             ) b ON b.asset_code = t.asset_code
+             WHERE t.user_id = ? AND t.asset_code IN (${ph})
+               AND t.is_deleted = 0 AND t.broker_code IS NOT NULL
+               AND t.id = (
+                 SELECT MAX(t2.id) FROM user_trade_record t2
+                 WHERE t2.user_id = ? AND t2.asset_code = t.asset_code
+                   AND t2.is_deleted = 0 AND t2.broker_code IS NOT NULL
+               )`,
           )
-          .all(user.sub, ...assetCodes, user.sub) as Array<{
+          .all(user.sub, user.sub, ...assetCodes, user.sub) as Array<{
           asset_code: string;
-          broker_code: string;
+          latest_broker: string;
+          nbrokers: number;
         }>;
-        // 上面 GROUP BY 取每标的最新一条；同一标的历史上多券商时用「是否出现过第二券商」判 mixed
-        const multiBroker = new Set(
-          (
-            dbHolding
-              .prepare(
-                `SELECT asset_code FROM user_trade_record
-                 WHERE user_id = ? AND is_deleted = 0 AND broker_code IS NOT NULL
-                   AND asset_code IN (${ph})
-                 GROUP BY asset_code HAVING COUNT(DISTINCT broker_code) > 1`,
-              )
-              .all(user.sub, ...assetCodes) as Array<{ asset_code: string }>
-          ).map((r) => r.asset_code),
-        );
         for (const r of brokerRows) {
-          brokerMap.set(r.asset_code, multiBroker.has(r.asset_code) ? 'mixed' : r.broker_code);
+          brokerMap.set(r.asset_code, r.nbrokers > 1 ? 'mixed' : r.latest_broker);
         }
       }
 
