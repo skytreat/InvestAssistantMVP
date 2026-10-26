@@ -66,6 +66,8 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/signals', label: '策略信号' },
   { to: '/review', label: '交易复盘' },
   { to: '/candidates', label: '候选池' },
+  // V3.8 T143/T144：券商对账域（PRD_v3 §3 导航「数据 → 券商对账」；仅 admin 可见，SDD_v3 §10.3）
+  { to: '/broker/reconcile', label: '券商对账', adminOnly: true },
   { to: '/settings', label: '设置' },
   { to: '/admin', label: '管理员', adminOnly: true },
 ];
