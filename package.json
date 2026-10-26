@@ -27,5 +27,8 @@
     "globals": "^15.15.0",
     "prettier": "^3.9.10",
     "typescript-eslint": "^8.72.0"
+  },
+  "dependencies": {
+    "pinyin-pro": "^3.29.5"
   }
 }

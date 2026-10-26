@@ -168,6 +168,7 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/review/pairs' },
   { method: 'PATCH', url: '/api/review/pairs/:id', payload: {} },
   { method: 'GET', url: '/api/portfolio/return' },
+  { method: 'GET', url: '/api/portfolio/risk-check' },
   { method: 'GET', url: '/api/asset-stat/latest' },
   { method: 'GET', url: '/api/asset-stat/history' },
 
@@ -180,6 +181,9 @@ const ROUTE_CASES: RouteCase[] = [
   // ── 信号 / 除权 ──
   { method: 'GET', url: '/api/signal' },
   { method: 'GET', url: '/api/signal/stats' },
+  { method: 'PATCH', url: '/api/signal/:id/adopt', payload: {} },
+  { method: 'PATCH', url: '/api/signal/:id/ignore', payload: {} },
+  { method: 'GET', url: '/api/strategy/signals/:id/outcome' },
   { method: 'GET', url: '/api/ex-dividend/imports' },
 
   // ── 插件 / 策略 ──

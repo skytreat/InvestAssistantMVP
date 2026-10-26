@@ -182,6 +182,14 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     strength REAL,
     metrics_json TEXT,
     is_final INTEGER DEFAULT 1,
+    -- T134（V3.4）信号生命周期
+    grade TEXT CHECK (grade IS NULL OR grade IN ('strong','medium','weak')),
+    expires_at TEXT,
+    snapshot_json TEXT,
+    adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1)),
+    ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
+    adopted_at TEXT,
+    cooldown_until TEXT,
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(user_id, asset_code, plugin_id, trade_date),
@@ -386,6 +394,9 @@ export class ConfigStore {
     //           表重建**全表只有这一处**（AGENTS.md「DDL 变更判据」：多次 DROP/RENAME = 数据丢失风险）
     this._ensureTradeRecordReviewColumns();
 
+    // T134（V3.4）：信号生命周期列补齐
+    this._ensureSignalLifecycleColumns();
+
     // T87b：唯一键从「表级 UNIQUE 约束」迁移到「部分唯一索引（WHERE is_deleted = 0）」
     this._ensureTradeRecordUniqueConstraint();
 
@@ -435,6 +446,39 @@ export class ConfigStore {
       }
     } catch (err) {
       console.error('[ConfigStore] 复盘字段列补齐失败（不阻塞启动）:', err);
+    }
+  }
+
+  /**
+   * T134（V3.4）：补齐 user_strategy_signal 的生命周期列
+   * SQLite ALTER TABLE ADD COLUMN 支持带 CHECK 的可空列。
+   */
+  private _ensureSignalLifecycleColumns(): void {
+    const EXPECTED: Record<string, string> = {
+      grade: "TEXT CHECK (grade IS NULL OR grade IN ('strong','medium','weak'))",
+      expires_at: 'TEXT',
+      snapshot_json: 'TEXT',
+      adopted: 'INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))',
+      ignored: 'INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))',
+      adopted_at: 'TEXT',
+      cooldown_until: 'TEXT',
+    };
+    try {
+      const table = this._db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_strategy_signal'")
+        .get();
+      if (!table) return;
+      const cols = (
+        this._db.prepare('PRAGMA table_info(user_strategy_signal)').all() as { name: string }[]
+      ).map((c) => c.name);
+      const missing = Object.keys(EXPECTED).filter((c) => !cols.includes(c));
+      if (missing.length === 0) return;
+      for (const col of missing) {
+        this._db.exec(`ALTER TABLE user_strategy_signal ADD COLUMN ${col} ${EXPECTED[col]}`);
+        console.log(`[ConfigStore] user_strategy_signal 补齐列 ${col}`);
+      }
+    } catch (err) {
+      console.error('[ConfigStore] 信号生命周期列补齐失败（不阻塞启动）:', err);
     }
   }
 

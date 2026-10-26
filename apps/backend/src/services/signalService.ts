@@ -33,7 +33,19 @@ export function resolveSignalSymbols(userId: number = SIGNAL_USER_ID): string[] 
        ORDER BY asset_code`,
     )
     .all(userId) as Array<{ asset_code: string }>;
-  return rows.map((r) => r.asset_code).filter((s) => typeof s === 'string' && s.length > 0);
+  const codes = rows.map((r) => r.asset_code).filter((s) => typeof s === 'string' && s.length > 0);
+  // T133（V3.4）：现金类资产不产生任何策略信号（SDD_v3 §2 / INV-S4-15）
+  // 无 asset_class 记录的标的默认 risk（安全侧），不静默排除
+  const cashSet = new Set(
+    (
+      db
+        .prepare(
+          `SELECT symbol FROM asset_class WHERE asset_class = 'cash' AND symbol IN (${codes.map(() => '?').join(',') || "''"})`,
+        )
+        .all(...codes) as Array<{ symbol: string }>
+    ).map((r) => r.symbol),
+  );
+  return codes.filter((c) => !cashSet.has(c));
 }
 
 /**
