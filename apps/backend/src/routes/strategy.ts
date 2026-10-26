@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { ConfigStore } from '../config/configStore.js';
 import {
   PLUGIN_ALLOWED_PATH,
   createPluginSandbox,
@@ -154,4 +155,57 @@ export async function registerStrategyRoutes(app: FastifyInstance) {
 
   app.post('/api/strategy/reload', handler);
   app.post('/api/strategy/plugins/reload', handler);
+
+  // T135（V3.4）信号后续表现：T+1/T+5/T+10 收盘价与涨跌幅（扣真实成本在前端/评估层处理）
+  app.get('/api/strategy/signals/:id/outcome', async (request, reply) => {
+    const user = currentUser(request);
+    if (!user) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
+    const db = ConfigStore.getInstance().db;
+    const sig = db
+      .prepare(
+        `SELECT asset_code, trade_date, direction, strength FROM user_strategy_signal WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+      )
+      .get(id, user.sub) as
+      { asset_code: string; trade_date: string; direction: string; strength: number | null } | undefined;
+    if (!sig) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+
+    // 用 DuckDB 取该标的 trade_date 之后的 K 线（T+1/T+5/T+10）
+    const { queryDuckDB } = await import('../db/duckdb.js');
+    const rows = (await queryDuckDB<{ date: unknown; close: number }>(
+      `SELECT date, "close" AS close FROM raw_kline_daily
+        WHERE symbol = ? AND date > ? ORDER BY date ASC LIMIT 10`,
+      [sig.asset_code, sig.trade_date],
+    )) as Array<{ date: unknown; close: number }>;
+
+    const baseRow = (await queryDuckDB<{ close: number }>(
+      `SELECT "close" AS close FROM raw_kline_daily WHERE symbol = ? AND date <= ? ORDER BY date DESC LIMIT 1`,
+      [sig.asset_code, sig.trade_date],
+    )) as Array<{ close: number }>;
+    const baseClose = baseRow[0]?.close ?? null;
+
+    const outcome = (n: number) => {
+      const r = rows[n - 1];
+      if (!r || baseClose == null) return null;
+      return {
+        date: String(r.date).slice(0, 10),
+        close: r.close,
+        changePct: parseFloat((((r.close - baseClose) / baseClose) * 100).toFixed(2)),
+      };
+    };
+
+    return reply.send(
+      ok({
+        signalId: id,
+        asset_code: sig.asset_code,
+        trade_date: sig.trade_date,
+        direction: sig.direction,
+        baseClose,
+        t1: outcome(1),
+        t5: outcome(5),
+        t10: outcome(10),
+      }),
+    );
+  });
 }

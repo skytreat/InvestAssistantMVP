@@ -1,17 +1,18 @@
 import type { FastifyInstance } from 'fastify';
+import { ConfigStore } from '../config/configStore.js';
 import { queryDuckDB } from '../db/duckdb.js';
 import { ok, fail } from '../lib/envelope.js';
+import { ensureSymbolDict, searchSymbolDict } from '../services/symbolDict.js';
 
-/**
- * 标的搜索接口（SDD §5.5 选股页 autocomplete）
- *
- * GET /api/symbols/search?q=600000
- * 返回模糊匹配的标的列表（最多 20 条），带中文名
- * 用于前端输入框 autocomplete
- */
 interface SymbolRow {
   symbol: string;
   name: string;
+  code6?: string;
+  pinyin?: string;
+  market?: string;
+  class?: string;
+  asset_class?: string;
+  matchType?: string;
 }
 
 export async function registerSymbolSearchRoutes(app: FastifyInstance) {
@@ -23,18 +24,34 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
       return reply.send(ok([]));
     }
 
-    // 支持：纯数字（600000）、带前缀（sh600000）、中文名模糊匹配
-    // LIKE 用双 % 同时匹配 symbol 和 name
     try {
-      const rows = await queryDuckDB<SymbolRow>(
+      await ensureSymbolDict();
+      const db = ConfigStore.getInstance().db;
+      const rows = searchSymbolDict(db, keyword, 20);
+      if (rows.length > 0) {
+        return reply.send(
+          ok(
+            rows.map((r) => ({
+              symbol: r.symbol,
+              code6: r.code6,
+              name: r.name,
+              market: r.market,
+              class: r.class,
+              asset_class: r.asset_class,
+              pinyin: r.pinyin,
+              matchType: 'code',
+            })),
+          ),
+        );
+      }
+      // 快照为空（CI 无行情库）时回退 DuckDB
+      const fallback = await queryDuckDB<SymbolRow>(
         `SELECT symbol, name FROM raw_symbol_name
          WHERE symbol LIKE ? OR name LIKE ?
-         ORDER BY symbol
-         LIMIT 20`,
+         ORDER BY symbol LIMIT 20`,
         [`%${keyword}%`, `%${keyword}%`],
       );
-
-      return reply.send(ok(rows));
+      return reply.send(ok(fallback));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       app.log.warn({ err, keyword }, 'symbol search failed');

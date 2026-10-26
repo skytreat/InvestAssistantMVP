@@ -139,4 +139,30 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
+  // T134（V3.4）信号采纳/忽略标注
+  app.patch('/api/signal/:id/adopt', async (request, reply) => {
+    const user = (request as AuthedRequest).user;
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
+    const db = ConfigStore.getInstance().db;
+    const info = db
+      .prepare(
+        `UPDATE user_strategy_signal SET adopted = 1, adopted_at = datetime('now','localtime') WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+      )
+      .run(id, user.sub);
+    if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+    return reply.send(ok({ id, adopted: 1 }));
+  });
+
+  app.patch('/api/signal/:id/ignore', async (request, reply) => {
+    const user = (request as AuthedRequest).user;
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
+    const db = ConfigStore.getInstance().db;
+    const info = db
+      .prepare(`UPDATE user_strategy_signal SET ignored = 1 WHERE id = ? AND user_id = ? AND is_deleted = 0`)
+      .run(id, user.sub);
+    if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+    return reply.send(ok({ id, ignored: 1 }));
+  });
 }
