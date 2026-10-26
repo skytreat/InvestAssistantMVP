@@ -1025,7 +1025,23 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 | `INV-S4-23` ~ `INV-S4-26`（货币 ETF 建模） | `cash_etf.test.ts` |
 | `INV-S4-27` ~ `INV-S4-29`（三口径收益） | `portfolio_return.test.ts` |
 | `INV-S3-*`（交易类型与成本语义） | `movingWeightedCost`（core）+ `positionCalculator.test.ts` |
-| `INV-S1-1` ~ `INV-S1-7`（标的联想） | `symbolSearch.test.ts` |
+| `INV-S1-1` ~ `INV-S1-7`（标的联想） | `symbolSearch.test.ts` + `symbolDict.test.ts`（T136 快照 / 拼音 / 免前缀） |
+
+**V3.7 补录映射（2026-10-26 交叉审计，测试载体待 T138~T141 后续 commit 补齐）**：
+
+| Requirements 不变量 | 测试载体（计划） |
+|---|---|
+| `INV-S2-14/15`（代码补零 / 前导空白裁剪） | `broker_parser.test.ts` + `broker_import.test.ts`（T138） |
+| `INV-S2-17~20`（数值化 / 金额保留 / 余额保留 / 费用分项保留） | `broker_parser.test.ts`（T138） |
+| `INV-S2-21/22/23`（按券商分组匹配 / 全流水覆盖 / 缺失可标记已手工） | `broker_reconcile.test.ts` + `brokerConfirm.test.ts`（T129 已含 ④/⑥） |
+| `INV-S2-26/27/29~31`（对账不改记录 / 多余保留 / 三层呈现 / 手工独立成组） | `broker_reconcile_report.test.ts` |
+| `INV-S2-52`（列名同义/错字容忍） | `broker_parser.test.ts`（T138） |
+| `INV-S3-1/2/10`（类型表达 / 一次性扩展 / 时间仅区分同日多笔） | `positionCalculator.test.ts` + `t87-trade-time.test.ts`（已有） |
+| `INV-S3-15/16`、`INV-S6-4`（信号↔交易关联 / 跳转复盘） | `signalLink.test.ts`（T141，载体新建） |
+| `INV-S3-21`（默认参数可解释依据） | 插件文档 + `pluginEngine.test.ts` |
+| `INV-S4-1~6`（毛/净盈亏 / 成本项 / 账户费率 / 品种费率 / 源文件优先+反算标注） | `feeModel.test.ts`（T140，载体新建） |
+| `INV-S4-3~5`（费用模型配置） | `feeModel.test.ts` + `user_fee_config` DDL 断言 |
+| `INV-S2-45~47`（manual_sheet 三方对账） | **V4 候选**（V3-B8 / D-45，不映射 V3 测试） |
 
 **验收基线**（实测，可直接作为断言期望值）：
 
@@ -1039,8 +1055,47 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 
 ---
 
+## 13. 前端 V3 架构（页面 / 路由 / 组件）
+
+> V3.1~V3.7 交付的是**后端 API + 算法**；PRD_v3 §2~§5 的界面在 **V3.8**（T142~T150）落地。
+> 本节点定「长什么样、挂在哪、连哪个端点」，**不复述交互细节**（交互权威源 = `PRD_v3.md` 对应章节）。
+
+### 13.1 新增路由（挂在 `apps/frontend/src/router` 既有路由体系）
+
+| 路由 | 页面 | 主要端点 | PRD 章节 | 任务 |
+|---|---|---|---|---|
+| `/broker/import` | 导入向导（拖拽→探测/映射→预览→确认） | `POST /api/broker-import/upload /preview /confirm` | §3.1 | T143 |
+| `/broker/reconcile` | 对账报告（摘要/归因/资金校验/回填/差异/三口径） | `POST /run`、`GET /latest /diff`、`/api/portfolio/return` | §3.2 | T144/T147 |
+| （弹窗） | 补录对话框 | `POST /confirm`、`POST /diff/:id/match` | §3.3 | T145 |
+| `/strategy/config` | 策略配置（分类/组合/适用品种/冷却期） | `GET /api/strategy/plugins`、`PUT /:id/config` | §4.1 | T148 |
+| （现有 Signals 页增强） | 分级/过期/Top5/采纳/快照/关联 | `PATCH /api/signal/:id/adopt /ignore /link-trade`、`GET /outcome` | §4.2 | T149 |
+| `/strategy/effectiveness` | 策略有效性（多周期/基准/导出 CSV） | `GET /api/strategy/signals/:id/outcome`（T135） | §4.3 | T150 |
+| `/portfolio/risk-check` | 组合体检（四指标卡片/行业分布） | `GET /api/portfolio/risk-check` | §5.3 | T150 |
+| （Review 页 tab） | 流水 / **交易对**双 tab + 复盘编辑 | `GET /api/review/pairs`、`PATCH /api/review/pairs/:id` | §5.1/5.2 | T150 |
+| （持仓页增强） | 券商列 / 现金类分区 / 手工成组 | `GET /api/holding` + `asset_class` 快照 | §3.4.1 | T146 |
+| （全端联想增强） | 防抖/键盘/现金标签/唯一命中自动确认 | `GET /api/symbols/search`（T136 symbol_dict 快照） | §2.1/2.2 | T142 |
+
+### 13.2 组件分层（沿用 `SDD.md` §2.12 的 Pages / Business / Common / Feature 四层）
+
+| 层 | 新增 | 依赖 |
+|---|---|---|
+| Pages | `BrokerImport` / `BrokerReconcile` / `PortfolioReturn` / `RiskCheck` / `StrategyEffectiveness` 路由容器 | Business + Common |
+| Business | `BrokerImportWizard`、`ReconcileReport`、`ComplementDialog`、`PortfolioReturnCard`、`RiskCheckCard`、`StrategyConfigForm`、`SignalLifecyclePanel`（采纳/忽略/快照/关联）、`ReviewPairsTable`、`ReviewEditForm` | Common + Feature + `@/api/client` |
+| Feature（store） | 扩展 `holdingStore`（含 broker/asset_class 维度）；新增 `brokerStore`（批次/报告缓存，React Query） | API client |
+
+**硬约束**：前端**只走 HTTP API**（`apps/frontend` 禁止 import `packages/core`，AGENTS 硬约束）；
+所有写操作（导入/补录）仅 admin 可见入口（SDD §10.3 路由层 403 已拦，前端按角色隐藏菜单）。
+
+### 13.3 与既有页面的关系
+
+- 不新增全局导航项：券商对账挂在「数据」分组下（PRD §3 导航 `数据 → 券商对账`）；
+  收益/体检挂 Dashboard 二级入口；策略三页挂「策略」分组。
+
+---
+
 ## 修订记录
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-20 | V3.0-1 | 初稿（第 1 部分）。基于 6 份真实券商文件（1627 行）的实测分析。DDL 覆盖新增 5 表；`user_trade_record` 改造留白（依赖 Wave 1-8 稳定） |
+| 2026-10-26 | V3.2-1 | 交叉审计补全：§11.2 T128/T129 定稿回填；§12 补 V3.7 不变量映射（T138~T141）；**新增 §13 前端 V3 架构**（V3.8 T142~T150 页面规格）；§11 新增 `user_fee_config`（T140，见 §13/plan V3.7） |

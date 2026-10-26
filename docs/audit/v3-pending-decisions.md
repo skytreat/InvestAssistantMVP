@@ -62,3 +62,10 @@
 | D-39 | V3.3 复盘字段 DDL 通过幂等 ALTER 补齐（buy_reason / sell_reason / emotion_status），新库直接 CREATE TABLE 含新列 | `_ensureTradeRecordReviewColumns` 扩展 EXPECTED 映射；emotion_status 5 档 CHECK | INV-S6-2/3；与 T128 重建历史合并考虑（copy plan 已含新列） | 低（ALTER ADD COLUMN） | ✅ |
 | D-40 | 交易对配对算法：按标的分桶→时间排序；buy/add 合并开仓；reduce/clear 生成 closed pair（部分平仓保留剩余）；bonus 摊薄数量；末尾未平仓单独 open 组 | `reviewPairs.ts` buildReviewPairs | INV-S6-6~9；配对规则与 §3.2 推导一致（加仓归并、减仓结转移动加权均价） | 中（算法可替换） | 🟡 |
 | D-41 | 三口径收益率现金类收益 = cash ETF 市值变动 + 逆回购配对利息；repo 在途头寸不并入 MV；broker 维度筛选可选 | `portfolioReturn.ts` computePortfolioReturn | §7.3 / §9.5；避免编造在途金额；可加性 total = risk + cash − fees | 中（repo 投入口径可细化） | 🟡 |
+
+| D-45 | **manual_sheet 三方对账（INV-S2-45~47）判定 V4 候选**（owner 2026-10-26 裁决） | 原拟 T139；UI 入口未定稿、需求复杂度高，移出 V3（登记 V3-B8）；`source_kind='manual_sheet'` 的 DDL/解析侧已就位（T122），V4 只补呈现与交叉验证 | V4-B1 立项时回收 | 🟡（V4 候选） |
+| D-46 | **费用模型配置 T140 落地（INV-S4-3~5）** | `user_fee_config` 表已建（费率/最低佣金/印花税/过户费，可按券商/资产类配置）；`user_trade_record.fee_estimated` 列已加；**取数规则：源文件 `fee_total` 优先，缺失才按配置反算并标 `fee_estimated=1`**（反算逻辑待后续 commit） | 源数据覆盖是错的（会抹掉真实费用）；反算是兜底不是替代 | 中（表结构可 ALTER） | ✅（表/列已落地；反算逻辑待办） |
+| D-47 | **信号↔交易手动关联 T141（INV-S3-15/16、INV-S6-4）** | `user_strategy_signal.linked_trade_id` + `PATCH /api/signal/:id/link-trade`（归属 + 标的一致校验，PR #47） | 关联后信号页可跳转复盘；采纳率与量化结果分开呈现 | 低（列可 DROP） | ✅ |
+| D-48 | **V3.1~V3.7 均无前端 UI，PRD_v3 §2~§5 页面由 V3.8（T142~T150）承担** | plan V3.8 四 PR 拆分（券商域/组合域/策略域/联想）；技术栈 React18+Vite+Tailwind 无组件库，复用现有通用组件 | 计划层面遗漏（后端先行），owner 确认本轮补齐 | 低（任务可再拆） | ✅ |
+| D-49 | **T138 字段归一化（INV-S2-14/15/17~20/52）：代码补零改动已回退** | PR #47 初版补零+前缀改动**破坏了 G5 回填基线**（12/12 → 0 命中，CI 实测），已回退；补零/裁剪须与「回填匹配键」同口径后重做，且必须重跑 G5 基线 | AGENTS「先证明现状是错的」+ gate 红线：归一化改 asset_code 形态 = 改匹配键，不能顺手提 | 中 | 🟡（待重做 + G5 回归） |
+| D-50 | **拼音库选型 = pinyin-pro**（T136） | 已安装（D-43 登记同项）；`symbol_dict.pinyin` 预计算存首字母串 | 无更轻量替代；纯 JS 无原生依赖 | 低（换库只改一行 import） | ✅ |
