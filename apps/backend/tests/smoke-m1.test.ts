@@ -78,7 +78,7 @@ describe('M1 SQLite', () => {
     expect(row.foreign_keys).toBe(1);
   });
 
-  it('11 张业务表全覆盖（M1 基线 7 张 + V3.1 新增 4 张：asset_class / broker_* 三表）', () => {
+  it('12 张业务表全覆盖（M1 基线 7 张 + V3.1 新增 4 张 + V3.7 新增 1 张：user_fee_config）', () => {
     const tables = db.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as { name: string }[];
@@ -97,6 +97,7 @@ describe('M1 SQLite', () => {
         'broker_trade_record',
         'broker_import_batch',
         'broker_import_template',
+        'user_fee_config',
       ].sort(),
     );
   });
