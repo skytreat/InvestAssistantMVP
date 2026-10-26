@@ -13,7 +13,7 @@ import fs from 'node:fs';
  * `user_trade_record` 的**最终 schema**（列 + 约束）—— 单一真相源
  *
  * 🔴 **表级 UNIQUE 约束已被移除**（T87b）—— 改用**部分唯一索引**
- *    （`TRADE_RECORD_UNIQUE_INDEX_SQL`，见下方注释）。
+ *    （T128 起为三条：手工 A + 源锚 B + 身份 C，见下方注释）。
  *    表级 UNIQUE **无法部分化**（不能带 WHERE 条件）⇒ 会把**软删记录也纳入约束**
  *    ⇒ 软删记录永久占用唯一键。修复后软删记录不再占用唯一键。
  *
@@ -29,12 +29,22 @@ const TRADE_RECORD_COLUMNS_SQL = `
         trade_type IN ('buy', 'add', 'reduce', 'clear', 'dividend', 'bonus', 'transfer')
     ),
     trade_date TEXT NOT NULL,
-    trade_time TEXT NOT NULL,
+    -- T128（V3.2，INV-S3-11）：成交时间可空 —— 导入补录（B 类文件）无时间时留空，不得填假时间。
+    -- 手工录入仍必填（服务层校验，INV-S3-12 的「非空记录」才受同刻唯一约束）。
+    trade_time TEXT,
     quantity REAL NOT NULL CHECK (quantity >= 0),
     price REAL NOT NULL CHECK (price >= 0),
     fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
     trade_reason TEXT,
     is_auto_import INTEGER NOT NULL DEFAULT 0 CHECK (is_auto_import IN (0, 1)),
+    -- T128（V3.2，SDD_v3 §11.2 定稿）：券商维度三列（全部可空 = 手工录入）。
+    -- broker_code 券商标识（与 broker_import_batch.broker_code 同一套编码）；
+    -- broker_seq = 事实层 content_seq（同批次内同内容出现序号），导入身份键的一部分；
+    -- source_broker_record_id = 事实层锚点（INV-S2-34 可回溯）。
+    -- asset_class 不加列：靠 asset_code 关联 asset_class 表（D-34，分类规则/人工修正可热改）。
+    broker_code TEXT,
+    broker_seq INTEGER,
+    source_broker_record_id INTEGER REFERENCES broker_trade_record(id),
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     review_summary TEXT,
     system_followed INTEGER CHECK (system_followed IS NULL OR system_followed IN (0, 1)),
@@ -59,11 +69,66 @@ const TRADE_RECORD_COLUMNS_SQL = `
  * ⚠️ 索引名固定为 `idx_user_trade_record_unique_live`：
  *   幂等判定（`_inspectTradeRecordUniqueState`）、预检 SQL 的 `EXPLAIN QUERY PLAN`
  *   断言都依赖它 —— 改名 = 契约漂移。
+ *
+ * T128（V3.2）唯一性**两套并存**（SDD_v3 §11.2 定稿 / INV-S3-12~14）：
+ *   A【手工】同键唯一，但**收窄到 `broker_code IS NULL`**——券商导入的同秒多笔不受它约束；
+ *   B【源锚】`UNIQUE(source_broker_record_id)`——同一事实行最多一条活业务记录，
+ *     软删释放（撤销补录后可重新补录，INV-S2-35）；
+ *   C【身份】`(user_id, broker_code, asset_code, trade_type, trade_date, broker_seq, trade_time)`
+ *     —— 导入侧兜底防重；trade_time 为 NULL 时 C 拦不住（SQLite 唯一索引 NULL 互异），
+ *     由 B 兜住 —— 这是 B 与 C **同时存在**的原因（三索引而非 SDD 留白期的两索引）。
  */
 const TRADE_RECORD_UNIQUE_INDEX_NAME = 'idx_user_trade_record_unique_live';
 const TRADE_RECORD_UNIQUE_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS ${TRADE_RECORD_UNIQUE_INDEX_NAME}
     ON user_trade_record(user_id, asset_code, trade_type, trade_date, trade_time)
-    WHERE is_deleted = 0`;
+    WHERE is_deleted = 0 AND broker_code IS NULL`;
+
+/** B（导入源锚）：事实层一行 ↔ 业务层一条活记录（软删释放） */
+const TRADE_RECORD_BROKER_SOURCE_INDEX_NAME = 'idx_user_trade_record_broker_source';
+const TRADE_RECORD_BROKER_SOURCE_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS ${TRADE_RECORD_BROKER_SOURCE_INDEX_NAME}
+    ON user_trade_record(user_id, source_broker_record_id)
+    WHERE is_deleted = 0 AND source_broker_record_id IS NOT NULL`;
+
+/** C（导入身份键，含 broker_seq）：同秒同类型多笔可表达（不同事实行 seq 互异），同内容重复补录被拦 */
+const TRADE_RECORD_BROKER_IDENTITY_INDEX_NAME = 'idx_user_trade_record_broker_identity';
+const TRADE_RECORD_BROKER_IDENTITY_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS ${TRADE_RECORD_BROKER_IDENTITY_INDEX_NAME}
+    ON user_trade_record(user_id, broker_code, asset_code, trade_type, trade_date, broker_seq, trade_time)
+    WHERE is_deleted = 0 AND broker_code IS NOT NULL`;
+
+/** 三条部分唯一索引（T128 最终形态）明细：名 → 完整 DDL + 索引列（语义复核用） */
+const TRADE_RECORD_PARTIAL_UNIQUE_INDEXES: Array<{
+  name: string;
+  sql: string;
+  columns: string[];
+  predicate: 'manual' | 'broker-source' | 'broker-identity';
+}> = [
+  {
+    name: TRADE_RECORD_UNIQUE_INDEX_NAME,
+    sql: TRADE_RECORD_UNIQUE_INDEX_SQL,
+    columns: ['user_id', 'asset_code', 'trade_type', 'trade_date', 'trade_time'],
+    predicate: 'manual',
+  },
+  {
+    name: TRADE_RECORD_BROKER_SOURCE_INDEX_NAME,
+    sql: TRADE_RECORD_BROKER_SOURCE_INDEX_SQL,
+    columns: ['user_id', 'source_broker_record_id'],
+    predicate: 'broker-source',
+  },
+  {
+    name: TRADE_RECORD_BROKER_IDENTITY_INDEX_NAME,
+    sql: TRADE_RECORD_BROKER_IDENTITY_INDEX_SQL,
+    columns: [
+      'user_id',
+      'broker_code',
+      'asset_code',
+      'trade_type',
+      'trade_date',
+      'broker_seq',
+      'trade_time',
+    ],
+    predicate: 'broker-identity',
+  },
+];
 
 // DDL 脚本（全部 CREATE TABLE IF NOT EXISTS）
 const DDL_SQL = `
@@ -78,11 +143,12 @@ CREATE TABLE IF NOT EXISTS user_account (
 );
 
 -- 交易记录
--- ⚠️ 表级 UNIQUE 已移除（T87b）：唯一键改由**部分唯一索引**承担
---    （idx_user_trade_record_unique_live，WHERE is_deleted = 0），
---    以便软删记录不再永久占用唯一键。
---    ⚠️ 该索引**不在本段 DDL 里建**：存量库可能还没有 trade_time 列，
---    建索引会直接报 "no such column: trade_time" 而**卡死启动**。
+-- ⚠️ 表级 UNIQUE 已移除（T87b），唯一性由**三条部分唯一索引**承担（T128，SDD_v3 §11.2 定稿）：
+--    A idx_user_trade_record_unique_live  手工唯一（WHERE broker_code IS NULL AND is_deleted = 0）
+--    B idx_user_trade_record_broker_source 源锚（同一事实行最多一条活记录）
+--    C idx_user_trade_record_broker_identity 导入身份键（同秒多笔可表达）
+--    ⚠️ 三条索引**都不在本段 DDL 里建**：存量库可能缺 trade_time / 券商三维列，
+--    建索引会直接报 "no such column" 而**卡死启动**。
 --    ⇒ 索引统一由 _ensureTradeRecordUniqueConstraint() 负责
 --      （新库 ⇒ 直接补建；旧库 ⇒ 表重建时一并建好）。
 --    改已有表的约束必须走幂等表重建，见 _ensureTradeRecordUniqueConstraint()。
@@ -464,43 +530,60 @@ export class ConfigStore {
    *   修法：SQLite 的**表级 UNIQUE 无法部分化**（不支持 WHERE 条件）
    *   ⇒ 必须去掉表级约束 + 改用部分唯一索引 `WHERE is_deleted = 0`。
    *
-   * ── 幂等策略（三态判定，见 `_inspectTradeRecordUniqueState`）──
-   *   ① `ready`         —— 无表级 UNIQUE + 有部分唯一索引 ⇒ **一个字节都不动**（重复启动零动作）
-   *   ② `missing-index` —— 表已是最终形态、只差索引 ⇒ **只补建索引**（不重建表、不碰数据）
-   *   ③ `legacy`        —— 仍有表级 UNIQUE ⇒ **幂等表重建**
-   *      （建新表 → 灌数据 → 删旧表 → 改名 → 建索引，全程包在 `db.transaction()` 里）
-   *
-   * ⚠️ **本表只此一处做表重建**（AGENTS.md「DDL 变更判据」：多个幂等重建落在同一张表上
-   *   要**合并为一次**，不要叠加多次 DROP/RENAME）。
-   *   `_ensureTradeRecordReviewColumns()` 只做 `ALTER TABLE ADD COLUMN`（不重建），
-   *   且在**本函数之前**执行 ⇒ 重建时新表已含复盘 4 列，两处不打架。
-   *
-   * ⚠️ 迁移失败**不阻塞启动**：DB 保持旧 schema，数据**零丢失**
-   *   （`db.transaction()` 事务体抛错会自动 ROLLBACK）。
-   */
+    * ── 幂等策略（四态判定，见 `_inspectTradeRecordUniqueState`）──
+    *   ① `ready`          —— 无表级 UNIQUE + 三条部分唯一索引形态全对 ⇒ **一个字节都不动**（重复启动零动作）
+    *   ② `missing-index`  —— 表已是最终形态、只差索引 ⇒ **只补建索引**（不重建表、不碰数据）
+    *   ③ `stale-index`    —— 表已是最终形态、但索引是 T87b 旧形态（谓词缺 broker_code / 缺 B 或 C）
+    *                         ⇒ 只重建索引（DROP 旧形态 + CREATE 新形态），不碰数据
+    *   ④ `legacy`         —— 仍有表级 UNIQUE / 缺 T128 新列 / trade_time 仍 NOT NULL ⇒ **幂等表重建**
+    *                         （建新表 → 灌数据 → 删旧表 → 改名 → 建索引，全程包在 `db.transaction()` 里）
+    *                         🔴 与 T87b/T49 的重建历史**合并为一次**（AGENTS.md「DDL 变更判据」：
+    *                            多次 DROP/RENAME 会留下重建碎片 → 数据风险）
+    *
+    * ⚠️ **本表只此一处做表重建**（AGENTS.md「DDL 变更判据」）。
+    *   `_ensureTradeRecordReviewColumns()` 只做 `ALTER TABLE ADD COLUMN`（不重建），
+    *   且在**本函数之前**执行 ⇒ 重建时新表已含复盘 4 列，两处不打架。
+    *
+    * ⚠️ 迁移失败**不阻塞启动**：DB 保持旧 schema，数据**零丢失**
+    *   （`db.transaction()` 事务体抛错会自动 ROLLBACK）。
+    */
   private _ensureTradeRecordUniqueConstraint(): void {
     try {
       const state = this._inspectTradeRecordUniqueState();
       if (state === 'ready') return; // 幂等：已是新 schema，什么都不做
 
-      if (state === 'missing-index') {
-        // 表已是最终形态（新库刚建好 / 上次迁移只差索引）→ 只补索引，不重建表
-        this._db.exec(TRADE_RECORD_UNIQUE_INDEX_SQL);
-        console.log('[ConfigStore] user_trade_record 已补建部分唯一索引');
+      if (state === 'missing-index' || state === 'stale-index') {
+        // 表已是最终形态（新库刚建好 / 上次迁移只差索引 / 索引是旧形态）→ 只调索引，不重建表
+        this._ensureTradeRecordPartialUniqueIndexes();
+        console.log(`[ConfigStore] user_trade_record 部分唯一索引已同步（${state}）`);
         return;
       }
 
-      // legacy：仍有表级 UNIQUE → 幂等表重建
-      console.warn('[ConfigStore] user_trade_record 仍是表级 UNIQUE 约束，迁移到部分唯一索引...');
+      // legacy：仍有表级 UNIQUE / 缺列 / trade_time NOT NULL → 幂等表重建
+      console.warn('[ConfigStore] user_trade_record schema 需刷新（T87b/T128 合并重建）...');
       this._rebuildTradeRecordTable();
-      console.log('[ConfigStore] user_trade_record 唯一键迁移成功（部分唯一索引）');
+      console.log('[ConfigStore] user_trade_record 迁移成功（券商维度 + 三条部分唯一索引）');
     } catch (err) {
       console.error('[ConfigStore] user_trade_record 唯一键迁移失败（不阻塞启动）:', err);
     }
   }
 
   /**
-   * 判定 `user_trade_record` 处于哪种 schema 状态（三态）
+   * 索引级同步（表已为最终形态，不碰数据）：
+   * DROP 三条旧索引（若名下存在，可能是 T87b 旧形态）→ CREATE 三条新形态。
+   * 幂等：DROP IF EXISTS + CREATE IF NOT EXISTS。
+   */
+  private _ensureTradeRecordPartialUniqueIndexes(): void {
+    for (const idx of TRADE_RECORD_PARTIAL_UNIQUE_INDEXES) {
+      this._db.exec(`DROP INDEX IF EXISTS ${idx.name}`);
+    }
+    for (const idx of TRADE_RECORD_PARTIAL_UNIQUE_INDEXES) {
+      this._db.exec(idx.sql);
+    }
+  }
+
+  /**
+   * 判定 `user_trade_record` 处于哪种 schema 状态（四态）
    *
    * ⚠️ **判定依据必须落在「结构」上，不能靠「索引名猜测」**：
    *   - 表级 UNIQUE 在 `sqlite_master` 里**没有**独立的索引行
@@ -509,52 +592,89 @@ export class ConfigStore {
    *   - 部分唯一索引是我们自己 `CREATE` 出来的 ⇒ `sqlite_master.sql` 有文本，
    *     再用 `PRAGMA index_list` 的 `unique/partial` 标志做结构复核。
    */
-  private _inspectTradeRecordUniqueState(): 'ready' | 'missing-index' | 'legacy' {
+  private _inspectTradeRecordUniqueState(): 'ready' | 'missing-index' | 'stale-index' | 'legacy' {
     const tbl = this._db
       .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_trade_record'")
       .get() as { sql: string | null } | undefined;
     if (!tbl?.sql) return 'missing-index'; // 表不存在（理论上 DDL_SQL 已建）→ 保守按「只补索引」
 
-    // ⚠️ 列不齐（如存量库还没有 trade_time）⇒ 必须**重建**：
-    //   部分唯一索引引用 trade_time，缺列时建索引会直接报错。
-    if (!this._hasTradeRecordRequiredColumns()) return 'legacy';
+    // ⚠️ 列不齐（存量库还没有 T128 三列 / trade_time 仍 NOT NULL / 仍有表级 UNIQUE）
+    //   ⇒ 必须**重建**：部分唯一索引引用 broker_code 等，缺列时建索引会直接报错。
+    if (this._tradeRecordNeedsRebuild(tbl.sql)) return 'legacy';
 
-    const hasTableUnique = /UNIQUE\s*\(/i.test(tbl.sql);
-    if (hasTableUnique) return 'legacy';
-    return this._hasTradeRecordPartialUniqueIndex() ? 'ready' : 'missing-index';
+    return this._tradeRecordIndexesReady() ? 'ready' : 'missing-index';
   }
 
-  /** 表是否具备「最终 schema」要求的列（至少 trade_time —— 唯一键与 CHECK 都依赖它） */
-  private _hasTradeRecordRequiredColumns(): boolean {
-    const row = this._db
-      .prepare("SELECT 1 FROM pragma_table_info('user_trade_record') WHERE name = 'trade_time'")
-      .get();
-    return row !== undefined;
+  /**
+   * 表是否需要**重建**（而非只调索引）：
+   * ① 缺 T128 新列（broker_code / broker_seq / source_broker_record_id）；
+   * ② trade_time 仍 NOT NULL（T87 时代的表级约束，改约束必须重建）；
+   * ③ 仍有表级 UNIQUE。
+   */
+  private _tradeRecordNeedsRebuild(tableSql: string): boolean {
+    const cols = this._db
+      .prepare("PRAGMA table_info('user_trade_record')")
+      .all() as Array<{ name: string; notnull: number }>;
+    const colMap = new Map(cols.map((c) => [c.name, c]));
+    for (const required of ['broker_code', 'broker_seq', 'source_broker_record_id']) {
+      if (!colMap.has(required)) return true;
+    }
+    const tradeTime = colMap.get('trade_time');
+    if (!tradeTime || tradeTime.notnull === 1) return true;
+    if (/UNIQUE\s*\(/i.test(tableSql)) return true;
+    return false;
   }
 
-  /** 部分唯一索引是否存在且形态正确（5 列 + WHERE is_deleted = 0） */
-  private _hasTradeRecordPartialUniqueIndex(): boolean {
-    // 结构判定：PRAGMA index_list 的 unique / partial 标志
+  /** 表定义文本检查后的最终判定 —— 是否已有构成「ready」的三条部分唯一索引 */
+  private _tradeRecordIndexesReady(): boolean {
+    for (const idx of TRADE_RECORD_PARTIAL_UNIQUE_INDEXES) {
+      if (!this._tradeRecordPartialIndexShapeOK(idx)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * 单条部分唯一索引**形态复核**（T87b 同语义，泛化到三条）：
+   * ① PRAGMA index_list 上 unique=1 + partial=1；
+   * ② sqlite_master.sql 里谓词含 `is_deleted = 0`（T87b 锚）；
+   * ③ 索引列集合 = 期望列（数量 + 名称，顺序无关）；
+   * ④ 谓词附加条件：manual 须含 `broker_code IS NULL`、
+   *    broker-source 须含 `source_broker_record_id IS NOT NULL`、
+   *    broker-identity 须含 `broker_code IS NOT NULL`（T128 新形态锚点，缺 = 旧形态 → 走重建索引）。
+   */
+  private _tradeRecordPartialIndexShapeOK(idx: {
+    name: string;
+    columns: string[];
+    predicate: 'manual' | 'broker-source' | 'broker-identity';
+  }): boolean {
     const list = this._db.prepare('PRAGMA index_list(user_trade_record)').all() as Array<{
       name: string;
       unique: number;
       partial: number;
     }>;
-    const meta = list.find((i) => i.name === TRADE_RECORD_UNIQUE_INDEX_NAME);
+    const meta = list.find((i) => i.name === idx.name);
     if (!meta || meta.unique !== 1 || meta.partial !== 1) return false;
 
-    // 语义判定：索引列 = 5 列唯一键，且谓词是 is_deleted = 0
     const row = this._db
       .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?")
-      .get(TRADE_RECORD_UNIQUE_INDEX_NAME) as { sql: string | null } | undefined;
+      .get(idx.name) as { sql: string | null } | undefined;
     if (!row?.sql) return false;
     if (!/WHERE\s+is_deleted\s*=\s*0/i.test(row.sql)) return false;
-    // ⚠️ 表重建后 SQLite 会把表名写成带引号的 `"user_trade_record"` ⇒ 引号可选
+
+    // 谓词形态（缺锚点 = T87b 旧形态）
+    const want =
+      idx.predicate === 'manual'
+        ? /broker_code\s+IS\s+NULL/i
+        : idx.predicate === 'broker-source'
+          ? /source_broker_record_id\s+IS\s+NOT\s+NULL/i
+          : /broker_code\s+IS\s+NOT\s+NULL/i;
+    if (!want.test(row.sql)) return false;
+
+    // 索引列集合（表重建后 SQLite 会把表名写成带引号的 `"user_trade_record"` ⇒ 引号可选）
     const m = /ON\s+"?user_trade_record"?\s*\(([^)]*)\)/i.exec(row.sql);
     if (!m) return false;
     const cols = m[1].split(',').map((s) => s.trim().replace(/^"|"$/g, ''));
-    const expected = ['user_id', 'asset_code', 'trade_type', 'trade_date', 'trade_time'];
-    return cols.length === expected.length && expected.every((c) => cols.includes(c));
+    return cols.length === idx.columns.length && idx.columns.every((c) => cols.includes(c));
   }
 
   /**
@@ -622,19 +742,23 @@ export class ConfigStore {
     // ⚠️ 迁移期间关闭 FK 检查：存量库可能有孤儿 user_id，
     //    开着 FK 迁移会把它们判成违规而**回滚整笔迁移**（白跑一趟）；
     //    关闭期间**不删除任何数据**，孤儿行原样搬过去，迁移结束立即恢复 FK。
+    //    （T128：新表还带 source_broker_record_id FK，迁移时旧数据全 NULL，同理关闭。）
     db.pragma('foreign_keys = OFF');
     try {
       const tx = db.transaction(() => {
         // ① 释放索引名（旧表上的同名索引随旧表一起消失，先显式 DROP 更稳）
-        db.exec(`DROP INDEX IF EXISTS ${TRADE_RECORD_UNIQUE_INDEX_NAME}`);
-        // ② 建新表（最终 schema：表级 UNIQUE 已去掉）
+        for (const idx of TRADE_RECORD_PARTIAL_UNIQUE_INDEXES) {
+          db.exec(`DROP INDEX IF EXISTS ${idx.name}`);
+        }
+        // ② 建新表（最终 schema：表级 UNIQUE 已去掉、trade_time 可空、含券商维度三列）
         db.exec(`CREATE TABLE _user_trade_record_new (${TRADE_RECORD_COLUMNS_SQL})`);
-        // ③ 先建部分唯一索引，再灌数据 ⇒ 唯一性冲突在事务内立刻炸（不静默丢行）
-        db.exec(
-          `CREATE UNIQUE INDEX ${TRADE_RECORD_UNIQUE_INDEX_NAME}
-             ON _user_trade_record_new(user_id, asset_code, trade_type, trade_date, trade_time)
-             WHERE is_deleted = 0`,
-        );
+        // ③ 先建三条部分唯一索引，再灌数据 ⇒ 唯一性冲突在事务内立刻炸（不静默丢行）
+        //    ⚠️ 不能无脑 replace：索引名（idx_user_trade_record_*）也含 user_trade_record 子串，
+        //    String.replace 只替换第一处 ⇒ 会把「索引名」换掉而漏掉「ON 表名」。
+        //    故显式替换 ` ON user_trade_record`。
+        for (const idx of TRADE_RECORD_PARTIAL_UNIQUE_INDEXES) {
+          db.exec(idx.sql.replace(' ON user_trade_record', ' ON _user_trade_record_new'));
+        }
         // ④ 搬数据（逐列按列名显式映射；trade_time 有则原样保留，无则从 created_at 回填）
         db.exec(
           `INSERT INTO _user_trade_record_new (${columns.join(', ')})
@@ -716,6 +840,10 @@ export class ConfigStore {
     add('fee', has('fee') ? 'COALESCE(fee, 0)' : '0');
     add('trade_reason', has('trade_reason') ? 'trade_reason' : 'NULL');
     add('is_auto_import', has('is_auto_import') ? 'COALESCE(is_auto_import, 0)' : '0');
+    // T128 券商维度三列：存量库没有这些列（全部手工人为）⇒ 统一 NULL（手工形态），不造数据
+    add('broker_code', has('broker_code') ? 'broker_code' : 'NULL');
+    add('broker_seq', has('broker_seq') ? 'broker_seq' : 'NULL');
+    add('source_broker_record_id', has('source_broker_record_id') ? 'source_broker_record_id' : 'NULL');
     add('is_deleted', has('is_deleted') ? 'COALESCE(is_deleted, 0)' : '0');
     add('review_summary', has('review_summary') ? 'review_summary' : 'NULL');
     add('system_followed', has('system_followed') ? 'system_followed' : 'NULL');

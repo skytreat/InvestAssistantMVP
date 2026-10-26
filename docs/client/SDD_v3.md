@@ -952,27 +952,44 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 
 见 §2.2。
 
-### 11.2 `user_trade_record` 的改造（**DDL 待定稿**）
+### 11.2 `user_trade_record` 的改造（**已定稿**，T128）
 
-> ⏳ **依赖**：Wave 1-8 对 `user_trade_record` 的改动稳定。
-> 现状：该表已在 T49（7 种 CHECK）、T87（加 `trade_time`、改 UNIQUE）中被改过两次。
+> ✅ **定稿**（2026-10-26，`v3-pending-decisions.md` D-7/D-34）：Wave 1-12 已全部合入，该表自 T49/T87b 后无未决改动。
+> 现状：该表已在 T49（7 种 CHECK）、T87（加 `trade_time`、改 UNIQUE）、T87b（ 部分 unique 索引）中被改过。
+> 本次改造与 T87b/T49 的重建历史**合并为一次幂等表重建**（AGENTS.md「DDL 变更判据」）。
 
-**待定稿的改造点**（Requirements 已定契约，此处仅列物理形态待决的部分）：
+**定稿后的物理形态**（单一真相源 = `apps/backend/src/config/configStore.ts` 的 `TRADE_RECORD_COLUMNS_SQL`）：
 
-| 改造点 | 需求侧已定 | 待定稿内容 |
+| 改造点 | 需求侧已定 | **定稿值** |
 |---|---|---|
-| 券商维度 | `user_trade_record` 带券商维度，可空（手工录入） | 列形态：`broker_code TEXT`（简单）或 `broker_account_id INTEGER` 外键 |
-| 唯一性约束 | 手工记录保留「同日同标的同类型同时刻唯一」；导入记录允许同秒多笔 | 物理实现：**两个部分唯一索引**（`WHERE broker_code IS NULL` / 含 `broker_seq`） |
-| 成交时间可空 | 导入记录无成交时间时留空 | 是否放宽 `NOT NULL`、索引如何调整 |
-| 交易类型扩展 | **不需要扩展**（7 种够用，Requirements §3.1） | — |
-| 补录来源回溯 | 必须可回溯到事实层 | 列形态：`source_broker_record_id INTEGER` |
-| 现金类资产 | 逆回购 / 货币 ETF 作为现金类资产 | 是否需要 `asset_class` 列，还是靠 `asset_code` 关联 `asset_class` 表 |
+| 券商维度 | `user_trade_record` 带券商维度，可空（手工录入） | **`broker_code TEXT`**（可空，NULL = 手工录入）。不引入 `broker_account_id` 外键 —— MVP 无券商账户表，券商编码与 `broker_import_batch.broker_code` 同一套 |
+| 唯一性约束 | 手工记录「同日同标的同类型同时刻唯一」；导入允许同秒多笔 | **三条部分唯一索引**（语义见下） |
+| 成交时间可空 | 导入记录无成交时间时留空 | **`trade_time TEXT`（NOT NULL 移除）**；手工必填由服务层校验（`validateTradeTime`）承担 |
+| 交易类型扩展 | **不需要扩展**（7 种够用，Requirements §3.1） | CHECK 原样保留 |
+| 补录来源回溯 | 必须可回溯到事实层 | **`source_broker_record_id INTEGER REFERENCES broker_trade_record(id)`** |
+| 现金类资产 | 逆回购 / 货币 ETF 作为现金类资产 | **不加 `asset_class` 列**，靠 `asset_code` 关联 `asset_class` 表（D-34）——分类规则/人工修正可热改，不冗余 |
+| 同内容序号 | 导入记录的身份键需能区分「同内容多笔」 | **`broker_seq INTEGER`** = 事实层 `content_seq`（同批次内同哈希出现序号） |
 
-**定稿时机**：Wave 2 验收后、Wave 3 开工前。若届时 `user_trade_record` 仍在变动，则推迟到稳定后。
+**三条部分唯一索引**（全部 `CREATE UNIQUE INDEX`，谓词见 SQL 常量）：
 
-**约束提醒**：`CREATE TABLE IF NOT EXISTS` 对已存在的表**无效** → 改 UNIQUE / CHECK 必须走**幂等表重建**
-（`建新表 → INSERT SELECT → DROP 旧表 → ALTER RENAME`），且**与 T87/T49 的重建历史合并考虑**，
-不得叠加多次重建。
+| # | 索引名 | 约束对象 | 谓词 | 需求依据 |
+|---|---|---|---|---|
+| A | `idx_user_trade_record_unique_live` | 手工记录：`(user_id, asset_code, trade_type, trade_date, trade_time)` | `WHERE is_deleted = 0 AND broker_code IS NULL` | INV-S3-12 / T87b 幽灵占用修复 |
+| B | `idx_user_trade_record_broker_source` | 源锚：`(user_id, source_broker_record_id)` | `WHERE is_deleted = 0 AND source_broker_record_id IS NOT NULL` | INV-S2-34/35：同一事实行最多一条活记录；软删释放 ⇒ 撤销后可重新补录 |
+| C | `idx_user_trade_record_broker_identity` | 导入身份键：`(user_id, broker_code, asset_code, trade_type, trade_date, broker_seq, trade_time)` | `WHERE is_deleted = 0 AND broker_code IS NOT NULL` | INV-S3-13：同秒多笔可表达；同内容重复补录被拦 |
+
+> 🔴 **为什么 B 与 C 同时存在**（SDD 留白期只写了两个索引）：SQLite 唯一索引把 NULL 视为互异 ——
+> 导入记录的 `trade_time` 可为 NULL（INV-S2-36），此时 C 的 (…, broker_seq, trade_time) 对
+> 「同一事实行被补录两次」**拦不住**（两次都 NULL 不冲突）⇒ 必须由 B（源锚）兜底。
+> C 的价值在「防止同内容事实行跨批次重复补录」（不同批次 seq 同为 0 时 C 拦截）。
+> 物理偏差已登记 `v3-pending-decisions.md` D-34。
+
+**迁移机制**：`_ensureTradeRecordUniqueConstraint()` 四态判定
+（`ready` / `missing-index` / `stale-index` ／ `legacy`）——
+表已最终形态只调索引；缺列 / 仍有表级 UNIQUE / trade_time 仍 NOT NULL ⇒ 一次幂等表重建（新表 → 灌数据 → 删旧表 → 改名，事务 + 零丢失校验）。
+
+**约束提醒**：`CREATE TABLE IF NOT EXISTS` 对已存在的表**无效** → 改 UNIQUE / CHECK 必须走**幂等表重建**，
+且**与 T87/T49 的重建历史合并考虑**，不得叠加多次重建。
 
 ---
 
