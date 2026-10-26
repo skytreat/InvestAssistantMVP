@@ -65,4 +65,4 @@ T119 ~ T137 共 19 个，无缺号
 
 **Gate 结论：8/8 PASS**
 
-> **2026-10-24 复跑记录**（重编号后）：旧编号 `T100~T118` 残留 = 0（plan_v3 / PRD_v3 / SDD_v3 / Requirements_v3 / traceability / ADR-013~017 / 本文件）；敏感信息（资金账号 18057491 / 股东代码 / 用户名 / 营业部）在 V3 文档内 = 0；U+FFFD = 0。同步变更：ADR-017（任务编号顺延）、V3-B1/Q7 关闭（U15 5 档 owner 确认）、V3-B7 登记（样本入库 `apps/backend/tests/fixtures/broker-samples/` + 脱敏标准）、Q1 前置满足（v2 Wave 1-12 已全部合入）。自决事项登记见 `docs/audit/v3-pending-decisions.md`。
+> **2026-10-24 复跑记录**（重编号后）：旧编号 `T100~T118` 残留 = 0（plan_v3 / PRD_v3 / SDD_v3 / Requirements_v3 / traceability / ADR-013~017 / 本文件）；敏感信息（资金账号 / 股东代码 / 用户名 / 营业部，原值不入仓，见 D-33）在 V3 文档内 = 0；U+FFFD = 0。同步变更：ADR-017（任务编号顺延）、V3-B1/Q7 关闭（U15 5 档 owner 确认）、V3-B7 登记（样本入库 `apps/backend/tests/fixtures/broker-samples/` + 脱敏标准）、Q1 前置满足（v2 Wave 1-12 已全部合入）。自决事项登记见 `docs/audit/v3-pending-decisions.md`。

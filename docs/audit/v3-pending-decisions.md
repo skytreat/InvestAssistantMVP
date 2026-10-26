@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|
 | D-1 | **V3 任务编号**（撞 v2 T100~T111） | 整体顺延 **T119~T137**（映射表见 ADR-017） | 全仓 T 号唯一；保「一个 T 一条 commit + 按区间 revert」铁律 | 低（改前只动了 6 份文档，未写一行代码） | 🟡 |
 | D-2 | U15 情绪状态枚举（T131 落库） | **5 档默认值生效**：极度兴奋/兴奋/平静/焦虑/恐慌 | owner 2026-10-24 已确认（PRD_v3 §6.1 定稿） | — | ✅ |
-| D-3 | V3.1 样本文件 | 来源 `/home/ubuntu/brokertrades/成交交割单`（owner 提供，6 文件）；**入库路径 `tests/fixtures/broker-samples/`**（repo 根 tests/fixtures，与 AGENTS.md「黄金测试数据集 tests/fixtures/golden」同层；backend 单测经 `../../../../tests/fixtures/broker-samples` 相对导入，与既有 golden 导入范式一致）；入库前**脱敏**：国泰 xlsx 前 4 行元数据（资金账号 18057491 / 用户名 / 营业部名）替换为占位值，数值列不动；grep 校验「资金账号 18057491、何骏、北京知春路、03110400、A235245331、A744531939、0585665749、0585666749」= 0 | gate G8 敏感 0；数值型断言（利息 7501.46 / 145/148 / 125/125）不依赖敏感字段 | 低（脱敏脚本可重跑；路径若需改放 `packages/...` 只需同步测试 import） | 🟡 |
+| D-3 | V3.1 样本文件 | 来源 `/home/ubuntu/brokertrades/成交交割单`（owner 提供，6 文件）；**入库路径 `tests/fixtures/broker-samples/`**（repo 根 tests/fixtures，与 AGENTS.md「黄金测试数据集 tests/fixtures/golden」同层；backend 单测经 `../../../../tests/fixtures/broker-samples` 相对导入，与既有 golden 导入范式一致）；入库前**脱敏**：国泰 xlsx 前 4 行元数据（资金账号 / 用户名 / 营业部名）+ 股东代码列替换为占位值，数值列不动；**原始敏感值不入仓**（manifest/决策文档不枚举原值，避免反查表 ⇒ 脱敏白做，见 D-33），6 数据文件 grep = 0 | gate G8 敏感 0；数值型断言（利息 7501.46 / 145/148 / 125/125）不依赖敏感字段 | 低（脱敏脚本可重跑；路径若需改放 `packages/...` 只需同步测试 import） | 🟡 |
 | D-4 | V3 第一个 PR 的范围 | **V3.0 + V3.0b + V3.1 合成一个 PR**（T119+T120+T121~T127 + fixtures 提交） | plan_v3 §2.1 明文建议（三者互为前提，拆开产生中间态） | 中（拆 PR 需重排依赖） | 🟡（按 plan 建议执行，若 owner 要求拆，在 T121 提交前仍可拆） |
 | D-5 | 阶段审计文件命名 | `docs/audit/v3-1-audit.md` / `v3-2-audit.md` …（plan 4.5 G4 规定 `v3-N-audit.md`，N = 阶段序号） | 与 v2 的 `wave-N-audit.md` 同构且 plan 已定 | 低 | ✅（plan 已定稿，仅登记） |
 | D-6 | 文档 PR（#25）的验收落档名 | `docs/audit/v3-spec-gate.md` 内「实测结果」节**原地复跑更新**（不加新文件），gate 8/8 PASS + 本轮重编号后重新扫描 | gate 定义与结果同档，纯文档 PR 不必再开第二份 | 低 | 🟡 |
@@ -47,4 +47,6 @@
 | D-31 | broker_reconcile.test「国泰 4 份」回填计数用例改用**专属 user 7104**（不再与「回填只写成交时间」共享 7101） | 断言 `matched=109` 的用例独享 7104 | `backfillTradeTime` 一次性（trade_time 已填 ⇒ totalNeeded=0），两用例共享 7101 时 `sequence.shuffle=true` 下顺序翻转即红（实测 standalone 3 跑 2 红，证实既有隐患，非 T126 引入） | 低 | ✅ |
 | D-32 | t55「真实 DuckDB 数据」板块表前置断言过期（断言 0 行，实测真库板块表现在 89928 行） | **本会话不改其断言**：该 describe 由 `MARKET_DATA_NUMERIC_AVAILABLE` 守卫，CI（无真行情库）**自动跳过**，非 gate 阻断项；在此登记真实数据现状 | 板块表新数据属 tdx2db 数据层变更；「行业过滤在真数据上的行为」应单独立任务并实测后再写断言（AGENTS：不得对未实测数据硬编码期望） | 0（仅登记，不动码） | 🟡（待 owner：是否立任务更新 t55 行业过滤基线） |
 
-<!-- D-33+ -->
+| D-33 | **脱敏映射表 / 决策文档曾复述原始敏感值**（反查表 ⇒ 脱敏失效） | 2026-10-26 复核发现：`broker-samples/README.md` 映射表「原值」列、`v3-pending-decisions.md` D-3、`v3-spec-gate.md` 复跑记录共 3 处把 8 个原始敏感值（资金账号/股东代码/营业部/用户名）写进了仓库。本次全部脱敏：README 映射表改为「列 + 格式 + 占位值」（不列原值）；D-3 / v3-spec-gate.md 删除原值枚举。G8 判定口径收紧为「全仓（含 md）grep 原值 = 0」 | AGENTS「敏感配置/token 禁止明文」同理 —— 脱敏的意义是仓库可共享；manifest 列原值等于反查表。owner 提问「README 脱敏映射是否也属敏感信息」触发 | 低（纯文档脱敏，不影响任何测试/数值基线） | ✅ |
+
+<!-- D-34+ -->
