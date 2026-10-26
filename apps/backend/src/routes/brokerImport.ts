@@ -113,10 +113,13 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     });
   });
 
-  // 确认导入 → 落事实层 + 批次（**不写 user_trade_record**）
+  // 确认导入 → 落事实层 + 批次（**不写 user_trade_record**；SDD §10.3 仅 admin）
   app.post('/api/broker-import/confirm', async (request, reply) => {
-    const userId = userIdOf(request as { user?: { sub?: number | string } });
+    const req = request as { user?: { sub?: number | string; role?: string } };
+    const userId = userIdOf(req);
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    if (req.user?.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
     const body = request.body as UploadBody;
     if (!body?.brokerCode?.trim()) {
       return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode（逻辑券商标识，用户自维护）'));
@@ -141,10 +144,13 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     return ok({ batches: listBatches(ConfigStore.getInstance().db, userId) });
   });
 
-  // 撤销批次（软删事实层；raw_row_json 证据保留）
+  // 撤销批次（软删事实层；raw_row_json 证据保留；SDD §10.3 仅 admin）
   app.post('/api/broker-import/batches/:id/revoke', async (request, reply) => {
-    const userId = userIdOf(request as { user?: { sub?: number | string } });
+    const req = request as { user?: { sub?: number | string; role?: string } };
+    const userId = userIdOf(req);
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    if (req.user?.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可撤销导入（SDD §10.3）'));
     const batchId = Number((request.params as { id: string }).id);
     if (!Number.isInteger(batchId) || batchId <= 0) {
       return reply.code(400).send(fail(400, 'INVALID_BATCH_ID', '批次 id 非法'));
@@ -177,8 +183,11 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/broker-import/templates', async (request, reply) => {
-    const userId = userIdOf(request as { user?: { sub?: number | string } });
+    const req = request as { user?: { sub?: number | string; role?: string } };
+    const userId = userIdOf(req);
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    if (req.user?.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可维护导入模板（SDD §10.3）'));
     const body = request.body as {
       brokerCode?: string;
       fileKind?: 'settlement' | 'trade';

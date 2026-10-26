@@ -101,13 +101,19 @@ describe('SE1 —— HTTPS 强制（HTTP 301 跳转）', () => {
     expect(redirLine).toContain('{uri}');
   });
 
-  it('契约层：:443 站点块把 /api/* 反代到 127.0.0.1:8080（Fastify 只监听本机）', () => {
+  it('契约层：HTTPS 站点块把 /api/* 反代到 127.0.0.1:8080（Fastify 只监听本机）', () => {
+    // #36（2026-10-24）把 443 块的标签从字面 `:443` 改为 `__CADDY_DOMAIN__` 占位
+    //   （渲染时替换为真实域名）。契约只关心**语义**：存在一个非 :80 的站点块，
+    //   且该块 (a) 分流 /api/* (b) 反代 127.0.0.1:8080 (c) 开 TLS（D-39）
     const src = readFileSync(CADDYFILE_PATH, 'utf8');
     const blocks = parseCaddyfile(src);
-    const httpsBlock = blocks.get(':443');
-    expect(httpsBlock, 'Caddyfile 缺少 :443 站点块').toBeDefined();
-    expect(httpsBlock).toMatch(/route\s+\/api\/\*/);
+    const httpsEntries = [...blocks.entries()].filter(([k]) => k !== ':80');
+    expect(httpsEntries.length, 'Caddyfile 缺少 HTTPS 站点块').toBeGreaterThan(0);
+    const [httpKey, httpsBlock] = httpsEntries[0];
+    expect(httpKey).not.toBe(':80');
+    expect(httpsBlock).toMatch(/(handle|route)\s+\/api\/\*/);
     expect(httpsBlock).toMatch(/reverse_proxy\s+127\.0\.0\.1:8080/);
+    expect(httpsBlock).toMatch(/tls\s/);
   });
 
   it('契约层：Fastify 侧**不做** TLS / 不发 301（职责在 Caddy）', () => {

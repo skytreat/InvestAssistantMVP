@@ -201,6 +201,13 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'POST', url: '/api/broker-reconcile/run', payload: { brokerCode: 't89b' } },
   { method: 'GET', url: '/api/broker-reconcile/latest', query: { brokerCode: 't89b' } },
   { method: 'GET', url: '/api/broker-reconcile/diff', query: { brokerCode: 't89b' } },
+  // T129 补录（admin；sub=1 在 seed 中是 admin，故走 service 主路径）
+  {
+    method: 'POST',
+    url: '/api/broker-reconcile/confirm',
+    payload: { brokerCode: 't89b', items: [{ sourceId: 1 }] },
+  },
+  { method: 'POST', url: '/api/broker-reconcile/diff/:id/match', payload: {} },
 
   // ── 管理员 ──
   { method: 'GET', url: '/api/admin/datacheck/result' },

@@ -161,9 +161,11 @@ describe('T128 user_trade_record 券商维度改造（SDD_v3 §11.2 定稿）', 
     const afterRows = readKeyRows(db, false);
     expect(afterRows.length).toBe(beforeRows.length);
     expect(JSON.stringify(afterRows)).toBe(JSON.stringify(beforeRows));
-    const withBroker = (db
-      .prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE broker_code IS NOT NULL`)
-      .get() as { c: number }).c;
+    const withBroker = (
+      db.prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE broker_code IS NOT NULL`).get() as {
+        c: number;
+      }
+    ).c;
     expect(withBroker).toBe(0); // 存量全为手工形态（broker 维度 NULL）
     expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
 
@@ -175,10 +177,12 @@ describe('T128 user_trade_record 券商维度改造（SDD_v3 §11.2 定稿）', 
     expect(names).toContain(IDX_IDENTITY);
 
     // trade_time 已可空
-    const tt = (db.prepare("PRAGMA table_info('user_trade_record')").all() as Array<{
-      name: string;
-      notnull: number;
-    }>).find((c) => c.name === 'trade_time');
+    const tt = (
+      db.prepare("PRAGMA table_info('user_trade_record')").all() as Array<{
+        name: string;
+        notnull: number;
+      }>
+    ).find((c) => c.name === 'trade_time');
     expect(tt?.notnull).toBe(0);
     closeConfigStore();
     rmSync(dir, { recursive: true, force: true });
@@ -283,9 +287,9 @@ describe('T128 user_trade_record 券商维度改造（SDD_v3 §11.2 定稿）', 
     const db = store.db;
     expect(readKeyRows(db)).toEqual(beforeRows); // 数据原样
 
-    const a = db
-      .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?")
-      .get(IDX_MANUAL) as { sql: string };
+    const a = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?").get(IDX_MANUAL) as {
+      sql: string;
+    };
     expect(a.sql).toMatch(/broker_code\s+IS\s+NULL/); // 新谓词就位
     closeConfigStore();
     rmSync(dir, { recursive: true, force: true });
@@ -296,9 +300,7 @@ describe('T128 user_trade_record 券商维度改造（SDD_v3 §11.2 定稿）', 
     const dbPath = path.join(dir, 'main.db');
     const { store, rebuildCalls } = runStartup(dbPath);
     expect(rebuildCalls).toBe(0);
-    const list = store.db
-      .prepare('PRAGMA index_list(user_trade_record)')
-      .all() as Array<{ name: string }>;
+    const list = store.db.prepare('PRAGMA index_list(user_trade_record)').all() as Array<{ name: string }>;
     const names = list.map((i) => i.name);
     for (const idx of [IDX_MANUAL, IDX_SOURCE, IDX_IDENTITY]) expect(names).toContain(idx);
     closeConfigStore();

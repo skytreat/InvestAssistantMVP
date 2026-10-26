@@ -117,15 +117,7 @@ const TRADE_RECORD_PARTIAL_UNIQUE_INDEXES: Array<{
   {
     name: TRADE_RECORD_BROKER_IDENTITY_INDEX_NAME,
     sql: TRADE_RECORD_BROKER_IDENTITY_INDEX_SQL,
-    columns: [
-      'user_id',
-      'broker_code',
-      'asset_code',
-      'trade_type',
-      'trade_date',
-      'broker_seq',
-      'trade_time',
-    ],
+    columns: ['user_id', 'broker_code', 'asset_code', 'trade_type', 'trade_date', 'broker_seq', 'trade_time'],
     predicate: 'broker-identity',
   },
 ];
@@ -530,23 +522,23 @@ export class ConfigStore {
    *   修法：SQLite 的**表级 UNIQUE 无法部分化**（不支持 WHERE 条件）
    *   ⇒ 必须去掉表级约束 + 改用部分唯一索引 `WHERE is_deleted = 0`。
    *
-    * ── 幂等策略（四态判定，见 `_inspectTradeRecordUniqueState`）──
-    *   ① `ready`          —— 无表级 UNIQUE + 三条部分唯一索引形态全对 ⇒ **一个字节都不动**（重复启动零动作）
-    *   ② `missing-index`  —— 表已是最终形态、只差索引 ⇒ **只补建索引**（不重建表、不碰数据）
-    *   ③ `stale-index`    —— 表已是最终形态、但索引是 T87b 旧形态（谓词缺 broker_code / 缺 B 或 C）
-    *                         ⇒ 只重建索引（DROP 旧形态 + CREATE 新形态），不碰数据
-    *   ④ `legacy`         —— 仍有表级 UNIQUE / 缺 T128 新列 / trade_time 仍 NOT NULL ⇒ **幂等表重建**
-    *                         （建新表 → 灌数据 → 删旧表 → 改名 → 建索引，全程包在 `db.transaction()` 里）
-    *                         🔴 与 T87b/T49 的重建历史**合并为一次**（AGENTS.md「DDL 变更判据」：
-    *                            多次 DROP/RENAME 会留下重建碎片 → 数据风险）
-    *
-    * ⚠️ **本表只此一处做表重建**（AGENTS.md「DDL 变更判据」）。
-    *   `_ensureTradeRecordReviewColumns()` 只做 `ALTER TABLE ADD COLUMN`（不重建），
-    *   且在**本函数之前**执行 ⇒ 重建时新表已含复盘 4 列，两处不打架。
-    *
-    * ⚠️ 迁移失败**不阻塞启动**：DB 保持旧 schema，数据**零丢失**
-    *   （`db.transaction()` 事务体抛错会自动 ROLLBACK）。
-    */
+   * ── 幂等策略（四态判定，见 `_inspectTradeRecordUniqueState`）──
+   *   ① `ready`          —— 无表级 UNIQUE + 三条部分唯一索引形态全对 ⇒ **一个字节都不动**（重复启动零动作）
+   *   ② `missing-index`  —— 表已是最终形态、只差索引 ⇒ **只补建索引**（不重建表、不碰数据）
+   *   ③ `stale-index`    —— 表已是最终形态、但索引是 T87b 旧形态（谓词缺 broker_code / 缺 B 或 C）
+   *                         ⇒ 只重建索引（DROP 旧形态 + CREATE 新形态），不碰数据
+   *   ④ `legacy`         —— 仍有表级 UNIQUE / 缺 T128 新列 / trade_time 仍 NOT NULL ⇒ **幂等表重建**
+   *                         （建新表 → 灌数据 → 删旧表 → 改名 → 建索引，全程包在 `db.transaction()` 里）
+   *                         🔴 与 T87b/T49 的重建历史**合并为一次**（AGENTS.md「DDL 变更判据」：
+   *                            多次 DROP/RENAME 会留下重建碎片 → 数据风险）
+   *
+   * ⚠️ **本表只此一处做表重建**（AGENTS.md「DDL 变更判据」）。
+   *   `_ensureTradeRecordReviewColumns()` 只做 `ALTER TABLE ADD COLUMN`（不重建），
+   *   且在**本函数之前**执行 ⇒ 重建时新表已含复盘 4 列，两处不打架。
+   *
+   * ⚠️ 迁移失败**不阻塞启动**：DB 保持旧 schema，数据**零丢失**
+   *   （`db.transaction()` 事务体抛错会自动 ROLLBACK）。
+   */
   private _ensureTradeRecordUniqueConstraint(): void {
     try {
       const state = this._inspectTradeRecordUniqueState();
@@ -612,9 +604,10 @@ export class ConfigStore {
    * ③ 仍有表级 UNIQUE。
    */
   private _tradeRecordNeedsRebuild(tableSql: string): boolean {
-    const cols = this._db
-      .prepare("PRAGMA table_info('user_trade_record')")
-      .all() as Array<{ name: string; notnull: number }>;
+    const cols = this._db.prepare("PRAGMA table_info('user_trade_record')").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
     const colMap = new Map(cols.map((c) => [c.name, c]));
     for (const required of ['broker_code', 'broker_seq', 'source_broker_record_id']) {
       if (!colMap.has(required)) return true;
