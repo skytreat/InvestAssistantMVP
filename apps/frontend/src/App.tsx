@@ -39,6 +39,12 @@ const Kline = React.lazy(() => import('./pages/Kline'));
 const Admin = React.lazy(() => import('./pages/Admin'));
 
 /**
+ * V3.8（T143/T144）：券商对账域 —— 懒加载（非首屏）+ AdminGuard（SDD_v3 §10.3 导入/补录仅 admin）
+ */
+const BrokerImport = React.lazy(() => import('./pages/BrokerImport'));
+const BrokerReconcile = React.lazy(() => import('./pages/BrokerReconcile'));
+
+/**
  * 登录页路由（T64）
  *
  * ⚠️ 此前**未登录时整个 `<Routes>` 都没挂载**（`if (!token) return <main><Login/></main>`），
@@ -209,6 +215,23 @@ export default function App() {
           {/* T74：候选池页（F-G3 · 候选池此前完全没有页面，后端路由也没被前端接上）*/}
           <Route path="/candidates" element={<Candidates />} />
           <Route path="/review" element={<Review />} />
+          {/* V3.8 T143/T144：券商对账域（仅 admin；AdminGuard 不渲染 children ⇒ 非 admin 不下载 chunk） */}
+          <Route
+            path="/broker/import"
+            element={
+              <AdminGuard>
+                <BrokerImport />
+              </AdminGuard>
+            }
+          />
+          <Route
+            path="/broker/reconcile"
+            element={
+              <AdminGuard>
+                <BrokerReconcile />
+              </AdminGuard>
+            }
+          />
           <Route path="/settings" element={<Settings />} />
           {/* T98：管理员路由受 AdminGuard 保护 —— 非 admin 不挂载 <Admin />，故不发 admin 请求 */}
           <Route path="/admin" element={<AdminRoute />} />

@@ -312,6 +312,9 @@ const PAGES: PageCase[] = [
   { key: 'review', path: '/review' },
   { key: 'settings', path: '/settings' },
   { key: 'admin', path: '/admin', admin: true },
+  // V3.8 T143/T144：券商对账域（仅 admin，SDD_v3 §10.3）
+  { key: 'broker-import', path: '/broker/import', admin: true },
+  { key: 'broker-reconcile', path: '/broker/reconcile', admin: true },
   { key: 'notfound', path: '/__a11y_unknown_route__' },
 ];
 
@@ -335,6 +338,8 @@ const KNOWN_VIOLATIONS: Record<string, ReadonlyArray<readonly [string, string, s
   review: [],
   settings: [],
   admin: [],
+  'broker-import': [],
+  'broker-reconcile': [],
   notfound: [],
 };
 
