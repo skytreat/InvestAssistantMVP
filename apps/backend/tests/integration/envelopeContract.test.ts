@@ -183,6 +183,7 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/signal/stats' },
   { method: 'PATCH', url: '/api/signal/:id/adopt', payload: {} },
   { method: 'PATCH', url: '/api/signal/:id/ignore', payload: {} },
+  { method: 'PATCH', url: '/api/signal/:id/link-trade', payload: {} },
   { method: 'GET', url: '/api/strategy/signals/:id/outcome' },
   { method: 'GET', url: '/api/ex-dividend/imports' },
 

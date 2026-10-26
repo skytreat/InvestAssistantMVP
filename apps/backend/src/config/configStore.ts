@@ -36,6 +36,7 @@ const TRADE_RECORD_COLUMNS_SQL = `
     price REAL NOT NULL CHECK (price >= 0),
     fee REAL NOT NULL DEFAULT 0 CHECK (fee >= 0),
     trade_reason TEXT,
+    fee_estimated INTEGER NOT NULL DEFAULT 0 CHECK (fee_estimated IN (0, 1)),
     is_auto_import INTEGER NOT NULL DEFAULT 0 CHECK (is_auto_import IN (0, 1)),
     -- T128（V3.2，SDD_v3 §11.2 定稿）：券商维度三列（全部可空 = 手工录入）。
     -- broker_code 券商标识（与 broker_import_batch.broker_code 同一套编码）；
@@ -190,6 +191,7 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
     adopted_at TEXT,
     cooldown_until TEXT,
+    linked_trade_id INTEGER REFERENCES user_trade_record(id),
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(user_id, asset_code, plugin_id, trade_date),
@@ -198,6 +200,23 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
 CREATE INDEX IF NOT EXISTS idx_signal_user_date ON user_strategy_signal(user_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_signal_user_plugin ON user_strategy_signal(user_id, plugin_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_signal_user_asset_date ON user_strategy_signal(user_id, asset_code, trade_date DESC);
+
+-- T140（V3.7）费用模型配置（INV-S4-3~5）
+CREATE TABLE IF NOT EXISTS user_fee_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    broker_code TEXT,
+    asset_class TEXT CHECK (asset_class IS NULL OR asset_class IN ('risk','cash')),
+    commission_rate REAL NOT NULL DEFAULT 0.0003,
+    min_commission REAL NOT NULL DEFAULT 5,
+    stamp_tax_rate REAL NOT NULL DEFAULT 0.001,
+    transfer_fee_rate REAL NOT NULL DEFAULT 0.00002,
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES user_account(id)
+);
+CREATE INDEX IF NOT EXISTS idx_fee_config_user ON user_fee_config(user_id, broker_code);
 
 -- 插件配置
 CREATE TABLE IF NOT EXISTS user_plugin_config (
@@ -420,6 +439,7 @@ export class ConfigStore {
       strategy_match: 'INTEGER CHECK (strategy_match IS NULL OR strategy_match IN (0, 1))',
       is_stop_loss: 'INTEGER CHECK (is_stop_loss IS NULL OR is_stop_loss IN (0, 1))',
       remark: 'TEXT',
+      fee_estimated: 'INTEGER NOT NULL DEFAULT 0 CHECK (fee_estimated IN (0, 1))',
       // T131（V3.3）：复盘字段对齐 —— 买入/卖出逻辑分离 + 情绪状态（5 档固定枚举）
       buy_reason: 'TEXT',
       sell_reason: 'TEXT',
@@ -462,6 +482,7 @@ export class ConfigStore {
       ignored: 'INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))',
       adopted_at: 'TEXT',
       cooldown_until: 'TEXT',
+      linked_trade_id: 'INTEGER REFERENCES user_trade_record(id)',
     };
     try {
       const table = this._db
@@ -884,6 +905,7 @@ export class ConfigStore {
     add('quantity', has('quantity') ? 'COALESCE(quantity, 0)' : '0');
     add('price', has('price') ? 'COALESCE(price, 0)' : '0');
     add('fee', has('fee') ? 'COALESCE(fee, 0)' : '0');
+    add('fee_estimated', has('fee_estimated') ? 'COALESCE(fee_estimated, 0)' : '0');
     add('trade_reason', has('trade_reason') ? 'trade_reason' : 'NULL');
     // T131（V3.3）复盘字段对齐：存量库没有这些列 ⇒ NULL（历史复盘数据须人工补录，不造数据）
     add('buy_reason', has('buy_reason') ? 'buy_reason' : 'NULL');

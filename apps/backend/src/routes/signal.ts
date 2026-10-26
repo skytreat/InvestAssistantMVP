@@ -165,4 +165,39 @@ export async function registerSignalRoutes(app: FastifyInstance) {
     if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
     return reply.send(ok({ id, ignored: 1 }));
   });
+  // T141（V3.7）信号↔交易手动关联（INV-S3-15/16、INV-S6-4）
+  app.patch('/api/signal/:id/link-trade', async (request, reply) => {
+    const user = (request as AuthedRequest).user;
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
+    const body = (request.body ?? {}) as { tradeRecordId?: number | null };
+    const tradeId = body.tradeRecordId == null ? null : Number(body.tradeRecordId);
+    if (tradeId != null && (!Number.isFinite(tradeId) || tradeId <= 0)) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', 'tradeRecordId 非法'));
+    }
+    const db = ConfigStore.getInstance().db;
+    const sig = db
+      .prepare(
+        'SELECT id, asset_code FROM user_strategy_signal WHERE id = ? AND user_id = ? AND is_deleted = 0',
+      )
+      .get(id, user.sub) as { id: number; asset_code: string } | undefined;
+    if (!sig) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+    if (tradeId != null) {
+      const rec = db
+        .prepare(
+          'SELECT id, asset_code FROM user_trade_record WHERE id = ? AND user_id = ? AND is_deleted = 0',
+        )
+        .get(tradeId, user.sub) as { id: number; asset_code: string } | undefined;
+      if (!rec) return reply.code(404).send(fail(404, 'NOT_FOUND', '交易记录不存在'));
+      if (rec.asset_code !== sig.asset_code) {
+        return reply.code(400).send(fail(400, 'ASSET_MISMATCH', '信号与交易标的不一致'));
+      }
+    }
+    db.prepare('UPDATE user_strategy_signal SET linked_trade_id = ? WHERE id = ? AND user_id = ?').run(
+      tradeId,
+      id,
+      user.sub,
+    );
+    return reply.send(ok({ id, linked_trade_id: tradeId }));
+  });
 }
