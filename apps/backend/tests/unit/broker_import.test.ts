@@ -57,7 +57,9 @@ afterAll(() => {
 });
 
 async function seedUser(uid: number): Promise<void> {
-  db.prepare(`INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`).run(uid, `user_${uid}`, 'x');
+  db.prepare(
+    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+  ).run(uid, `user_${uid}`, 'x');
 }
 
 describe('T122 · 验收① 同文件重复上传零重复（INV-S2-9）', () => {
@@ -77,7 +79,11 @@ describe('T122 · 验收① 同文件重复上传零重复（INV-S2-9）', () =>
     expect(listBatches(db, 9001).length).toBe(batchesAfterFirst);
 
     // 事实层行数不变
-    const n = (db.prepare(`SELECT COUNT(*) c FROM broker_trade_record WHERE user_id = 9001 AND is_deleted = 0`).get() as { c: number }).c;
+    const n = (
+      db
+        .prepare(`SELECT COUNT(*) c FROM broker_trade_record WHERE user_id = 9001 AND is_deleted = 0`)
+        .get() as { c: number }
+    ).c;
     expect(n).toBe(r1.rowInserted);
   });
 
@@ -93,7 +99,9 @@ describe('T122 · 验收① 同文件重复上传零重复（INV-S2-9）', () =>
     expect(r2.rowInserted).toBe(r1.rowInserted);
     // 旧批次行软删，新批次行在
     const live = db
-      .prepare(`SELECT COUNT(*) c FROM broker_trade_record WHERE user_id = 9002 AND import_batch_id = ? AND is_deleted = 0`)
+      .prepare(
+        `SELECT COUNT(*) c FROM broker_trade_record WHERE user_id = 9002 AND import_batch_id = ? AND is_deleted = 0`,
+      )
       .get(r2.batchId) as { c: number };
     expect(live.c).toBe(r2.rowInserted);
   });
@@ -116,7 +124,9 @@ describe('T122 · 验收② 同内容多笔不误判（content_seq，INV-S2-39�
     if (dup) {
       const seqs = (
         db
-          .prepare(`SELECT content_seq FROM broker_trade_record WHERE user_id = 9003 AND row_hash = ? AND is_deleted = 0 ORDER BY content_seq`)
+          .prepare(
+            `SELECT content_seq FROM broker_trade_record WHERE user_id = 9003 AND row_hash = ? AND is_deleted = 0 ORDER BY content_seq`,
+          )
           .all(dup.row_hash) as Array<{ content_seq: number }>
       ).map((x) => x.content_seq);
       expect(seqs).toEqual(Array.from({ length: dup.n }, (_, i) => i)); // 0,1,... 全留
@@ -137,7 +147,9 @@ describe('T122 · 验收③ 撤销只软删、原始证据保留', () => {
     const r1 = await importBrokerFile(db, 9004, '国泰', { buffer: f.buffer, filename: f.filename });
     revokeBatch(db, 9004, r1.batchId);
     const row = db
-      .prepare(`SELECT is_deleted, raw_row_json FROM broker_trade_record WHERE user_id = 9004 AND import_batch_id = ? LIMIT 1`)
+      .prepare(
+        `SELECT is_deleted, raw_row_json FROM broker_trade_record WHERE user_id = 9004 AND import_batch_id = ? LIMIT 1`,
+      )
       .get(r1.batchId) as { is_deleted: number; raw_row_json: string };
     expect(row.is_deleted).toBe(1);
     const replay = JSON.parse(row.raw_row_json) as { rowIndex: number; cells: string[] };
@@ -164,7 +176,9 @@ describe('T122 · 验收④ 确认导入不写 user_trade_record', () => {
     await seedUser(9006);
     const f = file('2026-10-20-国泰股票成交.xlsx');
     await importBrokerFile(db, 9006, '国泰', { buffer: f.buffer, filename: f.filename });
-    const n = (db.prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE user_id = 9006`).get() as { c: number }).c;
+    const n = (
+      db.prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE user_id = 9006`).get() as { c: number }
+    ).c;
     expect(n).toBe(0);
   });
 });
@@ -176,13 +190,19 @@ describe('T122 · 验收⑤ match_status 五态与排除项', () => {
     const r = await importBrokerFile(db, 9007, '华宝', { buffer: f.buffer, filename: f.filename });
     expect(r.rowExcluded).toBeGreaterThan(0); // 基金申购 32 + 指定 2
     const ex = db
-      .prepare(`SELECT exclude_reason FROM broker_trade_record WHERE user_id = 9007 AND match_status = 'EXCLUDED' AND is_deleted = 0 LIMIT 1`)
+      .prepare(
+        `SELECT exclude_reason FROM broker_trade_record WHERE user_id = 9007 AND match_status = 'EXCLUDED' AND is_deleted = 0 LIMIT 1`,
+      )
       .get() as { exclude_reason: string | null };
     expect(ex.exclude_reason).toBeTruthy();
     const statuses = new Set(
-      (db
-        .prepare(`SELECT DISTINCT match_status FROM broker_trade_record WHERE user_id = 9007 AND is_deleted = 0`)
-        .all() as Array<{ match_status: string }>).map((x) => x.match_status),
+      (
+        db
+          .prepare(
+            `SELECT DISTINCT match_status FROM broker_trade_record WHERE user_id = 9007 AND is_deleted = 0`,
+          )
+          .all() as Array<{ match_status: string }>
+      ).map((x) => x.match_status),
     );
     expect(statuses.has('EXCLUDED')).toBe(true);
     expect(statuses.has('MISSING')).toBe(true); // 待 T124 回填为 MATCHED/FUZZY/CONFLICT
@@ -191,11 +211,15 @@ describe('T122 · 验收⑤ match_status 五态与排除项', () => {
 
 describe('T122 · 映射模板（UNIQUE 幂等）', () => {
   it('saveTemplate 同 (user, broker, kind) upsert 不增生', () => {
-    db.prepare(`INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (9008, 'u9008', 'x', 'user')`).run();
+    db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (9008, 'u9008', 'x', 'user')`,
+    ).run();
     saveTemplate(db, 9008, '国泰', 'trade', '{"symbol":3}');
     saveTemplate(db, 9008, '国泰', 'trade', '{"symbol":5}');
     const rows = db
-      .prepare(`SELECT COUNT(*) c FROM broker_import_template WHERE user_id = 9008 AND broker_code = '国泰' AND file_kind = 'trade'`)
+      .prepare(
+        `SELECT COUNT(*) c FROM broker_import_template WHERE user_id = 9008 AND broker_code = '国泰' AND file_kind = 'trade'`,
+      )
       .get() as { c: number };
     expect(rows.c).toBe(1);
     expect(getTemplate(db, 9008, '国泰', 'trade')!.mappingJson).toBe('{"symbol":5}');

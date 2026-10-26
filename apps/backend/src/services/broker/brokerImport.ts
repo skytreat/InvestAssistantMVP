@@ -148,7 +148,7 @@ export async function importBrokerFile(
   // 跨文件的「冗余导出」去重归 T124（对账层）；同文件重复上传由上方 file_hash 拦截。
   const seqByHashInBatch = new Map<string, number>();
   let rowInserted = 0;
-  let rowDeduped = 0; // 仅统计文件级重复（本路径恒 0，重复文件走 duplicateFile 短路）
+  const rowDeduped = 0; // 仅统计文件级重复（本路径恒 0，重复文件走 duplicateFile 短路）
   let rowExcluded = 0;
 
   const runAll = db.transaction(() => {

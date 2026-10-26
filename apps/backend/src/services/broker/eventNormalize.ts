@@ -74,27 +74,6 @@ const PRODUCTS = [
   '基金',
 ] as const;
 
-/** 方向 + 方式词（实测全量） */
-const DIRECTIONS = [
-  '竞价买入',
-  '竞价卖出',
-  '盘后买入',
-  '盘后卖出',
-  '盘后定价买入',
-  '盘后定价卖出',
-  '现金申购',
-  '现金赎回',
-  '申购确认',
-  '现金分红',
-  '红利入账',
-  '分拆折算份额计增',
-  '特殊调账调入',
-  '现金替代退款',
-  '现金差额扣款',
-  '买入',
-  '卖出',
-] as const;
-
 const MARKET_RE = /^(上海|深圳)/;
 
 /** 去包裹残留（解析器已去一次，此处防御二次出现） */
@@ -105,7 +84,7 @@ function clean(raw: string): string {
   return s.trim();
 }
 
-export function normalizeEvent(rawInput: string, ctx?: { symbol?: string }): NormalizedEvent {
+export function normalizeEvent(rawInput: string, _ctx?: { symbol?: string }): NormalizedEvent {
   const raw = clean(rawInput);
   const base = { raw_event_type: raw };
 
