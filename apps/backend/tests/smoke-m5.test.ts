@@ -316,10 +316,11 @@ beforeAll(async () => {
     trade_reason: 'M5 减仓止盈',
   });
   // ④ dividend 分红（系统固化理由 + system_followed=1 → 复盘页绿色档）
+  // ⚠️ T119（V3.0）起 bonus 计入持仓，清仓（02-20）须晚于送转才可能归零 ⇒ 除权事件排到清仓前
   snap.tradeDividend = await postTrade({
     asset_code: MAIN_CODE,
     trade_type: 'dividend',
-    trade_date: '2026-03-01',
+    trade_date: '2026-02-15',
     trade_time: '09:00:04',
     quantity: 1100,
     price: 0.5,
@@ -329,7 +330,7 @@ beforeAll(async () => {
   snap.tradeBonus = await postTrade({
     asset_code: MAIN_CODE,
     trade_type: 'bonus',
-    trade_date: '2026-03-02',
+    trade_date: '2026-02-16',
     trade_time: '09:00:05',
     quantity: 100,
     price: 0,
@@ -338,18 +339,19 @@ beforeAll(async () => {
   snap.tradeTransfer = await postTrade({
     asset_code: MAIN_CODE,
     trade_type: 'transfer',
-    trade_date: '2026-03-03',
+    trade_date: '2026-02-17',
     trade_time: '09:00:06',
     quantity: 10,
     price: 0,
   });
-  // ⑦ clear 清仓（1100 股全部卖出 → 该标的持仓归零）
+  // ⑦ clear 清仓（1200 股全部卖出 → 该标的持仓归零）
+  // ⚠️ T119（V3.0）起送股计入持仓：reduce 后 1100 + bonus 100 = 1200，故清仓须卖 1200 才能归零
   snap.tradeClear = await postTrade({
     asset_code: MAIN_CODE,
     trade_type: 'clear',
     trade_date: '2026-02-20',
     trade_time: '09:00:07',
-    quantity: 1100,
+    quantity: 1200,
     price: 16,
     fee: 1,
     trade_reason: 'M5 清仓',
@@ -826,7 +828,8 @@ describe('M5 · 第 2 步 交易 7 类型', () => {
     expect(res.statusCode).toBe(201);
     const pos = body(res).data.position;
     expect(pos.totalQuantity).toBe(0);
-    expect(pos.realizedPnL).toBeCloseTo(7592, 3);
+    // T119（V3.0）：reduce 1730 + clear（1200 股 @16，成本基 11737）7462 = 9192
+    expect(pos.realizedPnL).toBeCloseTo(9192, 3);
   });
 
   it('7 种类型全部落库（交易列表里 7 种都在，且分属两个标的）', () => {
@@ -842,14 +845,14 @@ describe('M5 · 第 2 步 交易 7 类型', () => {
 // 第 3 步 · 持仓（双口径）
 // ════════════════════════════════════════════════════════════════════════
 describe('M5 · 第 3 步 持仓与双口径', () => {
-  it('单标的持仓：清仓后数量 0、成本基 0、已实现盈亏 7592', () => {
+  it('单标的持仓：清仓后数量 0、成本基 0、已实现盈亏 9192', () => {
     const res = snap.holding as Inject;
     expect(res.statusCode).toBe(200);
     const d = body(res).data;
     expect(d.asset_code).toBe(MAIN_CODE);
     expect(d.totalQuantity).toBe(0);
     expect(d.totalCostBasis).toBeCloseTo(0, 6);
-    expect(d.realizedPnL).toBeCloseTo(7592, 3);
+    expect(d.realizedPnL).toBeCloseTo(9192, 3);
     expect(d.totalFee).toBeCloseTo(8, 6); // 手续费 5 + 2 + 1
   });
 
@@ -1212,7 +1215,8 @@ describe('M5 · 第 8 步 复盘 4 色', () => {
     expect(s.winRate).toBe(100);
     // 全盈利无亏损 → 盈亏比为 null（不是 Infinity）
     expect(s.profitLossRatio).toBeNull();
-    expect(s.totalRealizedPnl).toBeCloseTo(7592, 2);
+    // T119（V3.0）：reduce 1730 + clear 7462 = 9192
+    expect(s.totalRealizedPnl).toBeCloseTo(9192, 2);
   });
 });
 

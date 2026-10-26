@@ -23,6 +23,7 @@ import { calculateMovingWeightedCost, type TradeRecord } from '../src/movingWeig
 import rsiGolden from './fixtures/golden/rsi.json';
 import macdGolden from './fixtures/golden/macd.json';
 import mwcGolden from './fixtures/golden/movingWeightedCost.json';
+import mwcV3Golden from './fixtures/golden/movingWeightedCostV3.json';
 
 function assertBitwiseEqual(actual: number[], expected: Array<number | null>): void {
   expect(actual.length).toBe(expected.length);
@@ -134,5 +135,31 @@ describe('golden · 移动加权成本（5 场景）', () => {
     expect(actual.totalCostBasis).toBe(s.expected.totalCostBasis);
     expect(actual.realizedPnL).toBe(s.expected.realizedPnL);
     expect(actual.totalFee).toBe(s.expected.totalFee);
+    expect(actual.cashReceived).toBe(s.expected.cashReceived);
+  });
+});
+
+describe('golden · 移动加权成本 V3（T119 送股/分红 5 场景）', () => {
+  it('场景数为 5（SDD_v3 §8.3 B1-B5）', () => {
+    expect(mwcV3Golden.scenarios.length).toBe(5);
+    expect(mwcV3Golden.scenarios.map((s) => s.id)).toEqual(['B1', 'B2', 'B3', 'B4', 'B5']);
+  });
+
+  it.each(mwcV3Golden.scenarios)('$id $name 逐字段一致', (s) => {
+    const actual = calculateMovingWeightedCost(s.trades as TradeRecord[]);
+    expect(actual.totalQuantity).toBe(s.expected.totalQuantity);
+    // 金额/盈亏类用容差断言：均价 10.05（fee=5）等浮点值不能 toBe（B5 场景）
+    expect(actual.avgCost).toBeCloseTo(s.expected.avgCost, 6);
+    expect(actual.totalCostBasis).toBeCloseTo(s.expected.totalCostBasis, 6);
+    expect(actual.realizedPnL).toBeCloseTo(s.expected.realizedPnL, 6);
+    expect(actual.totalFee).toBeCloseTo(s.expected.totalFee, 6);
+    expect(actual.cashReceived).toBeCloseTo(s.expected.cashReceived, 6);
+  });
+
+  // 双口径可加（T119 G4）：含分红净利 = realizedPnL + cashReceived
+  it('B5 双口径可加：价差 492 + 分红 50 = 542', () => {
+    const s = mwcV3Golden.scenarios.find((x) => x.id === 'B5')!;
+    const actual = calculateMovingWeightedCost(s.trades as TradeRecord[]);
+    expect(actual.realizedPnL + actual.cashReceived).toBeCloseTo(542, 6);
   });
 });

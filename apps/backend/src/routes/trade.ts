@@ -186,9 +186,9 @@ export function localDateTimeToIso(s: string): string {
  * 幂等：先按 UNIQUE(user_id, asset_code, rel_type) 查现状，再决定 INSERT/UPDATE，
  * 重复调用不会产生第二行，也不会抛 UNIQUE。
  *
- * ⚠️ 与 `exDividendSync.getHoldingBeforeDate` 的口径差异（**疑似，未修**）：
- *    后者把 `bonus` 计入 +quantity，`calcPosition`（core 移动加权）不计 bonus。
- *    「清仓后又有送转股」这类序列两者结论会相反。此处不擅自改动，等业务口径裁决。
+ * ✅ 与 `exDividendSync.getHoldingBeforeDate` 的口径差异**已由 T119 消除**：
+ *    两处现在都把 `bonus` 计为 +quantity（core 移动加权已支持 bonus/dividend），
+ *    「清仓后又有送转股」序列结论一致。
  */
 export function syncHoldRelation(
   userId: number,

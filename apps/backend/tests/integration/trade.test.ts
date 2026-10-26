@@ -570,8 +570,8 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
       fee: 0,
       seed: true,
       reason: null,
-      /** ⚠️ 当前实现口径：送转**不计入**移动加权（与 Requirements §5.3 / SDD §12.3 A5 存在偏差，取证用） */
-      expectQty: 100,
+      // T119（V3.0）：送股计入移动加权（股数 +n、均价摊薄，SDD_v3 §8.5）⇒ 100 + 10 = 110
+      expectQty: 110,
     },
     {
       type: 'transfer',
@@ -583,7 +583,7 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
       fee: 0,
       seed: true,
       reason: null,
-      /** ⚠️ 同 bonus：当前实现口径（偏差取证用） */
+      // transfer（转托管）仍**不参与**移动加权（mapToCoreTrade 过滤，转托管不改总持仓/成本）⇒ 100
       expectQty: 100,
     },
   ] as const;

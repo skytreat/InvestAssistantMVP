@@ -869,10 +869,13 @@ describe('T67-⑩ /api/holding enrich —— name（中文名）+ industry（契
       label: '死叉',
       trade_date: '2026-10-12',
     });
-    // weight = marketValue / totalMarketValue（1200 / (1200+2250+3330)）
-    expect(p.weight).toBeCloseTo(1200 / 6780, 10);
+    // weight = marketValue / totalMarketValue
+    // ⚠️ T119（V3.0）后 sh600002 的 300 股送转计入持仓（100→400）⇒ 市值 22.5×400=9000
+    //    ⇒ totalMarketValue = 1200(sh600001) + 9000(sh600002) + 3330(sh600003) = 13530
+    //    （T119 前送转被过滤，sh600002 市值为 2250，合计 6780 —— 旧期望已随口径作废）
+    expect(p.weight).toBeCloseTo(1200 / 13530, 10);
     // summary 仍在**顶层**（T89a 契约），数值不受 name 影响
-    expect(body.summary.totalMarketValue).toBe(6780);
+    expect(body.summary.totalMarketValue).toBe(13530);
     expect(body.summary.positionCount).toBe(ALL_CODES.length);
   });
 
