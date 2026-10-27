@@ -27,6 +27,8 @@ import {
 interface TradeRow {
   id: number;
   asset_code: string;
+  asset_name?: string | null;
+  name?: string | null;
   trade_type: string;
   trade_date: string;
   quantity: number;
@@ -295,6 +297,7 @@ export default function Review() {
     strategy_match: '' as TriState,
     is_stop_loss: '' as TriState,
     remark: '',
+    trade_reason: '',
   });
 
   /**
@@ -423,6 +426,7 @@ export default function Review() {
       strategy_match: trade.strategy_match === 1 ? '1' : trade.strategy_match === 0 ? '0' : '',
       is_stop_loss: trade.is_stop_loss === 1 ? '1' : trade.is_stop_loss === 0 ? '0' : '',
       remark: trade.remark ?? '',
+      trade_reason: trade.trade_reason ?? '',
     });
   };
 
@@ -442,6 +446,9 @@ export default function Review() {
         payload.is_stop_loss = editForm.is_stop_loss === '1' ? 1 : 0;
       }
       if (editForm.remark !== editingTrade.remark) payload.remark = editForm.remark || null;
+      if (editingTrade.is_auto_import === 1 && editForm.trade_reason !== (editingTrade.trade_reason ?? '')) {
+        payload.trade_reason = editForm.trade_reason.trim() || null;
+      }
       if (Object.keys(payload).length === 0) {
         setEditingTrade(null);
         return;
@@ -756,6 +763,11 @@ export default function Review() {
                         <td style={thTdStyle}>{t.trade_date}</td>
                         <td style={thTdStyle}>
                           <code>{t.asset_code}</code>
+                          {(t.asset_name ?? t.name) && (
+                            <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
+                              {t.asset_name ?? t.name}
+                            </div>
+                          )}
                         </td>
                         <td style={thTdStyle}>{tradeTypeLabel(t.trade_type)}</td>
                         <td style={thTdStyle}>{t.quantity}</td>
@@ -907,6 +919,22 @@ export default function Review() {
                       onChange={(v) => setEditForm((f) => ({ ...f, is_stop_loss: v }))}
                     />
                   </div>
+                  {editingTrade.is_auto_import === 1 && (
+                    <div>
+                      <label
+                        htmlFor="review-edit-trade-reason"
+                        style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                      >
+                        操作理由（券商导入）
+                      </label>
+                      <input
+                        id="review-edit-trade-reason"
+                        style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                        value={editForm.trade_reason}
+                        onChange={(e) => setEditForm((f) => ({ ...f, trade_reason: e.target.value }))}
+                      />
+                    </div>
+                  )}
                   <div>
                     <label
                       htmlFor="review-edit-remark"

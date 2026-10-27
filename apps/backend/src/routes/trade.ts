@@ -519,7 +519,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const body = request.body as Record<string, any>;
-    const allowedFields = ['review_summary', 'strategy_match', 'is_stop_loss', 'remark'];
+    const allowedFields = ['review_summary', 'strategy_match', 'is_stop_loss', 'remark', 'trade_reason'];
     const updates: string[] = [];
     const params: any[] = [];
     for (const key of allowedFields) {

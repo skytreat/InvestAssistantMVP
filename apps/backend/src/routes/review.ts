@@ -3,6 +3,7 @@ import { ConfigStore } from '../config/configStore.js';
 import { calcClosedTradePnLs } from '../services/positionCalculator.js';
 import { buildReviewPairs } from '../services/reviewPairs.js';
 import { ok, fail } from '../lib/envelope.js';
+import { batchGetSymbolNames } from '../services/marketData.js';
 
 /**
  * 复盘统计 API（T38）
@@ -146,8 +147,22 @@ export async function registerReviewRoutes(app: FastifyInstance) {
       )
       .all(...params, limit, offset) as any[];
 
+    // 标的中文名（行情层 raw_symbol_name，查不到 → null；DuckDB 不可用时整体降级为空）
+    const names = new Map<string, string>();
+    try {
+      const fetched = await batchGetSymbolNames(rows.map((r: any) => String(r.asset_code)));
+      for (const [k, v] of fetched) names.set(k, v);
+    } catch {
+      /* ignore */
+    }
+    const enriched = rows.map((r: any) => ({
+      ...r,
+      name: names.get(String(r.asset_code)) ?? null,
+      asset_name: names.get(String(r.asset_code)) ?? null,
+    }));
+
     reply.send(
-      ok(rows, {
+      ok(enriched, {
         pagination: { page, limit, total: countRow.cnt, totalPages: Math.ceil(countRow.cnt / limit) },
       }),
     );
