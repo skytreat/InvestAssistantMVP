@@ -703,7 +703,7 @@ transfer         -> 忽略（转托管不改变总持仓）
 |---|---|
 | **match_status 语义** | 补录确认后事实行置 `MATCHED`（五态无 IMPORTED）；「标记已手工记录」同样置 `MATCHED` + `matched_trade_record_id`（可选关联） |
 | **可修正白名单** | `buy / add / reduce / clear` 四态（分红/送股**不可**经补录端点进入，仍走除权链路 §8） |
-| **推导顺序** | ① 用户修正 > ② 有 `balance_after` 单行判定（卖&余0=clear / 卖&余>0=reduce / 买&余=量=buy / 买&余>量=add；余<量=异常保守 buy）> ③ 无余额按 (user, broker, asset) 分桶、`date→time→fact id` 时序回放 |
+| **推导顺序** | ① 用户修正 > ② 有 `balance_after` 单行判定（卖&余0=clear / 卖&余>0=reduce / 买&余=量=buy / 买&余>量=add；余<量=异常保守 buy）> ③ 无余额按 (user, broker, asset) 分桶、`date→time→fact id` 时序回放。前端默认不传 `tradeType`，仅用户修正时覆盖 |
 | **回放起点** | 事实层该标的在该券商的首行（期前持仓不并入回放；覆盖区间之外的口径由用户修正兜底，见 D-37） |
 | **明细落库** | `is_auto_import=1`、`trade_reason='券商补录'`、`fee=fee_total`、`broker_seq=content_seq`；时间无法解析 → `NULL`（不变假时间） |
 | **权限** | 两端点仅 admin（§10.3）；含 T122 写路由（import confirm / revoke / template save）admin 门补位（D-35） |

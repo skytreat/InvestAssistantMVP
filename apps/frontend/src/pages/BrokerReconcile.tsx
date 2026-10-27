@@ -72,7 +72,7 @@ const CONFIRM_TYPES = ['buy', 'add', 'reduce', 'clear'] as const;
 /** 补录候选行（从差异明细勾选） */
 interface ConfirmItem {
   sourceId: number;
-  tradeType: string;
+  tradeType?: string;
   asset_code: string | null;
   trade_date?: string;
   trade_time?: string | null;
@@ -179,7 +179,6 @@ export default function BrokerReconcile() {
       if (checked)
         next.set(row.id, {
           sourceId: row.id,
-          tradeType: 'buy',
           asset_code: row.asset_code,
           trade_date: row.trade_date,
           trade_time: row.trade_time,
@@ -207,7 +206,6 @@ export default function BrokerReconcile() {
         if (checked)
           next.set(r.id, {
             sourceId: r.id,
-            tradeType: 'buy',
             asset_code: r.asset_code,
             trade_date: r.trade_date,
             trade_time: r.trade_time,
@@ -223,7 +221,9 @@ export default function BrokerReconcile() {
     setConfirmBusy(true);
     setConfirmResult(null);
     try {
-      const items = [...selected.values()].map((x) => ({ sourceId: x.sourceId, tradeType: x.tradeType }));
+      const items = [...selected.values()].map((x) =>
+        x.tradeType ? { sourceId: x.sourceId, tradeType: x.tradeType } : { sourceId: x.sourceId },
+      );
       const res = await api.post('/broker-reconcile/confirm', { brokerCode, items });
       if (isOkEnvelope(res.data)) {
         const r = res.data.data as typeof confirmResult;
@@ -549,14 +549,15 @@ export default function BrokerReconcile() {
                         <td style={tdStyle}>{x.trade_date ?? '—'}</td>
                         <td style={tdStyle}>
                           <select
-                            value={x.tradeType}
+                            value={x.tradeType ?? ''}
                             onChange={(e) => {
                               const next = new Map(selected);
-                              next.set(x.sourceId, { ...x, tradeType: e.target.value });
+                              next.set(x.sourceId, { ...x, tradeType: e.target.value || undefined });
                               setSelected(next);
                             }}
                             style={{ fontSize: TYPO.smallSize }}
                           >
+                            <option value="">自动推导</option>
                             {CONFIRM_TYPES.map((t) => (
                               <option key={t} value={t}>
                                 {t}

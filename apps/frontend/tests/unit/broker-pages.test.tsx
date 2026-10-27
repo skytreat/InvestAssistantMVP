@@ -441,8 +441,7 @@ describe('T151③ 补录全选（当前页可补录行）', () => {
         postMock.mock.calls.some(
           (c) =>
             String(c[0]) === '/broker-reconcile/confirm' &&
-            JSON.stringify((c[1] as { items: unknown }).items) ===
-              JSON.stringify([{ sourceId: 101, tradeType: 'buy' }]),
+            JSON.stringify((c[1] as { items: unknown }).items) === JSON.stringify([{ sourceId: 101 }]),
         ),
       ).toBe(true);
     });
