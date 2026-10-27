@@ -52,3 +52,18 @@ a11y 基线（G3.4 精神）：`tests/unit/a11y.test.tsx` PAGES 已含上述全�
 
 **V3.8 验收判定：PASS（G1 为 COND，附 D-51/D-52 登记）**。
 CI 双绿 + 专属门槛三项 PASS + 页面↔PRD↔测试映射完整。允许 squash merge #52 与 #53，V3 计划（T119~T150）至此全部合入 main。
+
+---
+
+## 附：V3.8a · T151 券商域增强（owner 2026-10-27 增补，PR #55）
+
+| 门槛项 | 判定 | 证据 |
+|---|---|---|
+| ① 标识必填 + 自动推断 | **PASS** | 红星 + `aria-required`；`detectBrokerName`（已知清单最长匹配 + 「中文名+证券」兜底）；**脱敏样本必须推不出**（敏感边界断言，broker_parser 4 用例）；单文件+标识空时自动填入（手填优先不覆盖） |
+| ② 多文件 + 不同券商分批提示 | **PASS** | 分组（手填 > 推断 > 未识别）；≥2 组 → 「分批导入」提示 + 逐组确认（组标识落库）；broker-pages 2 用例 |
+| ③ 补录全选 | **PASS** | 表头「全选本页可补录」checkbox（checked/indeterminate）→ 选中当前页全部可补录行；broker-pages 1 用例 |
+| 通用 G2（lint/typecheck/test） | **PASS** | 前端全量 705 passed；后端 broker 套件 26 passed；CI #55 三项全 PASS |
+| G4（审计同 PR） | **PASS** | 本增补节随 #55 合入 |
+
+**端点契约**：`POST /api/broker-import/upload` 响应 `+brokerNameHint?`（可选字段，向后兼容）。
+**偏差**：无新增（T151 任务卡 + 修订记录行已登记 plan §3 / 修订记录）。
