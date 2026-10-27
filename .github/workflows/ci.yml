@@ -8,6 +8,76 @@ on:
 
 jobs:
   # ============================================================================
+  # 文档改动快速通道 —— 仅文档改动时跳过三个全量 job
+  #
+  # 🔴 **为什么用 job 级 if，而不是 workflow 级 paths / paths-ignore**：
+  #    工作流被路径过滤跳过时 GitHub **不会创建 check run**，required check 会一直
+  #    Pending 并阻塞合并；而 job 被条件跳过会报告 `skipped`，GitHub 将其视为成功。
+  #    （GitHub Docs: Troubleshooting required status checks）
+  #
+  # 判定规则：本次变更的**所有**文件都落在 `docs/**` 或 `*.md` ⇒ `docs_only=true`。
+  # - 空变更 / 检测失败 / 新分支首次 push ⇒ 一律跑全量（安全侧）
+  # - `.github/**`、源码、配置、脚本改动都不算 docs-only
+  # ============================================================================
+  changes:
+    runs-on: ubuntu-latest
+    name: Detect docs-only change
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          changed_file="$RUNNER_TEMP/changed-files"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$BASE_REF"
+            git diff --name-only --no-renames -z "origin/$BASE_REF...HEAD" > "$changed_file"
+          elif [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            # 新分支首次 push：拿不到 before，保守视为全量
+            git ls-tree -r --name-only -z "$AFTER_SHA" > "$changed_file"
+          else
+            git diff --name-only --no-renames -z "$BEFORE_SHA" "$AFTER_SHA" > "$changed_file"
+          fi
+
+          mapfile -d '' -t files < "$changed_file"
+
+          docs_only=true
+          count=0
+          for file in "${files[@]}"; do
+            [ -n "$file" ] || continue
+            count=$((count + 1))
+            case "$file" in
+              docs/*|*.md) ;;
+              *) docs_only=false ;;
+            esac
+          done
+
+          # 空变更 / 无法判定时走全量，避免误跳过
+          if [ "$count" -eq 0 ]; then
+            docs_only=false
+          fi
+
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "Changed files ($count):"
+          if [ "$count" -gt 0 ]; then
+            printf '  %s\n' "${files[@]}"
+          fi
+          echo "docs_only=$docs_only"
+
+  # ============================================================================
   # Coverage Gate —— SDD §12.2（覆盖率目标）+ §12.6（CI 阻断点）
   #
   # 🔴 **这是 T86b 恢复的门禁**（SDD §12.2 的表 + §12.6 的「核心算法 + 插件引擎 <90% 阻断合入」）。
@@ -37,6 +107,9 @@ jobs:
   #    前端         行 ≥70% / 分支 ≥65%
   # ============================================================================
   coverage-gate:
+    needs: changes
+    # changes 失败时仍跑全量（不要把检测故障变成「静默跳过」）
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true') }}
     runs-on: ubuntu-latest
     name: Coverage Gate — SDD §12.2 / §12.6
 
@@ -262,6 +335,8 @@ jobs:
   #    不会传导到后端 → **tsc 红而 CI 绿**（这就是 AGENTS.md 记的 T86 盲区）。
   # ============================================================================
   lint-and-typecheck:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true') }}
     runs-on: ubuntu-latest
     name: Stage 2 — Lint + TypeScript Check
 
@@ -304,6 +379,8 @@ jobs:
           echo "reverse check OK: lint failed as expected"
 
   build-and-test:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true') }}
     runs-on: ubuntu-latest
 
     steps:
