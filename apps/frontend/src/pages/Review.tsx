@@ -6,6 +6,7 @@ import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { truncatedTextStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
+import ReviewPairsView from '../components/ReviewPairsView';
 import TriStateGroup, { type TriState } from '../components/TriStateGroup';
 import { ReviewTagLegend, ReviewTagPill, reviewTagOf } from '../components/ReviewTag';
 import { TRADE_TYPES, tradeTypeLabel } from '../components/tradeTypes';
@@ -281,6 +282,8 @@ export default function Review() {
   const [systemFollowed, setSystemFollowed] = useState('');
   const [strategyMatch, setStrategyMatch] = useState('');
   const [isStopLoss, setIsStopLoss] = useState('');
+  /** V3.8 T150：复盘页「逐笔流水 / 交易对」双 tab（PRD_v3 §5.1 · INV-S6-6 并存不替代） */
+  const [viewMode, setViewMode] = useState<'trades' | 'pairs'>('trades');
   /** 日期范围（T69 ① · gap-list F-R1；后端 `/review/trades` 已支持 start_date / end_date）*/
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -493,358 +496,396 @@ export default function Review() {
         </span>
       </div>
 
-      {/* R2/R4 收益曲线（月度/季度/年度） */}
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>收益曲线</div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {(
-              [
-                ['monthly', '月度'],
-                ['quarterly', '季度'],
-                ['yearly', '年度'],
-              ] as [CurvePeriod, string][]
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setCurvePeriod(k)}
-                style={{
-                  padding: '3px 12px',
-                  fontSize: TYPO.smallSize,
-                  cursor: 'pointer',
-                  border: `1px solid ${curvePeriod === k ? COLORS.brand : COLORS.borderMedium}`,
-                  borderRadius: RADIUS.sm,
-                  background: curvePeriod === k ? COLORS.brand : COLORS.cardBg,
-                  color: curvePeriod === k ? COLORS.cardBg : COLORS.textSecondary,
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-        {historyLoading ? <Spinner size={16} /> : <YieldCurve points={curvePoints} caliber={caliber} />}
-      </div>
-
-      {/* 统计卡片 */}
-      <div
-        style={{
-          display: 'flex',
-          gap: SPACING.gapRelaxed,
-          flexWrap: 'wrap',
-          marginBottom: SPACING.gapLoose,
-        }}
-      >
-        {[
-          { label: '总交易数', value: dash(stats?.totalTrades), color: COLORS.brandLink },
-          { label: '已复盘', value: dash(stats?.reviewedCount), color: COLORS.textSuccess },
-          {
-            label: '胜率',
-            value: stats?.winRate != null ? `${stats.winRate}%` : '--',
-            color: COLORS.accentPurple,
-          },
-          {
-            label: '盈亏比',
-            value: stats?.profitLossRatio != null ? `${stats.profitLossRatio}` : '--',
-            color: COLORS.danger,
-          },
-          {
-            label: '已实现盈亏',
-            value:
-              stats?.totalRealizedPnl != null
-                ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
-                : '--',
-            color: (stats?.totalRealizedPnl ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger,
-          },
-        ].map((card) => (
-          <div key={card.label} style={{ ...cardStyle, flex: '1 1 140px', textAlign: 'center' }}>
-            <div style={{ fontSize: 28, fontWeight: 'bold', color: card.color }}>{card.value}</div>
-            <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>{card.label}</div>
-          </div>
+      {/* V3.8 T150：逐笔流水 / 交易对 双 tab（INV-S6-6：交易对视图与逐笔流水并存，不替代） */}
+      <div style={{ display: 'flex', gap: SPACING.gapBase, marginBottom: 20, flexWrap: 'wrap' }}>
+        {(
+          [
+            ['trades', '逐笔流水'],
+            ['pairs', '交易对'],
+          ] as [typeof viewMode, string][]
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setViewMode(k)}
+            aria-pressed={viewMode === k}
+            style={{
+              ...buttonStyle,
+              background: viewMode === k ? COLORS.brand : COLORS.cardBg,
+              color: viewMode === k ? COLORS.cardBg : COLORS.textSecondary,
+              border: `1px solid ${COLORS.borderMedium}`,
+            }}
+          >
+            {label}
+          </button>
         ))}
       </div>
-      {stats && (
-        <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: -12, marginBottom: 20 }}>
-          平仓 {dash(stats.closedCount)} 笔（盈利 {dash(stats.winCount)} / 亏损 {dash(stats.lossCount)}）
-          {stats.avgWin != null && ` · 平均盈利 ${stats.avgWin.toFixed(2)}`}
-          {stats.avgLoss != null && ` · 平均亏损 ${stats.avgLoss.toFixed(2)}`}
-        </div>
-      )}
 
-      {/*
+      {viewMode === 'pairs' ? (
+        <ReviewPairsView />
+      ) : (
+        <>
+          {/* R2/R4 收益曲线（月度/季度/年度） */}
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>
+                收益曲线
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {(
+                  [
+                    ['monthly', '月度'],
+                    ['quarterly', '季度'],
+                    ['yearly', '年度'],
+                  ] as [CurvePeriod, string][]
+                ).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setCurvePeriod(k)}
+                    style={{
+                      padding: '3px 12px',
+                      fontSize: TYPO.smallSize,
+                      cursor: 'pointer',
+                      border: `1px solid ${curvePeriod === k ? COLORS.brand : COLORS.borderMedium}`,
+                      borderRadius: RADIUS.sm,
+                      background: curvePeriod === k ? COLORS.brand : COLORS.cardBg,
+                      color: curvePeriod === k ? COLORS.cardBg : COLORS.textSecondary,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {historyLoading ? <Spinner size={16} /> : <YieldCurve points={curvePoints} caliber={caliber} />}
+          </div>
+
+          {/* 统计卡片 */}
+          <div
+            style={{
+              display: 'flex',
+              gap: SPACING.gapRelaxed,
+              flexWrap: 'wrap',
+              marginBottom: SPACING.gapLoose,
+            }}
+          >
+            {[
+              { label: '总交易数', value: dash(stats?.totalTrades), color: COLORS.brandLink },
+              { label: '已复盘', value: dash(stats?.reviewedCount), color: COLORS.textSuccess },
+              {
+                label: '胜率',
+                value: stats?.winRate != null ? `${stats.winRate}%` : '--',
+                color: COLORS.accentPurple,
+              },
+              {
+                label: '盈亏比',
+                value: stats?.profitLossRatio != null ? `${stats.profitLossRatio}` : '--',
+                color: COLORS.danger,
+              },
+              {
+                label: '已实现盈亏',
+                value:
+                  stats?.totalRealizedPnl != null
+                    ? `${stats.totalRealizedPnl >= 0 ? '+' : ''}${stats.totalRealizedPnl.toFixed(2)}`
+                    : '--',
+                color: (stats?.totalRealizedPnl ?? 0) >= 0 ? COLORS.textSuccess : COLORS.danger,
+              },
+            ].map((card) => (
+              <div key={card.label} style={{ ...cardStyle, flex: '1 1 140px', textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 'bold', color: card.color }}>{card.value}</div>
+                <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral }}>{card.label}</div>
+              </div>
+            ))}
+          </div>
+          {stats && (
+            <div
+              style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: -12, marginBottom: 20 }}
+            >
+              平仓 {dash(stats.closedCount)} 笔（盈利 {dash(stats.winCount)} / 亏损 {dash(stats.lossCount)}）
+              {stats.avgWin != null && ` · 平均盈利 ${stats.avgWin.toFixed(2)}`}
+              {stats.avgLoss != null && ` · 平均亏损 ${stats.avgLoss.toFixed(2)}`}
+            </div>
+          )}
+
+          {/*
         筛选栏（T69 ①⑥）
         ⚠️ **没有「筛选」按钮** —— 改动后 300ms 自动重查（ux_v2 §3.3-3）。
       */}
-      <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <label htmlFor="review-filter-trade-type" style={{ fontSize: TYPO.bodySize }}>
-          交易类型：
-        </label>
-        <select
-          id="review-filter-trade-type"
-          style={inputStyle}
-          value={tradeType}
-          onChange={(e) => setTradeType(e.target.value)}
-        >
-          <option value="">全部</option>
-          {/* 交易类型标签统一取自 `components/tradeTypes`（单一真相源，gap-list F-R2）*/}
-          {TRADE_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {tradeTypeLabel(t)}
-            </option>
-          ))}
-        </select>
-        <label htmlFor="review-filter-system-followed" style={{ fontSize: TYPO.bodySize }}>
-          系统信号：
-        </label>
-        <select
-          id="review-filter-system-followed"
-          style={inputStyle}
-          value={systemFollowed}
-          onChange={(e) => setSystemFollowed(e.target.value)}
-        >
-          <option value="">全部</option>
-          <option value="1">是</option>
-          <option value="0">否</option>
-        </select>
-        <label htmlFor="review-filter-strategy-match" style={{ fontSize: TYPO.bodySize }}>
-          符合策略：
-        </label>
-        <select
-          id="review-filter-strategy-match"
-          style={inputStyle}
-          value={strategyMatch}
-          onChange={(e) => setStrategyMatch(e.target.value)}
-        >
-          <option value="">全部</option>
-          <option value="1">是</option>
-          <option value="0">否</option>
-        </select>
-        <label htmlFor="review-filter-stop-loss" style={{ fontSize: TYPO.bodySize }}>
-          止损：
-        </label>
-        <select
-          id="review-filter-stop-loss"
-          style={inputStyle}
-          value={isStopLoss}
-          onChange={(e) => setIsStopLoss(e.target.value)}
-        >
-          <option value="">全部</option>
-          <option value="1">是</option>
-          <option value="0">否</option>
-        </select>
-        <label htmlFor="review-filter-start-date" style={{ fontSize: TYPO.bodySize }}>
-          起始日期：
-        </label>
-        <input
-          id="review-filter-start-date"
-          type="date"
-          style={inputStyle}
-          value={startDate}
-          max={endDate || undefined}
-          onChange={(e) => setStartDate(e.target.value)}
-        />
-        <label htmlFor="review-filter-end-date" style={{ fontSize: TYPO.bodySize }}>
-          结束日期：
-        </label>
-        <input
-          id="review-filter-end-date"
-          type="date"
-          style={inputStyle}
-          value={endDate}
-          min={startDate || undefined}
-          onChange={(e) => setEndDate(e.target.value)}
-        />
-      </div>
+          <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <label htmlFor="review-filter-trade-type" style={{ fontSize: TYPO.bodySize }}>
+              交易类型：
+            </label>
+            <select
+              id="review-filter-trade-type"
+              style={inputStyle}
+              value={tradeType}
+              onChange={(e) => setTradeType(e.target.value)}
+            >
+              <option value="">全部</option>
+              {/* 交易类型标签统一取自 `components/tradeTypes`（单一真相源，gap-list F-R2）*/}
+              {TRADE_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {tradeTypeLabel(t)}
+                </option>
+              ))}
+            </select>
+            <label htmlFor="review-filter-system-followed" style={{ fontSize: TYPO.bodySize }}>
+              系统信号：
+            </label>
+            <select
+              id="review-filter-system-followed"
+              style={inputStyle}
+              value={systemFollowed}
+              onChange={(e) => setSystemFollowed(e.target.value)}
+            >
+              <option value="">全部</option>
+              <option value="1">是</option>
+              <option value="0">否</option>
+            </select>
+            <label htmlFor="review-filter-strategy-match" style={{ fontSize: TYPO.bodySize }}>
+              符合策略：
+            </label>
+            <select
+              id="review-filter-strategy-match"
+              style={inputStyle}
+              value={strategyMatch}
+              onChange={(e) => setStrategyMatch(e.target.value)}
+            >
+              <option value="">全部</option>
+              <option value="1">是</option>
+              <option value="0">否</option>
+            </select>
+            <label htmlFor="review-filter-stop-loss" style={{ fontSize: TYPO.bodySize }}>
+              止损：
+            </label>
+            <select
+              id="review-filter-stop-loss"
+              style={inputStyle}
+              value={isStopLoss}
+              onChange={(e) => setIsStopLoss(e.target.value)}
+            >
+              <option value="">全部</option>
+              <option value="1">是</option>
+              <option value="0">否</option>
+            </select>
+            <label htmlFor="review-filter-start-date" style={{ fontSize: TYPO.bodySize }}>
+              起始日期：
+            </label>
+            <input
+              id="review-filter-start-date"
+              type="date"
+              style={inputStyle}
+              value={startDate}
+              max={endDate || undefined}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
+            <label htmlFor="review-filter-end-date" style={{ fontSize: TYPO.bodySize }}>
+              结束日期：
+            </label>
+            <input
+              id="review-filter-end-date"
+              type="date"
+              style={inputStyle}
+              value={endDate}
+              min={startDate || undefined}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
+          </div>
 
-      {error && <div style={errorStyle}>{error}</div>}
+          {error && <div style={errorStyle}>{error}</div>}
 
-      {/* 交易列表 */}
-      <div style={cardStyle}>
-        {/* 标签图例（PRD §5.5「列表标签颜色」——4 色 pill 必须配图例）*/}
-        <div style={{ marginBottom: SPACING.gapBase }}>
-          <ReviewTagLegend />
-        </div>
-        {loading ? (
-          <Spinner />
-        ) : trades.length === 0 ? (
-          <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无交易记录</div>
-        ) : (
-          /*
+          {/* 交易列表 */}
+          <div style={cardStyle}>
+            {/* 标签图例（PRD §5.5「列表标签颜色」——4 色 pill 必须配图例）*/}
+            <div style={{ marginBottom: SPACING.gapBase }}>
+              <ReviewTagLegend />
+            </div>
+            {loading ? (
+              <Spinner />
+            ) : trades.length === 0 ? (
+              <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>暂无交易记录</div>
+            ) : (
+              /*
             G4.6（375px 无横向溢出）：
             11 列表格实测总宽 555px，在 375px 视口下会**把文档撑宽 +241px**。
             ⇒ 套 `ScrollableTable`（overflow-x:auto + min-width:0 + role/aria/tabindex），
               表格在**自己内部**横向滚动，文档不再被撑宽。
             ⚠️ **刻意不用 `table-layout: fixed`** —— 那会重算所有列宽、破坏既有观感与断言。
           */
-          <ScrollableTable label="交易复盘列表表">
-            <table style={tableStyle} aria-label="交易复盘列表">
-              <thead>
-                <tr>
-                  <th scope="col" style={thStyle}>
-                    日期
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    标的
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    类型
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    数量
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    价格
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    操作理由
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    复盘
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    符合策略
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    止损
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    标签
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    操作
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.map((t) => (
-                  <tr key={t.id}>
-                    <td style={thTdStyle}>{t.trade_date}</td>
-                    <td style={thTdStyle}>
-                      <code>{t.asset_code}</code>
-                    </td>
-                    <td style={thTdStyle}>{tradeTypeLabel(t.trade_type)}</td>
-                    <td style={thTdStyle}>{t.quantity}</td>
-                    <td style={thTdStyle}>{t.price.toFixed(2)}</td>
-                    <td style={thTdStyle}>
-                      {/* 长文本截断（视觉），完整内容用 title 暴露；DOM 文本仍是全文 */}
-                      <div style={truncatedTextStyle} title={t.trade_reason ?? undefined}>
-                        {t.trade_reason ?? '-'}
-                      </div>
-                    </td>
-                    <td style={thTdStyle}>
-                      {t.review_summary ? (
-                        <span style={{ color: COLORS.textSuccess }}>✓</span>
-                      ) : (
-                        <span style={{ color: COLORS.textMuted }}>—</span>
-                      )}
-                    </td>
-                    <td style={thTdStyle}>
-                      {t.strategy_match === 1 ? (
-                        <span style={{ color: COLORS.textPillSuccess }}>是</span>
-                      ) : t.strategy_match === 0 ? (
-                        <span style={{ color: COLORS.textPillDanger }}>否</span>
-                      ) : (
-                        <span style={{ color: COLORS.textMuted }}>未标记</span>
-                      )}
-                    </td>
-                    <td style={thTdStyle}>
-                      {t.is_stop_loss === 1 ? (
-                        <span style={{ color: COLORS.textPillSuccess }}>是</span>
-                      ) : t.is_stop_loss === 0 ? (
-                        <span style={{ color: COLORS.textPillDanger }}>否</span>
-                      ) : (
-                        <span style={{ color: COLORS.textMuted }}>未标记</span>
-                      )}
-                    </td>
-                    <td style={thTdStyle}>
-                      <ReviewTagPill tag={reviewTagOf(t)} />
-                    </td>
-                    <td style={thTdStyle}>
-                      <button
-                        style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', marginRight: 4 }}
-                        onClick={() => openEdit(t)}
-                      >
-                        编辑复盘
-                      </button>
-                      <button
-                        style={{
-                          ...buttonStyle,
-                          fontSize: 12,
-                          padding: '2px 8px',
-                          background: COLORS.danger,
-                        }}
-                        onClick={() => handleDelete(t.id)}
-                      >
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </ScrollableTable>
-        )}
+              <ScrollableTable label="交易复盘列表表">
+                <table style={tableStyle} aria-label="交易复盘列表">
+                  <thead>
+                    <tr>
+                      <th scope="col" style={thStyle}>
+                        日期
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        标的
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        类型
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        数量
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        价格
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        操作理由
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        复盘
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        符合策略
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        止损
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        标签
+                      </th>
+                      <th scope="col" style={thStyle}>
+                        操作
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.map((t) => (
+                      <tr key={t.id}>
+                        <td style={thTdStyle}>{t.trade_date}</td>
+                        <td style={thTdStyle}>
+                          <code>{t.asset_code}</code>
+                        </td>
+                        <td style={thTdStyle}>{tradeTypeLabel(t.trade_type)}</td>
+                        <td style={thTdStyle}>{t.quantity}</td>
+                        <td style={thTdStyle}>{t.price.toFixed(2)}</td>
+                        <td style={thTdStyle}>
+                          {/* 长文本截断（视觉），完整内容用 title 暴露；DOM 文本仍是全文 */}
+                          <div style={truncatedTextStyle} title={t.trade_reason ?? undefined}>
+                            {t.trade_reason ?? '-'}
+                          </div>
+                        </td>
+                        <td style={thTdStyle}>
+                          {t.review_summary ? (
+                            <span style={{ color: COLORS.textSuccess }}>✓</span>
+                          ) : (
+                            <span style={{ color: COLORS.textMuted }}>—</span>
+                          )}
+                        </td>
+                        <td style={thTdStyle}>
+                          {t.strategy_match === 1 ? (
+                            <span style={{ color: COLORS.textPillSuccess }}>是</span>
+                          ) : t.strategy_match === 0 ? (
+                            <span style={{ color: COLORS.textPillDanger }}>否</span>
+                          ) : (
+                            <span style={{ color: COLORS.textMuted }}>未标记</span>
+                          )}
+                        </td>
+                        <td style={thTdStyle}>
+                          {t.is_stop_loss === 1 ? (
+                            <span style={{ color: COLORS.textPillSuccess }}>是</span>
+                          ) : t.is_stop_loss === 0 ? (
+                            <span style={{ color: COLORS.textPillDanger }}>否</span>
+                          ) : (
+                            <span style={{ color: COLORS.textMuted }}>未标记</span>
+                          )}
+                        </td>
+                        <td style={thTdStyle}>
+                          <ReviewTagPill tag={reviewTagOf(t)} />
+                        </td>
+                        <td style={thTdStyle}>
+                          <button
+                            style={{ ...buttonStyle, fontSize: 12, padding: '2px 8px', marginRight: 4 }}
+                            onClick={() => openEdit(t)}
+                          >
+                            编辑复盘
+                          </button>
+                          <button
+                            style={{
+                              ...buttonStyle,
+                              fontSize: 12,
+                              padding: '2px 8px',
+                              background: COLORS.danger,
+                            }}
+                            onClick={() => handleDelete(t.id)}
+                          >
+                            删除
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </ScrollableTable>
+            )}
 
-        {/* 分页（T69 ③：页码 state 真的会变） */}
-        {totalPages > 1 && (
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button style={buttonStyle} disabled={page <= 1} onClick={() => void fetchTrades(page - 1)}>
-              上一页
-            </button>
-            <span style={{ fontSize: TYPO.bodySize }}>
-              第 {page} / {totalPages} 页，共 {total} 条
-            </span>
-            <button
-              style={buttonStyle}
-              disabled={page >= totalPages}
-              onClick={() => void fetchTrades(page + 1)}
-            >
-              下一页
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* 编辑弹窗 */}
-      {editingTrade && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: COLORS.maskOverlay,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 200,
-          }}
-        >
-          <div
-            ref={editDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={editDialogTitleId}
-            tabIndex={-1}
-            style={{ ...cardStyle, maxWidth: 480, width: '90%' }}
-          >
-            <div id={editDialogTitleId} style={cardTitleStyle}>
-              编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div>
-                <label
-                  htmlFor="review-edit-summary"
-                  style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+            {/* 分页（T69 ③：页码 state 真的会变） */}
+            {totalPages > 1 && (
+              <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <button style={buttonStyle} disabled={page <= 1} onClick={() => void fetchTrades(page - 1)}>
+                  上一页
+                </button>
+                <span style={{ fontSize: TYPO.bodySize }}>
+                  第 {page} / {totalPages} 页，共 {total} 条
+                </span>
+                <button
+                  style={buttonStyle}
+                  disabled={page >= totalPages}
+                  onClick={() => void fetchTrades(page + 1)}
                 >
-                  复盘总结
-                </label>
-                <textarea
-                  id="review-edit-summary"
-                  style={{ ...inputStyle, width: '100%', marginTop: 4, minHeight: 60, resize: 'vertical' }}
-                  value={editForm.review_summary}
-                  onChange={(e) => setEditForm((f) => ({ ...f, review_summary: e.target.value }))}
-                />
+                  下一页
+                </button>
               </div>
-              {/*
+            )}
+          </div>
+
+          {/* 编辑弹窗 */}
+          {editingTrade && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: COLORS.maskOverlay,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 200,
+              }}
+            >
+              <div
+                ref={editDialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={editDialogTitleId}
+                tabIndex={-1}
+                style={{ ...cardStyle, maxWidth: 480, width: '90%' }}
+              >
+                <div id={editDialogTitleId} style={cardTitleStyle}>
+                  编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div>
+                    <label
+                      htmlFor="review-edit-summary"
+                      style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                    >
+                      复盘总结
+                    </label>
+                    <textarea
+                      id="review-edit-summary"
+                      style={{
+                        ...inputStyle,
+                        width: '100%',
+                        marginTop: 4,
+                        minHeight: 60,
+                        resize: 'vertical',
+                      }}
+                      value={editForm.review_summary}
+                      onChange={(e) => setEditForm((f) => ({ ...f, review_summary: e.target.value }))}
+                    />
+                  </div>
+                  {/*
                 T63：三态按钮组**不是** form label（它标的是一组按钮，不是单个控件）
                 → 标题由 `<label>` 改为 `<span id=...>`，按钮组用
                   `role="group"` + `aria-labelledby` 指向该 span；
@@ -852,48 +893,50 @@ export default function Review() {
                 T69 ⑦：三态配色按 PRD §5.5 改为 是=绿 / 否=红 / 未标记=灰，
                   且选中项加粗（fontWeight 600 + borderWidth 2px）。
               */}
-              <div style={{ display: 'flex', gap: SPACING.gapRelaxed, flexWrap: 'wrap' }}>
-                <TriStateGroup
-                  labelId="review-edit-strategy-match-label"
-                  label="是否符合策略"
-                  value={editForm.strategy_match}
-                  onChange={(v) => setEditForm((f) => ({ ...f, strategy_match: v }))}
-                />
-                <TriStateGroup
-                  labelId="review-edit-stop-loss-label"
-                  label="是否止损"
-                  value={editForm.is_stop_loss}
-                  onChange={(v) => setEditForm((f) => ({ ...f, is_stop_loss: v }))}
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="review-edit-remark"
-                  style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
-                >
-                  备注
-                </label>
-                <input
-                  id="review-edit-remark"
-                  style={{ ...inputStyle, width: '100%', marginTop: 4 }}
-                  value={editForm.remark}
-                  onChange={(e) => setEditForm((f) => ({ ...f, remark: e.target.value }))}
-                />
+                  <div style={{ display: 'flex', gap: SPACING.gapRelaxed, flexWrap: 'wrap' }}>
+                    <TriStateGroup
+                      labelId="review-edit-strategy-match-label"
+                      label="是否符合策略"
+                      value={editForm.strategy_match}
+                      onChange={(v) => setEditForm((f) => ({ ...f, strategy_match: v }))}
+                    />
+                    <TriStateGroup
+                      labelId="review-edit-stop-loss-label"
+                      label="是否止损"
+                      value={editForm.is_stop_loss}
+                      onChange={(v) => setEditForm((f) => ({ ...f, is_stop_loss: v }))}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="review-edit-remark"
+                      style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+                    >
+                      备注
+                    </label>
+                    <input
+                      id="review-edit-remark"
+                      style={{ ...inputStyle, width: '100%', marginTop: 4 }}
+                      value={editForm.remark}
+                      onChange={(e) => setEditForm((f) => ({ ...f, remark: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 16 }}>
+                  <button style={buttonStyle} onClick={saveEdit}>
+                    保存
+                  </button>
+                  <button
+                    style={{ ...buttonStyle, background: COLORS.neutral }}
+                    onClick={() => setEditingTrade(null)}
+                  >
+                    取消
+                  </button>
+                </div>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: SPACING.gapBase, marginTop: 16 }}>
-              <button style={buttonStyle} onClick={saveEdit}>
-                保存
-              </button>
-              <button
-                style={{ ...buttonStyle, background: COLORS.neutral }}
-                onClick={() => setEditingTrade(null)}
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
     </div>
   );

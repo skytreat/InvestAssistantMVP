@@ -358,7 +358,8 @@ describe('Signals · 结果表可读性', () => {
 
     await screen.findByRole('table');
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
-    expect(headers).toEqual(['标的代码', '策略', '方向', '强度', '标签', '交易日期']);
+    // V3.8 T149：新增「操作」列（采纳/忽略/关联交易）
+    expect(headers).toEqual(['标的代码', '策略', '方向', '强度', '标签', '交易日期', '操作']);
   });
 
   it('数据行按列顺序渲染（标的代码 / 策略 / 方向 / 强度 / 标签 / 交易日期）', async () => {
@@ -376,7 +377,16 @@ describe('Signals · 结果表可读性', () => {
       .getAllByRole('cell')
       .map((td) => td.textContent);
     // 方向 pill 内含方向符号（▲ 买入）；强度字段缺省 → 降级 `--`
-    expect(cells).toEqual(['sh600000', 'filter_v2', '▲ 买入', '--', '放量突破', '2026-10-12']);
+    // V3.8 T149：末列为操作列（采纳/忽略/关联交易 三个按钮，textContent 拼接）
+    expect(cells).toEqual([
+      'sh600000',
+      'filter_v2',
+      '▲ 买入',
+      '--',
+      '放量突破',
+      '2026-10-12',
+      '采纳忽略关联交易',
+    ]);
   });
 
   it('方向列按 DIRECTION_LABEL 映射（buy→买入 / sell→卖出 / hold→持仓）', async () => {

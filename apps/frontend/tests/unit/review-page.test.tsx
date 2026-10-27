@@ -149,6 +149,50 @@ function installApiMock(overrides: ApiOverrides = {}): void {
         return mockResponse(STATS);
       case '/review/trades':
         return mockResponse(trades, { pagination: { totalPages, total } });
+      // V3.8 T150：交易对视图（复盘页「交易对」tab · INV-S6-6/9）
+      case '/review/pairs':
+        return mockResponse([
+          {
+            id: 1,
+            asset_code: 'sh600000',
+            open_trade_id: 10,
+            close_trade_id: 11,
+            open_date: '2026-03-15',
+            close_date: '2026-04-20',
+            open_price: 10.5,
+            close_price: 11.2,
+            open_quantity: 100,
+            closed_quantity: 100,
+            remaining_quantity: 0,
+            realized_pnl: 70,
+            holding_days: 36,
+            buy_reason: '突破均线',
+            sell_reason: '止盈',
+            emotion_status: '平静',
+            broker_code: null,
+            status: 'closed',
+          },
+          {
+            id: 2,
+            asset_code: 'sz000001',
+            open_trade_id: 12,
+            close_trade_id: null,
+            open_date: '2026-05-01',
+            close_date: null,
+            open_price: 8.0,
+            close_price: null,
+            open_quantity: 200,
+            closed_quantity: 100,
+            remaining_quantity: 100,
+            realized_pnl: null,
+            holding_days: null,
+            buy_reason: null,
+            sell_reason: null,
+            emotion_status: null,
+            broker_code: 'gt',
+            status: 'open',
+          },
+        ]);
       case '/asset-stat/history':
         return mockResponse(history);
       default:
@@ -625,5 +669,32 @@ describe('G4.6 · Review 表格的可横向滚动容器 + 长文本截断', () =
     expect(inner?.style.overflow).toBe('hidden');
     expect(inner?.style.whiteSpace).toBe('nowrap');
     expect(inner?.getAttribute('title')).toBe(long);
+  });
+});
+
+/** V3.8 T150 · 复盘页「逐笔流水 / 交易对」双 tab（PRD_v3 §5.1 · INV-S6-6/9） */
+describe('T150 · 交易对 tab（未平仓单独成组 + 情绪状态枚举编辑）', () => {
+  it('点「交易对」→ 渲染已平仓/未平仓两个分组，未平仓不混入已平仓', async () => {
+    renderWithRouter(<Review />);
+    await userEvent.click(await screen.findByRole('button', { name: '交易对' }));
+    // 分组标题（数字是独立文本节点，用正则匹配前缀）
+    expect(await screen.findByText(/已平仓交易对/)).toBeInTheDocument();
+    expect(screen.getByText(/未平仓（/)).toBeInTheDocument();
+    // 已平仓组含 sh600000，未平仓组含 sz000001（开仓中，剩余 100）
+    // 已平仓组含 sh600000，未平仓组含 sz000001（开仓中，剩余 100）
+    expect((await screen.findAllByText('sh600000'))[0]).toBeInTheDocument();
+    expect((await screen.findAllByText('sz000001'))[0]).toBeInTheDocument();
+  });
+
+  it('改情绪状态下拉 → PATCH /review/pairs/:id（INV-S6-2 复盘字段独立存取）', async () => {
+    renderWithRouter(<Review />);
+    await userEvent.click(await screen.findByRole('button', { name: '交易对' }));
+    await screen.findByText(/已平仓交易对/);
+    // 已平仓行(#1)与未平仓行(#2)各有一个情绪下拉，取第一个即 #1
+    const select = screen.getAllByRole('combobox')[0] as unknown as HTMLSelectElement;
+    await userEvent.selectOptions(select, '恐慌');
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledWith('/review/pairs/1', { emotion_status: '恐慌' }),
+    );
   });
 });
