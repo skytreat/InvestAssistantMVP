@@ -189,6 +189,35 @@ export default function BrokerReconcile() {
     });
   };
 
+  /** T151③：当前页可补录行（MISSING 且有标的与数量） */
+  const confirmable = category === 'unmatched';
+  const selectableRows = useMemo(
+    () =>
+      confirmable ? diffRows.filter((r) => r.match_status === 'MISSING' && r.quantity && r.asset_code) : [],
+    [diffRows, confirmable],
+  );
+  const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.id));
+  const someSelected = !allSelected && selectableRows.some((r) => selected.has(r.id));
+
+  /** T151③：全选 / 取消全选（当前页） */
+  const toggleSelectAll = (checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (const r of selectableRows) {
+        if (checked)
+          next.set(r.id, {
+            sourceId: r.id,
+            tradeType: 'buy',
+            asset_code: r.asset_code,
+            trade_date: r.trade_date,
+            trade_time: r.trade_time,
+          });
+        else next.delete(r.id);
+      }
+      return next;
+    });
+  };
+
   /** 确认补录（整体事务；失败全回滚，PRD §3.3.1） */
   const confirmSupplement = async () => {
     setConfirmBusy(true);
@@ -239,8 +268,6 @@ export default function BrokerReconcile() {
       highlight: k === 'residual' && report.attribution.residual !== 0,
     }));
   }, [report]);
-
-  const confirmable = category === 'unmatched';
 
   return (
     <div style={pageContainerStyle}>
@@ -391,7 +418,22 @@ export default function BrokerReconcile() {
             <table style={tableStyle}>
               <thead>
                 <tr>
-                  {confirmable && <th style={thStyle}>补录</th>}
+                  {confirmable && (
+                    <th style={thStyle}>
+                      补录
+                      {/* T151③：全选当前页可补录行（全选/部分 → indeterminate） */}
+                      <input
+                        type="checkbox"
+                        aria-label="全选本页可补录"
+                        checked={allSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = someSelected;
+                        }}
+                        onChange={(e) => toggleSelectAll(e.target.checked)}
+                        style={{ marginLeft: 6 }}
+                      />
+                    </th>
+                  )}
                   <th style={thStyle}>id</th>
                   <th style={thStyle}>事件</th>
                   <th style={thStyle}>标的</th>

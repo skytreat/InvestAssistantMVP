@@ -82,6 +82,8 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
       previewRows: parse.rows.slice(0, 5),
       rowTotal: parse.rows.length,
       warnings: parse.warnings,
+      // T151①：券商名推断（仅元数据行；前端在其为空时自动填入券商标识框，可改）
+      ...(parse.brokerNameHint !== undefined ? { brokerNameHint: parse.brokerNameHint } : {}),
     });
   });
 

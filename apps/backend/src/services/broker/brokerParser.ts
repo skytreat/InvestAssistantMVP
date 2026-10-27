@@ -268,6 +268,9 @@ export async function parseBrokerFile(input: BrokerFileInput): Promise<BrokerFil
 
   const mappingSuggestion = buildSuggestion(columns);
 
+  // T151①：券商名推断（仅元数据行；推断不出为 undefined）
+  const brokerNameHint = detectBrokerName(grid, headerRowIndex);
+
   if (sensitiveIdx.size > 0) {
     warnings.push({
       code: 'SENSITIVE_DROPPED',
@@ -286,6 +289,7 @@ export async function parseBrokerFile(input: BrokerFileInput): Promise<BrokerFil
     mappingSuggestion,
     warnings,
     errors,
+    ...(brokerNameHint !== undefined ? { brokerNameHint } : {}),
   };
 }
 
@@ -324,6 +328,71 @@ function buildSuggestion(columns: DetectedColumn[]): ColumnMappingSuggestion {
 
 function emptySuggestion(): ColumnMappingSuggestion {
   return { byField: {}, unmapped: [], sensitiveDropped: [] };
+}
+
+/**
+ * T151①（V3.8a）：常见券商名清单（元数据行推断用，最长匹配优先）。
+ * 只识别**公司名**（如「国泰君安证券」）——敏感信息边界（§3.6 / INV-S-*）：
+ * 不回账号 / 用户名 / 营业部代码，故匹配范围仅限公司名关键词。
+ */
+const KNOWN_BROKER_NAMES: readonly string[] = [
+  '国泰君安证券',
+  '中信证券',
+  '华泰证券',
+  '申万宏源证券',
+  '招商证券',
+  '国信证券',
+  '广发证券',
+  '银河证券',
+  '海通证券',
+  '东方证券',
+  '安信证券',
+  '浙商证券',
+  '兴业证券',
+  '中金公司',
+  '东方财富证券',
+  '民生证券',
+  '光大证券',
+  '平安证券',
+  '方正证券',
+  '东北证券',
+  '财通证券',
+  '华西证券',
+];
+
+/**
+ * 从**表头之前的元数据行**推断券商名（T151①）。
+ *
+ * 规则（确定性、可测试）：
+ * 1. 拼元数据行（0..headerRowIndex-1，去包裹）全文；
+ * 2. 先按 KNOWN_BROKER_NAMES 命中（**最长优先**，避免「中信」误配「中信证券」的短名）；
+ * 3. 兜底：`/([\u4e00-\u9fa5]{2,10}证券)/` 提取「中文名 + 证券」形态（取首个，且不含敏感词）；
+ * 4. 推断不出 → undefined。
+ *
+ * ⚠️ 元数据行常含敏感值（资金账号/用户名/营业部）——本函数只输出公司名形态的匹配，
+ *    不输出整行内容，敏感值不会经由该字段回显。
+ */
+export function detectBrokerName(grid: string[][], headerRowIndex: number): string | undefined {
+  if (headerRowIndex <= 0) return undefined;
+  const metaText = grid
+    .slice(0, headerRowIndex)
+    .map((row) => (row ?? []).map((c) => stripCellWrap(c).trim()).join(' '))
+    .join('\n');
+  if (!metaText) return undefined;
+
+  let best: string | undefined;
+  for (const name of KNOWN_BROKER_NAMES) {
+    if (metaText.includes(name) && (!best || name.length > best.length)) best = name;
+  }
+  if (best) return best;
+
+  const m = metaText.match(/([\u4e00-\u9fa5]{2,10}证券)/);
+  if (m) {
+    const cand = m[1];
+    // 排除疑似敏感/表头词（含账号/用户名/营业部的不采纳）
+    if (!/账号|帐号|用户|营业部|名称$/.test(cand)) return cand;
+  }
+  return undefined;
 }
 
 export type {

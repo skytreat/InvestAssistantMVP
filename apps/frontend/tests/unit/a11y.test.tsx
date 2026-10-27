@@ -310,7 +310,22 @@ function installApiMock(): void {
           },
         ]);
       case '/broker-import/batches':
-        return ok({ batches: [{ broker_code: 'gt' }] });
+        return ok({
+          batches: [
+            {
+              id: 1,
+              broker_code: 'gt',
+              file_kind: 'trade',
+              file_name: 'gt-trade.csv',
+              status: 'imported',
+              row_total: 1,
+              row_inserted: 1,
+              row_deduped: 0,
+              row_excluded: 0,
+              created_at: '2026-10-20 10:00:00',
+            },
+          ],
+        });
       case '/strategy/plugins':
         return ok(PLUGINS);
       case '/stockscan/plugins':
