@@ -46,7 +46,15 @@ export interface ReconcileReport {
   generatedAt: string;
 }
 
-/** 系统层（user_trade_record）与事实层的粗匹配（asset_code + trade_date 家族），精确匹配归 T129 */
+/**
+ * 系统层（user_trade_record）与事实层的粗匹配（asset_code + trade_date 家族），精确匹配归 T129
+ *
+ * 🔴 **日期归一化**（2026-10-27 修复）：
+ *    `broker_trade_record.trade_date` 因导入文件类型不同可能存 `YYYYMMDD`（交割单）或
+ *    `YYYY-MM-DD`（成交流水），而 `user_trade_record.trade_date` 恒为 `YYYY-MM-DD`。
+ *    匹配前统一用 `fmtDate()` 归一化为 `YYYY-MM-DD`，否则同一笔交易在两侧 key 不同，
+ *    产生对称的「缺失 + 多余」误报。
+ */
 function matchVsSystem(
   db: Database.Database,
   userId: number,
@@ -68,8 +76,8 @@ function matchVsSystem(
           AND trade_type IN ('buy','add','reduce','clear','dividend','bonus')`,
     )
     .all(userId) as Array<{ asset_code: string; trade_date: string }>;
-  const factSet = new Set(factKeys.map((k) => `${k.asset_code}|${k.trade_date}`));
-  const sysSet = new Set(sysKeys.map((k) => `${k.asset_code}|${k.trade_date}`));
+  const factSet = new Set(factKeys.map((k) => `${k.asset_code}|${fmtDate(k.trade_date)}`));
+  const sysSet = new Set(sysKeys.map((k) => `${k.asset_code}|${fmtDate(k.trade_date)}`));
   let missing = 0;
   let extra = 0;
   for (const k of factSet) if (!sysSet.has(k)) missing++;
@@ -77,6 +85,7 @@ function matchVsSystem(
   return { missing, extra };
 }
 
+/** 日期归一化：`YYYYMMDD` → `YYYY-MM-DD`；已含横杠则原样返回；空 → 空串 */
 function fmtDate(d: string | null): string {
   if (!d) return '';
   if (d.includes('-')) return d;
