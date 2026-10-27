@@ -87,11 +87,37 @@ const DIFF_ROWS = [
   },
 ];
 
+const BATCH_IMPORTED = {
+  id: 9,
+  broker_code: 'gt',
+  file_kind: 'trade',
+  file_name: 'gt-trade.csv',
+  status: 'imported',
+  row_total: 134,
+  row_inserted: 104,
+  row_deduped: 20,
+  row_excluded: 10,
+  created_at: '2026-10-20 10:00:00',
+};
+
+const BATCH_REVOKED = {
+  ...BATCH_IMPORTED,
+  id: 8,
+  file_name: 'gt-settlement.csv',
+  file_kind: 'settlement',
+  status: 'revoked',
+  row_total: 20,
+  row_inserted: 15,
+  row_excluded: 5,
+};
+
+let batchRows: Array<typeof BATCH_IMPORTED>;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  batchRows = [{ ...BATCH_IMPORTED }, { ...BATCH_REVOKED }];
   getMock.mockImplementation((url: string) => {
-    if (url === '/broker-import/batches')
-      return Promise.resolve(mockResponse({ batches: [{ broker_code: 'gt' }, { broker_code: 'hb' }] }));
+    if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
     if (url === '/broker-reconcile/latest') return Promise.resolve(mockResponse(REPORT));
     if (url === '/broker-reconcile/diff')
       return Promise.resolve(
@@ -127,6 +153,10 @@ beforeEach(() => {
           duplicateFile: false,
         }),
       );
+    if (url === '/broker-import/batches/9/revoke') {
+      batchRows = batchRows.map((b) => (b.id === 9 ? { ...b, status: 'revoked' } : b));
+      return Promise.resolve(mockResponse({ batchId: 9, affectedRows: 104 }));
+    }
     if (url === '/broker-reconcile/run') return Promise.resolve(mockResponse({ ok: true }));
     if (url === '/broker-reconcile/confirm')
       return Promise.resolve(
@@ -176,6 +206,41 @@ describe('T143 券商导入向导 /broker/import', () => {
     // 跳转对账页
     await user.click(screen.getByRole('button', { name: /查看对账报告/ }));
     await waitFor(() => expect(postMock.mock.calls.length).toBeGreaterThanOrEqual(1));
+  });
+
+  it('导入批次：列表展示统计；撤销需二次确认，成功后刷新为已撤销', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+
+    await waitFor(() => expect(screen.getByText('gt-trade.csv')).toBeInTheDocument());
+    expect(screen.getByText('134 / 104 / 10')).toBeInTheDocument();
+    expect(screen.getByText('已导入')).toBeInTheDocument();
+    expect(screen.getByText('已撤销')).toBeInTheDocument(); // 已撤销批次不显示撤销按钮
+
+    await user.click(screen.getByRole('button', { name: '撤销批次 #9' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText(/软删除该批次全部事实层记录/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '确认撤销' }));
+
+    await waitFor(() =>
+      expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/batches/9/revoke')).toBe(true),
+    );
+    await waitFor(() => expect(screen.getByTestId('batch-notice')).toHaveTextContent('已撤销批次 #9'));
+    expect(screen.getAllByText('已撤销').length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByRole('button', { name: '撤销批次 #9' })).not.toBeInTheDocument();
+  });
+
+  it('导入批次撤销：点「取消」不发请求', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+
+    await waitFor(() => expect(screen.getByText('gt-trade.csv')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: '撤销批次 #9' }));
+    await user.click(screen.getByRole('button', { name: '取消' }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(postMock.mock.calls.some((c) => String(c[0]).includes('/revoke'))).toBe(false);
   });
 });
 

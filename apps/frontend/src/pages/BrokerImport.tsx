@@ -1,9 +1,11 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
+import { extractErrorMessage } from '../api/errors';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
-import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } from './_shared';
+import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, successStyle, titleStyle } from './_shared';
 
 /**
  * BrokerImport.tsx —— 券商文件导入向导 `/broker/import`（V3.8 T143 · PRD_v3 §3.1）
@@ -11,9 +13,14 @@ import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } fr
  * 三步向导：
  *   ① 选文件 + 券商标识 → ② 探测结果（类型/编码/列映射建议/未识别列醒目）→ ③ 预览（前 5 行 + 统计）→ 确认导入
  *
+ * 导入批次（T122 / SDD_v3 §9.1）：列表 + 撤销入口。撤销只软删事实层（is_deleted=1），
+ * 原始行证据（raw_row_json）保留，可重新导入同一文件。
+ *
  * 后端契约（T121/T122）：
  *   - POST /api/broker-import/upload   { filename, fileBase64, brokerCode } → 探测 + 预览 + 映射建议（不落库）
  *   - POST /api/broker-import/confirm  同 body → 落事实层 + 批次（不写业务层）
+ *   - GET  /api/broker-import/batches  批次列表（含统计与撤销入口）
+ *   - POST /api/broker-import/batches/:id/revoke 撤销批次（软删事实层）
  * 权限：仅 admin（SDD_v3 §10.3；路由挂 AdminGuard）
  */
 
@@ -37,6 +44,32 @@ interface ConfirmResult {
   rowExcluded?: number;
   duplicateFile?: boolean;
 }
+
+/** 导入批次（GET /api/broker-import/batches 的 batch 行，字段见 broker_import_batch DDL） */
+interface BatchRow {
+  id: number;
+  broker_code: string;
+  file_kind: string;
+  file_name: string | null;
+  status: string;
+  row_total: number;
+  row_inserted: number;
+  row_deduped: number;
+  row_excluded: number;
+  created_at: string;
+}
+
+const BATCH_STATUS_LABELS: Record<string, string> = {
+  pending: '待处理',
+  parsed: '已解析',
+  imported: '已导入',
+  revoked: '已撤销',
+};
+
+const FILE_KIND_LABELS: Record<string, string> = {
+  settlement: '交割单',
+  trade: '成交流水',
+};
 
 /** 字段中文名（与后端 SEMANTIC_ALIASES 保持可读性） */
 const FIELD_LABELS: Record<string, string> = {
@@ -80,6 +113,36 @@ export default function BrokerImport() {
   const [busy, setBusy] = useState(false);
   const [confirmResult, setConfirmResult] = useState<ConfirmResult | null>(null);
 
+  // ── 导入批次（列表 + 撤销）──
+  const [batches, setBatches] = useState<BatchRow[]>([]);
+  const [batchesLoading, setBatchesLoading] = useState(true);
+  const [batchesError, setBatchesError] = useState<string | null>(null);
+  const [batchesNotice, setBatchesNotice] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<BatchRow | null>(null);
+  const [revokeBusy, setRevokeBusy] = useState(false);
+
+  const loadBatches = useCallback(async () => {
+    setBatchesLoading(true);
+    setBatchesError(null);
+    try {
+      const res = await api.get('/broker-import/batches');
+      if (isOkEnvelope(res.data)) {
+        const data = res.data.data as { batches?: BatchRow[] };
+        setBatches(data.batches ?? []);
+      } else {
+        setBatchesError(String(res.data?.message ?? '加载导入批次失败'));
+      }
+    } catch (err) {
+      setBatchesError(extractErrorMessage(err, '加载导入批次失败'));
+    } finally {
+      setBatchesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadBatches();
+  }, [loadBatches]);
+
   /** 探测（不落库）：上传即探 */
   const runDetect = useCallback(
     async (f: File) => {
@@ -118,6 +181,7 @@ export default function BrokerImport() {
       });
       if (isOkEnvelope(res.data)) {
         setConfirmResult(res.data.data as ConfirmResult);
+        await loadBatches();
       } else {
         setDetectError(String(res.data?.message ?? '导入失败'));
       }
@@ -126,7 +190,39 @@ export default function BrokerImport() {
     } finally {
       setBusy(false);
     }
-  }, [file, brokerCode]);
+  }, [file, brokerCode, loadBatches]);
+
+  /** 撤销批次（二次确认后调用；后端软删事实层，原始证据保留） */
+  const doRevoke = useCallback(
+    async (batch: BatchRow) => {
+      setRevokeBusy(true);
+      setBatchesError(null);
+      setBatchesNotice(null);
+      try {
+        const res = await api.post(`/broker-import/batches/${batch.id}/revoke`);
+        if (isOkEnvelope(res.data)) {
+          const data = res.data.data as { affectedRows?: number };
+          setBatchesNotice(
+            `已撤销批次 #${batch.id}（软删除 ${data.affectedRows ?? 0} 行事实记录，原始数据仍保留）`,
+          );
+          await loadBatches();
+        } else {
+          setBatchesError(String(res.data?.message ?? '撤销失败'));
+        }
+      } catch (err) {
+        setBatchesError(extractErrorMessage(err, '撤销失败'));
+      } finally {
+        setRevokeBusy(false);
+      }
+    },
+    [loadBatches],
+  );
+
+  const confirmRevoke = () => {
+    const target = revokeTarget;
+    setRevokeTarget(null);
+    if (target) void doRevoke(target);
+  };
 
   const mappingEntries = Object.entries(detect?.mappingSuggestion?.byField ?? {});
 
@@ -269,6 +365,91 @@ export default function BrokerImport() {
           </button>
         </div>
       )}
+
+      <div style={{ ...cardStyle, marginTop: 16 }}>
+        <h2 style={subtitleStyle}>导入批次</h2>
+        <p style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary, margin: '0 0 8px' }}>
+          撤销批次只软删除事实层记录（对账不再计入），原始行数据仍保留，可重新导入同一文件。
+        </p>
+        <div aria-live="polite">
+          {batchesNotice !== null && (
+            <p style={successStyle} data-testid="batch-notice">
+              {batchesNotice}
+            </p>
+          )}
+          {batchesError !== null && (
+            <p style={errorStyle} data-testid="batch-error">
+              {batchesError}
+            </p>
+          )}
+        </div>
+        {batchesLoading ? (
+          <p style={{ ...typing, marginTop: 12 }}>加载中…</p>
+        ) : batches.length === 0 ? (
+          <p style={{ color: COLORS.textSecondary }}>暂无导入批次</p>
+        ) : (
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>批次</th>
+                <th style={thStyle}>券商</th>
+                <th style={thStyle}>文件</th>
+                <th style={thStyle}>类型</th>
+                <th style={thStyle}>行数（总/写入/排除）</th>
+                <th style={thStyle}>状态</th>
+                <th style={thStyle}>导入时间</th>
+                <th style={thStyle}>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {batches.map((b) => {
+                const revoked = b.status === 'revoked';
+                return (
+                  <tr key={b.id}>
+                    <td style={tdStyle}>{b.id}</td>
+                    <td style={tdStyle}>{b.broker_code ?? '—'}</td>
+                    <td style={tdStyle}>{b.file_name ?? '—'}</td>
+                    <td style={tdStyle}>{FILE_KIND_LABELS[b.file_kind] ?? b.file_kind ?? '—'}</td>
+                    <td style={tdStyle}>
+                      {b.row_total ?? 0} / {b.row_inserted ?? 0} / {b.row_excluded ?? 0}
+                    </td>
+                    <td style={tdStyle}>{BATCH_STATUS_LABELS[b.status] ?? b.status ?? '—'}</td>
+                    <td style={tdStyle}>{b.created_at ?? '—'}</td>
+                    <td style={tdStyle}>
+                      {!revoked && (
+                        <button
+                          type="button"
+                          aria-label={`撤销批次 #${b.id}`}
+                          style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                          onClick={() => setRevokeTarget(b)}
+                          disabled={revokeBusy}
+                        >
+                          撤销
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={revokeTarget !== null}
+        title="确认撤销导入批次"
+        message={
+          revokeTarget
+            ? `撤销批次 #${revokeTarget.id}（${revokeTarget.file_name ?? '未命名文件'}）会软删除该批次全部事实层记录，对账结果将不再包含这些流水。\n原始行数据仍保留，可重新导入同一文件。\n确认继续？`
+            : ''
+        }
+        confirmText="确认撤销"
+        cancelText="取消"
+        danger
+        onConfirm={confirmRevoke}
+        onCancel={() => setRevokeTarget(null)}
+      />
     </div>
   );
 }
