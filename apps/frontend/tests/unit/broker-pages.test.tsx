@@ -310,7 +310,7 @@ describe('T144 对账报告 /broker/reconcile', () => {
  */
 describe('T151① 券商标识必填 + 自动推断（brokerNameHint）', () => {
   it('推断出券商名且标识框为空 → 自动填入 + 「自动推断」提示；红星必填标记存在', async () => {
-    postMock.mockImplementation((url: string, body?: unknown) => {
+    postMock.mockImplementation((url: string) => {
       if (url === '/broker-import/upload')
         return Promise.resolve(
           mockResponse({
