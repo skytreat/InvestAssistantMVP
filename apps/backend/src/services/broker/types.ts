@@ -67,4 +67,10 @@ export interface BrokerFileParseResult {
   mappingSuggestion: ColumnMappingSuggestion;
   warnings: ParseWarning[];
   errors: ParseError[];
+  /**
+   * T151①（V3.8a）：从**表头之前的元数据行**推断出的券商名（如「国泰君安证券」）。
+   * 推断不出为 `undefined` —— 前端仅当其为空时用它自动填入券商标识框（可改）。
+   * ⚠️ 敏感信息边界（INV-S-*）：只回券商**名**（公司名），不回账号/用户名/营业部代码。
+   */
+  brokerNameHint?: string;
 }

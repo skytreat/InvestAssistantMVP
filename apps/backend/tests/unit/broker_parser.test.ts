@@ -142,3 +142,39 @@ describe('T121 · gate G2：编码 / 包裹 / 表头非首行 / 敏感丢弃', (
     expect(r.columns.map((c) => c.header)).toEqual(['成交日期', '证券代码']);
   });
 });
+
+/**
+ * T151①（V3.8a）· 券商名推断（detectBrokerName）
+ * 元数据行 → 公司名（已知清单 / 「中文名+证券」兜底）；推断不出 → undefined。
+ * ⚠️ 敏感边界：脱敏样本（国泰 4 份 xlsx 元数据=占位值）必须**推断不出**（不回敏感值）。
+ */
+describe('T151① · 券商名推断（detectBrokerName）', () => {
+  it('元数据行含已知券商名 → 命中（最长优先）', async () => {
+    const body =
+      '国泰君安证券股份有限公司证券交割单\n客户查询\n成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'gt.csv' });
+    expect(r.ok).toBe(true);
+    expect(r.brokerNameHint).toBe('国泰君安证券');
+  });
+
+  it('未知券商 → 兜底「中文名+证券」形态（首个）', async () => {
+    const body =
+      '某某证券 交易明细\n成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'xx.csv' });
+    expect(r.ok).toBe(true);
+    expect(r.brokerNameHint).toBe('某某证券');
+  });
+
+  it('元数据只含敏感占位（脱敏样本）→ 推断不出（不回敏感值）', async () => {
+    const r = await parseBrokerFile(fixtureFile('2026-10-20-国泰ETF交割单.xlsx'));
+    expect(r.ok).toBe(true);
+    expect(r.brokerNameHint).toBeUndefined();
+  });
+
+  it('表头首行（无元数据）→ 不推断', async () => {
+    const body =
+      '成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'h0.csv' });
+    expect(r.brokerNameHint).toBeUndefined();
+  });
+});
