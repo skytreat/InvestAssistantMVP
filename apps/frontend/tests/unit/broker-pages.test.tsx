@@ -381,7 +381,7 @@ describe('T151① 券商标识必填 + 自动推断（brokerNameHint）', () => 
 });
 
 describe('T151② 多文件 + 不同券商提示分批导入', () => {
-  it('两个文件推断出不同券商 → 「分批导入」提示 + 按券商分组的确认按钮', async () => {
+  it('两个文件推断出不同券商 → 分批导入提示 + 禁用跨券商确认 + 移除后可确认', async () => {
     postMock.mockImplementation((url: string, body?: unknown) => {
       if (url === '/broker-import/upload') {
         const fn = String((body as { filename?: string })?.filename ?? '');
@@ -412,9 +412,22 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
     expect(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /确认导入【华泰证券】/ })).toBeInTheDocument();
 
-    // 填券商标识 → 按钮启用 → 点国泰组
+    // 填券商标识 → 仍因多券商冲突禁用 → 点击国泰组不发请求
     await user.type(screen.getByPlaceholderText(/必填/), '国泰君安证券');
+    expect(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ }));
+    expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm')).toBe(false);
+
+    // 移除华泰文件 → 冲突解除 → 清理历史调用 → 确认国泰文件
+    await user.click(screen.getByRole('button', { name: /移除 ht-b.csv/ }));
+    await waitFor(() => {
+      // 等待移除完成：文件列表应只剩 gt-a.csv
+      const btn = screen.getByRole('button', { name: /确认导入【国泰君安证券】/ });
+      expect(btn).toBeEnabled();
+    });
+    postMock.mockClear();
+    const btn = screen.getByRole('button', { name: /确认导入【国泰君安证券】/ });
+    await user.click(btn);
     await waitFor(() => {
       expect(
         postMock.mock.calls.some(
@@ -424,6 +437,10 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
             (c[1] as { filename?: string }).filename === 'gt-a.csv',
         ),
       ).toBe(true);
+      // 华泰文件不应在请求中
+      expect(postMock.mock.calls.some((c) => (c[1] as { filename?: string })?.filename === 'ht-b.csv')).toBe(
+        false,
+      );
     });
   });
 });

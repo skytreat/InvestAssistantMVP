@@ -182,19 +182,39 @@ export default function BrokerImport() {
     [brokerCode],
   );
 
-  /** T151②：文件按其有效券商分组（手填标识优先；否则用推断名；无 → unknown） */
+  /** T151②：文件按其有效券商分组。
+   *  🔴 PR#60 review 修复：手填券商标识**不得吞掉推断分组**——旧逻辑一旦填了标识，
+   *  所有文件（含推断出其它券商的）合并为一组、一键全导入到同一券商下（错误归属风险）。
+   *  现恒按推断名分组（无推断 → 未识别）；确认按钮仍用手填标识落库。 */
   const groups = useMemo(() => {
     const m = new Map<string, File[]>();
     for (const f of files) {
       const d = detects[f.name];
-      let key: string;
-      if (brokerCode.trim()) key = brokerCode.trim();
-      else if (d && typeof d === 'object' && d.brokerNameHint) key = d.brokerNameHint;
-      else key = '未识别';
+      const key = d && typeof d === 'object' && d.brokerNameHint ? d.brokerNameHint : '未识别';
       m.set(key, [...(m.get(key) ?? []), f]);
     }
     return [...m.entries()];
-  }, [files, detects, brokerCode]);
+  }, [files, detects]);
+
+  /** 🔴 多文件推断出 ≥2 个不同券商 → 禁止确认导入（防错误归属），须移除多余文件分批处理 */
+  const conflictingHints = useMemo(() => {
+    const hints = new Set<string>();
+    for (const f of files) {
+      const d = detects[f.name];
+      if (d && typeof d === 'object' && d.brokerNameHint) hints.add(d.brokerNameHint);
+    }
+    return hints.size > 1 ? [...hints] : null;
+  }, [files, detects]);
+
+  const removeFile = (target: File) => {
+    setFiles((prev) => prev.filter((f) => f !== target));
+    setDetects((prev) => {
+      const next = { ...prev };
+      delete next[target.name];
+      return next;
+    });
+    setConfirmResults([]);
+  };
 
   const detectOk = (f: File): f is File & { detect: DetectResult } =>
     detects[f.name] !== undefined && typeof detects[f.name] === 'object';
@@ -318,10 +338,38 @@ export default function BrokerImport() {
             />
           </label>
           <span style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
-            {files.length > 0
-              ? `已选 ${files.length} 个文件：${files.map((f) => f.name).join('、')}`
-              : '未选择文件'}
+            {files.length > 0 ? `已选 ${files.length} 个文件（点 ✕ 可移除）：` : '未选择文件'}
           </span>
+          {files.length > 0 && (
+            <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {files.map((f) => (
+                <span
+                  key={`${f.name}|${f.size}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontSize: TYPO.smallSize,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 4,
+                    padding: '2px 6px',
+                  }}
+                >
+                  {f.name}
+                  <button
+                    type="button"
+                    aria-label={`移除 ${f.name}`}
+                    title="移除该文件"
+                    onClick={() => removeFile(f)}
+                    disabled={busy}
+                    style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0 }}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </span>
+          )}
         </div>
 
         {busy && <p style={{ ...typing, marginTop: 12 }}>处理中…</p>}
@@ -403,7 +451,16 @@ export default function BrokerImport() {
       {groups.length > 0 && (
         <div style={{ ...cardStyle, marginTop: 16 }}>
           <h2 style={subtitleStyle}>确认导入</h2>
-          {groups.length > 1 && (
+          {conflictingHints && (
+            <div style={{ ...warningBox, marginBottom: 12, color: COLORS.danger }}>
+              <strong>检测到多个券商的文件（{conflictingHints.join('、')}）。</strong>
+              <div style={{ fontSize: TYPO.smallSize, marginTop: 4 }}>
+                <strong>不支持跨券商批量导入</strong>：当前选择的文件属于不同券商。 请点击上方文件旁的 ✕
+                移除其它券商的文件，<strong>分批导入</strong>（每次只保留同一券商的文件）。
+              </div>
+            </div>
+          )}
+          {groups.length > 1 && !conflictingHints && (
             <div style={{ ...warningBox, marginBottom: 12 }}>
               <strong>
                 检测到 {files.length} 个文件属于 {groups.length} 个不同券商（
@@ -425,17 +482,18 @@ export default function BrokerImport() {
               const importable = groupFiles.filter((f) => detectOk(f));
               if (importable.length === 0) return null;
               const code = brokerCode.trim();
+              const isDisabled = !code || busy || conflictingHints !== null;
               return (
                 <div key={key} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                   <button
                     style={{ ...buttonStyle, ...primaryButton }}
                     onClick={() => void runConfirmGroup(code, importable)}
-                    disabled={!code || busy}
+                    disabled={isDisabled}
                   >
                     确认导入【{key}】（{importable.length} 个文件）
                   </button>
                   <span style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
-                    券商：{code} · 这将写入事实层记录，可随时撤销批次
+                    券商：{code || '（请先填写券商标识）'} · 这将写入事实层记录，可随时撤销批次
                   </span>
                 </div>
               );

@@ -23,6 +23,8 @@ import {
   getTemplate,
   rowHashOf,
   normalizeBrokerRow,
+  normalizeAssetCode,
+  buildCode6Dict,
 } from '../../src/services/broker/brokerImport.js';
 import { parseBrokerFile } from '../../src/services/broker/brokerParser.js';
 import type { BrokerFileInput } from '../../src/services/broker/types.js';
@@ -223,5 +225,77 @@ describe('T122 · 映射模板（UNIQUE 幂等）', () => {
       .get() as { c: number };
     expect(rows.c).toBe(1);
     expect(getTemplate(db, 9008, '国泰', 'trade')!.mappingJson).toBe('{"symbol":5}');
+  });
+});
+
+/**
+ * PR#60 review 修复：normalizeAssetCode 字典权威 + 启发式兜底修正。
+ * 背景：旧启发式按首位推断，920xxx（北交所）被错标成 sh（实测 raw_symbol_name：
+ *   d1=9 → bj92xxxx 354 只 / sh900xxx 41 只 B 股）；12/13 可转债被错标成 sh。
+ * 规则：① symbol_dict code6 唯一命中 → 直接采用（权威）；② 字典歧义 → 保留裸码；
+ *   ③ 兜底启发式按实测分布修正（92→bj / 90→sh；1x：10/11→sh，12/13/15/16/18→sz）。
+ */
+describe('PR#60 review · normalizeAssetCode 字典权威 + 兜底修正', () => {
+  it('字典唯一命中 → 采用字典 symbol（北交所 920xxx 不再错标 sh）', () => {
+    const dict = new Map<string, string | null>([['920001', 'bj920001']]);
+    expect(normalizeAssetCode('920001', dict)).toBe('bj920001');
+    expect(normalizeAssetCode('600000', dict)).toBe('sh600000');
+  });
+
+  it('字典歧义（同 code6 两市并存）→ 保留裸码不猜', () => {
+    const dict = new Map<string, string | null>([['300750', null]]);
+    expect(normalizeAssetCode('300750', dict)).toBe('300750');
+  });
+
+  it('无字典兜底：920xxx→bj / 900xxx→sh / 12/13 可转债→sz', () => {
+    expect(normalizeAssetCode('920001')).toBe('bj920001');
+    expect(normalizeAssetCode('900901')).toBe('sh900901');
+    expect(normalizeAssetCode('123456')).toBe('sz123456');
+    expect(normalizeAssetCode('127012')).toBe('sz127012');
+    expect(normalizeAssetCode('159915')).toBe('sz159915');
+    expect(normalizeAssetCode('510300')).toBe('sh510300');
+    expect(normalizeAssetCode('600000')).toBe('sh600000');
+  });
+
+  it('无字典兜底：14/17/19 未知段不猜，原样返回', () => {
+    expect(normalizeAssetCode('140001')).toBe('140001');
+    expect(normalizeAssetCode('170001')).toBe('170001');
+    expect(normalizeAssetCode('190001')).toBe('190001');
+  });
+
+  it('带前缀码原样返回（小写归一），非法输入返回 null/原样', () => {
+    expect(normalizeAssetCode('SH600000')).toBe('sh600000');
+    expect(normalizeAssetCode('sz000001')).toBe('sz000001');
+    expect(normalizeAssetCode(null)).toBeNull();
+    expect(normalizeAssetCode('')).toBeNull();
+    expect(normalizeAssetCode('ABC')).toBe('ABC');
+  });
+
+  it('buildCode6Dict：从 symbol_dict 建 code6→symbol 映射；同 code6 多 symbol → 歧义 null', () => {
+    // 测试库 symbol_dict 为空（无行情库）→ 空映射，走启发式
+    const empty = buildCode6Dict(db);
+    expect(empty.size).toBe(0);
+    // 造两条：一条唯一命中、一条同 code6 两个 symbol → 歧义
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('bj920999','920999','测试北交A','','bj','unknown','risk')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sh600001','600001','测试沪A','','sh','unknown','risk')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sz600001','600001','测试深A','','sz','unknown','risk')`,
+    ).run();
+    try {
+      const dict = buildCode6Dict(db);
+      expect(dict.get('920999')).toBe('bj920999');
+      expect(dict.get('600001')).toBeNull(); // 歧义
+      expect(normalizeAssetCode('920999', dict)).toBe('bj920999');
+      expect(normalizeAssetCode('600001', dict)).toBe('600001');
+    } finally {
+      db.prepare(`DELETE FROM symbol_dict WHERE code6 IN ('920999','600001')`).run();
+    }
   });
 });
