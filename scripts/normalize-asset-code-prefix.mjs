@@ -27,7 +27,9 @@ function normalize(code) {
 
 const run = db.transaction(() => {
   const rows = db
-    .prepare(`SELECT id, asset_code FROM user_trade_record WHERE asset_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'`)
+    .prepare(
+      `SELECT id, asset_code FROM user_trade_record WHERE asset_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'`,
+    )
     .all();
   const update = db.prepare(`UPDATE user_trade_record SET asset_code = ? WHERE id = ?`);
   let changed = 0;
@@ -40,7 +42,9 @@ const run = db.transaction(() => {
   }
   // 同步 user_asset_rel（关联表也用 asset_code）
   const relRows = db
-    .prepare(`SELECT id, asset_code FROM user_asset_rel WHERE asset_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]' AND is_deleted = 0`)
+    .prepare(
+      `SELECT id, asset_code FROM user_asset_rel WHERE asset_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]' AND is_deleted = 0`,
+    )
     .all();
   const relUpdate = db.prepare(`UPDATE user_asset_rel SET asset_code = ? WHERE id = ?`);
   for (const r of relRows) {
