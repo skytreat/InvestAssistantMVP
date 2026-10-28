@@ -45,6 +45,7 @@ interface ConfirmResult {
   rowDeduped?: number;
   rowExcluded?: number;
   duplicateFile?: boolean;
+  unknownAssets?: string[];
 }
 
 /** 导入批次（GET /api/broker-import/batches 的 batch 行，字段见 broker_import_batch DDL） */
@@ -475,6 +476,20 @@ export default function BrokerImport() {
                   ))}
                 </tbody>
               </table>
+              {g.results.some((r) => (r.result.unknownAssets?.length ?? 0) > 0) && (
+                <div style={{ ...warningBox, marginTop: 8 }}>
+                  <strong>以下标的代码在系统中未找到：</strong>
+                  <div style={{ fontSize: TYPO.smallSize, marginTop: 4 }}>
+                    {g.results
+                      .flatMap((r) => r.result.unknownAssets ?? [])
+                      .filter((v, i, a) => a.indexOf(v) === i)
+                      .join('、')}
+                  </div>
+                  <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted, marginTop: 4 }}>
+                    这些标的无法参与行情匹配与收益计算，请检查代码是否正确。
+                  </div>
+                </div>
+              )}
               <button
                 style={{ ...buttonStyle, ...primaryButton, marginTop: 8 }}
                 onClick={() => navigate(`/broker/reconcile?brokerCode=${encodeURIComponent(g.key)}`)}

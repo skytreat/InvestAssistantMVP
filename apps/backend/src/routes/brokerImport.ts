@@ -19,7 +19,27 @@ import {
   getTemplate,
 } from '../services/broker/brokerImport.js';
 import { backfillTradeTime } from '../services/broker/brokerReconcile.js';
+import type { Database } from 'better-sqlite3';
 import type { BrokerFileInput } from '../services/broker/types.js';
+
+/** 检查批次中 asset_code 在 symbol_dict 中不存在的标的（返回空数组 = 全部存在或字典为空） */
+function findUnknownAssets(db: Database, userId: number, batchId: number): string[] {
+  const codes = db
+    .prepare(
+      `SELECT DISTINCT asset_code FROM broker_trade_record
+       WHERE user_id = ? AND import_batch_id = ? AND is_deleted = 0 AND asset_code IS NOT NULL`,
+    )
+    .all(userId, batchId) as Array<{ asset_code: string }>;
+  if (codes.length === 0) return [];
+  const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
+  if (dictCount === 0) return []; // 字典未同步，跳过检查
+  const ph = codes.map(() => '?').join(',');
+  const found = db
+    .prepare(`SELECT DISTINCT symbol FROM symbol_dict WHERE symbol IN (${ph})`)
+    .all(...codes.map((c) => c.asset_code)) as Array<{ symbol: string }>;
+  const foundSet = new Set(found.map((f) => f.symbol));
+  return codes.map((c) => c.asset_code).filter((c) => !foundSet.has(c));
+}
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // SDD §3：上传 10MB 上限，扩展名不可信 → 以内容嗅探为准
 
@@ -136,7 +156,9 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
       const r = await importBrokerFile(db, userId, brokerCode, input);
       // 导入后自动回填：交割单缺 trade_time 时，从该券商已有成交流水行补齐（L1/L2/L3）
       const backfill = backfillTradeTime(db, userId, brokerCode);
-      return ok({ ...r, backfill });
+      // 检查标的代码是否在系统字典中存在
+      const unknownAssets = findUnknownAssets(db, userId, r.batchId);
+      return ok({ ...r, backfill, unknownAssets });
     } catch (e) {
       return reply
         .code(422)
@@ -186,7 +208,15 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     }
     // 全部导入完成后统一回填一次（交割单缺 trade_time ← 成交流水）
     const backfill = backfillTradeTime(db, userId, brokerCode);
-    return ok({ files: results, backfill });
+    // 检查所有批次中的标的代码是否在系统字典中存在
+    const unknownAssets = new Set<string>();
+    for (const r of results) {
+      const bid = (r as { batchId?: number }).batchId;
+      if (bid) {
+        for (const code of findUnknownAssets(db, userId, bid)) unknownAssets.add(code);
+      }
+    }
+    return ok({ files: results, backfill, unknownAssets: [...unknownAssets] });
   });
 
   // 批次列表（含统计与撤销入口信息）
