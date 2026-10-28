@@ -18,6 +18,7 @@ import {
   saveTemplate,
   getTemplate,
 } from '../services/broker/brokerImport.js';
+import { backfillTradeTime } from '../services/broker/brokerReconcile.js';
 import type { BrokerFileInput } from '../services/broker/types.js';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // SDD §3：上传 10MB 上限，扩展名不可信 → 以内容嗅探为准
@@ -129,14 +130,57 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     const got = toInput(body);
     if (got.err) return reply.code(got.err.code).send(got.err.body);
     const input = got.input!;
+    const db = ConfigStore.getInstance().db;
+    const brokerCode = body.brokerCode.trim();
     try {
-      const r = await importBrokerFile(ConfigStore.getInstance().db, userId, body.brokerCode.trim(), input);
-      return ok(r);
+      const r = await importBrokerFile(db, userId, brokerCode, input);
+      // 导入后自动回填：交割单缺 trade_time 时，从该券商已有成交流水行补齐（L1/L2/L3）
+      const backfill = backfillTradeTime(db, userId, brokerCode);
+      return ok({ ...r, backfill });
     } catch (e) {
       return reply
         .code(422)
         .send(fail(422, 'BROKER_IMPORT_FAILED', e instanceof Error ? e.message : String(e)));
     }
+  });
+
+  // 批量确认导入（同券商多文件一次提交，如成交流水+交割单；导入后自动回填 trade_time）
+  app.post('/api/broker-import/confirm-batch', async (request, reply) => {
+    const req = request as { user?: { sub?: number | string; role?: string } };
+    const userId = userIdOf(req);
+    if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    if (req.user?.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
+    const body = request.body as { brokerCode?: string; files?: UploadBody[] };
+    if (!body?.brokerCode?.trim()) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
+    }
+    if (!Array.isArray(body.files) || body.files.length === 0) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', 'files 不能为空'));
+    }
+    if (body.files.length > 5) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', '单次批量导入不超过 5 个文件'));
+    }
+    const db = ConfigStore.getInstance().db;
+    const brokerCode = body.brokerCode.trim();
+    const results: Array<Record<string, unknown>> = [];
+    for (const f of body.files) {
+      const got = toInput(f);
+      if (got.err) {
+        return reply.code(got.err.code).send(got.err.body);
+      }
+      try {
+        const r = await importBrokerFile(db, userId, brokerCode, got.input!);
+        results.push({ filename: f.filename, ...r });
+      } catch (e) {
+        return reply
+          .code(422)
+          .send(fail(422, 'BROKER_IMPORT_FAILED', `文件 ${f.filename}: ${e instanceof Error ? e.message : String(e)}`));
+      }
+    }
+    // 全部导入完成后统一回填一次（交割单缺 trade_time ← 成交流水）
+    const backfill = backfillTradeTime(db, userId, brokerCode);
+    return ok({ files: results, backfill });
   });
 
   // 批次列表（含统计与撤销入口信息）
