@@ -615,8 +615,9 @@ transfer         -> 忽略（转托管不改变总持仓）
 |---|---|---|
 | `/api/broker-import/upload` | POST | 上传文件 → 探测 + 预览 + 映射建议（**不落库**） |
 | `/api/broker-import/preview` | POST | 按给定映射重新预览 |
-| `/api/broker-import/confirm` | POST | 确认导入 → 落事实层（**不写系统记录**） |
-| `/api/broker-import/batches` | GET | 导入批次列表（含统计与撤销入口） |
+ | `/api/broker-import/confirm` | POST | 确认导入 → 落事实层（**不写系统记录**）；导入后自动调用 `backfillTradeTime` 回填交割单缺失的 `trade_time`（L1/L2/L3），响应体含 `backfill` 统计 |
+ | `/api/broker-import/confirm-batch` | POST | 同券商多文件一次提交（≤5 个，如成交流水+交割单）；全部导入后统一回填一次；**不支持跨券商**（body 仅一个 `brokerCode`） |
+ | `/api/broker-import/batches` | GET | 导入批次列表（含统计与撤销入口） |
 | `/api/broker-import/batches/:id/revoke` | POST | 撤销批次（软删该批次全部事实层记录） |
 | `/api/broker-import/templates` | GET / POST | 列映射模板的读取 / 保存 |
 
