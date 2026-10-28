@@ -256,6 +256,29 @@ export function backfillTradeTime(
         upd.run(src.trade_time, level === 'L3' ? 'FUZZY' : 'MATCHED', level, src.id, s.id, userId);
       }
     }
+
+    // 补充：交割单行无法从成交流水回填 trade_time，但 (asset_code, trade_date)
+    // 在 user_trade_record 中已存在（如成交流水已补录）→ 直接置 MATCHED，
+    // 避免"缺失=0 但差异明细仍有可补录"的语义矛盾
+    const sysKeys = db
+      .prepare(
+        `SELECT DISTINCT asset_code, trade_date FROM user_trade_record
+         WHERE user_id = ? AND is_deleted = 0
+           AND trade_type IN ('buy','add','reduce','clear','dividend','bonus')`,
+      )
+      .all(userId) as Array<{ asset_code: string; trade_date: string }>;
+    const sysSet = new Set(sysKeys.map((k) => `${k.asset_code}|${k.trade_date}`));
+    const markMatched = db.prepare(
+      `UPDATE broker_trade_record SET match_status = 'MATCHED', match_confidence = 'L0'
+       WHERE id = ? AND user_id = ? AND match_status = 'MISSING'`,
+    );
+    for (const s of settlement) {
+      if (!s.asset_code || !s.trade_date) continue;
+      if (s.match_status !== 'MISSING') continue; // 已被上面 L1/L2/L3 处理
+      if (sysSet.has(`${s.asset_code}|${s.trade_date}`)) {
+        markMatched.run(s.id, userId);
+      }
+    }
   });
   run();
 
