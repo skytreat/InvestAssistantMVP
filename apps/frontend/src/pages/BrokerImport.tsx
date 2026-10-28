@@ -303,13 +303,16 @@ export default function BrokerImport() {
               type="file"
               accept=".xlsx,.xls,.csv,.txt"
               multiple
-              onChange={(e) => {
-                const fs = Array.from(e.target.files ?? []);
-                setFiles(fs);
-                setDetects({});
-                setConfirmResults([]);
-                fs.forEach((f) => void runDetect(f, fs.length));
-              }}
+               onChange={(e) => {
+                 const fs = Array.from(e.target.files ?? []);
+                 // 追加而非替换：多次选择不覆盖已选文件（按 name+size 去重）
+                 setFiles((prev) => {
+                   const seen = new Set(prev.map((f) => `${f.name}|${f.size}`));
+                   return [...prev, ...fs.filter((f) => !seen.has(`${f.name}|${f.size}`))];
+                 });
+                 setConfirmResults([]);
+                 fs.forEach((f) => void runDetect(f, fs.length));
+               }}
               style={{ fontSize: TYPO.smallSize }}
             />
           </label>
