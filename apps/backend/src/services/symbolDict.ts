@@ -61,17 +61,20 @@ export async function syncSymbolDict(): Promise<number> {
   return n;
 }
 
-/** 确保快照非空（空则尝试同步；失败静默） */
-export async function ensureSymbolDict(): Promise<void> {
+/** 确保快照非空（空则尝试同步；失败静默）。返回同步后的快照行数。 */
+export async function ensureSymbolDict(): Promise<number> {
   const db = ConfigStore.getInstance().db;
-  const cnt = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
+  const count = (): number => (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
+  let cnt = count();
   if (cnt === 0) {
     try {
       await syncSymbolDict();
     } catch {
       /* ignore */
     }
+    cnt = count();
   }
+  return cnt;
 }
 
 /** 联想查询（业务层快照，不扫行情层） */

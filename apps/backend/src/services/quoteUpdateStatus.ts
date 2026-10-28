@@ -23,9 +23,12 @@ export const TDX2DB_UNIT = 'tdx2db.service';
 
 /**
  * 一轮 17:00 更新的判定时限。
- * 超过 30 分钟仍看到的「最近一次运行」不属于本轮 ⇒ 视为未触发。
+ *
+ * 17:01 校验会等待 tdx2db 写窗口结束（默认最长 35 分钟，对齐 `TimeoutStartSec=1800`
+ * 再加 5 分钟余量），因此这里必须比等待窗口更宽：否则一次正常但耗时 31 分钟的更新
+ * 会在等待结束后被误判为「不属于本轮」。45 分钟 > 35 分钟等待上限。
  */
-const MAX_RUN_AGE_MS = 30 * 60 * 1000;
+const MAX_RUN_AGE_MS = 45 * 60 * 1000;
 
 export type Tdx2dbRunState = 'SUCCESS' | 'FAIL' | 'NOT_RUN' | 'RUNNING' | 'UNKNOWN';
 

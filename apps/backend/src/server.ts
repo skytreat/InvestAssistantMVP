@@ -50,7 +50,9 @@ async function bootstrap() {
   if (process.env.DISABLE_CRON !== '1') {
     await app.register(schedule);
     registerCronJobs(app);
-    app.log.info('Cron 任务已注册（17:01 校验 / 17:02 信号 / 17:03 除权 / 17:05 备份）');
+    app.log.info(
+      'Cron 任务已注册（17:01 校验 / 17:02 信号 / 17:03 除权 / 17:05 备份，等待行情更新完成后串行执行）',
+    );
   } else {
     app.log.warn('DISABLE_CRON=1 — 跳过 cron 注册');
   }

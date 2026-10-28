@@ -256,6 +256,21 @@ CREATE TABLE IF NOT EXISTS asset_class (
 );
 CREATE INDEX IF NOT EXISTS idx_asset_class_kind ON asset_class(asset_class);
 
+-- 标的字典快照（T136，V3 SDD_v3 §11.1.4）：联想走业务层快照，不扫行情层。
+-- 由 symbolDict.syncSymbolDict() 从行情层只读同步；pinyin 为预计算首字母。
+CREATE TABLE IF NOT EXISTS symbol_dict (
+    symbol        TEXT PRIMARY KEY,
+    code6         TEXT NOT NULL,
+    name          TEXT,
+    pinyin        TEXT,
+    market        TEXT,
+    class         TEXT,
+    asset_class   TEXT NOT NULL CHECK (asset_class IN ('risk', 'cash')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_dict_code6 ON symbol_dict(code6);
+CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
+
 -- V3（T122，SDD_v3 §11.1.1）事实层：券商原始记录。
 -- 幂等键 = row_hash（归一化内容 SHA-256）+ content_seq（同哈希在批次内出现序号，
 --   「同内容多笔」不被误判为重复，「同文件重复上传」被识别为重复，INV-S2-39）。
