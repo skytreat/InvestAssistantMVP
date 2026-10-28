@@ -71,6 +71,7 @@ describe('configStore — DDL 表创建', () => {
       'user_strategy_signal',
       'user_plugin_config',
       'user_asset_stat',
+      'symbol_dict',
       'system_log',
     ];
     for (const t of tables) {

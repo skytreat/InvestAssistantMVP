@@ -25,10 +25,12 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
     }
 
     try {
-      await ensureSymbolDict();
-      const db = ConfigStore.getInstance().db;
-      const rows = searchSymbolDict(db, keyword, 20);
-      if (rows.length > 0) {
+      const snapshotCount = await ensureSymbolDict();
+      if (snapshotCount > 0) {
+        // 快照已就绪：无论是否命中都只查业务层，**不再回退 DuckDB**。
+        // 否则每次「无匹配」都会打开行情库，既慢又会把 CI 空库变成 500。
+        const db = ConfigStore.getInstance().db;
+        const rows = searchSymbolDict(db, keyword, 20);
         return reply.send(
           ok(
             rows.map((r) => ({
@@ -44,7 +46,7 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
           ),
         );
       }
-      // 快照为空（CI 无行情库）时回退 DuckDB
+      // 快照为空（CI 无行情库 / 首次同步失败）时回退 DuckDB
       const fallback = await queryDuckDB<SymbolRow>(
         `SELECT symbol, name FROM raw_symbol_name
          WHERE symbol LIKE ? OR name LIKE ?
