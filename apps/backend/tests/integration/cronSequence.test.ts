@@ -129,6 +129,7 @@ vi.mock('../../src/services/quoteRerun.js', () => ({
 import { registerCronJobs, runDatacheckWithRerun } from '../../src/services/scheduler.js';
 import { runAllChecks } from '../../src/services/validator.js';
 import { rerunQuoteUpdate } from '../../src/services/quoteRerun.js';
+import * as duckdbNs from '../../src/db/duckdb.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** 仓库根目录（apps/backend/tests/integration → 上 4 层） */
@@ -314,6 +315,41 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
 
       scheduler.stop();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cron_sequence_trigger: 写窗口结束前四段都不执行，结束后按序执行', async () => {
+    vi.useFakeTimers();
+    let sentinelPresent = true;
+    const sentinelSpy = vi
+      .spyOn(duckdbNs, 'isDuckDBWriteSentinelPresent')
+      .mockImplementation(() => sentinelPresent);
+    const scheduler = new ToadScheduler();
+
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+    };
+
+    try {
+      vi.setSystemTime(new Date('2026-10-20T08:59:00Z'));
+      registerCronJobs({ scheduler } as any);
+
+      // 16:59 → 17:05：四段 Cron 都已到点，但 tdx2db 仍在写库
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      await flush();
+      expect(fired, '写窗口内四段都不得执行').toEqual([]);
+
+      // 模拟 tdx2db 完成（哨兵删除）
+      sentinelPresent = false;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flush();
+
+      // 队列按 校验 → 信号 → 除权 → 备份 放行
+      expect(fired).toEqual(['datacheck', 'signal', 'dividend', 'backup']);
+    } finally {
+      scheduler.stop();
+      sentinelSpy.mockRestore();
       vi.useRealTimers();
     }
   });

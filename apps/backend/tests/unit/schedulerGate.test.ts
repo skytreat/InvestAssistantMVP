@@ -144,5 +144,7 @@ describe('T106 校验闸门', () => {
     expect(result.action).toBe('WAIT_TIMEOUT');
     expect(reportSpy).not.toHaveBeenCalled();
     expect(validatorNs.runAllChecks).not.toHaveBeenCalled();
+    const updateLog = logs().find((l) => l.logType === 'tdx2db_update' && l.level === 'WARN');
+    expect(updateLog?.message).toContain('未结束');
   });
 });

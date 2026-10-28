@@ -1593,12 +1593,11 @@ sequenceDiagram
 ```
 17:01 Fastify cron 触发
     │
-    ├─ Step 1: 等待 tdx2db 完成（最多等到 17:05，即 4 分钟窗口）
-    │   ├─ 查询 systemd tdx2db.service 最近一次运行状态
-    │   ├─ 如果 tdx2db 尚未运行或正在运行 → 每 5 秒轮询一次
-    │   ├─ 如果 tdx2db 已完成（exit_code=0）→ 进入 Step 2
-    │   ├─ 如果 tdx2db 已完成但失败（exit_code≠0）→ 进入 Step 3 补跑
-    │   └─ 超时（17:05 到了 tdx2db 还没好）→ 进入 Step 3 补跑（用当前快照继续，不阻塞）
+    ├─ Step 1: 等待 tdx2db 写窗口结束（`.tdx2db-writing` 消失；默认最长 35 分钟）
+    │   ├─ 17:01 起每 1 秒轮询哨兵
+    │   ├─ 哨兵消失 → `systemctl show` 读取最近一次运行结果，进入 Step 2
+    │   ├─ 超过等待上限 → 写 datacheck/WARN，跳过当天剩余段（不读半写数据）
+    │   └─ 后三段（信号/除权/备份）通过串行队列等待校验段完成
     │   ├─ Step 2: 判断数据有效性
     │   ├─ 查 DuckDB v_stock_qfq 最新 `date` 列
     │   ├─ 如果 == 今天 → 进入 C1-C12 校验（§5.7）
@@ -1615,7 +1614,7 @@ sequenceDiagram
     │   └─ exit_code≠0 或 timeout → ERROR + SKIP，不阻塞第二天
     │
     └─ Step 4: 串行执行剩余 3 段（信号 / 除权 / 备份）
-        ├─ 如果 Step 2/3 判定继续 → 17:02 信号、17:03 除权、17:05 备份
+        ├─ 如果 Step 2/3 判定继续 → cron 到点后排队，按 校验→信号→除权→备份 依次执行
         └─ 如果 Step 2/3 判定 SKIP → 跳过所有，写 system_log 记录原因
 ```
 
