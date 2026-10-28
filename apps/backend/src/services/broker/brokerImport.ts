@@ -17,7 +17,35 @@ import { parseBrokerFile } from './brokerParser.js';
 import { normalizeEvent, isExcludedFromSystemRecord } from './eventNormalize.js';
 import type { BrokerFileInput, BrokerFileParseResult } from './types.js';
 
-export const PARSER_VERSION = 'v3.1.0';
+export const PARSER_VERSION = 'v3.1.1';
+
+/**
+ * 标的代码前缀归一化（2026-10-28）：
+ * 券商文件中的 6 位裸码（如 600000）→ 带市场前缀（sh600000），与 user_trade_record /
+ * raw_symbol_name 格式对齐。已有前缀的码（sh600000）原样返回。
+ */
+export function normalizeAssetCode(raw: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // 已有前缀（sh/sz/bj 开头 + 6 位数字）→ 原样
+  if (/^(sh|sz|bj)\d{6}$/i.test(trimmed)) return trimmed.toLowerCase();
+  // 纯 6 位数字 → 按首位推断市场
+  if (/^\d{6}$/.test(trimmed)) {
+    const first = trimmed[0];
+    if (first === '6' || first === '9' || first === '5' || first === '7') return `sh${trimmed}`;
+    if (first === '0' || first === '3' || first === '2') return `sz${trimmed}`;
+    if (first === '4' || first === '8') return `bj${trimmed}`;
+    if (first === '1') {
+      // 1xxxxx：10-13 → sh（上交所基金），15-19 → sz（深交所基金/ETF）
+      const second = trimmed[1];
+      return Number(second) <= 3 ? `sh${trimmed}` : `sz${trimmed}`;
+    }
+    return trimmed; // 未知前缀，原样返回
+  }
+  // 其他格式（含字母、短码等）原样返回
+  return trimmed;
+}
 
 export interface ImportResult {
   batchId: number;
@@ -47,7 +75,7 @@ export function normalizeBrokerRow(
   return {
     event_type: norm.event_type,
     raw_event_type: norm.raw_event_type,
-    asset_code: col('symbol') ?? null,
+    asset_code: normalizeAssetCode(col('symbol') ?? null),
     raw_symbol: col('symbol') ?? null,
     raw_name: col('name') ?? null,
     market: norm.market ?? null,
