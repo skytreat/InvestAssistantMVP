@@ -88,7 +88,7 @@ describe('T105 行情更新结果归集', () => {
     expect(status.message).toContain('失败');
   });
 
-  it('最近一次运行是昨天的 / 超过 30 分钟 → NOT_RUN', () => {
+  it('最近一次运行是昨天的 → NOT_RUN', () => {
     const status = classifyTdx2dbStatus(
       parseSystemctlShow(
         show({
@@ -100,6 +100,20 @@ describe('T105 行情更新结果归集', () => {
     );
     expect(status.state).toBe('NOT_RUN');
     expect(status.message).toContain('不属于本轮');
+  });
+
+  it('17:00 更新耗时 32 分钟仍属本轮（Node 会等到写窗口结束再判状态）', () => {
+    const status = classifyTdx2dbStatus(
+      parseSystemctlShow(
+        show({
+          ExecMainStartTimestamp: 'Fri 2026-10-23 17:00:02 UTC',
+          ExecMainExitTimestamp: 'Fri 2026-10-23 17:32:02 UTC',
+        }),
+      ),
+      Date.parse('2026-10-23T17:32:10Z'),
+    );
+    expect(status.state).toBe('SUCCESS');
+    expect(status.durationSec).toBe(32 * 60);
   });
 
   it('无任何运行记录 → NOT_RUN', () => {

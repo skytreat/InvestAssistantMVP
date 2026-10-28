@@ -218,6 +218,12 @@ sudo journalctl -u caddy -f
 Fastify 在 17:00 窗口内检测到哨兵后会释放 DuckDB 读连接；外部写完成后惰性重建。
 Node 自己触发补跑时走 `rerunQuoteUpdate()` 的主动让锁路径（ADR-012）。
 
+> **等待写窗口**：17:01 校验会轮询 `.tdx2db-writing`，默认最长等待 **35 分钟**
+> （`tdx2db.service` 的 `TimeoutStartSec=1800` + 5 分钟余量；可用
+> `TDX2DB_SENTINEL_WAIT_MS` 覆盖）。后三段通过串行队列等待前一段完成，
+> 因此 tdx2db 即使运行 10+ 分钟，四段也会在更新结束后按
+> 「校验 → 信号 → 除权 → 备份」执行，而不是在 17:01-17:05 各自撞写窗口。
+
 **更新结果可见性（T105/T106）**：17:01 会执行 `systemctl show tdx2db.service`，把
 `Result` / `ExecMainStatus` / 起止时间写入 `system_log`（`log_type=tdx2db_update`）。
 失败或未触发时校验会跳过，但会写 `datacheck/ERROR`，不会再出现「无数据却 ERROR=0 WARN=0」。
