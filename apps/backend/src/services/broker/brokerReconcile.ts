@@ -174,12 +174,17 @@ export function backfillTradeTime(
   let matched = 0;
   let lowConfidence = 0;
 
+  // 日期归一化：YYYYMMDD → YYYY-MM-DD（两种文件格式并存，匹配前必须统一）
+  const normDate = (d: string): string =>
+    d.includes('-') ? d : `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+
   // L1：稳定标识（当前实现：同（标的,日期,价,量）且成交流水侧已有时间 ⇒ 视为标识匹配命中，
   //     记 L1；完整「成交编号=合同序号」通道待映射模板把 tradeId 固化后升级（V3-B 登记）
+  // ⚠️ trade_date 必须归一化后再拼 key，否则 YYYYMMDD 与 YYYY-MM-DD 互不命中
   const tradeByKey = new Map<string, FactRow[]>();
   for (const t of trade) {
     if (!t.asset_code || !t.trade_date) continue;
-    const k = `${t.asset_code}|${t.trade_date}|${directionOf(t.event_type, t.raw_event_type)}|${t.price}|${t.quantity}`;
+    const k = `${t.asset_code}|${normDate(t.trade_date)}|${directionOf(t.event_type, t.raw_event_type)}|${t.price}|${t.quantity}`;
     const arr = tradeByKey.get(k);
     if (arr) arr.push(t);
     else tradeByKey.set(k, [t]);
@@ -211,7 +216,8 @@ export function backfillTradeTime(
       const dir = directionOf(s.event_type, s.raw_event_type);
 
       // L1：精确内容键（同标的同日同方向同价量）直接命中 ⇒ 时间权威源 = 成交流水日期/时间
-      const exactKey = `${s.asset_code}|${s.trade_date}|${dir}|${s.price}|${s.quantity}`;
+      // ⚠️ 交割单侧 trade_date 也必须归一化（交割单可能存 YYYYMMDD）
+      const exactKey = `${s.asset_code}|${normDate(s.trade_date)}|${dir}|${s.price}|${s.quantity}`;
       let hit = tradeByKey.get(exactKey);
       let level: 'L1' | 'L2' | 'L3' = 'L1';
 
@@ -260,6 +266,7 @@ export function backfillTradeTime(
     // 补充：交割单行无法从成交流水回填 trade_time，但 (asset_code, trade_date)
     // 在 user_trade_record 中已存在（如成交流水已补录）→ 直接置 MATCHED，
     // 避免"缺失=0 但差异明细仍有可补录"的语义矛盾
+    // ⚠️ trade_date 归一化：broker_trade_record 可能存 YYYYMMDD，user_trade_record 恒为 YYYY-MM-DD
     const sysKeys = db
       .prepare(
         `SELECT DISTINCT asset_code, trade_date FROM user_trade_record
@@ -267,7 +274,9 @@ export function backfillTradeTime(
            AND trade_type IN ('buy','add','reduce','clear','dividend','bonus')`,
       )
       .all(userId) as Array<{ asset_code: string; trade_date: string }>;
-    const sysSet = new Set(sysKeys.map((k) => `${k.asset_code}|${k.trade_date}`));
+    const sysSet = new Set(
+      sysKeys.map((k) => `${k.asset_code}|${normDate(k.trade_date)}`),
+    );
     const markMatched = db.prepare(
       `UPDATE broker_trade_record SET match_status = 'MATCHED', match_confidence = 'L0'
        WHERE id = ? AND user_id = ? AND match_status = 'MISSING'`,
@@ -275,7 +284,7 @@ export function backfillTradeTime(
     for (const s of settlement) {
       if (!s.asset_code || !s.trade_date) continue;
       if (s.match_status !== 'MISSING') continue; // 已被上面 L1/L2/L3 处理
-      if (sysSet.has(`${s.asset_code}|${s.trade_date}`)) {
+      if (sysSet.has(`${s.asset_code}|${normDate(s.trade_date)}`)) {
         markMatched.run(s.id, userId);
       }
     }
