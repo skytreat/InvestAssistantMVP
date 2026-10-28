@@ -202,6 +202,7 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'POST', url: '/api/broker-import/upload', payload: {} },
   { method: 'POST', url: '/api/broker-import/preview', payload: {} },
   { method: 'POST', url: '/api/broker-import/confirm', payload: {} },
+  { method: 'POST', url: '/api/broker-import/confirm-batch', payload: {} },
   { method: 'GET', url: '/api/broker-import/batches' },
   { method: 'POST', url: '/api/broker-import/batches/:id/revoke', payload: {} },
   { method: 'GET', url: '/api/broker-import/templates' },

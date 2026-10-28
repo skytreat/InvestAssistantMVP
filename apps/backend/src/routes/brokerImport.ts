@@ -175,7 +175,13 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply
           .code(422)
-          .send(fail(422, 'BROKER_IMPORT_FAILED', `文件 ${f.filename}: ${e instanceof Error ? e.message : String(e)}`));
+          .send(
+            fail(
+              422,
+              'BROKER_IMPORT_FAILED',
+              `文件 ${f.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            ),
+          );
       }
     }
     // 全部导入完成后统一回填一次（交割单缺 trade_time ← 成交流水）
