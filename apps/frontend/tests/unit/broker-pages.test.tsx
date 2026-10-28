@@ -407,8 +407,8 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     await user.upload(fileInput, [new File(['a'], 'gt-a.csv'), new File(['b'], 'ht-b.csv')] as never);
 
-    // 分批导入提示 + 两个按券商分组的确认按钮
-    await waitFor(() => expect(screen.getByText(/分批导入/)).toBeInTheDocument());
+    // 跨券商限制提示 + 两个按券商分组的确认按钮
+    await waitFor(() => expect(screen.getByText(/不支持跨券商批量导入/)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /确认导入【华泰证券】/ })).toBeInTheDocument();
 

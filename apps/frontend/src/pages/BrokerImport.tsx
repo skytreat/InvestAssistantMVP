@@ -406,8 +406,14 @@ export default function BrokerImport() {
                 {groups.map(([k]) => k).join('、')}）。
               </strong>
               <div style={{ fontSize: TYPO.smallSize }}>
-                请<strong>分批导入</strong>：每个券商各成一个批次（确认导入按券商分组逐批执行）。
+                <strong>不支持跨券商批量导入</strong>：每次批量确认仅接受同一券商的多文件（如成交流水 +
+                交割单）。不同券商须<strong>分别点击</strong>下方各券商的「确认导入」按钮，逐批执行。
               </div>
+            </div>
+          )}
+          {groups.length === 1 && groups[0][1].length > 1 && (
+            <div style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary, marginBottom: 8 }}>
+              同券商多文件（如成交流水 + 交割单）可一次批量导入，导入后自动回填交割单缺失的成交时间。
             </div>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
