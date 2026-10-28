@@ -421,9 +421,9 @@ export default function BrokerImport() {
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {groups.map(([key, groupFiles]) => {
-              const code = brokerCode.trim() || key;
               const importable = groupFiles.filter((f) => detectOk(f));
               if (importable.length === 0) return null;
+              const code = brokerCode.trim();
               return (
                 <div key={key} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                   <button

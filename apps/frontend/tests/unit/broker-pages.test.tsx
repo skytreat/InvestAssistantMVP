@@ -412,7 +412,8 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
     expect(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /确认导入【华泰证券】/ })).toBeInTheDocument();
 
-    // 点国泰组 → 只确认该组文件（brokerCode=国泰君安证券）
+    // 填券商标识 → 按钮启用 → 点国泰组
+    await user.type(screen.getByPlaceholderText(/必填/), '国泰君安证券');
     await user.click(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ }));
     await waitFor(() => {
       expect(
