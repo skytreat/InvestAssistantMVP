@@ -274,9 +274,7 @@ export function backfillTradeTime(
            AND trade_type IN ('buy','add','reduce','clear','dividend','bonus')`,
       )
       .all(userId) as Array<{ asset_code: string; trade_date: string }>;
-    const sysSet = new Set(
-      sysKeys.map((k) => `${k.asset_code}|${normDate(k.trade_date)}`),
-    );
+    const sysSet = new Set(sysKeys.map((k) => `${k.asset_code}|${normDate(k.trade_date)}`));
     const markMatched = db.prepare(
       `UPDATE broker_trade_record SET match_status = 'MATCHED', match_confidence = 'L0'
        WHERE id = ? AND user_id = ? AND match_status = 'MISSING'`,
