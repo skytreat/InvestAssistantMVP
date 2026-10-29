@@ -31,9 +31,14 @@ import { ensureSymbolDict } from '../services/symbolDict.js';
 /** 未知标的拒绝文案：最多列 20 个代码，避免错误消息过长 */
 function unknownAssetsMessage(details: UnknownAssetDetail[]): string {
   const parts = details.map((d) => {
-    const shown = d.assetCodes.slice(0, 20);
-    const more = d.assetCodes.length > shown.length ? ` 等 ${d.assetCodes.length} 个` : '';
-    return `${d.filename}: ${shown.join('、')}${more}`;
+    const shownCodes = d.assetCodes.slice(0, 20);
+    const shownNames = d.assetNames?.slice(0, 20) ?? [];
+    const items = shownCodes.map((code, i) => {
+      const name = shownNames[i];
+      return name ? `${code}（${name}）` : code;
+    });
+    const more = d.assetCodes.length > shownCodes.length ? ` 等 ${d.assetCodes.length} 个` : '';
+    return `${d.filename}: ${items.join('、')}${more}`;
   });
   return `标的代码不存在，本次未导入任何数据：${parts.join('；')}。请核对代码后重新导入。`;
 }
@@ -231,7 +236,7 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     }
     const unknown = prepared
       .filter((p) => p.unknownAssets.length > 0)
-      .map((p) => ({ filename: p.filename, assetCodes: p.unknownAssets }));
+      .map((p) => ({ filename: p.filename, assetCodes: p.unknownAssets, assetNames: p.unknownAssetNames }));
     if (unknown.length > 0) {
       return reply.code(422).send(fail(422, 'UNKNOWN_ASSET_CODES', unknownAssetsMessage(unknown)));
     }
