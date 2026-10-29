@@ -160,6 +160,7 @@ export async function preflightBrokerFile(
       rowTotal: 0,
       rowExcluded: 0,
       unknownAssets: [],
+      unknownAssetNames: [],
     };
   }
 
@@ -184,7 +185,7 @@ export async function preflightBrokerFile(
     const code = r.normalized.asset_code;
     if (symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code)) {
       const existing = unknownMap.get(code);
-      const name = r.normalized.raw_name ?? null;
+      const name = (r.normalized.raw_name as string | null | undefined) ?? null;
       if (existing === undefined || (existing === null && name !== null && name !== '')) {
         unknownMap.set(code, name);
       }
