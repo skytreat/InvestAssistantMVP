@@ -253,7 +253,7 @@ describe('T122 · 未知标的整文件拒绝', () => {
       }
       expect(caught).toBeInstanceOf(UnknownAssetCodesError);
       expect((caught as UnknownAssetCodesError).details).toEqual([
-        { filename: f.filename, assetCodes: [unknown] },
+        { filename: f.filename, assetCodes: [unknown], assetNames: ['农业银行'] },
       ]);
 
       // 整文件拒绝：批次、事实层都不得留下半成品

@@ -45,18 +45,27 @@ export interface PreparedBrokerFile {
   rowTotal: number;
   rowExcluded: number;
   unknownAssets: string[];
+  unknownAssetNames: (string | null)[];
 }
 
 export interface UnknownAssetDetail {
   filename: string;
   assetCodes: string[];
+  /** 与 assetCodes 对应的原始名称（可能为 null/空字符串） */
+  assetNames?: (string | null)[];
 }
 
 /** 任一未知标的 → 整个文件/整批拒绝（不创建批次、不写事实层） */
 export class UnknownAssetCodesError extends Error {
   constructor(public readonly details: UnknownAssetDetail[]) {
     super(
-      `标的不在系统字典中：${details.map((d) => `${d.filename}: ${d.assetCodes.join('、')}`).join('；')}`,
+      `标的不在系统字典中：${details.map((d) => {
+        const parts = d.assetCodes.map((code, i) => {
+          const name = d.assetNames?.[i];
+          return name ? `${code}（${name}）` : code;
+        });
+        return `${d.filename}: ${parts.join('、')}`;
+      }).join('；')}`,
     );
     this.name = 'UnknownAssetCodesError';
   }
@@ -168,15 +177,39 @@ export async function preflightBrokerFile(
     rowIndex: row.rowIndex,
     cells: row.cells,
   }));
-  const unknownAssets = [
-    ...new Set(
-      rows
-        .map((r) => r.normalized.asset_code)
-        .filter(
-          (code): code is string => symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code),
-        ),
-    ),
-  ].sort();
+  const unknownMap = new Map<string, string | null>();
+  for (const r of rows) {
+    const code = r.normalized.asset_code;
+    if (symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code)) {
+      const existing = unknownMap.get(code);
+      const name = r.normalized.raw_name ?? null;
+      if (existing === undefined || (existing === null && name !== null && name !== '')) {
+        unknownMap.set(code, name);
+      }
+    }
+  }
+  // 歧义消解：6 位裸码 + 名称 → symbol_dict 精确匹配 code6 + name（如 000070 + 特发信息 → sz000070）
+  const resolveStmt = db.prepare(`SELECT symbol FROM symbol_dict WHERE code6 = ? AND name = ?`);
+  const resolveMap = new Map<string, string>(); // bare code → full symbol
+  for (const [code, name] of unknownMap) {
+    if (!/^\d{6}$/.test(code) || !name) continue;
+    const hit = resolveStmt.get(code, name) as { symbol: string } | undefined;
+    if (hit) {
+      resolveMap.set(code, hit.symbol);
+      unknownMap.delete(code);
+      unknownMap.set(hit.symbol, name);
+      symbolSet.add(hit.symbol);
+    }
+  }
+  for (const r of rows) {
+    const code = r.normalized.asset_code;
+    if (typeof code === 'string' && resolveMap.has(code)) {
+      r.normalized.asset_code = resolveMap.get(code);
+    }
+  }
+  const unknownAssetEntries = [...unknownMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const unknownAssets = unknownAssetEntries.map((e) => e[0]);
+  const unknownAssetNames = unknownAssetEntries.map((e) => e[1]);
 
   return {
     filename: input.filename,
@@ -190,6 +223,7 @@ export async function preflightBrokerFile(
     rowTotal: parse.rows.length,
     rowExcluded: rows.filter((r) => r.normalized.match_status === 'EXCLUDED').length,
     unknownAssets,
+    unknownAssetNames,
   };
 }
 
@@ -201,7 +235,7 @@ export function persistPreparedBrokerFile(
   prepared: PreparedBrokerFile,
 ): ImportResult {
   if (prepared.unknownAssets.length > 0) {
-    throw new UnknownAssetCodesError([{ filename: prepared.filename, assetCodes: prepared.unknownAssets }]);
+    throw new UnknownAssetCodesError([{ filename: prepared.filename, assetCodes: prepared.unknownAssets, assetNames: prepared.unknownAssetNames }]);
   }
 
   // 预检后、落盘前可能已有同文件批次（批量预检的场景）→ 再查一次
