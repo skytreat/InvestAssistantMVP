@@ -113,6 +113,12 @@ async function _trySystemctl(): Promise<RerunResult | null> {
     });
     return { status: 'FAIL', method: 'systemctl', message: 'timeout' };
   } catch (err: any) {
+    writeSystemLog({
+      logType: 'tdx2db_update',
+      level: 'WARN',
+      message: 'systemctl 补跑降级失败，尝试直接 exec',
+      detail: String(err?.stderr || err?.stdout || err).slice(0, 500),
+    });
     return null;
   }
 }
