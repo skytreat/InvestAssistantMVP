@@ -59,13 +59,15 @@ export interface UnknownAssetDetail {
 export class UnknownAssetCodesError extends Error {
   constructor(public readonly details: UnknownAssetDetail[]) {
     super(
-      `标的不在系统字典中：${details.map((d) => {
-        const parts = d.assetCodes.map((code, i) => {
-          const name = d.assetNames?.[i];
-          return name ? `${code}（${name}）` : code;
-        });
-        return `${d.filename}: ${parts.join('、')}`;
-      }).join('；')}`,
+      `标的不在系统字典中：${details
+        .map((d) => {
+          const parts = d.assetCodes.map((code, i) => {
+            const name = d.assetNames?.[i];
+            return name ? `${code}（${name}）` : code;
+          });
+          return `${d.filename}: ${parts.join('、')}`;
+        })
+        .join('；')}`,
     );
     this.name = 'UnknownAssetCodesError';
   }
@@ -235,7 +237,13 @@ export function persistPreparedBrokerFile(
   prepared: PreparedBrokerFile,
 ): ImportResult {
   if (prepared.unknownAssets.length > 0) {
-    throw new UnknownAssetCodesError([{ filename: prepared.filename, assetCodes: prepared.unknownAssets, assetNames: prepared.unknownAssetNames }]);
+    throw new UnknownAssetCodesError([
+      {
+        filename: prepared.filename,
+        assetCodes: prepared.unknownAssets,
+        assetNames: prepared.unknownAssetNames,
+      },
+    ]);
   }
 
   // 预检后、落盘前可能已有同文件批次（批量预检的场景）→ 再查一次

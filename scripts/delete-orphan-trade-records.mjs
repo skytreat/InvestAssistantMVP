@@ -68,9 +68,7 @@ const symbolSet = new Set(symbols);
 
 // 读取 SQLite 活交易
 const db = new Database(sqlitePath, { readonly: true });
-const liveTrades = db
-  .prepare('SELECT id, asset_code FROM user_trade_record WHERE is_deleted = 0')
-  .all();
+const liveTrades = db.prepare('SELECT id, asset_code FROM user_trade_record WHERE is_deleted = 0').all();
 db.close();
 
 console.log(`\n活交易记录共 ${liveTrades.length} 条`);
@@ -104,9 +102,7 @@ let totalDeleted = 0;
 
 const runBatch = dbW.transaction((batchIds) => {
   const placeholders = batchIds.map(() => '?').join(',');
-  const stmt = dbW.prepare(
-    `UPDATE user_trade_record SET is_deleted = 1 WHERE id IN (${placeholders})`,
-  );
+  const stmt = dbW.prepare(`UPDATE user_trade_record SET is_deleted = 1 WHERE id IN (${placeholders})`);
   const info = stmt.run(batchIds);
   return info.changes;
 });
