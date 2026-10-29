@@ -124,7 +124,7 @@ export async function registerBrokerReconcileRoutes(app: FastifyInstance) {
 
     const db = ConfigStore.getInstance().db;
     try {
-      const result = confirmTrades(db, userId, body.brokerCode.trim(), items);
+      const result = await confirmTrades(db, userId, body.brokerCode.trim(), items);
       return ok(result);
     } catch (err: any) {
       // UNIQUE 撞 B/C 锚 → 结构化 409；不外泄裸 SQLite 报错（AGENTS 错误处理约定）

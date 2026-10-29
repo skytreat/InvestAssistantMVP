@@ -25,7 +25,7 @@
  *   vitest 开了 `sequence.shuffle`（T81 守卫）⇒ 每个用例用**独立的标的代码**，
  *   不依赖「上一个用例先插过某行」。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -36,6 +36,10 @@ import type { FastifyInstance } from 'fastify';
 const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-t87-check-'));
 const ORIG_SQLITE_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = path.join(TMP_DIR, 't87-check.db');
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注 trade_time 占用预检，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { registerRoutes } = await import('../../src/routes/index.js');
@@ -53,6 +57,8 @@ let tokenB: string;
 
 beforeAll(async () => {
   app = Fastify({ logger: false });
+  // 默认放行：mock raw_symbol_class 返回空（本文件专注 trade_time 占用预检，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   // 用**真实的** registerRoutes —— 顺带验证本端点确实被注册（漏注册 = 404 = 契约漂移）
   await registerRoutes(app);
 

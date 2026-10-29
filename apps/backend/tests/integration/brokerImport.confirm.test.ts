@@ -1,13 +1,21 @@
 /**
  * 券商导入确认路由 —— 未知标的"弹窗选择跳过"契约
  *
+ * 存在性判定源 = DuckDB raw_symbol_class（mock 控制）；symbol_dict 只做名称补全。
  * confirm / confirm-batch：检测到未知标的时返回 200 + pending_unknown_assets，
  *   不再整批拒绝；前端据此弹窗让用户选择跳过哪些代码。
  * confirm-final：携带 skipUnknownAssetCodes 完成落盘，跳过代码对应行被过滤。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// mock DuckDB raw_symbol_class（存在性判定源）
+const { queryDuckDBMock } = vi.hoisted(() => ({
+  queryDuckDBMock: vi.fn(async (_sql: string, _params?: unknown[]) => [] as Array<{ symbol: string }>),
+}));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
+
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 import { parseBrokerFile } from '../../src/services/broker/brokerParser.js';
@@ -68,9 +76,10 @@ describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
     const codesB = await codesOf(FILE_B);
     expect(codesB.length).toBeGreaterThan(0);
     const unknown = codesB[codesB.length - 1];
-    // 只 seed 除 unknown 外的所有 code
+    // 存在性判定源 = DuckDB raw_symbol_class：只放行除 unknown 外的 code
     clearAll();
     seedDict(codesB.filter((c) => c !== unknown));
+    queryDuckDBMock.mockResolvedValue(codesB.filter((c) => c !== unknown).map((c) => ({ symbol: c })));
 
     const single = await bundle.app.inject({
       method: 'POST',
@@ -102,6 +111,9 @@ describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
     const unknown = codesB[codesB.length - 1];
     clearAll();
     seedDict([...codesA, ...codesB.filter((c) => c !== unknown)]);
+    queryDuckDBMock.mockResolvedValue(
+      [...codesA, ...codesB.filter((c) => c !== unknown)].map((c) => ({ symbol: c })),
+    );
 
     const batch = await bundle.app.inject({
       method: 'POST',
@@ -134,6 +146,7 @@ describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
     const unknownA = codesA[codesA.length - 1];
     clearAll();
     seedDict(codesA.filter((c) => c !== unknownA));
+    queryDuckDBMock.mockResolvedValue(codesA.filter((c) => c !== unknownA).map((c) => ({ symbol: c })));
 
     const res = await bundle.app.inject({
       method: 'POST',
@@ -163,6 +176,7 @@ describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
     const unknown = codesB[codesB.length - 1];
     clearAll();
     seedDict(codesB.filter((c) => c !== unknown));
+    queryDuckDBMock.mockResolvedValue(codesB.filter((c) => c !== unknown).map((c) => ({ symbol: c })));
 
     // 传一个与 unknown 无关的 skipCode → unknown 仍在 → 422
     const res = await bundle.app.inject({
@@ -181,10 +195,11 @@ describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
     expect(body.message).toContain(unknown);
   });
 
-  it('修正字典后直接 confirm-batch 无需 skip 即可成功', async () => {
+  it('行情层全覆盖后直接 confirm-batch 无需 skip 即可成功', async () => {
     const [codesA, codesB] = await Promise.all([codesOf(FILE_A), codesOf(FILE_B)]);
     clearAll();
     seedDict([...codesA, ...codesB]);
+    queryDuckDBMock.mockResolvedValue([...codesA, ...codesB].map((c) => ({ symbol: c })));
     const retry = await bundle.app.inject({
       method: 'POST',
       url: '/api/broker-import/confirm-batch',

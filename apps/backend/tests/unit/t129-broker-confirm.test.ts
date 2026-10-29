@@ -18,11 +18,17 @@
  * ── SQLite 隔离 ──
  *   每用例自建库（启动即最终形态 schema，零重建），用例间零依赖。
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
+
+// 存在性判定源 = DuckDB raw_symbol_class；mock 返回全部 code（默认放行）
+const { queryDuckDBMock } = vi.hoisted(() => ({
+  queryDuckDBMock: vi.fn(async () => [] as Array<{ symbol: string }>),
+}));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 const TMP_DIR = mkdtempSync(path.join(os.tmpdir(), 'invest-t129-'));
 const ORIG_SQLITE_PATH = process.env.SQLITE_DB_PATH;
@@ -126,7 +132,7 @@ afterAll(() => {
 });
 
 describe('T129 券商补录 brokerConfirm', () => {
-  it('① 单行判定（balance_after 权威）+ 回溯链 + 明细字段（G3）', () => {
+  it('① 单行判定（balance_after 权威）+ 回溯链 + 明细字段（G3）', async () => {
     const store = freshStore('single');
     const db = store.db;
     const ids = seedFacts(db, [
@@ -165,7 +171,8 @@ describe('T129 券商补录 brokerConfirm', () => {
       }, // 卖&0 → clear
     ]);
     const items: ConfirmItem[] = [...ids.values()].map((sid) => ({ sourceId: sid }));
-    const r = confirmTrades(db, UID, 't129broker', items);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+    const r = await confirmTrades(db, UID, 't129broker', items);
     expect(r.imported).toBe(4);
     expect(r.invalid).toBe(0);
     const got = r.rows.map((x) => x.tradeType);
@@ -191,7 +198,7 @@ describe('T129 券商补录 brokerConfirm', () => {
     expect(readTrade(db, r.rows[0].tradeRecordId!).fee).toBe(5);
   });
 
-  it('② 回放判定：无余额按 (asset) 分桶回放；跨标的互不影响（INV-S3-3）', () => {
+  it('② 回放判定：无余额按 (asset) 分桶回放；跨标的互不影响（INV-S3-3）', async () => {
     const store = freshStore('replay');
     const db = store.db;
     const ids = seedFacts(db, [
@@ -204,7 +211,8 @@ describe('T129 券商补录 brokerConfirm', () => {
       { id: 5, eventType: 'TRADE_SELL', asset: 'sz000001', qty: 200 },
     ]);
     const items: ConfirmItem[] = [...ids.values()].map((sid) => ({ sourceId: sid }));
-    const r = confirmTrades(db, UID, 't129broker', items);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }, { symbol: 'sz000001' }]);
+    const r = await confirmTrades(db, UID, 't129broker', items);
     expect(r.imported).toBe(5);
     const types = new Map(r.rows.map((x) => [x.sourceId, x.tradeType]));
     expect(types.get(ids.get(1))).toBe('buy');
@@ -214,7 +222,7 @@ describe('T129 券商补录 brokerConfirm', () => {
     expect(types.get(ids.get(5))).toBe('clear');
   });
 
-  it('③ 用户修正优先（INV-S3-9）+ 时间归一（INV-S2-36 不可解析→NULL）', () => {
+  it('③ 用户修正优先（INV-S3-9）+ 时间归一（INV-S2-36 不可解析→NULL）', async () => {
     const store = freshStore('override');
     const db = store.db;
     const ids = seedFacts(db, [
@@ -227,7 +235,8 @@ describe('T129 券商补录 brokerConfirm', () => {
       // '094530' 紧凑格式 → '09:45:30'
       { id: 4, eventType: 'TRADE_SELL', asset: 'sh600000', time: '094530', balance: 100 },
     ]);
-    const r = confirmTrades(db, UID, 't129broker', [
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+    const r = await confirmTrades(db, UID, 't129broker', [
       { sourceId: ids.get(1)!, tradeType: 'reduce' },
       { sourceId: ids.get(2)! },
       { sourceId: ids.get(3)! },
@@ -243,28 +252,29 @@ describe('T129 券商补录 brokerConfirm', () => {
     expect(trades[0].trade_time).toBe('09:30:00'); // HH:mm 补秒
   });
 
-  it('④ 幂等 already（二次确认不重复插入）+ 撤销后可再补录（索引 B 释放锚点）', () => {
+  it('④ 幂等 already（二次确认不重复插入）+ 撤销后可再补录（索引 B 释放锚点）', async () => {
     const store = freshStore('idem');
     const db = store.db;
     const ids = seedFacts(db, [{ id: 1, eventType: 'TRADE_BUY', asset: 'sh600000', balance: 100 }]);
     const items: ConfirmItem[] = [{ sourceId: ids.get(1)! }];
-    const first = confirmTrades(db, UID, 't129broker', items);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+    const first = await confirmTrades(db, UID, 't129broker', items);
     expect(first.imported).toBe(1);
     const tradeId = first.rows[0].tradeRecordId!;
 
-    const second = confirmTrades(db, UID, 't129broker', items);
+    const second = await confirmTrades(db, UID, 't129broker', items);
     expect(second.imported).toBe(0);
     expect(second.already).toBe(1);
     expect((db.prepare('SELECT COUNT(*) c FROM user_trade_record').get() as { c: number }).c).toBe(1);
 
     // 撤销（软删业务层）→ 同 source 可再次补录（INV-S2-35）
     db.prepare('UPDATE user_trade_record SET is_deleted = 1 WHERE id = ?').run(tradeId);
-    const third = confirmTrades(db, UID, 't129broker', items);
+    const third = await confirmTrades(db, UID, 't129broker', items);
     expect(third.imported).toBe(1);
     expect(third.rows[0].tradeRecordId).not.toBe(tradeId);
   });
 
-  it('⑤ 不可补行：manual_sheet（INV-S2-44）/ EXCLUDED / 缺关键字段 → invalid 不写入', () => {
+  it('⑤ 不可补行：manual_sheet（INV-S2-44）/ EXCLUDED / 缺关键字段 → invalid 不写入', async () => {
     const store = freshStore('invalid');
     const db = store.db;
     const ids = seedFacts(db, [
@@ -280,7 +290,8 @@ describe('T129 券商补录 brokerConfirm', () => {
       { id: 4, eventType: 'DIVIDEND', asset: 'sh600000', matchStatus: 'MISSING' }, // 事件族不可补录
     ]);
     const items: ConfirmItem[] = [...ids.values()].map((sid) => ({ sourceId: sid }));
-    const r = confirmTrades(db, UID, 't129broker', items);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+    const r = await confirmTrades(db, UID, 't129broker', items);
     expect(r.imported).toBe(0);
     expect(r.invalid + r.rows.filter((x) => x.status === 'manual_sheet').length).toBeGreaterThanOrEqual(3);
     expect(
@@ -334,19 +345,16 @@ describe('T129 券商补录 brokerConfirm', () => {
     expect(b.is_deleted).toBe(0); // 业务行不动（INV-S2-35）
   });
 
-  it('⑨ 标的不在 symbol_dict 时禁止补录（字典非空）', () => {
+  it('⑨ 标的不在市场（raw_symbol_class）时禁止补录', async () => {
     const store = freshStore('unknown-asset');
     const db = store.db;
-    db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
-    ).run();
     const ids = seedFacts(db, [
       { eventType: 'TRADE_BUY', asset: 'sh600000', balance: 100 },
       { eventType: 'TRADE_BUY', asset: 'sh999999', balance: 100 },
     ]);
 
-    const r = confirmTrades(
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]); // 市场仅含 sh600000
+    const r = await confirmTrades(
       db,
       UID,
       't129broker',
@@ -354,7 +362,7 @@ describe('T129 券商补录 brokerConfirm', () => {
     );
     expect(r.imported).toBe(1);
     expect(r.invalid).toBe(1);
-    expect(r.rows.some((x) => x.reason?.includes('标的不在系统字典中'))).toBe(true);
+    expect(r.rows.some((x) => x.reason?.includes('标的不存在于行情层'))).toBe(true);
     expect(
       db.prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE user_id = ?`).get(UID) as { c: number },
     ).toEqual({ c: 1 });

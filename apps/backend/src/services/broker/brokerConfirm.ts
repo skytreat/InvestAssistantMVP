@@ -18,6 +18,7 @@
  * - 推导**必须按券商分组**（INV-S3-3：各券商持仓互不影响）
  */
 import type Database from 'better-sqlite3';
+import { queryDuckDB } from '../../db/duckdb.js';
 
 /** 可补录的事件族（成交类）；分红/送股仍走除权链路（D-36），不在此端点补录 */
 export const CONFIRMABLE_EVENTS = ['TRADE_BUY', 'TRADE_SELL', 'FUND_SUBSCRIBE', 'FUND_REDEEM'] as const;
@@ -181,12 +182,12 @@ function inabilityReason(r: FactRow): string | null {
  * 批量补录（一次确认 = 一个事务；部分失败整体回滚）。
  * 已被映射（source 已有活记录）的行 → 'already'，不插入（回溯幂等，G3）。
  */
-export function confirmTrades(
+export async function confirmTrades(
   db: Database.Database,
   userId: number,
   brokerCode: string,
   items: ConfirmItem[],
-): ConfirmResult {
+): Promise<ConfirmResult> {
   const rows: ConfirmResultRow[] = [];
   const result: ConfirmResult = { brokerCode, imported: 0, already: 0, invalid: 0, rows };
 
@@ -235,10 +236,18 @@ export function confirmTrades(
     else buckets.set(r.asset_code, [r]);
   }
 
-  // 标的字典校验：字典非空时，不在字典中的事实行不可补录（避免产生孤儿业务记录）
-  const dictSet = new Set(
-    (db.prepare('SELECT symbol FROM symbol_dict').all() as Array<{ symbol: string }>).map((r) => r.symbol),
-  );
+  // 存在性判定源：DuckDB raw_symbol_class（覆盖 raw_kline_daily 全部标的）；
+  // symbol_dict 只做名称联想搜索，**不做存在性判定**。
+  // 行情库不可读时**降级跳过校验**（与既有「字典未同步则放行」语义一致），不误拒。
+  let dictSet: Set<string> | null = null;
+  try {
+    const symbols = await queryDuckDB<{ symbol: string }>(
+      `SELECT symbol FROM raw_symbol_class WHERE class <> 'block'`,
+    );
+    dictSet = new Set(symbols.map((r) => r.symbol));
+  } catch {
+    dictSet = null;
+  }
 
   const pending: Array<{ fact: FactRow; type: ConfirmTradeType }> = [];
   for (const fact of byId.values()) {
@@ -254,13 +263,13 @@ export function confirmTrades(
       });
       continue;
     }
-    if (dictSet.size > 0 && fact.asset_code && !dictSet.has(fact.asset_code)) {
+    if (dictSet !== null && dictSet.size > 0 && fact.asset_code && !dictSet.has(fact.asset_code)) {
       result.invalid++;
       rows.push({
         sourceId: fact.id,
         status: 'invalid',
         tradeType: null,
-        reason: `标的不在系统字典中：${fact.asset_code}`,
+        reason: `标的不存在于行情层：${fact.asset_code}`,
       });
       continue;
     }

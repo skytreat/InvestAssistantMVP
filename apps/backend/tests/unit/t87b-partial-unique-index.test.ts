@@ -43,6 +43,10 @@ const ORIG_SQLITE_PATH = process.env.SQLITE_DB_PATH;
 const MAIN_DB_PATH = path.join(TMP_DIR, 't87b-main.db');
 process.env.SQLITE_DB_PATH = MAIN_DB_PATH;
 
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注部分唯一索引，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
+
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { registerRoutes } = await import('../../src/routes/index.js');
 const { TRADE_TIME_OCCUPANCY_SQL } = await import('../../src/routes/trade.js');
@@ -422,6 +426,8 @@ describe('T87b · 预检端点口径同步', () => {
   beforeAll(async () => {
     closeConfigStore();
     process.env.SQLITE_DB_PATH = MAIN_DB_PATH;
+    // 默认放行：mock raw_symbol_class 返回空（本文件专注部分唯一索引/预检端点，不做存在性判定）
+    queryDuckDBMock.mockImplementation(async () => []);
     app = Fastify({ logger: false });
     await registerRoutes(app);
     db = ConfigStore.getInstance().db;

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { buildCode6Dict, normalizeAssetCode } from '../services/assetCode.js';
+import { queryDuckDB } from '../db/duckdb.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
 import {
   batchGetLatestAndPrevClose,
@@ -262,10 +263,18 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', '必要字段缺失'));
       }
       const db = ConfigStore.getInstance().db;
-      // 标的代码归一化 + 字典校验（字典未同步时跳过校验，避免 CI / 首次启动误拒）
+      // 标的代码归一化；存在性由 DuckDB raw_symbol_class 判定（symbol_dict 只做名称联想，不做存在性校验）
       const assetCode = normalizeAssetCode(body.asset_code, buildCode6Dict(db)) ?? body.asset_code.trim();
-      const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
-      if (dictCount > 0 && !db.prepare('SELECT 1 FROM symbol_dict WHERE symbol = ?').get(assetCode)) {
+      // 行情层不可读/无数据时降级跳过校验（与 brokerConfirm 一致），不误拒合法交易
+      let marketCodes: string[] = [];
+      try {
+        marketCodes = (
+          await queryDuckDB<{ symbol: string }>(`SELECT symbol FROM raw_symbol_class WHERE class <> 'block'`)
+        ).map((r) => r.symbol);
+      } catch {
+        marketCodes = [];
+      }
+      if (marketCodes.length > 0 && !marketCodes.includes(assetCode)) {
         return reply.code(400).send(fail(400, 'SYMBOL_NOT_FOUND', `标的不存在：${assetCode}`));
       }
       // T87：trade_time 必填且格式合法

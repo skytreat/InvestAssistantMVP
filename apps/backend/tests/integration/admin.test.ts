@@ -355,6 +355,12 @@ const ADMIN_ENDPOINTS: AdminEndpointCase[] = [
     url: '/api/admin/datacheck/trigger',
     payload: {},
   },
+  {
+    method: 'POST',
+    path: '/api/admin/symbol-dict/refresh',
+    url: '/api/admin/symbol-dict/refresh',
+    payload: {},
+  },
   // —— src/routes/dataCheck.ts ——
   { method: 'GET', path: '/api/admin/datacheck/result', url: '/api/admin/datacheck/result' },
 ];
@@ -423,8 +429,8 @@ describe('G7.4 · admin 端点逐端点 403（普通用户 · 管理员二次鉴
       expect(declared.has(c), `G7.4 清单里的 ${c} 在源码中已不存在`).toBe(true);
     }
     // ③ 数量兜底（源码新增端点时这两条会先红）
-    expect(declared.size).toBe(11);
-    expect(covered.size).toBe(11);
+    expect(declared.size).toBe(12);
+    expect(covered.size).toBe(12);
   });
 
   it.each(ADMIN_ENDPOINTS)('$method $path → 普通用户 403 FORBIDDEN 且零副作用', async (ep) => {
