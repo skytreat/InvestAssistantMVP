@@ -82,6 +82,8 @@ beforeEach(() => {
   vi.restoreAllMocks();
   h.execImpl = (_f, _a, cb) => cb(null, '', '');
   logMock.mockReset();
+  // 测试中始终启用 systemd-run 通道（默认生产环境跳过）
+  process.env.TDX2DB_SKIP_SYSTEMD_RUN = '0';
 });
 
 describe('quoteRerun — 降级链', () => {
