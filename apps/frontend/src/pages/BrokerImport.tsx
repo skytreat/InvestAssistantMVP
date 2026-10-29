@@ -44,6 +44,7 @@ interface ConfirmResult {
   rowInserted?: number;
   rowDeduped?: number;
   rowExcluded?: number;
+  rowUnknown?: number;
   duplicateFile?: boolean;
   unknownAssets?: string[];
 }
@@ -517,6 +518,7 @@ export default function BrokerImport() {
                     <th style={thStyle}>新写入</th>
                     <th style={thStyle}>去重跳过</th>
                     <th style={thStyle}>排除</th>
+                    <th style={thStyle}>未知标的跳过</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -530,13 +532,14 @@ export default function BrokerImport() {
                       <td style={tdStyle}>{r.result.rowInserted}</td>
                       <td style={tdStyle}>{r.result.rowDeduped}</td>
                       <td style={tdStyle}>{r.result.rowExcluded}</td>
+                      <td style={tdStyle}>{r.result.rowUnknown ?? 0}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {g.results.some((r) => (r.result.unknownAssets?.length ?? 0) > 0) && (
                 <div style={{ ...warningBox, marginTop: 8 }}>
-                  <strong>以下标的代码在系统中未找到：</strong>
+                  <strong>以下标的代码在系统中未找到，对应行已跳过（未写入事实层）：</strong>
                   <div style={{ fontSize: TYPO.smallSize, marginTop: 4 }}>
                     {g.results
                       .flatMap((r) => r.result.unknownAssets ?? [])
@@ -544,7 +547,7 @@ export default function BrokerImport() {
                       .join('、')}
                   </div>
                   <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted, marginTop: 4 }}>
-                    这些标的无法参与行情匹配与收益计算，请检查代码是否正确。
+                    请检查代码是否正确；修正后需先撤销该批次，再重新导入该文件。
                   </div>
                 </div>
               )}

@@ -22,7 +22,7 @@ import { backfillTradeTime } from '../services/broker/brokerReconcile.js';
 import type { Database } from 'better-sqlite3';
 import type { BrokerFileInput } from '../services/broker/types.js';
 
-import { softDeleteOrphanUserTradeRecords } from '../services/symbolDict.js';
+import { ensureSymbolDict } from '../services/symbolDict.js';
 
 /** 检查批次中 asset_code 在 symbol_dict 中不存在的标的（返回空数组 = 全部存在或字典为空） */
 function findUnknownAssets(db: Database, userId: number, batchId: number): string[] {
@@ -154,13 +154,27 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     const input = got.input!;
     const db = ConfigStore.getInstance().db;
     const brokerCode = body.brokerCode.trim();
+    // 导入前确保标的字典已同步：未知标的行必须可判定（不允许在字典缺失时盲导）
+    const dictCount = await ensureSymbolDict();
+    if (dictCount === 0) {
+      return reply
+        .code(422)
+        .send(
+          fail(
+            422,
+            'SYMBOL_DICT_UNAVAILABLE',
+            '标的字典未同步，无法校验标的代码；请先确认行情库可用并打开一次标的搜索',
+          ),
+        );
+    }
     try {
       const r = await importBrokerFile(db, userId, brokerCode, input);
       // 导入后自动回填：交割单缺 trade_time 时，从该券商已有成交流水行补齐（L1/L2/L3）
       const backfill = backfillTradeTime(db, userId, brokerCode);
-      // 检查标的代码是否在系统字典中存在；若字典已同步，自动软删不存在的标的交易记录
-      softDeleteOrphanUserTradeRecords();
-      const unknownAssets = findUnknownAssets(db, userId, r.batchId);
+      // 合并「本次跳过」与「历史批次中已存在的未知标的」，供前端提示
+      const unknownAssets = [
+        ...new Set([...(r.unknownAssets ?? []), ...findUnknownAssets(db, userId, r.batchId)]),
+      ];
       return ok({ ...r, backfill, unknownAssets });
     } catch (e) {
       return reply
@@ -188,6 +202,18 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     }
     const db = ConfigStore.getInstance().db;
     const brokerCode = body.brokerCode.trim();
+    const dictCount = await ensureSymbolDict();
+    if (dictCount === 0) {
+      return reply
+        .code(422)
+        .send(
+          fail(
+            422,
+            'SYMBOL_DICT_UNAVAILABLE',
+            '标的字典未同步，无法校验标的代码；请先确认行情库可用并打开一次标的搜索',
+          ),
+        );
+    }
     const results: Array<Record<string, unknown>> = [];
     for (const f of body.files) {
       const got = toInput(f);
@@ -211,16 +237,18 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     }
     // 全部导入完成后统一回填一次（交割单缺 trade_time ← 成交流水）
     const backfill = backfillTradeTime(db, userId, brokerCode);
-    softDeleteOrphanUserTradeRecords();
-    // 检查所有批次中的标的代码是否在系统字典中存在
+    // 合并「本次跳过」与「历史批次中已存在的未知标的」
     const unknownAssets = new Set<string>();
     for (const r of results) {
+      for (const code of (r as { unknownAssets?: string[] }).unknownAssets ?? []) {
+        unknownAssets.add(code);
+      }
       const bid = (r as { batchId?: number }).batchId;
       if (bid) {
         for (const code of findUnknownAssets(db, userId, bid)) unknownAssets.add(code);
       }
     }
-    return ok({ files: results, backfill, unknownAssets: [...unknownAssets] });
+    return ok({ files: results, backfill, unknownAssets: [...unknownAssets].sort() });
   });
 
   // 批次列表（含统计与撤销入口信息）

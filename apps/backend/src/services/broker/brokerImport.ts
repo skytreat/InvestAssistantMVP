@@ -91,6 +91,10 @@ export interface ImportResult {
   rowInserted: number;
   rowDeduped: number;
   rowExcluded: number;
+  /** 因标的不在 symbol_dict 中而跳过的行数（不写事实层） */
+  rowUnknown: number;
+  /** 被跳过的未知标的代码（去重） */
+  unknownAssets: string[];
   duplicateFile: boolean; // 同 file_hash 已有批次（本批 0 新行）
 }
 
@@ -170,6 +174,8 @@ export async function importBrokerFile(
       rowInserted: 0,
       rowDeduped: 0,
       rowExcluded: 0,
+      rowUnknown: 0,
+      unknownAssets: [],
       duplicateFile: true,
     };
   }
@@ -216,12 +222,29 @@ export async function importBrokerFile(
   let rowInserted = 0;
   const rowDeduped = 0; // 仅统计文件级重复（本路径恒 0，重复文件走 duplicateFile 短路）
   let rowExcluded = 0;
+  let rowUnknown = 0;
+  const unknownAssets = new Set<string>();
 
   // 字典权威前缀归一化：每次导入建一次 code6 → symbol 快照（避免逐行查表）
   const code6Dict = buildCode6Dict(db);
+  // 标的有效性快照：symbol_dict 非空时，不属于字典的标的一律跳过（不落事实层）。
+  // 字典为空（如 CI / 尚未同步）时不做校验，避免把全部行误判为未知标的。
+  const symbolSet = new Set(
+    (db.prepare(`SELECT symbol FROM symbol_dict`).all() as Array<{ symbol: string }>).map((r) => r.symbol),
+  );
   const runAll = db.transaction(() => {
     for (const row of parse.rows) {
       const normalized = normalizeBrokerRow(parse, row, code6Dict);
+      // 未知标的：跳过且不写 broker_trade_record（券商导入不允许导入不存在的标的）
+      if (
+        symbolSet.size > 0 &&
+        typeof normalized.asset_code === 'string' &&
+        !symbolSet.has(normalized.asset_code)
+      ) {
+        rowUnknown++;
+        unknownAssets.add(normalized.asset_code);
+        continue;
+      }
       const hash = rowHashOf(normalized);
       const seq = seqByHashInBatch.get(hash) ?? 0;
       seqByHashInBatch.set(hash, seq + 1);
@@ -270,6 +293,8 @@ export async function importBrokerFile(
     rowInserted,
     rowDeduped,
     rowExcluded,
+    rowUnknown,
+    unknownAssets: [...unknownAssets].sort(),
     duplicateFile: false,
   };
 }

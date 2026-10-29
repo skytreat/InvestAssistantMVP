@@ -211,6 +211,60 @@ describe('T122 · 验收⑤ match_status 五态与排除项', () => {
   });
 });
 
+describe('T122 · 未知标的不写入事实层', () => {
+  it('symbol_dict 非空时，未知标的行被跳过并返回清单；已知标的正常写入', async () => {
+    await seedUser(9009);
+    const f = file('2026-10-20-国泰股票成交.xlsx');
+    const parse = await parseBrokerFile({ buffer: f.buffer, filename: f.filename });
+    expect(parse.ok).toBe(true);
+    const codes = [
+      ...new Set(
+        parse.rows
+          .map((row) => normalizeBrokerRow(parse, row).asset_code)
+          .filter((c): c is string => typeof c === 'string' && c.length > 0),
+      ),
+    ];
+    expect(codes.length).toBeGreaterThan(1);
+    const unknown = codes[codes.length - 1];
+    const known = codes.slice(0, -1);
+
+    db.prepare('DELETE FROM symbol_dict').run();
+    const ins = db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES (?, ?, '', '', ?, 'unknown', 'risk')`,
+    );
+    for (const code of known) ins.run(code, code.replace(/^[a-z]+/i, ''), code.slice(0, 2));
+
+    try {
+      const r = await importBrokerFile(db, 9009, '国泰', {
+        buffer: f.buffer,
+        filename: f.filename,
+      });
+      expect(r.unknownAssets).toEqual([unknown]);
+      expect(r.rowUnknown).toBeGreaterThan(0);
+      expect(r.rowInserted + r.rowUnknown).toBe(r.rowTotal);
+
+      const unknownRows = db
+        .prepare(
+          `SELECT COUNT(*) c FROM broker_trade_record
+            WHERE user_id = 9009 AND import_batch_id = ? AND asset_code = ? AND is_deleted = 0`,
+        )
+        .get(r.batchId, unknown) as { c: number };
+      expect(unknownRows.c).toBe(0);
+
+      const knownRows = db
+        .prepare(
+          `SELECT COUNT(*) c FROM broker_trade_record
+            WHERE user_id = 9009 AND import_batch_id = ? AND asset_code = ? AND is_deleted = 0`,
+        )
+        .get(r.batchId, known[0]) as { c: number };
+      expect(knownRows.c).toBeGreaterThan(0);
+    } finally {
+      db.prepare('DELETE FROM symbol_dict').run();
+    }
+  });
+});
+
 describe('T122 · 映射模板（UNIQUE 幂等）', () => {
   it('saveTemplate 同 (user, broker, kind) upsert 不增生', () => {
     db.prepare(
