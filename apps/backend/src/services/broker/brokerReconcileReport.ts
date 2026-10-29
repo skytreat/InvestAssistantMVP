@@ -60,20 +60,25 @@ function matchVsSystem(
   userId: number,
   brokerCode: string,
 ): { missing: number; extra: number } {
+  const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
+  const validAssetSql = dictCount > 0 ? `AND asset_code IN (SELECT symbol FROM symbol_dict)` : '';
+
   const factKeys = db
     .prepare(
       `SELECT DISTINCT b.asset_code, b.trade_date
          FROM broker_trade_record b JOIN broker_import_batch f ON f.id = b.import_batch_id
         WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0
           AND b.match_status != 'EXCLUDED'
-          AND b.event_type IN ('TRADE_BUY','TRADE_SELL','FUND_SUBSCRIBE','FUND_REDEEM')`,
+          AND b.event_type IN ('TRADE_BUY','TRADE_SELL','FUND_SUBSCRIBE','FUND_REDEEM')
+          ${validAssetSql}`,
     )
     .all(userId, brokerCode) as Array<{ asset_code: string; trade_date: string }>;
   const sysKeys = db
     .prepare(
       `SELECT DISTINCT asset_code, trade_date FROM user_trade_record
         WHERE user_id = ? AND is_deleted = 0
-          AND trade_type IN ('buy','add','reduce','clear','dividend','bonus')`,
+          AND trade_type IN ('buy','add','reduce','clear','dividend','bonus')
+          ${validAssetSql}`,
     )
     .all(userId) as Array<{ asset_code: string; trade_date: string }>;
   const factSet = new Set(factKeys.map((k) => `${k.asset_code}|${fmtDate(k.trade_date)}`));

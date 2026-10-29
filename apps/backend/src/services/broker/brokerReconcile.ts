@@ -266,7 +266,8 @@ export function backfillTradeTime(
     // 补充：交割单行无法从成交流水回填 trade_time，但 (asset_code, trade_date)
     // 在 user_trade_record 中已存在（如成交流水已补录）→ 直接置 MATCHED，
     // 避免"缺失=0 但差异明细仍有可补录"的语义矛盾
-    // ⚠️ trade_date 归一化：broker_trade_record 可能存 YYYYMMDD，user_trade_record 恒为 YYYY-MM-DD
+    // 🔴 同时检查该 asset_code 在 symbol_dict 中是否存在（若字典非空且资产不在字典中，则跳过 L0 标记，保持 MISSING 以便被自动软删）
+    const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
     const sysKeys = db
       .prepare(
         `SELECT DISTINCT asset_code, trade_date FROM user_trade_record
@@ -282,6 +283,11 @@ export function backfillTradeTime(
     for (const s of settlement) {
       if (!s.asset_code || !s.trade_date) continue;
       if (s.match_status !== 'MISSING') continue; // 已被上面 L1/L2/L3 处理
+      if (dictCount > 0) {
+        // 如果 symbol_dict 非空，需确保 asset_code 存在于 symbol_dict 中
+        const exists = db.prepare(`SELECT 1 FROM symbol_dict WHERE symbol = ?`).get(s.asset_code);
+        if (!exists) continue; // 不存在的标的保持 MISSING，让 softDeleteOrphanUserTradeRecords 软删
+      }
       if (sysSet.has(`${s.asset_code}|${normDate(s.trade_date)}`)) {
         markMatched.run(s.id, userId);
       }

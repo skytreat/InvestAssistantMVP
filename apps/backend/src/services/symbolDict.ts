@@ -74,7 +74,38 @@ export async function ensureSymbolDict(): Promise<number> {
     }
     cnt = count();
   }
+  if (cnt > 0) {
+    try {
+      softDeleteOrphanUserTradeRecords();
+    } catch {
+      /* ignore */
+    }
+  }
   return cnt;
+}
+
+/**
+ * 软删 user_trade_record 中**在 symbol_dict 里不存在的标的**对应记录。
+ *
+ * 🔴 前提（INV-S1-7 精神）：只有当 symbol_dict **非空**（已同步过真实行情）时才执行，
+ *    避免 CI/开发环境里空字典把所有用户记录误删。
+ * 幂等：只 UPDATE `is_deleted = 0` 的行；软删后该键释放（部分唯一索引 WHERE is_deleted=0）。
+ * 返回被软删的记录数（0 = 无需处理）。
+ * 软删不物理删除（AGENTS 铁律），原始记录保留可恢复。
+ */
+export function softDeleteOrphanUserTradeRecords(): number {
+  const db = ConfigStore.getInstance().db;
+  const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
+  if (dictCount === 0) return 0; // 字典未同步 → 不软删，防止空字典误删
+  const info = db
+    .prepare(
+      `UPDATE user_trade_record
+       SET is_deleted = 1
+       WHERE is_deleted = 0
+         AND asset_code NOT IN (SELECT symbol FROM symbol_dict)`,
+    )
+    .run();
+  return Number(info.changes);
 }
 
 /** 联想查询（业务层快照，不扫行情层） */
