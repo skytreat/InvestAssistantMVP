@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import BrokerImport from '../../src/pages/BrokerImport';
 import BrokerReconcile from '../../src/pages/BrokerReconcile';
-import { mockResponse, renderWithRouter } from '../helpers';
+import { mockErrorResponse, mockResponse, renderWithRouter } from '../helpers';
 
 /**
  * V3.8 T143/T144 · 券商对账域页面级用例
@@ -142,15 +142,21 @@ beforeEach(() => {
           warnings: [{ code: 'SENSITIVE_DROPPED', message: '已丢弃敏感列' }],
         }),
       );
-    if (url === '/broker-import/confirm')
+    if (url === '/broker-import/confirm-batch')
       return Promise.resolve(
         mockResponse({
-          batchId: 9,
-          rowTotal: 134,
-          rowInserted: 104,
-          rowDeduped: 20,
-          rowExcluded: 10,
-          duplicateFile: false,
+          files: [
+            {
+              filename: 'gt-trade.csv',
+              batchId: 9,
+              rowTotal: 134,
+              rowInserted: 104,
+              rowDeduped: 20,
+              rowExcluded: 10,
+              duplicateFile: false,
+            },
+          ],
+          backfill: { updated: 0 },
         }),
       );
     if (url === '/broker-import/batches/9/revoke') {
@@ -206,6 +212,45 @@ describe('T143 券商导入向导 /broker/import', () => {
     // 跳转对账页
     await user.click(screen.getByRole('button', { name: /查看对账报告/ }));
     await waitFor(() => expect(postMock.mock.calls.length).toBeGreaterThanOrEqual(1));
+  });
+
+  it('未知标的整批拒绝：显示 422 文案，不出现「导入完成」或半批次结果', async () => {
+    postMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/upload')
+        return Promise.resolve(
+          mockResponse({
+            fileKind: 'trade',
+            encoding: 'utf-8',
+            headerRowIndex: 0,
+            columns: [],
+            mappingSuggestion: { byField: {} },
+            previewRows: [],
+            rowTotal: 3,
+            warnings: [],
+          }),
+        );
+      if (url === '/broker-import/confirm-batch')
+        return Promise.reject(
+          mockErrorResponse(
+            422,
+            'UNKNOWN_ASSET_CODES',
+            '标的代码不存在，本次未导入任何数据：gt-trade.csv: sh999999。请核对代码后重新导入。',
+          ),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'gt-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+    await user.type(screen.getByPlaceholderText(/必填/), 'gt');
+    await user.click(screen.getByRole('button', { name: /确认导入/ }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('sh999999');
+    expect(alert.textContent).toContain('本次未导入任何数据');
+    expect(screen.queryByText('导入完成')).not.toBeInTheDocument();
   });
 
   it('导入批次：列表展示统计；撤销需二次确认，成功后刷新为已撤销', async () => {
@@ -325,15 +370,21 @@ describe('T151① 券商标识必填 + 自动推断（brokerNameHint）', () => 
             brokerNameHint: '国泰君安证券',
           }),
         );
-      if (url === '/broker-import/confirm')
+      if (url === '/broker-import/confirm-batch')
         return Promise.resolve(
           mockResponse({
-            batchId: 9,
-            rowTotal: 10,
-            rowInserted: 10,
-            rowDeduped: 0,
-            rowExcluded: 0,
-            duplicateFile: false,
+            files: [
+              {
+                filename: 'gt-a.csv',
+                batchId: 9,
+                rowTotal: 10,
+                rowInserted: 10,
+                rowDeduped: 0,
+                rowExcluded: 0,
+                duplicateFile: false,
+              },
+            ],
+            backfill: { updated: 0 },
           }),
         );
       return Promise.resolve(mockResponse({ ok: true }));
@@ -399,7 +450,19 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
         );
       }
       return Promise.resolve(
-        mockResponse({ batchId: 9, rowTotal: 10, rowInserted: 10, rowDeduped: 0, rowExcluded: 0 }),
+        mockResponse({
+          files: [
+            {
+              filename: 'gt-a.csv',
+              batchId: 9,
+              rowTotal: 10,
+              rowInserted: 10,
+              rowDeduped: 0,
+              rowExcluded: 0,
+            },
+          ],
+          backfill: { updated: 0 },
+        }),
       );
     });
     const user = userEvent.setup();
@@ -416,7 +479,7 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
     await user.type(screen.getByPlaceholderText(/必填/), '国泰君安证券');
     expect(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: /确认导入【国泰君安证券】/ }));
-    expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm')).toBe(false);
+    expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm-batch')).toBe(false);
 
     // 移除华泰文件 → 冲突解除 → 清理历史调用 → 确认国泰文件
     await user.click(screen.getByRole('button', { name: /移除 ht-b.csv/ }));
@@ -430,17 +493,24 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
     await user.click(btn);
     await waitFor(() => {
       expect(
-        postMock.mock.calls.some(
-          (c) =>
-            String(c[0]) === '/broker-import/confirm' &&
-            (c[1] as { brokerCode?: string }).brokerCode === '国泰君安证券' &&
-            (c[1] as { filename?: string }).filename === 'gt-a.csv',
-        ),
+        postMock.mock.calls.some((c) => {
+          if (String(c[0]) !== '/broker-import/confirm-batch') return false;
+          const body = c[1] as { brokerCode?: string; files?: Array<{ filename?: string }> };
+          return (
+            body.brokerCode === '国泰君安证券' &&
+            body.files?.length === 1 &&
+            body.files[0]?.filename === 'gt-a.csv'
+          );
+        }),
       ).toBe(true);
       // 华泰文件不应在请求中
-      expect(postMock.mock.calls.some((c) => (c[1] as { filename?: string })?.filename === 'ht-b.csv')).toBe(
-        false,
-      );
+      expect(
+        postMock.mock.calls.some((c) =>
+          ((c[1] as { files?: Array<{ filename?: string }> })?.files ?? []).some(
+            (f) => f.filename === 'ht-b.csv',
+          ),
+        ),
+      ).toBe(false);
     });
   });
 });

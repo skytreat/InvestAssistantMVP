@@ -13,34 +13,29 @@ import { ok, fail } from '../lib/envelope.js';
 import { parseBrokerFile } from '../services/broker/brokerParser.js';
 import {
   importBrokerFile,
+  persistPreparedBrokerFile,
+  preflightBrokerFile,
   revokeBatch,
   listBatches,
   saveTemplate,
   getTemplate,
+  UnknownAssetCodesError,
+  type ImportResult,
+  type UnknownAssetDetail,
 } from '../services/broker/brokerImport.js';
 import { backfillTradeTime } from '../services/broker/brokerReconcile.js';
-import type { Database } from 'better-sqlite3';
 import type { BrokerFileInput } from '../services/broker/types.js';
 
 import { ensureSymbolDict } from '../services/symbolDict.js';
 
-/** 检查批次中 asset_code 在 symbol_dict 中不存在的标的（返回空数组 = 全部存在或字典为空） */
-function findUnknownAssets(db: Database, userId: number, batchId: number): string[] {
-  const codes = db
-    .prepare(
-      `SELECT DISTINCT asset_code FROM broker_trade_record
-       WHERE user_id = ? AND import_batch_id = ? AND is_deleted = 0 AND asset_code IS NOT NULL`,
-    )
-    .all(userId, batchId) as Array<{ asset_code: string }>;
-  if (codes.length === 0) return [];
-  const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
-  if (dictCount === 0) return []; // 字典未同步，跳过检查
-  const ph = codes.map(() => '?').join(',');
-  const found = db
-    .prepare(`SELECT DISTINCT symbol FROM symbol_dict WHERE symbol IN (${ph})`)
-    .all(...codes.map((c) => c.asset_code)) as Array<{ symbol: string }>;
-  const foundSet = new Set(found.map((f) => f.symbol));
-  return codes.map((c) => c.asset_code).filter((c) => !foundSet.has(c));
+/** 未知标的拒绝文案：最多列 20 个代码，避免错误消息过长 */
+function unknownAssetsMessage(details: UnknownAssetDetail[]): string {
+  const parts = details.map((d) => {
+    const shown = d.assetCodes.slice(0, 20);
+    const more = d.assetCodes.length > shown.length ? ` 等 ${d.assetCodes.length} 个` : '';
+    return `${d.filename}: ${shown.join('、')}${more}`;
+  });
+  return `标的代码不存在，本次未导入任何数据：${parts.join('；')}。请核对代码后重新导入。`;
 }
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // SDD §3：上传 10MB 上限，扩展名不可信 → 以内容嗅探为准
@@ -171,12 +166,11 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
       const r = await importBrokerFile(db, userId, brokerCode, input);
       // 导入后自动回填：交割单缺 trade_time 时，从该券商已有成交流水行补齐（L1/L2/L3）
       const backfill = backfillTradeTime(db, userId, brokerCode);
-      // 合并「本次跳过」与「历史批次中已存在的未知标的」，供前端提示
-      const unknownAssets = [
-        ...new Set([...(r.unknownAssets ?? []), ...findUnknownAssets(db, userId, r.batchId)]),
-      ];
-      return ok({ ...r, backfill, unknownAssets });
+      return ok({ ...r, backfill });
     } catch (e) {
+      if (e instanceof UnknownAssetCodesError) {
+        return reply.code(422).send(fail(422, 'UNKNOWN_ASSET_CODES', unknownAssetsMessage(e.details)));
+      }
       return reply
         .code(422)
         .send(fail(422, 'BROKER_IMPORT_FAILED', e instanceof Error ? e.message : String(e)));
@@ -214,15 +208,15 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
           ),
         );
     }
-    const results: Array<Record<string, unknown>> = [];
+    // 第一步：整批预检（解析 + 归一化 + 未知标的检查），不写任何事实层
+    const prepared: Awaited<ReturnType<typeof preflightBrokerFile>>[] = [];
     for (const f of body.files) {
       const got = toInput(f);
       if (got.err) {
         return reply.code(got.err.code).send(got.err.body);
       }
       try {
-        const r = await importBrokerFile(db, userId, brokerCode, got.input!);
-        results.push({ filename: f.filename, ...r });
+        prepared.push(await preflightBrokerFile(db, userId, brokerCode, got.input!));
       } catch (e) {
         return reply
           .code(422)
@@ -235,20 +229,33 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
           );
       }
     }
+    const unknown = prepared
+      .filter((p) => p.unknownAssets.length > 0)
+      .map((p) => ({ filename: p.filename, assetCodes: p.unknownAssets }));
+    if (unknown.length > 0) {
+      return reply.code(422).send(fail(422, 'UNKNOWN_ASSET_CODES', unknownAssetsMessage(unknown)));
+    }
+
+    // 第二步：整批落盘（单事务；任一文件失败则全部回滚）
+    const results: ImportResult[] = [];
+    try {
+      const persistAll = db.transaction(() => {
+        for (const p of prepared) {
+          results.push(persistPreparedBrokerFile(db, userId, brokerCode, p));
+        }
+      });
+      persistAll();
+    } catch (e) {
+      return reply
+        .code(422)
+        .send(fail(422, 'BROKER_IMPORT_FAILED', e instanceof Error ? e.message : String(e)));
+    }
     // 全部导入完成后统一回填一次（交割单缺 trade_time ← 成交流水）
     const backfill = backfillTradeTime(db, userId, brokerCode);
-    // 合并「本次跳过」与「历史批次中已存在的未知标的」
-    const unknownAssets = new Set<string>();
-    for (const r of results) {
-      for (const code of (r as { unknownAssets?: string[] }).unknownAssets ?? []) {
-        unknownAssets.add(code);
-      }
-      const bid = (r as { batchId?: number }).batchId;
-      if (bid) {
-        for (const code of findUnknownAssets(db, userId, bid)) unknownAssets.add(code);
-      }
-    }
-    return ok({ files: results, backfill, unknownAssets: [...unknownAssets].sort() });
+    return ok({
+      files: prepared.map((p, i) => ({ filename: p.filename, ...results[i] })),
+      backfill,
+    });
   });
 
   // 批次列表（含统计与撤销入口信息）

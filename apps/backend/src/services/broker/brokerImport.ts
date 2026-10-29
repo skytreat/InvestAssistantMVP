@@ -29,11 +29,37 @@ export interface ImportResult {
   rowInserted: number;
   rowDeduped: number;
   rowExcluded: number;
-  /** 因标的不在 symbol_dict 中而跳过的行数（不写事实层） */
-  rowUnknown: number;
-  /** 被跳过的未知标的代码（去重） */
-  unknownAssets: string[];
   duplicateFile: boolean; // 同 file_hash 已有批次（本批 0 新行）
+}
+
+/** 预检后的文件：此时尚未写任何 DB 行，供整批“先检后写”使用 */
+export interface PreparedBrokerFile {
+  filename: string;
+  fileHash: string;
+  fileSize: number;
+  duplicateFile: boolean;
+  existingBatchId: number | null;
+  fileKind: BrokerFileParseResult['fileKind'] | null;
+  encoding: BrokerFileParseResult['encoding'] | null;
+  rows: Array<{ normalized: Record<string, unknown>; rowIndex: number; cells: string[] }>;
+  rowTotal: number;
+  rowExcluded: number;
+  unknownAssets: string[];
+}
+
+export interface UnknownAssetDetail {
+  filename: string;
+  assetCodes: string[];
+}
+
+/** 任一未知标的 → 整个文件/整批拒绝（不创建批次、不写事实层） */
+export class UnknownAssetCodesError extends Error {
+  constructor(public readonly details: UnknownAssetDetail[]) {
+    super(
+      `标的不在系统字典中：${details.map((d) => `${d.filename}: ${d.assetCodes.join('、')}`).join('；')}`,
+    );
+    this.name = 'UnknownAssetCodesError';
+  }
 }
 
 /** 归一化后的行（映射模板缺省时用默认列映射；模板化属 T122② 的 mapping_json 载体） */
@@ -90,12 +116,18 @@ export function rowHashOf(normalized: Record<string, unknown>): string {
   return createHash('sha256').update(stable).digest('hex');
 }
 
-export async function importBrokerFile(
+/**
+ * 预检：解析 + 归一化 + 标的存在性检查，**不写任何 DB 行**。
+ *
+ * 路由先对所有文件预检，任一文件存在未知标的则整批 422，避免“部分导入 + 撤销重来”。
+ */
+export async function preflightBrokerFile(
   db: Database.Database,
   userId: number,
   brokerCode: string,
   input: BrokerFileInput,
-): Promise<ImportResult> {
+): Promise<PreparedBrokerFile> {
+  void brokerCode;
   const fileHash = createHash('sha256').update(input.buffer).digest('hex');
 
   // 文件级幂等（INV-S2-9）：同 file_hash 已有未撤销批次 ⇒ 不重复落行
@@ -106,15 +138,17 @@ export async function importBrokerFile(
     .get(userId, fileHash) as { id: number; status: string } | undefined;
   if (prev && prev.status !== 'revoked') {
     return {
-      batchId: prev.id,
+      filename: input.filename,
       fileHash,
-      rowTotal: 0,
-      rowInserted: 0,
-      rowDeduped: 0,
-      rowExcluded: 0,
-      rowUnknown: 0,
-      unknownAssets: [],
+      fileSize: input.buffer.length,
       duplicateFile: true,
+      existingBatchId: prev.id,
+      fileKind: null,
+      encoding: null,
+      rows: [],
+      rowTotal: 0,
+      rowExcluded: 0,
+      unknownAssets: [],
     };
   }
 
@@ -123,6 +157,69 @@ export async function importBrokerFile(
     throw new Error(
       `BROKER_PARSE_FAILED: ${parse.errors.map((e) => e.message).join('; ') || '无法识别文件类型'}`,
     );
+  }
+
+  const code6Dict = buildCode6Dict(db);
+  const symbolSet = new Set(
+    (db.prepare(`SELECT symbol FROM symbol_dict`).all() as Array<{ symbol: string }>).map((r) => r.symbol),
+  );
+  const rows = parse.rows.map((row) => ({
+    normalized: normalizeBrokerRow(parse, row, code6Dict),
+    rowIndex: row.rowIndex,
+    cells: row.cells,
+  }));
+  const unknownAssets = [
+    ...new Set(
+      rows
+        .map((r) => r.normalized.asset_code)
+        .filter(
+          (code): code is string => symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code),
+        ),
+    ),
+  ].sort();
+
+  return {
+    filename: input.filename,
+    fileHash,
+    fileSize: input.buffer.length,
+    duplicateFile: false,
+    existingBatchId: null,
+    fileKind: parse.fileKind,
+    encoding: parse.encoding,
+    rows,
+    rowTotal: parse.rows.length,
+    rowExcluded: rows.filter((r) => r.normalized.match_status === 'EXCLUDED').length,
+    unknownAssets,
+  };
+}
+
+/** 落盘预检结果：创建批次 + 写事实层（调用方必须先完成未知标的检查） */
+export function persistPreparedBrokerFile(
+  db: Database.Database,
+  userId: number,
+  brokerCode: string,
+  prepared: PreparedBrokerFile,
+): ImportResult {
+  if (prepared.unknownAssets.length > 0) {
+    throw new UnknownAssetCodesError([{ filename: prepared.filename, assetCodes: prepared.unknownAssets }]);
+  }
+
+  // 预检后、落盘前可能已有同文件批次（批量预检的场景）→ 再查一次
+  const prev = db
+    .prepare(
+      `SELECT id, status FROM broker_import_batch WHERE user_id = ? AND file_hash = ? AND is_deleted = 0 ORDER BY id DESC LIMIT 1`,
+    )
+    .get(userId, prepared.fileHash) as { id: number; status: string } | undefined;
+  if (prev && prev.status !== 'revoked') {
+    return {
+      batchId: prev.id,
+      fileHash: prepared.fileHash,
+      rowTotal: 0,
+      rowInserted: 0,
+      rowDeduped: 0,
+      rowExcluded: 0,
+      duplicateFile: true,
+    };
   }
 
   const batchId = Number(
@@ -135,11 +232,11 @@ export async function importBrokerFile(
       .run(
         userId,
         brokerCode,
-        parse.fileKind,
-        parse.encoding,
-        input.filename,
-        fileHash,
-        input.buffer.length,
+        prepared.fileKind,
+        prepared.encoding,
+        prepared.filename,
+        prepared.fileHash,
+        prepared.fileSize,
         PARSER_VERSION,
       ).lastInsertRowid,
   );
@@ -158,31 +255,10 @@ export async function importBrokerFile(
   // 跨文件的「冗余导出」去重归 T124（对账层）；同文件重复上传由上方 file_hash 拦截。
   const seqByHashInBatch = new Map<string, number>();
   let rowInserted = 0;
-  const rowDeduped = 0; // 仅统计文件级重复（本路径恒 0，重复文件走 duplicateFile 短路）
   let rowExcluded = 0;
-  let rowUnknown = 0;
-  const unknownAssets = new Set<string>();
-
-  // 字典权威前缀归一化：每次导入建一次 code6 → symbol 快照（避免逐行查表）
-  const code6Dict = buildCode6Dict(db);
-  // 标的有效性快照：symbol_dict 非空时，不属于字典的标的一律跳过（不落事实层）。
-  // 字典为空（如 CI / 尚未同步）时不做校验，避免把全部行误判为未知标的。
-  const symbolSet = new Set(
-    (db.prepare(`SELECT symbol FROM symbol_dict`).all() as Array<{ symbol: string }>).map((r) => r.symbol),
-  );
   const runAll = db.transaction(() => {
-    for (const row of parse.rows) {
-      const normalized = normalizeBrokerRow(parse, row, code6Dict);
-      // 未知标的：跳过且不写 broker_trade_record（券商导入不允许导入不存在的标的）
-      if (
-        symbolSet.size > 0 &&
-        typeof normalized.asset_code === 'string' &&
-        !symbolSet.has(normalized.asset_code)
-      ) {
-        rowUnknown++;
-        unknownAssets.add(normalized.asset_code);
-        continue;
-      }
+    for (const row of prepared.rows) {
+      const normalized = row.normalized;
       const hash = rowHashOf(normalized);
       const seq = seqByHashInBatch.get(hash) ?? 0;
       seqByHashInBatch.set(hash, seq + 1);
@@ -208,7 +284,7 @@ export async function importBrokerFile(
         normalized.raw_event_type,
         // raw_row_json：去包裹后的原始单元格（敏感列已置空）+ 行号，可重放
         JSON.stringify({ rowIndex: row.rowIndex, cells: row.cells }),
-        input.filename,
+        prepared.filename,
         normalized.source_row_no,
         normalized.match_status,
         normalized.exclude_reason,
@@ -220,21 +296,30 @@ export async function importBrokerFile(
     }
     db.prepare(
       `UPDATE broker_import_batch SET status = 'imported', row_total = ?, row_inserted = ?, row_deduped = ?, row_excluded = ? WHERE id = ? AND user_id = ?`,
-    ).run(parse.rows.length, rowInserted, rowDeduped, rowExcluded, batchId, userId);
+    ).run(prepared.rowTotal, rowInserted, 0, rowExcluded, batchId, userId);
   });
   runAll();
 
   return {
     batchId,
-    fileHash,
-    rowTotal: parse.rows.length,
+    fileHash: prepared.fileHash,
+    rowTotal: prepared.rowTotal,
     rowInserted,
-    rowDeduped,
+    rowDeduped: 0,
     rowExcluded,
-    rowUnknown,
-    unknownAssets: [...unknownAssets].sort(),
     duplicateFile: false,
   };
+}
+
+/** 单文件导入：先整文件预检，任一未知标的即拒绝（不写事实层） */
+export async function importBrokerFile(
+  db: Database.Database,
+  userId: number,
+  brokerCode: string,
+  input: BrokerFileInput,
+): Promise<ImportResult> {
+  const prepared = await preflightBrokerFile(db, userId, brokerCode, input);
+  return persistPreparedBrokerFile(db, userId, brokerCode, prepared);
 }
 
 /** 撤销批次：只软删事实层，raw_row_json 证据保留（验收③） */

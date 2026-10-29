@@ -44,9 +44,7 @@ interface ConfirmResult {
   rowInserted?: number;
   rowDeduped?: number;
   rowExcluded?: number;
-  rowUnknown?: number;
   duplicateFile?: boolean;
-  unknownAssets?: string[];
 }
 
 /** 导入批次（GET /api/broker-import/batches 的 batch 行，字段见 broker_import_batch DDL） */
@@ -122,6 +120,8 @@ export default function BrokerImport() {
   const [confirmResults, setConfirmResults] = useState<
     Array<{ key: string; results: Array<{ filename: string; result: ConfirmResult }> }>
   >([]);
+  /** 整批拒绝原因（如未知标的：本次未导入任何数据） */
+  const [confirmError, setConfirmError] = useState<string | null>(null);
 
   // ── 导入批次（列表 + 撤销）──
   const [batches, setBatches] = useState<BatchRow[]>([]);
@@ -160,6 +160,7 @@ export default function BrokerImport() {
       setBusy(true);
       setDetects((d) => ({ ...d, [f.name]: 'detecting' as unknown as string }));
       setConfirmResults([]);
+      setConfirmError(null);
       try {
         const fileBase64 = await fileToBase64(f);
         const res = await api.post('/broker-import/upload', { filename: f.name, fileBase64, brokerCode });
@@ -225,29 +226,36 @@ export default function BrokerImport() {
   const runConfirmGroup = useCallback(
     async (groupCode: string, groupFiles: File[]) => {
       setBusy(true);
-      const out: Array<{ filename: string; result: ConfirmResult }> = [];
+      setConfirmError(null);
+      // 后端 confirm-batch 上限 5 个文件；超限直接提示，避免“部分文件已导入”
+      if (groupFiles.length > 5) {
+        setConfirmError('单次批量导入不超过 5 个文件，请移除多余文件后分批确认。');
+        setBusy(false);
+        return;
+      }
       try {
-        for (const f of groupFiles) {
-          const fileBase64 = await fileToBase64(f);
-          const res = await api.post('/broker-import/confirm', {
-            filename: f.name,
-            fileBase64,
-            brokerCode: groupCode,
-          });
-          if (isOkEnvelope(res.data)) {
-            out.push({ filename: f.name, result: res.data.data as ConfirmResult });
-          } else {
-            out.push({
-              filename: f.name,
-              result: { rowTotal: 0, rowInserted: 0, rowDeduped: 0, rowExcluded: 0 },
-            });
-          }
+        const payloadFiles = await Promise.all(
+          groupFiles.map(async (f) => ({ filename: f.name, fileBase64: await fileToBase64(f) })),
+        );
+        const res = await api.post('/broker-import/confirm-batch', {
+          brokerCode: groupCode,
+          files: payloadFiles,
+        });
+        if (!isOkEnvelope(res.data)) {
+          setConfirmError(String(res.data?.message ?? '导入失败'));
+          return;
         }
+        const data = res.data.data as {
+          files?: Array<{ filename: string } & ConfirmResult>;
+        };
+        const out = (data.files ?? []).map(({ filename, ...result }) => ({ filename, result }));
         setConfirmResults((prev) => [
           ...prev.filter((g) => g.key !== groupCode),
           { key: groupCode, results: out },
         ]);
         await loadBatches();
+      } catch (err) {
+        setConfirmError(extractErrorMessage(err, '导入失败'));
       } finally {
         setBusy(false);
       }
@@ -500,6 +508,11 @@ export default function BrokerImport() {
               );
             })}
           </div>
+          {confirmError && (
+            <p style={{ ...errorStyle, marginTop: 12 }} role="alert">
+              {confirmError}
+            </p>
+          )}
         </div>
       )}
 
@@ -518,7 +531,6 @@ export default function BrokerImport() {
                     <th style={thStyle}>新写入</th>
                     <th style={thStyle}>去重跳过</th>
                     <th style={thStyle}>排除</th>
-                    <th style={thStyle}>未知标的跳过</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -532,25 +544,10 @@ export default function BrokerImport() {
                       <td style={tdStyle}>{r.result.rowInserted}</td>
                       <td style={tdStyle}>{r.result.rowDeduped}</td>
                       <td style={tdStyle}>{r.result.rowExcluded}</td>
-                      <td style={tdStyle}>{r.result.rowUnknown ?? 0}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {g.results.some((r) => (r.result.unknownAssets?.length ?? 0) > 0) && (
-                <div style={{ ...warningBox, marginTop: 8 }}>
-                  <strong>以下标的代码在系统中未找到，对应行已跳过（未写入事实层）：</strong>
-                  <div style={{ fontSize: TYPO.smallSize, marginTop: 4 }}>
-                    {g.results
-                      .flatMap((r) => r.result.unknownAssets ?? [])
-                      .filter((v, i, a) => a.indexOf(v) === i)
-                      .join('、')}
-                  </div>
-                  <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted, marginTop: 4 }}>
-                    请检查代码是否正确；修正后需先撤销该批次，再重新导入该文件。
-                  </div>
-                </div>
-              )}
               <button
                 style={{ ...buttonStyle, ...primaryButton, marginTop: 8 }}
                 onClick={() => navigate(`/broker/reconcile?brokerCode=${encodeURIComponent(g.key)}`)}

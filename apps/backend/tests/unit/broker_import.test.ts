@@ -25,6 +25,7 @@ import {
   normalizeBrokerRow,
   normalizeAssetCode,
   buildCode6Dict,
+  UnknownAssetCodesError,
 } from '../../src/services/broker/brokerImport.js';
 import { parseBrokerFile } from '../../src/services/broker/brokerParser.js';
 import type { BrokerFileInput } from '../../src/services/broker/types.js';
@@ -211,8 +212,8 @@ describe('T122 · 验收⑤ match_status 五态与排除项', () => {
   });
 });
 
-describe('T122 · 未知标的不写入事实层', () => {
-  it('symbol_dict 非空时，未知标的行被跳过并返回清单；已知标的正常写入', async () => {
+describe('T122 · 未知标的整文件拒绝', () => {
+  it('symbol_dict 非空时，任一未知标的 → 整文件拒绝，不创建批次/不写事实层', async () => {
     await seedUser(9009);
     const f = file('2026-10-20-国泰股票成交.xlsx');
     const parse = await parseBrokerFile({ buffer: f.buffer, filename: f.filename });
@@ -235,30 +236,41 @@ describe('T122 · 未知标的不写入事实层', () => {
     );
     for (const code of known) ins.run(code, code.replace(/^[a-z]+/i, ''), code.slice(0, 2));
 
+    const beforeBatches = (
+      db.prepare('SELECT COUNT(*) c FROM broker_import_batch WHERE user_id = ?').get(9009) as {
+        c: number;
+      }
+    ).c;
     try {
-      const r = await importBrokerFile(db, 9009, '国泰', {
-        buffer: f.buffer,
-        filename: f.filename,
-      });
-      expect(r.unknownAssets).toEqual([unknown]);
-      expect(r.rowUnknown).toBeGreaterThan(0);
-      expect(r.rowInserted + r.rowUnknown).toBe(r.rowTotal);
+      let caught: unknown;
+      try {
+        await importBrokerFile(db, 9009, '国泰', {
+          buffer: f.buffer,
+          filename: f.filename,
+        });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(UnknownAssetCodesError);
+      expect((caught as UnknownAssetCodesError).details).toEqual([
+        { filename: f.filename, assetCodes: [unknown] },
+      ]);
 
-      const unknownRows = db
-        .prepare(
-          `SELECT COUNT(*) c FROM broker_trade_record
-            WHERE user_id = 9009 AND import_batch_id = ? AND asset_code = ? AND is_deleted = 0`,
-        )
-        .get(r.batchId, unknown) as { c: number };
-      expect(unknownRows.c).toBe(0);
-
-      const knownRows = db
-        .prepare(
-          `SELECT COUNT(*) c FROM broker_trade_record
-            WHERE user_id = 9009 AND import_batch_id = ? AND asset_code = ? AND is_deleted = 0`,
-        )
-        .get(r.batchId, known[0]) as { c: number };
-      expect(knownRows.c).toBeGreaterThan(0);
+      // 整文件拒绝：批次、事实层都不得留下半成品
+      expect(
+        (
+          db.prepare('SELECT COUNT(*) c FROM broker_import_batch WHERE user_id = ?').get(9009) as {
+            c: number;
+          }
+        ).c,
+      ).toBe(beforeBatches);
+      expect(
+        (
+          db
+            .prepare('SELECT COUNT(*) c FROM broker_trade_record WHERE user_id = ? AND is_deleted = 0')
+            .get(9009) as { c: number }
+        ).c,
+      ).toBe(0);
     } finally {
       db.prepare('DELETE FROM symbol_dict').run();
     }
