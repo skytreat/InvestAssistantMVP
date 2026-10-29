@@ -15,7 +15,9 @@ function loadEnvFile(p) {
       const m = line.match(/^\s*(\w+)\s*=\s*(.+)\s*$/);
       if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
     }
-  } catch {}
+  } catch {
+    /* env file not found — ignore */
+  }
 }
 loadEnvFile('.env.local');
 loadEnvFile('apps/backend/.env.local');
@@ -48,9 +50,7 @@ const symbolSet = new Set(symbols);
 
 // 读取 SQLite 活交易
 const db = new Database(sqlitePath, { readonly: true });
-const liveTrades = db
-  .prepare('SELECT id, asset_code FROM user_trade_record WHERE is_deleted = 0')
-  .all();
+const liveTrades = db.prepare('SELECT id, asset_code FROM user_trade_record WHERE is_deleted = 0').all();
 db.close();
 
 console.log(`\n活交易记录共 ${liveTrades.length} 条`);
