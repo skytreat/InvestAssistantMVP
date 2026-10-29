@@ -16,7 +16,7 @@ const TEST_DB = path.join(tmpDir, 'sched-test.db');
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
-import { registerCronJobs } from '../../src/services/scheduler.js';
+import { refreshSymbolDictSnapshot, registerCronJobs } from '../../src/services/scheduler.js';
 import { ConfigStore } from '../../src/config/configStore.js';
 import * as loggerNs from '../../src/services/logger.js';
 
@@ -84,6 +84,29 @@ describe('scheduler — registerCronJobs 有 scheduler', () => {
     );
     expect(startupCalls.length).toBeGreaterThan(0);
 
+    logSpy.mockRestore();
+  });
+});
+
+describe('scheduler — refreshSymbolDictSnapshot', () => {
+  it('成功 → 返回行数并写 SUCCESS 日志', async () => {
+    const logSpy = vi.spyOn(loggerNs, 'writeSystemLog').mockImplementation(() => {});
+    await expect(refreshSymbolDictSnapshot(async () => 42)).resolves.toBe(42);
+    expect(
+      logSpy.mock.calls.some((c) => c[0]?.checkItem === 'symbol_dict' && c[0]?.level === 'SUCCESS'),
+    ).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it('DuckDB 失败 → 返回 null 并写 ERROR，不向上抛', async () => {
+    const logSpy = vi.spyOn(loggerNs, 'writeSystemLog').mockImplementation(() => {});
+    await expect(
+      refreshSymbolDictSnapshot(async () => {
+        throw new Error('duckdb locked');
+      }),
+    ).resolves.toBeNull();
+    const err = logSpy.mock.calls.find((c) => c[0]?.checkItem === 'symbol_dict' && c[0]?.level === 'ERROR');
+    expect(err?.[0]?.detail).toContain('duckdb locked');
     logSpy.mockRestore();
   });
 });

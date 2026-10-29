@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
+import { buildCode6Dict, normalizeAssetCode } from '../services/assetCode.js';
 import { calcPosition, calcAllPositions, validateSufficientHolding } from '../services/positionCalculator.js';
 import {
   batchGetLatestAndPrevClose,
@@ -260,6 +261,13 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       ) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', '必要字段缺失'));
       }
+      const db = ConfigStore.getInstance().db;
+      // 标的代码归一化 + 字典校验（字典未同步时跳过校验，避免 CI / 首次启动误拒）
+      const assetCode = normalizeAssetCode(body.asset_code, buildCode6Dict(db)) ?? body.asset_code.trim();
+      const dictCount = (db.prepare('SELECT COUNT(*) c FROM symbol_dict').get() as { c: number }).c;
+      if (dictCount > 0 && !db.prepare('SELECT 1 FROM symbol_dict WHERE symbol = ?').get(assetCode)) {
+        return reply.code(400).send(fail(400, 'SYMBOL_NOT_FOUND', `标的不存在：${assetCode}`));
+      }
       // T87：trade_time 必填且格式合法
       if (!validateTradeTime(body.trade_time)) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_time 必填，格式 HH:mm:ss（秒级）'));
@@ -296,22 +304,15 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         // T84（P0-13）：必须传 trade_date —— 以卖出发生时点回放，
         // 否则尚未发生的买入会支撑更早的卖出（日期交错绕过校验）
         if (
-          !validateSufficientHolding(
-            user.sub,
-            body.asset_code,
-            body.quantity,
-            body.trade_date,
-            body.trade_time,
-          )
+          !validateSufficientHolding(user.sub, assetCode, body.quantity, body.trade_date, body.trade_time)
         ) {
           // B-10 裁决：HOLDING_INSUFFICIENT = HTTP 409（非 400）
           return reply
             .code(409)
-            .send(fail(409, 'HOLDING_INSUFFICIENT', `持仓不足：无法${tradeType} ${body.asset_code}`));
+            .send(fail(409, 'HOLDING_INSUFFICIENT', `持仓不足：无法${tradeType} ${assetCode}`));
         }
       }
 
-      const db = ConfigStore.getInstance().db;
       const info = db
         .prepare(
           `INSERT INTO user_trade_record
@@ -320,7 +321,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         )
         .run(
           user.sub,
-          body.asset_code,
+          assetCode,
           tradeType,
           body.trade_date,
           body.trade_time,
@@ -335,16 +336,16 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       writeSystemLog({
         logType: 'trade',
         level: 'SUCCESS',
-        message: `录入${tradeType} ${body.asset_code} qty=${body.quantity} price=${body.price}`,
+        message: `录入${tradeType} ${assetCode} qty=${body.quantity} price=${body.price}`,
       });
 
       // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
-      const holdRel = syncHoldRelation(user.sub, body.asset_code);
+      const holdRel = syncHoldRelation(user.sub, assetCode);
 
       reply.code(201).send(
         ok({
           trade_id: info.lastInsertRowid,
-          position: calcPosition(user.sub, body.asset_code),
+          position: calcPosition(user.sub, assetCode),
           hold_rel: holdRel,
         }),
       );
@@ -418,8 +419,10 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       }
 
       // ── 只查当前用户（user_id 来自 token，绝不信请求参数）──
-      //    asset_code 用**原值**查（不 trim）：与 INSERT 落库的值完全一致，避免口径漂移。
-      const hit = findTradeTimeOccupancy(user.sub, assetCode, tradeType, tradeDate, tradeTime);
+      //    asset_code 与 INSERT 使用同一归一化规则，避免「预检/落库」口径漂移。
+      const db = ConfigStore.getInstance().db;
+      const normalizedAssetCode = normalizeAssetCode(assetCode, buildCode6Dict(db)) ?? assetCode.trim();
+      const hit = findTradeTimeOccupancy(user.sub, normalizedAssetCode, tradeType, tradeDate, tradeTime);
       if (hit) {
         return reply.send(ok({ taken: true, taken_at: localDateTimeToIso(hit.created_at) }));
       }

@@ -16,8 +16,11 @@ import type Database from 'better-sqlite3';
 import { parseBrokerFile } from './brokerParser.js';
 import { normalizeEvent, isExcludedFromSystemRecord } from './eventNormalize.js';
 import type { BrokerFileInput, BrokerFileParseResult } from './types.js';
+import { buildCode6Dict, normalizeAssetCode } from '../assetCode.js';
 
-export const PARSER_VERSION = 'v3.1.0';
+export { buildCode6Dict, normalizeAssetCode } from '../assetCode.js';
+
+export const PARSER_VERSION = 'v3.1.1';
 
 export interface ImportResult {
   batchId: number;
@@ -29,10 +32,52 @@ export interface ImportResult {
   duplicateFile: boolean; // 同 file_hash 已有批次（本批 0 新行）
 }
 
+/** 预检后的文件：此时尚未写任何 DB 行，供整批“先检后写”使用 */
+export interface PreparedBrokerFile {
+  filename: string;
+  fileHash: string;
+  fileSize: number;
+  duplicateFile: boolean;
+  existingBatchId: number | null;
+  fileKind: BrokerFileParseResult['fileKind'] | null;
+  encoding: BrokerFileParseResult['encoding'] | null;
+  rows: Array<{ normalized: Record<string, unknown>; rowIndex: number; cells: string[] }>;
+  rowTotal: number;
+  rowExcluded: number;
+  unknownAssets: string[];
+  unknownAssetNames: (string | null)[];
+}
+
+export interface UnknownAssetDetail {
+  filename: string;
+  assetCodes: string[];
+  /** 与 assetCodes 对应的原始名称（可能为 null/空字符串） */
+  assetNames?: (string | null)[];
+}
+
+/** 任一未知标的 → 整个文件/整批拒绝（不创建批次、不写事实层） */
+export class UnknownAssetCodesError extends Error {
+  constructor(public readonly details: UnknownAssetDetail[]) {
+    super(
+      `标的不在系统字典中：${details
+        .map((d) => {
+          const parts = d.assetCodes.map((code, i) => {
+            const name = d.assetNames?.[i];
+            return name ? `${code}（${name}）` : code;
+          });
+          return `${d.filename}: ${parts.join('、')}`;
+        })
+        .join('；')}`,
+    );
+    this.name = 'UnknownAssetCodesError';
+  }
+}
+
 /** 归一化后的行（映射模板缺省时用默认列映射；模板化属 T122② 的 mapping_json 载体） */
 export function normalizeBrokerRow(
   parse: BrokerFileParseResult,
   row: { rowIndex: number; cells: string[] },
+  code6Dict?: Map<string, string | null>,
 ): Record<string, unknown> {
   const m = parse.mappingSuggestion.byField;
   const col = (f: keyof typeof m): string | undefined => (m[f] ? row.cells[m[f]!.column] : undefined);
@@ -47,7 +92,7 @@ export function normalizeBrokerRow(
   return {
     event_type: norm.event_type,
     raw_event_type: norm.raw_event_type,
-    asset_code: col('symbol') ?? null,
+    asset_code: normalizeAssetCode(col('symbol') ?? null, code6Dict),
     raw_symbol: col('symbol') ?? null,
     raw_name: col('name') ?? null,
     market: norm.market ?? null,
@@ -82,12 +127,18 @@ export function rowHashOf(normalized: Record<string, unknown>): string {
   return createHash('sha256').update(stable).digest('hex');
 }
 
-export async function importBrokerFile(
+/**
+ * 预检：解析 + 归一化 + 标的存在性检查，**不写任何 DB 行**。
+ *
+ * 路由先对所有文件预检，任一文件存在未知标的则整批 422，避免“部分导入 + 撤销重来”。
+ */
+export async function preflightBrokerFile(
   db: Database.Database,
   userId: number,
   brokerCode: string,
   input: BrokerFileInput,
-): Promise<ImportResult> {
+): Promise<PreparedBrokerFile> {
+  void brokerCode;
   const fileHash = createHash('sha256').update(input.buffer).digest('hex');
 
   // 文件级幂等（INV-S2-9）：同 file_hash 已有未撤销批次 ⇒ 不重复落行
@@ -98,13 +149,18 @@ export async function importBrokerFile(
     .get(userId, fileHash) as { id: number; status: string } | undefined;
   if (prev && prev.status !== 'revoked') {
     return {
-      batchId: prev.id,
+      filename: input.filename,
       fileHash,
-      rowTotal: 0,
-      rowInserted: 0,
-      rowDeduped: 0,
-      rowExcluded: 0,
+      fileSize: input.buffer.length,
       duplicateFile: true,
+      existingBatchId: prev.id,
+      fileKind: null,
+      encoding: null,
+      rows: [],
+      rowTotal: 0,
+      rowExcluded: 0,
+      unknownAssets: [],
+      unknownAssetNames: [],
     };
   }
 
@@ -113,6 +169,100 @@ export async function importBrokerFile(
     throw new Error(
       `BROKER_PARSE_FAILED: ${parse.errors.map((e) => e.message).join('; ') || '无法识别文件类型'}`,
     );
+  }
+
+  const code6Dict = buildCode6Dict(db);
+  const symbolSet = new Set(
+    (db.prepare(`SELECT symbol FROM symbol_dict`).all() as Array<{ symbol: string }>).map((r) => r.symbol),
+  );
+  const rows = parse.rows.map((row) => ({
+    normalized: normalizeBrokerRow(parse, row, code6Dict),
+    rowIndex: row.rowIndex,
+    cells: row.cells,
+  }));
+  const unknownMap = new Map<string, string | null>();
+  for (const r of rows) {
+    const code = r.normalized.asset_code;
+    if (symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code)) {
+      const existing = unknownMap.get(code);
+      const name = (r.normalized.raw_name as string | null | undefined) ?? null;
+      if (existing === undefined || (existing === null && name !== null && name !== '')) {
+        unknownMap.set(code, name);
+      }
+    }
+  }
+  // 歧义消解：6 位裸码 + 名称 → symbol_dict 精确匹配 code6 + name（如 000070 + 特发信息 → sz000070）
+  const resolveStmt = db.prepare(`SELECT symbol FROM symbol_dict WHERE code6 = ? AND name = ?`);
+  const resolveMap = new Map<string, string>(); // bare code → full symbol
+  for (const [code, name] of unknownMap) {
+    if (!/^\d{6}$/.test(code) || !name) continue;
+    const hit = resolveStmt.get(code, name) as { symbol: string } | undefined;
+    if (hit) {
+      resolveMap.set(code, hit.symbol);
+      unknownMap.delete(code);
+      unknownMap.set(hit.symbol, name);
+      symbolSet.add(hit.symbol);
+    }
+  }
+  for (const r of rows) {
+    const code = r.normalized.asset_code;
+    if (typeof code === 'string' && resolveMap.has(code)) {
+      r.normalized.asset_code = resolveMap.get(code);
+    }
+  }
+  const unknownAssetEntries = [...unknownMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const unknownAssets = unknownAssetEntries.map((e) => e[0]);
+  const unknownAssetNames = unknownAssetEntries.map((e) => e[1]);
+
+  return {
+    filename: input.filename,
+    fileHash,
+    fileSize: input.buffer.length,
+    duplicateFile: false,
+    existingBatchId: null,
+    fileKind: parse.fileKind,
+    encoding: parse.encoding,
+    rows,
+    rowTotal: parse.rows.length,
+    rowExcluded: rows.filter((r) => r.normalized.match_status === 'EXCLUDED').length,
+    unknownAssets,
+    unknownAssetNames,
+  };
+}
+
+/** 落盘预检结果：创建批次 + 写事实层（调用方必须先完成未知标的检查） */
+export function persistPreparedBrokerFile(
+  db: Database.Database,
+  userId: number,
+  brokerCode: string,
+  prepared: PreparedBrokerFile,
+): ImportResult {
+  if (prepared.unknownAssets.length > 0) {
+    throw new UnknownAssetCodesError([
+      {
+        filename: prepared.filename,
+        assetCodes: prepared.unknownAssets,
+        assetNames: prepared.unknownAssetNames,
+      },
+    ]);
+  }
+
+  // 预检后、落盘前可能已有同文件批次（批量预检的场景）→ 再查一次
+  const prev = db
+    .prepare(
+      `SELECT id, status FROM broker_import_batch WHERE user_id = ? AND file_hash = ? AND is_deleted = 0 ORDER BY id DESC LIMIT 1`,
+    )
+    .get(userId, prepared.fileHash) as { id: number; status: string } | undefined;
+  if (prev && prev.status !== 'revoked') {
+    return {
+      batchId: prev.id,
+      fileHash: prepared.fileHash,
+      rowTotal: 0,
+      rowInserted: 0,
+      rowDeduped: 0,
+      rowExcluded: 0,
+      duplicateFile: true,
+    };
   }
 
   const batchId = Number(
@@ -125,11 +275,11 @@ export async function importBrokerFile(
       .run(
         userId,
         brokerCode,
-        parse.fileKind,
-        parse.encoding,
-        input.filename,
-        fileHash,
-        input.buffer.length,
+        prepared.fileKind,
+        prepared.encoding,
+        prepared.filename,
+        prepared.fileHash,
+        prepared.fileSize,
         PARSER_VERSION,
       ).lastInsertRowid,
   );
@@ -148,12 +298,10 @@ export async function importBrokerFile(
   // 跨文件的「冗余导出」去重归 T124（对账层）；同文件重复上传由上方 file_hash 拦截。
   const seqByHashInBatch = new Map<string, number>();
   let rowInserted = 0;
-  const rowDeduped = 0; // 仅统计文件级重复（本路径恒 0，重复文件走 duplicateFile 短路）
   let rowExcluded = 0;
-
   const runAll = db.transaction(() => {
-    for (const row of parse.rows) {
-      const normalized = normalizeBrokerRow(parse, row);
+    for (const row of prepared.rows) {
+      const normalized = row.normalized;
       const hash = rowHashOf(normalized);
       const seq = seqByHashInBatch.get(hash) ?? 0;
       seqByHashInBatch.set(hash, seq + 1);
@@ -179,7 +327,7 @@ export async function importBrokerFile(
         normalized.raw_event_type,
         // raw_row_json：去包裹后的原始单元格（敏感列已置空）+ 行号，可重放
         JSON.stringify({ rowIndex: row.rowIndex, cells: row.cells }),
-        input.filename,
+        prepared.filename,
         normalized.source_row_no,
         normalized.match_status,
         normalized.exclude_reason,
@@ -191,19 +339,30 @@ export async function importBrokerFile(
     }
     db.prepare(
       `UPDATE broker_import_batch SET status = 'imported', row_total = ?, row_inserted = ?, row_deduped = ?, row_excluded = ? WHERE id = ? AND user_id = ?`,
-    ).run(parse.rows.length, rowInserted, rowDeduped, rowExcluded, batchId, userId);
+    ).run(prepared.rowTotal, rowInserted, 0, rowExcluded, batchId, userId);
   });
   runAll();
 
   return {
     batchId,
-    fileHash,
-    rowTotal: parse.rows.length,
+    fileHash: prepared.fileHash,
+    rowTotal: prepared.rowTotal,
     rowInserted,
-    rowDeduped,
+    rowDeduped: 0,
     rowExcluded,
     duplicateFile: false,
   };
+}
+
+/** 单文件导入：先整文件预检，任一未知标的即拒绝（不写事实层） */
+export async function importBrokerFile(
+  db: Database.Database,
+  userId: number,
+  brokerCode: string,
+  input: BrokerFileInput,
+): Promise<ImportResult> {
+  const prepared = await preflightBrokerFile(db, userId, brokerCode, input);
+  return persistPreparedBrokerFile(db, userId, brokerCode, prepared);
 }
 
 /** 撤销批次：只软删事实层，raw_row_json 证据保留（验收③） */

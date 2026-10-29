@@ -13,12 +13,30 @@ import { ok, fail } from '../lib/envelope.js';
 import { parseBrokerFile } from '../services/broker/brokerParser.js';
 import {
   importBrokerFile,
+  persistPreparedBrokerFile,
+  preflightBrokerFile,
   revokeBatch,
   listBatches,
   saveTemplate,
   getTemplate,
+  UnknownAssetCodesError,
+  type ImportResult,
+  type UnknownAssetDetail,
 } from '../services/broker/brokerImport.js';
+import { backfillTradeTime } from '../services/broker/brokerReconcile.js';
 import type { BrokerFileInput } from '../services/broker/types.js';
+
+import { ensureSymbolDict } from '../services/symbolDict.js';
+
+/** 未知标的拒绝文案：最多列 20 个代码，避免错误消息过长 */
+function unknownAssetsMessage(details: UnknownAssetDetail[]): string {
+  const parts = details.map((d) => {
+    const shown = d.assetCodes.slice(0, 20);
+    const more = d.assetCodes.length > shown.length ? ` 等 ${d.assetCodes.length} 个` : '';
+    return `${d.filename}: ${shown.join('、')}${more}`;
+  });
+  return `标的代码不存在，本次未导入任何数据：${parts.join('；')}。请核对代码后重新导入。`;
+}
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // SDD §3：上传 10MB 上限，扩展名不可信 → 以内容嗅探为准
 
@@ -129,14 +147,115 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     const got = toInput(body);
     if (got.err) return reply.code(got.err.code).send(got.err.body);
     const input = got.input!;
+    const db = ConfigStore.getInstance().db;
+    const brokerCode = body.brokerCode.trim();
+    // 导入前确保标的字典已同步：未知标的行必须可判定（不允许在字典缺失时盲导）
+    const dictCount = await ensureSymbolDict();
+    if (dictCount === 0) {
+      return reply
+        .code(422)
+        .send(
+          fail(
+            422,
+            'SYMBOL_DICT_UNAVAILABLE',
+            '标的字典未同步，无法校验标的代码；请先确认行情库可用并打开一次标的搜索',
+          ),
+        );
+    }
     try {
-      const r = await importBrokerFile(ConfigStore.getInstance().db, userId, body.brokerCode.trim(), input);
-      return ok(r);
+      const r = await importBrokerFile(db, userId, brokerCode, input);
+      // 导入后自动回填：交割单缺 trade_time 时，从该券商已有成交流水行补齐（L1/L2/L3）
+      const backfill = backfillTradeTime(db, userId, brokerCode);
+      return ok({ ...r, backfill });
+    } catch (e) {
+      if (e instanceof UnknownAssetCodesError) {
+        return reply.code(422).send(fail(422, 'UNKNOWN_ASSET_CODES', unknownAssetsMessage(e.details)));
+      }
+      return reply
+        .code(422)
+        .send(fail(422, 'BROKER_IMPORT_FAILED', e instanceof Error ? e.message : String(e)));
+    }
+  });
+
+  // 批量确认导入（同券商多文件一次提交，如成交流水+交割单；导入后自动回填 trade_time）
+  app.post('/api/broker-import/confirm-batch', async (request, reply) => {
+    const req = request as { user?: { sub?: number | string; role?: string } };
+    const userId = userIdOf(req);
+    if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    if (req.user?.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
+    const body = request.body as { brokerCode?: string; files?: UploadBody[] };
+    if (!body?.brokerCode?.trim()) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
+    }
+    if (!Array.isArray(body.files) || body.files.length === 0) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', 'files 不能为空'));
+    }
+    if (body.files.length > 5) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', '单次批量导入不超过 5 个文件'));
+    }
+    const db = ConfigStore.getInstance().db;
+    const brokerCode = body.brokerCode.trim();
+    const dictCount = await ensureSymbolDict();
+    if (dictCount === 0) {
+      return reply
+        .code(422)
+        .send(
+          fail(
+            422,
+            'SYMBOL_DICT_UNAVAILABLE',
+            '标的字典未同步，无法校验标的代码；请先确认行情库可用并打开一次标的搜索',
+          ),
+        );
+    }
+    // 第一步：整批预检（解析 + 归一化 + 未知标的检查），不写任何事实层
+    const prepared: Awaited<ReturnType<typeof preflightBrokerFile>>[] = [];
+    for (const f of body.files) {
+      const got = toInput(f);
+      if (got.err) {
+        return reply.code(got.err.code).send(got.err.body);
+      }
+      try {
+        prepared.push(await preflightBrokerFile(db, userId, brokerCode, got.input!));
+      } catch (e) {
+        return reply
+          .code(422)
+          .send(
+            fail(
+              422,
+              'BROKER_IMPORT_FAILED',
+              `文件 ${f.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            ),
+          );
+      }
+    }
+    const unknown = prepared
+      .filter((p) => p.unknownAssets.length > 0)
+      .map((p) => ({ filename: p.filename, assetCodes: p.unknownAssets }));
+    if (unknown.length > 0) {
+      return reply.code(422).send(fail(422, 'UNKNOWN_ASSET_CODES', unknownAssetsMessage(unknown)));
+    }
+
+    // 第二步：整批落盘（单事务；任一文件失败则全部回滚）
+    const results: ImportResult[] = [];
+    try {
+      const persistAll = db.transaction(() => {
+        for (const p of prepared) {
+          results.push(persistPreparedBrokerFile(db, userId, brokerCode, p));
+        }
+      });
+      persistAll();
     } catch (e) {
       return reply
         .code(422)
         .send(fail(422, 'BROKER_IMPORT_FAILED', e instanceof Error ? e.message : String(e)));
     }
+    // 全部导入完成后统一回填一次（交割单缺 trade_time ← 成交流水）
+    const backfill = backfillTradeTime(db, userId, brokerCode);
+    return ok({
+      files: prepared.map((p, i) => ({ filename: p.filename, ...results[i] })),
+      backfill,
+    });
   });
 
   // 批次列表（含统计与撤销入口信息）

@@ -115,7 +115,9 @@ describe('T124 · gate G5：成交时间回填命中 100%（125/125 + 12/12）',
     // 品种维度拆分：股票交割侧 12 行全部 MATCHED
     const split = db
       .prepare(
-        `SELECT CASE WHEN b.asset_code LIKE '6%' OR b.asset_code LIKE '0%' THEN 'stock' ELSE 'etf' END AS kind,
+        `SELECT CASE WHEN b.asset_code LIKE 'sh6%' OR b.asset_code LIKE 'sz0%' OR b.asset_code LIKE 'sz3%'
+                      OR b.asset_code LIKE '6%' OR b.asset_code LIKE '0%' OR b.asset_code LIKE '3%'
+                 THEN 'stock' ELSE 'etf' END AS kind,
                 COUNT(*) AS n
            FROM broker_trade_record b JOIN broker_import_batch f ON f.id = b.import_batch_id
            WHERE b.user_id = 7104 AND f.file_kind = 'settlement' AND b.match_status = 'MATCHED' AND b.is_deleted = 0

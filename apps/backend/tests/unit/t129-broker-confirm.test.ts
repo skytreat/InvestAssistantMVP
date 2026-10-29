@@ -333,4 +333,30 @@ describe('T129 券商补录 brokerConfirm', () => {
     const b = readTrade(db, manualId);
     expect(b.is_deleted).toBe(0); // 业务行不动（INV-S2-35）
   });
+
+  it('⑨ 标的不在 symbol_dict 时禁止补录（字典非空）', () => {
+    const store = freshStore('unknown-asset');
+    const db = store.db;
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
+    ).run();
+    const ids = seedFacts(db, [
+      { eventType: 'TRADE_BUY', asset: 'sh600000', balance: 100 },
+      { eventType: 'TRADE_BUY', asset: 'sh999999', balance: 100 },
+    ]);
+
+    const r = confirmTrades(
+      db,
+      UID,
+      't129broker',
+      [...ids.values()].map((sourceId) => ({ sourceId })),
+    );
+    expect(r.imported).toBe(1);
+    expect(r.invalid).toBe(1);
+    expect(r.rows.some((x) => x.reason?.includes('标的不在系统字典中'))).toBe(true);
+    expect(
+      db.prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE user_id = ?`).get(UID) as { c: number },
+    ).toEqual({ c: 1 });
+  });
 });
