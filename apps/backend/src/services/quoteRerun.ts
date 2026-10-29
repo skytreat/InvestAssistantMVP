@@ -35,7 +35,9 @@ const RETRY_SETTLE_MS = Number(process.env.TDX2DB_RERUN_SETTLE_MS ?? 3_000);
 const TDX2DB_BIN = process.env.TDX2DB_BIN ?? '/usr/local/bin/tdx2db';
 
 /** 是否跳过 systemd-run（默认跳过；polkit 认证在此部署环境永远失败） */
-const SKIP_SYSTEMD_RUN = (process.env.TDX2DB_SKIP_SYSTEMD_RUN ?? '1') === '1';
+function shouldSkipSystemdRun(): boolean {
+  return (process.env.TDX2DB_SKIP_SYSTEMD_RUN ?? '1') === '1';
+}
 
 /** DuckDB URI（与 deploy/tdx2db.service 保持一致） */
 const DUCKDB_URI = process.env.TDX2DB_DBURI ?? `duckdb:///${process.env.DUCKDB_PATH ?? 'data/quotes.duckdb'}`;
@@ -188,7 +190,9 @@ export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
   }
 
   const result =
-    (SKIP_SYSTEMD_RUN ? null : await _trySystemdRun()) ?? (await _trySystemctl()) ?? (await _tryDirectExec());
+    (shouldSkipSystemdRun() ? null : await _trySystemdRun()) ??
+    (await _trySystemctl()) ??
+    (await _tryDirectExec());
 
   if (releaseWriteWindow) releaseWriteWindow();
 
