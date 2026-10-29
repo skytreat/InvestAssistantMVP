@@ -41,12 +41,15 @@ export function normalizeAssetCode(
     if (hit) return hit; // 字典唯一命中 → 直接采用
     if (hit === null) return trimmed; // 字典歧义（同 code6 多市场）→ 不猜
     const first = trimmed[0];
-    // 启发式兜底（依据 raw_symbol_name 实测分布 2026-10-28）：
+    // 启发式兜底（依据 raw_symbol_name 实测分布 2026-10-28，2026-10-29 修正 204xxx）：
     //   d1=9：92xxxx=北交所（354 只）、900xxx=沪 B（41 只）⇒ 按 d2 区分；
+    //   d1=2：204xxx=上交所逆回购（GC001/GC002/...），其余 2xxxxx=深市；
     //   d1=1：15/16/18=深基金（1170 行）、10/11=沪转债/基金、12/13=深转债；
     //         14/17/19 无数据 ⇒ 不猜
     if (first === '6' || first === '5' || first === '7') return `sh${trimmed}`;
-    if (first === '0' || first === '2' || first === '3') return `sz${trimmed}`;
+    if (first === '0' || first === '3') return `sz${trimmed}`;
+    // 204xxx = 上交所国债逆回购（GC001/GC002/...），不是深市
+    if (first === '2') return trimmed.startsWith('204') ? `sh${trimmed}` : `sz${trimmed}`;
     if (first === '4' || first === '8') return `bj${trimmed}`;
     if (first === '9') return trimmed[1] === '2' ? `bj${trimmed}` : `sh${trimmed}`;
     if (first === '1') {
