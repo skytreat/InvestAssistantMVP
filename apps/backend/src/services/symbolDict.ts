@@ -94,6 +94,16 @@ export async function ensureSymbolDict(): Promise<number> {
 }
 
 /**
+ * 强制全量刷新标的字典：先清表再同步。
+ * 用于部署后手动补刷（ensureSymbolDict 只在表为空时才懒加载，非空时不重拉）。
+ */
+export async function forceRefreshSymbolDict(): Promise<number> {
+  const db = ConfigStore.getInstance().db;
+  db.prepare('DELETE FROM symbol_dict').run();
+  return syncSymbolDict();
+}
+
+/**
  * 列出「asset_code 不在 symbol_dict 中」的活交易记录，供 admin 手动工具预览。
  * 字典为空时返回 []（无法判定，禁止批量清理）。
  */

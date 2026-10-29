@@ -10,6 +10,7 @@ import {
   SIGNAL_USER_ID,
 } from '../services/signalService.js';
 import { writeSystemLog, readFallbackLogTail } from '../services/logger.js';
+import { forceRefreshSymbolDict } from '../services/symbolDict.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
 
@@ -20,6 +21,7 @@ import { defaultMessage } from '../lib/errorMessages.js';
  * - GET  /api/admin/system-log      分页查询 system_log
  * - GET  /api/admin/system-log/fallback  读取降级日志文件尾部（I-13）
  * - POST /api/admin/rerun-quotes    手动触发行情更新补跑（Requirements §5.1）
+ * - POST /api/admin/symbol-dict/refresh  强制刷新标的字典（含 unknown 类标的补刷）
  */
 
 /** 降级日志回读的最大行数（契约：只回读尾部 N 行，不回传整个文件）*/
@@ -221,6 +223,30 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
       return reply.send(ok({ ...result, checks }));
     } catch (err) {
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
+  });
+
+  // 强制刷新标的字典（部署后 / 字典未覆盖 unknown 类标的时手动调用）
+  app.post('/api/admin/symbol-dict/refresh', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', defaultMessage('FORBIDDEN')));
+    try {
+      const rows = await forceRefreshSymbolDict();
+      writeSystemLog({
+        logType: 'trigger_manual',
+        level: rows > 0 ? 'INFO' : 'WARN',
+        message: `${user.username} 强制刷新标的字典，同步 ${rows} 行`,
+      });
+      return reply.send(ok({ rows }));
+    } catch (err) {
+      writeSystemLog({
+        logType: 'trigger_manual',
+        level: 'ERROR',
+        message: `${user.username} 强制刷新标的字典失败`,
+        detail: String(err),
+      });
       return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
