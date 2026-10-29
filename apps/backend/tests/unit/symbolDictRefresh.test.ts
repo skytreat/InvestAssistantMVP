@@ -47,32 +47,53 @@ afterAll(() => {
   }
 });
 
-function seed(symbol: string, name: string): void {
+function seed(symbol: string, name: string, class_: string = 'stock'): void {
   db.prepare(
     `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-     VALUES (?, ?, ?, '', ?, 'unknown', 'risk')`,
-  ).run(symbol, symbol.replace(/^[a-z]+/i, ''), name, symbol.slice(0, 2));
+     VALUES (?, ?, ?, '', ?, ?, 'risk')`,
+  ).run(symbol, symbol.replace(/^[a-z]+/i, ''), name, symbol.slice(0, 2), class_);
 }
 
 describe('symbol_dict · 全量刷新', () => {
-  it('新增标的并更新已有标的名称/拼音', async () => {
+  it('新增标的并更新已有标的名称/拼音，class 写入真实值', async () => {
     seed('sh600000', '旧名称');
     queryDuckDBMock.mockResolvedValue([
-      { symbol: 'sh600000', name: '浦发银行' },
-      { symbol: 'sz000001', name: '平安银行' },
+      { symbol: 'sh600000', class: 'stock', name: '浦发银行' },
+      { symbol: 'sz000001', class: 'stock', name: '平安银行' },
     ]);
 
     await expect(syncSymbolDict()).resolves.toBe(2);
 
-    const rows = db.prepare('SELECT symbol, name, pinyin FROM symbol_dict ORDER BY symbol').all() as Array<{
+    const rows = db.prepare('SELECT symbol, name, pinyin, class FROM symbol_dict ORDER BY symbol').all() as Array<{
       symbol: string;
       name: string;
       pinyin: string;
+      class: string;
     }>;
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ symbol: 'sh600000', name: '浦发银行' });
+    expect(rows[0]).toMatchObject({ symbol: 'sh600000', name: '浦发银行', class: 'stock' });
     expect(rows[0].pinyin.length).toBeGreaterThan(0);
-    expect(rows[1]).toMatchObject({ symbol: 'sz000001', name: '平安银行' });
+    expect(rows[1]).toMatchObject({ symbol: 'sz000001', name: '平安银行', class: 'stock' });
+  });
+
+  it('unknown 类标的纳入字典（name 为空串，code6 搜索仍命中）', async () => {
+    queryDuckDBMock.mockResolvedValue([
+      { symbol: 'sz131810', class: 'unknown', name: null },
+      { symbol: 'sh204001', class: 'unknown', name: null },
+      { symbol: 'sh600000', class: 'stock', name: '浦发银行' },
+    ]);
+
+    await expect(syncSymbolDict()).resolves.toBe(3);
+
+    const rows = db.prepare('SELECT symbol, name, class FROM symbol_dict ORDER BY symbol').all() as Array<{
+      symbol: string;
+      name: string;
+      class: string;
+    }>;
+    expect(rows).toHaveLength(3);
+    expect(rows.find(r => r.symbol === 'sz131810')).toMatchObject({ class: 'unknown', name: '' });
+    expect(rows.find(r => r.symbol === 'sh204001')).toMatchObject({ class: 'unknown', name: '' });
+    expect(rows.find(r => r.symbol === 'sh600000')).toMatchObject({ class: 'stock', name: '浦发银行' });
   });
 
   it('DuckDB 不可读时抛出，不返回 0 伪装成功', async () => {
@@ -88,7 +109,7 @@ describe('symbol_dict · 全量刷新', () => {
   });
 
   it('ensureSymbolDict 表为空时仍懒加载一次', async () => {
-    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000', name: '浦发银行' }]);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000', class: 'stock', name: '浦发银行' }]);
     await expect(ensureSymbolDict()).resolves.toBe(1);
     expect(queryDuckDBMock).toHaveBeenCalledTimes(1);
   });

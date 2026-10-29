@@ -726,7 +726,7 @@ transfer         -> 忽略（转托管不改变总持仓）
     code6: string;         // 6 位裸码
     name: string;          // 中文名（缺失时为空串，不报错）
     market: 'sh' | 'sz' | 'bj';
-    class: 'stock' | 'etf' | 'index' | 'bond' | 'unknown';
+    class: 'stock' | 'etf' | 'index' | 'bstock' | 'unknown';
     assetClass: 'risk' | 'cash';      // 现金类标识（§2）
     pinyin: string;        // 拼音首字母（用于「gzzq」→「贵州茅台」）
     matchType: 'code' | 'name' | 'pinyin';
@@ -959,8 +959,11 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_code6 ON symbol_dict(code6);
 CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 ```
 
-> 由行情层**只读**同步而来；`asset_class` 来自 §2 的分类表。
+> 由行情层**只读**同步而来：`raw_symbol_class LEFT JOIN raw_symbol_name ON symbol`，**排除 `block`（板块分组非可交易证券）**；`asset_class` 来自 §2 的分类表。
 > **快照而非实时查行情层** —— 联想是高频操作，且行情层按需开关连接（`AGENTS.md`）。
+>
+> - 覆盖 `stock / etf / index / bstock / unknown` 五类；
+> - `unknown` 类（B 股 / 债券 / 可转债等，数据层无独立 `bond` 值）name 为空串、pinyin 为空串，**code6 搜索仍命中**（SDD §9.4 允许）。
 
 #### 11.1.5 资产分类
 

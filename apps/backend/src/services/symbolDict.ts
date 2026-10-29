@@ -1,8 +1,12 @@
 /**
  * T136（V3.4）标的字典快照 —— SDD_v3 §9.4 / §11.1.4 / Requirements INV-S1-1~7
  *
- * 由行情层 raw_symbol_name **只读**同步而来；pinyin 首字母预计算存储；
- * 联想走业务层快照，不扫行情层（SDD §9.4 硬约束）。
+ * 由行情层 **raw_symbol_class LEFT JOIN raw_symbol_name** 只读同步而来；
+ * pinyin 首字母预计算存储；联想走业务层快照，不扫行情层（SDD §9.4 硬约束）。
+ *
+ * - 覆盖 raw_symbol_class 全部 class（stock/etf/index/bstock/unknown）；
+ * - 排除 block（板块分组，非可交易证券，不入字典）；
+ * - unknown 行 name 为空串、pinyin 为空串，code6 搜索仍命中（SDD §9.4 允许）。
  */
 import { ConfigStore } from '../config/configStore.js';
 import { queryDuckDB } from '../db/duckdb.js';
@@ -38,8 +42,11 @@ export function toPinyinInitials(name: string): string {
  */
 export async function syncSymbolDict(): Promise<number> {
   const db = ConfigStore.getInstance().db;
-  const rows = await queryDuckDB<{ symbol: string; name: string }>(
-    `SELECT symbol, name FROM raw_symbol_name`,
+  const rows = await queryDuckDB<{ symbol: string; class: string; name: string | null }>(
+    `SELECT c.symbol, c.class, n.name
+     FROM raw_symbol_class c
+     LEFT JOIN raw_symbol_name n ON c.symbol = n.symbol
+     WHERE c.class <> 'block'`,
   );
   const upsert = db.prepare(
     `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
@@ -56,7 +63,9 @@ export async function syncSymbolDict(): Promise<number> {
       const symbol = r.symbol;
       const code6 = symbol.replace(/^[a-z]+/i, '');
       const market = symbol.slice(0, 2);
-      upsert.run(symbol, code6, r.name ?? '', toPinyinInitials(r.name ?? ''), market, 'unknown', 'risk');
+      const class_ = r.class;
+      const name = r.name ?? '';
+      upsert.run(symbol, code6, name, toPinyinInitials(name), market, class_, 'risk');
       n++;
     }
   });
@@ -78,8 +87,9 @@ export async function ensureSymbolDict(): Promise<number> {
     cnt = count();
   }
   // 🔴 只读：不得在此自动软删 user_trade_record。
-  // 字典只覆盖当前 raw_symbol_name，可能缺退市/新上市/裸码/大写码；
-  // 自动清理会误删合法历史交易，故改为 admin 手动维护（见下方函数）。
+  // 字典覆盖 raw_symbol_class（排除 block），含 unknown 类标的；
+  // 自动清理会误删退市、新上市、裸码、大写码等合法历史交易，
+  // 故改为 admin 手动维护（见下方函数）。
   return cnt;
 }
 
@@ -114,8 +124,9 @@ export function listOrphanUserTradeRecords(userId?: number): Array<{
  * 手动软删 user_trade_record 中**在 symbol_dict 里不存在的标的**对应记录。
  *
  * 🔴 **仅供 admin 手动维护；禁止在请求路径 / cron / ensureSymbolDict 中调用。**
- *    原因：字典只覆盖当前 raw_symbol_name，自动清理会误删退市、新上市、裸码、
- *    大写码等合法历史交易（详见 2026-10-29 审计）。
+ *    原因：字典覆盖 raw_symbol_class（排除 block），已含 unknown 类标的；
+ *    但自动清理会误删退市、新上市、裸码、大写码等合法历史交易
+ *    （详见 2026-10-29 审计）。
  *
  * 前提：symbol_dict 非空（否则返回 0，防止空字典误删）。
  * `options.userId` 可限定单用户；不传 = 全用户（admin 全局维护）。

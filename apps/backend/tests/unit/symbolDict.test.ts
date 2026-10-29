@@ -197,4 +197,18 @@ describe('symbol_dict · softDeleteOrphanUserTradeRecords', () => {
       ),
     ).toBe(1);
   });
+
+  it('unknown 类标的进入字典后，对应交易记录不再被判为孤儿', () => {
+    const h = helper();
+    // 模拟字典含 sz131810（unknown / 可转债）—— 这是本次改动的回归点
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sz131810','131810','','','sz','unknown','risk')`,
+    ).run();
+    const idBond = h.insertTrade(7001, 'sz131810', 'buy', '2026-03-01');
+
+    const orphans = listOrphanUserTradeRecords();
+    expect(orphans).toHaveLength(0);
+    expect(h.getIsDeleted(idBond)).toBe(0);
+  });
 });
