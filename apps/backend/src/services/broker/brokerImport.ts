@@ -230,13 +230,40 @@ export async function preflightBrokerFile(
   };
 }
 
-/** 落盘预检结果：创建批次 + 写事实层（调用方必须先完成未知标的检查） */
+/** 落盘预检结果：创建批次 + 写事实层（调用方必须先完成未知标的检查）
+ *
+ * @param skipUnknownAssetCodes 用户选择跳过的标的代码集合；
+ *   提供时按代码过滤行与 unknownAssets，不再因这些代码抛错。
+ */
 export function persistPreparedBrokerFile(
   db: Database.Database,
   userId: number,
   brokerCode: string,
   prepared: PreparedBrokerFile,
+  skipUnknownAssetCodes: string[] = [],
 ): ImportResult {
+  if (skipUnknownAssetCodes.length > 0) {
+    const skipSet = new Set(skipUnknownAssetCodes);
+    const filteredRows = prepared.rows.filter(
+      (r) => !skipSet.has(r.normalized.asset_code as string),
+    );
+    const keptCodes: string[] = [];
+    const keptNames: (string | null)[] = [];
+    for (let i = 0; i < prepared.unknownAssets.length; i++) {
+      if (!skipSet.has(prepared.unknownAssets[i])) {
+        keptCodes.push(prepared.unknownAssets[i]);
+        keptNames.push(prepared.unknownAssetNames[i] ?? null);
+      }
+    }
+    prepared = {
+      ...prepared,
+      rows: filteredRows,
+      unknownAssets: keptCodes,
+      unknownAssetNames: keptNames,
+      rowTotal: filteredRows.length,
+    };
+  }
+
   if (prepared.unknownAssets.length > 0) {
     throw new UnknownAssetCodesError([
       {
