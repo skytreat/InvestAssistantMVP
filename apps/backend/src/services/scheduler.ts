@@ -15,6 +15,7 @@ import { runFullBackup } from './backup.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
+import { syncSymbolDict } from './symbolDict.js';
 
 /**
  * 全部收盘后 cron 的时区（T108）。
@@ -228,6 +229,39 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
 }
 
 /**
+ * 收盘后刷新 symbol_dict（17:01 校验段末尾调用）。
+ *
+ * tdx2db 在 17:00 更新 `raw_symbol_name`，此前的 `ensureSymbolDict()` 只在表为空时
+ * 同步一次 → 新增/改名标的永远进不了字典。这里做**全量 upsert**，不删除退市标的
+ * （历史交易仍可识别），失败只记日志、不阻塞 17:02 信号段。
+ *
+ * @returns 同步行数；DuckDB 不可读时返回 null（已写 ERROR 日志）
+ */
+export async function refreshSymbolDictSnapshot(
+  sync: () => Promise<number> = syncSymbolDict,
+): Promise<number | null> {
+  try {
+    const rows = await sync();
+    writeSystemLog({
+      logType: 'datacheck',
+      level: rows > 0 ? 'SUCCESS' : 'WARN',
+      checkItem: 'symbol_dict',
+      message: rows > 0 ? `标的字典刷新完成: ${rows} 行` : '标的字典刷新跳过: 行情层 raw_symbol_name 无数据',
+    });
+    return rows;
+  } catch (err: any) {
+    writeSystemLog({
+      logType: 'datacheck',
+      level: 'ERROR',
+      checkItem: 'symbol_dict',
+      message: '标的字典刷新失败（不影响后续信号/除权/备份）',
+      detail: String(err),
+    });
+    return null;
+  }
+}
+
+/**
  * 注册所有 cron 任务（由 server.ts 在 Fastify 启动后调用）
  *
  * cron 表达式（5 段标准格式：分 时 日 月 周）:
@@ -324,6 +358,10 @@ export function registerCronJobs(app: FastifyInstance): void {
                 message: 'C1-C12 校验异常',
                 detail: String(err),
               });
+            }
+            // 写窗口已结束（或校验已完成）→ 全量刷新标的字典，供后续搜索/导入/录入使用
+            if (!pipelineBlocked) {
+              await refreshSymbolDictSnapshot();
             }
           },
           false,
@@ -499,6 +537,6 @@ export function registerCronJobs(app: FastifyInstance): void {
     logType: 'startup',
     level: 'INFO',
     message:
-      '4 段 cron 已注册: 17:01 校验 / 17:02 信号 / 17:03 除权 / 17:05 备份（等待 tdx2db 写窗口结束后串行执行）',
+      '4 段 cron 已注册: 17:01 校验+字典刷新 / 17:02 信号 / 17:03 除权 / 17:05 备份（等待 tdx2db 写窗口结束后串行执行）',
   });
 }

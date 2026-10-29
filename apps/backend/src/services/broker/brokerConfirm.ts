@@ -235,6 +235,11 @@ export function confirmTrades(
     else buckets.set(r.asset_code, [r]);
   }
 
+  // 标的字典校验：字典非空时，不在字典中的事实行不可补录（避免产生孤儿业务记录）
+  const dictSet = new Set(
+    (db.prepare('SELECT symbol FROM symbol_dict').all() as Array<{ symbol: string }>).map((r) => r.symbol),
+  );
+
   const pending: Array<{ fact: FactRow; type: ConfirmTradeType }> = [];
   for (const fact of byId.values()) {
     if (alreadyIds.has(fact.id)) continue;
@@ -246,6 +251,16 @@ export function confirmTrades(
         status: reason.includes('manual_sheet') ? 'manual_sheet' : 'invalid',
         tradeType: null,
         reason,
+      });
+      continue;
+    }
+    if (dictSet.size > 0 && fact.asset_code && !dictSet.has(fact.asset_code)) {
+      result.invalid++;
+      rows.push({
+        sourceId: fact.id,
+        status: 'invalid',
+        tradeType: null,
+        reason: `标的不在系统字典中：${fact.asset_code}`,
       });
       continue;
     }

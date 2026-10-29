@@ -783,3 +783,59 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
     expect(row, '非法类型不得落库').toBeUndefined();
   });
 });
+
+describe('Trade · 标的字典校验', () => {
+  it('字典非空时：裸码归一化后可录入，未知标的返回 400 SYMBOL_NOT_FOUND', async () => {
+    const db = bundle.db.db;
+    db.prepare('DELETE FROM symbol_dict').run();
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
+    ).run();
+    try {
+      const bad = await bundle.app.inject({
+        method: 'POST',
+        url: '/api/trade',
+        headers: authHeaders(),
+        payload: {
+          asset_code: 'sh999999',
+          trade_type: 'buy',
+          trade_date: TRADE_DATE,
+          trade_time: '10:20:00',
+          quantity: 10,
+          price: 10,
+          trade_reason: '未知标的',
+        },
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(JSON.parse(bad.body).error).toBe('SYMBOL_NOT_FOUND');
+
+      const good = await bundle.app.inject({
+        method: 'POST',
+        url: '/api/trade',
+        headers: authHeaders(),
+        payload: {
+          asset_code: '600000',
+          trade_type: 'buy',
+          trade_date: TRADE_DATE,
+          trade_time: '10:20:01',
+          quantity: 10,
+          price: 10,
+          trade_reason: '裸码归一化',
+        },
+      });
+      expect(good.statusCode).toBe(201);
+      const tradeId = JSON.parse(good.body).data.trade_id;
+      const stored = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as {
+        asset_code: string;
+      };
+      expect(stored.asset_code).toBe('sh600000');
+    } finally {
+      db.prepare('DELETE FROM symbol_dict').run();
+      db.prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?').run(
+        bundle.userId,
+        'sh600000',
+      );
+    }
+  });
+});

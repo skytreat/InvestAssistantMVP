@@ -105,6 +105,11 @@ vi.mock('../../src/services/backup.js', () => ({
     };
   }),
 }));
+vi.mock('../../src/services/symbolDict.js', () => ({
+  // 17:01 末尾会刷新标的字典；fake timers 下不能真开 DuckDB（会挂起整个队列）
+  syncSymbolDict: vi.fn(async () => 1),
+  ensureSymbolDict: vi.fn(async () => 1),
+}));
 vi.mock('../../src/services/marketData.js', () => ({
   resolveTargetTradeDate: vi.fn(async () => '2026-10-20'),
   resolveLatestQuoteDate: vi.fn(async () => '2026-10-20'),

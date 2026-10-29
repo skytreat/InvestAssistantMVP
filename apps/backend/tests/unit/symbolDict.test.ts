@@ -1,9 +1,9 @@
 /**
- * symbolDict.test.ts — 字典权威 & 孤儿软删
+ * symbolDict.test.ts — 字典权威 & 孤儿软删（仅手动维护）
  * 验证：
- *  - softDeleteOrphanUserTradeRecords 仅软删 user_trade_record 中 asset_code 不在 symbol_dict 的记录
- *  - 幂等性：重复调用不会重复改变 is_deleted
- *  - 字典未同步（dictCount=0）时直接跳过，防止误删
+ *  - ensureSymbolDict 不再自动软删 user_trade_record（防止误删历史交易）
+ *  - softDeleteOrphanUserTradeRecords 仅软删 asset_code 不在 symbol_dict 的记录
+ *  - 支持按 userId 限定范围；幂等；字典为空时跳过
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
@@ -16,7 +16,11 @@ process.env.SQLITE_DB_PATH = tmpDbPath;
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import type Database from 'better-sqlite3';
-import { softDeleteOrphanUserTradeRecords } from '../../src/services/symbolDict.js';
+import {
+  ensureSymbolDict,
+  listOrphanUserTradeRecords,
+  softDeleteOrphanUserTradeRecords,
+} from '../../src/services/symbolDict.js';
 
 let db: Database.Database;
 
@@ -73,6 +77,36 @@ function helper() {
 }
 
 describe('symbol_dict · softDeleteOrphanUserTradeRecords', () => {
+  it('ensureSymbolDict 只同步字典，不再自动软删交易记录', async () => {
+    const h = helper();
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
+    ).run();
+    const idOrphan = h.insertTrade(7002, 'sz000001', 'buy', '2026-01-31');
+    expect(h.getIsDeleted(idOrphan)).toBe(0);
+
+    await ensureSymbolDict();
+
+    expect(h.getIsDeleted(idOrphan)).toBe(0);
+    expect(listOrphanUserTradeRecords()).toHaveLength(1);
+  });
+
+  it('支持按 userId 限定，仅软删目标用户的孤儿记录', () => {
+    const h = helper();
+    db.prepare(
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
+       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
+    ).run();
+    const id7001 = h.insertTrade(7001, 'sz000001', 'buy', '2026-01-30');
+    const id7002 = h.insertTrade(7002, 'sz000002', 'buy', '2026-01-30');
+
+    const n = softDeleteOrphanUserTradeRecords({ userId: 7002 });
+    expect(n).toBe(1);
+    expect(h.getIsDeleted(id7001)).toBe(0);
+    expect(h.getIsDeleted(id7002)).toBe(1);
+  });
+
   it('字典未同步（dictCount=0）时直接跳过，不软删任何记录', () => {
     const h = helper();
     // 确保字典为空
