@@ -188,9 +188,7 @@ export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
   }
 
   const result =
-    (SKIP_SYSTEMD_RUN ? null : (await _trySystemdRun())) ??
-    (await _trySystemctl()) ??
-    (await _tryDirectExec());
+    (SKIP_SYSTEMD_RUN ? null : await _trySystemdRun()) ?? (await _trySystemctl()) ?? (await _tryDirectExec());
 
   if (releaseWriteWindow) releaseWriteWindow();
 
