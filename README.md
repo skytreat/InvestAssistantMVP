@@ -16,16 +16,17 @@ graph LR
       PluginEngine[插件引擎<br/>沙盒 50ms timeout]
     end
     subgraph 部署
-      Caddy[Caddy 反代 :443]
-      Systemd[systemd timers<br/>17:00 tdx2db]
+      Caddy["Caddy 反代 :443"]
+      Systemd["systemd timers<br/>17:00 tdx2db"]
+      TDX["tdx2db Go binary"]
     end
-    FE -- fetch /api --> Caddy
-    Caddy -- reverse_proxy --> BE
+    FE -- "fetch /api" --> Caddy
+    Caddy -- "reverse_proxy" --> BE
     BE --> SQLite
-    BE -- SELECT only --> DuckDB
+    BE -- "SELECT only" --> DuckDB
     BE --> PluginEngine
-    Systemd --> tdx2db Go binary
-    tdx2db --> DuckDB
+    Systemd --> TDX
+    TDX --> DuckDB
 ```
 
 ## 快速开始

@@ -663,13 +663,18 @@ transfer         -> 忽略（转托管不改变总持仓）
 {
   brokerCode: string;
   coveredRange: { from: string; to: string };
-  matchSummary: { exact: number; fuzzy: number; priceMismatch: number;
-                  qtyMismatch: number; directionMismatch: number;
-                  missing: number; extra: number };
-  attribution: {                        // §9.2 的差额归因
+  matchSummary: {
+    exact: number; fuzzy: number; priceMismatch: number;
+    qtyMismatch: number; directionMismatch: number;
+    missing: number; extra: number;      // 交易记录笔数
+    missingGroups?: number; extraGroups?: number; // 标的×日期组数，仅辅助
+  };
+  attribution: {                        // §9.2 的差额归因（金额单位均为元）
     repo: number; cashLikeEtf: number; dividend: number;
-    offExchange: number; uncoveredPeriod: number; caliberDiff: number;
-    residual: number                    // ← 真实差异，必须醒目
+    offExchange: number; uncoveredPeriod: number;
+    caliberDiff: number;                // 口径差异金额（元）
+    caliberDiffCount: number;           // 口径差异条数（辅助）
+    residual: number                    // ← 真实差异金额（元），必须醒目
   };
   fundCheck: {                          // §6 行内自洽
     applicable: number; passed: number;
@@ -682,6 +687,11 @@ transfer         -> 忽略（转托管不改变总持仓）
 
 **强制**：`residual`（无法解释的残差）**必须单独返回且不为 0 时置顶**；
 **不得用「其他 / 未知」兜底**（Requirements `INV-S2-62/63`）。
+
+**计量口径（强制）**：
+- `attribution` 中除 `caliberDiffCount` 外均为**元**；`caliberDiff` 是金额，`caliberDiffCount` 是条数，二者不得互相替代。
+- `matchSummary.missing/extra` 是**交易记录笔数**；`missingGroups/extraGroups` 是去重后的**标的×日期组数**，仅 tooltip/辅助。
+- `GET /diff` 在现有 `unmatched/repo/cashLikeEtf/dividend/offExchange/unknown` 类别基础上增加 **`extra`**（系统有、事实层无），并与摘要卡同口径分页。
 
 ### 9.3 补录
 
