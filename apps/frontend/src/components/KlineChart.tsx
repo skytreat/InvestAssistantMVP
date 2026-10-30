@@ -44,12 +44,13 @@
  * - 响应式：`ResizeObserver` + `window.resize` → `chart.resize()`
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Chart, KLineData } from 'klinecharts';
 import { COLORS, TYPO } from '../theme/tokens';
 import { PERIOD_TO_KLINECHARTS, type ChartBar, type KlinePeriod } from '../indicators/chartBars';
 import type { IndicatorParams } from '../indicators/chartParams';
 import KlineHoverPanel from './KlineHoverPanel';
+import KlineTradePanel from './KlineTradePanel';
 import {
   CHART_STYLES,
   KDJ_INDICATOR,
@@ -62,18 +63,22 @@ import {
   RSI_INDICATOR,
   RSI_LINE_STYLES,
   SIGNAL_INDICATOR,
+  TRADE_INDICATOR,
   VOL_BAR_STYLES,
   VOL_INDICATOR,
   calcKdj,
   calcMacd,
   calcMa,
   calcRsi,
+  computeTradeMarkerPositions,
   createKdjIndicator,
   createMacdIndicator,
   createMaIndicator,
   createRsiIndicator,
   drawRsiThresholds,
+  findTradeMarkerAtPoint,
   maFigures,
+  type TradeMarkerGeometry,
 } from '../indicators/chartIndicators';
 
 /** klinecharts 的主图（蜡烛图）pane id */
@@ -114,6 +119,8 @@ export interface KlineChartProps {
   params: IndicatorParams;
   /** 主图是否叠加 MA(4 条) */
   showMa: boolean;
+  /** 是否显示交易点（T152；默认开）*/
+  showTrades?: boolean;
   /** 副图类型 */
   subIndicator: SubIndicatorKind;
   /** 图表总高度（px）*/
@@ -151,6 +158,8 @@ function registerCustomIndicators(
   kc.registerIndicator(VOL_INDICATOR);
   // 🔴 信号标记也必须注册 —— 未注册的名字 `createIndicator` 会静默返回 null
   kc.registerIndicator(SIGNAL_INDICATOR);
+  // T152：交易标记也必须注册（未注册时 createIndicator 会静默返回 null）
+  kc.registerIndicator(TRADE_INDICATOR);
 }
 
 /** 创建一个指标（若已存在则先移除，保证幂等）*/
@@ -172,6 +181,7 @@ export default function KlineChart({
   dataSignature,
   params,
   showMa,
+  showTrades = true,
   subIndicator,
   height = 560,
   mainHeight = 380,
@@ -193,9 +203,16 @@ export default function KlineChart({
   signatureRef.current = dataSignature;
   /** 图表里当前装着的**原始数据**的指纹 —— 与它不同才需要重新取数 */
   const loadedSignatureRef = useRef<string | null>(null);
+  /** 是否显示交易点（prop 默认值，避免初始化闭包里拿不到最新值）*/
+  const showTradesRef = useRef(showTrades);
+  showTradesRef.current = showTrades;
+  /** 当前交易标记几何（点击命中用；与 draw 同一套几何）*/
+  const tradeMarkersRef = useRef<TradeMarkerGeometry[]>([]);
 
   /** 当前 hover 的 K 线下标 */
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  /** 被点中的 K 线（T152 交易明细面板；null = 未点中）*/
+  const [selectedTradeBarIndex, setSelectedTradeBarIndex] = useState<number | null>(null);
   /** 图表初始化失败时的降级提示（jsdom / 无 canvas 环境）*/
   const [chartError, setChartError] = useState<string | null>(null);
   /** 图表是否已就绪 */
@@ -304,6 +321,23 @@ export default function KlineChart({
             );
           },
           true,
+        );
+
+        // 交易标记（T152；自绘圆点，走指标的自定义 draw 回调）
+        ensureIndicator(
+          chart,
+          TRADE_INDICATOR.name,
+          (c) => {
+            c.createIndicator(
+              {
+                name: TRADE_INDICATOR.name,
+                paneId: CANDLE_PANE_ID,
+                series: 'price',
+              },
+              true,
+            );
+          },
+          showTrades,
         );
 
         // 副图（MACD / RSI / KDJ 三选一）
@@ -515,14 +549,65 @@ export default function KlineChart({
     chart.setPaneOptions({ height: subHeight });
   }, [mainHeight, subHeight, ready, subIndicator]);
 
+  /** 交易标记几何（点击命中用；与自绘 draw 使用同一套计算） */
+  const _tradeMarkers = useMemo(() => {
+    if (!showTrades) {
+      tradeMarkersRef.current = [];
+      return [];
+    }
+    const chart = chartRef.current;
+    if (!chart) {
+      tradeMarkersRef.current = [];
+      return [];
+    }
+    const yAxis = chart.getYAxes({ paneId: CANDLE_PANE_ID })[0];
+    if (!yAxis) {
+      tradeMarkersRef.current = [];
+      return [];
+    }
+    const result = computeTradeMarkerPositions(
+      bars,
+      (index) => {
+        const converted = chart.convertToPixel(
+          { dataIndex: index, value: 0 },
+          { paneId: CANDLE_PANE_ID },
+        ) as Partial<import('klinecharts').Coordinate>;
+        return converted.x ?? Number.NaN;
+      },
+      (value) => yAxis.convertToPixel(value),
+    );
+    tradeMarkersRef.current = result;
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bars, showTrades, ready]);
+
   const hovered = hoverIndex !== null ? bars[hoverIndex] : null;
+  const selectedTradeBar = selectedTradeBarIndex !== null ? bars[selectedTradeBarIndex] : null;
+
+  const handleChartClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const marker = findTradeMarkerAtPoint(
+      event.nativeEvent.offsetX,
+      event.nativeEvent.offsetY,
+      () => tradeMarkersRef.current,
+    );
+    if (marker) {
+      setSelectedTradeBarIndex(marker.index);
+      return;
+    }
+    setSelectedTradeBarIndex(null);
+  }, []);
+
+  const closeTradePanel = useCallback(() => {
+    setSelectedTradeBarIndex(null);
+  }, []);
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
       <div
         ref={containerRef}
         data-testid="kline-chart-container"
-        // 🔴 `role="figure"` —— 裸 `<div>`（无 role）上挂 `aria-label` 会踩
+        onClick={handleChartClick}
+        // 🔴 `role="figure"` —— 裸 `<div aria-label="K 线图">` 上挂 `aria-label` 会踩
         //    axe 规则 `aria-prohibited-attr`（serious）：
         //    「aria-label attribute cannot be used on "div" elements with no valid role attribute」。
         //    `figure` 允许「作者提供的可访问名」，且**不会**把子节点整体设为 presentational
@@ -565,6 +650,9 @@ export default function KlineChart({
         subIndicator={subIndicator}
         maPeriods={params.ma.periods}
       />
+
+      {/* T152：点击交易圆点后的交易明细（移动端也通过点击打开）*/}
+      <KlineTradePanel bar={selectedTradeBar} onClose={closeTradePanel} />
     </div>
   );
 }

@@ -55,6 +55,21 @@ export interface RawBar {
   amount: number;
 }
 
+/** K 线交易标记（T152 · SDD_v3 §9.9）*/
+export interface TradeMarker {
+  id: number;
+  trade_date: string;
+  trade_time: string | null;
+  /** 原始录入 / 导入类型（buy/add/reduce/clear）*/
+  trade_type: string;
+  /** 按发生前持仓推导出的展示类型（open/add/reduce/close）*/
+  marker_type: 'open' | 'add' | 'reduce' | 'close';
+  quantity: number;
+  price: number;
+  /** 当前复权口径的显示价 */
+  adj_price: number;
+}
+
 /** 图表周期（日 / 周 / 月） */
 export type KlinePeriod = 'day' | 'week' | 'month';
 
@@ -105,6 +120,13 @@ export interface ChartBar extends RawBar {
   j: number;
   /** 该交易日的信号（无则 `null`）*/
   signal: SignalMarker | null;
+  /**
+   * 该 K 线对应的交易标记（T152）
+   *
+   * ⚠️ 同一根 K 线可能对应**多笔**交易（同日多笔）⇒ 用数组，不是单值。
+   *    周/月 K 下该数组包含**整根周期 K 线内**的全部交易（桶映射）。
+   */
+  trades: TradeMarker[];
   /** 相对前一根 K 线收盘价的涨跌幅（%），第一根为 null */
   changePct?: number | null;
 }
@@ -139,6 +161,49 @@ function monthKey(date: string): string {
   return date.slice(0, 7);
 }
 
+/** 周期 K 线桶（周/月由日线聚合出来的区间；日 K 是单日桶）*/
+export interface BarBucket {
+  /** 桶内首根日线日期 */
+  startDate: string;
+  /** 桶内末根日线日期 */
+  endDate: string;
+}
+
+interface BarGroup {
+  key: string;
+  items: RawBar[];
+}
+
+/**
+ * 把升序日线切成周期桶。
+ *
+ * 周/月 K 线聚合时，交易点不能只按聚合后 `bar.date`（末交易日）精确匹配；
+ * 必须知道「这一根周期 K 线覆盖的首日～末日」，才能把桶内任意交易归入同一根。
+ */
+export function buildBarBuckets(bars: RawBar[], period: KlinePeriod): BarBucket[] {
+  if (period === 'day') {
+    return bars.map((bar) => ({ startDate: bar.date, endDate: bar.date }));
+  }
+
+  const keyOf = period === 'week' ? isoWeekKey : monthKey;
+  const groups: BarGroup[] = [];
+
+  for (const bar of bars) {
+    const key = keyOf(bar.date);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) {
+      last.items.push(bar);
+    } else {
+      groups.push({ key, items: [bar] });
+    }
+  }
+
+  return groups.map(({ items }) => ({
+    startDate: items[0]?.date ?? '',
+    endDate: items[items.length - 1]?.date ?? '',
+  }));
+}
+
 /**
  * 把日线聚合成周线 / 月线
  *
@@ -156,8 +221,8 @@ function monthKey(date: string): string {
 export function aggregateBars(bars: RawBar[], period: KlinePeriod): RawBar[] {
   if (period === 'day') return bars.slice();
 
+  const groups: BarGroup[] = [];
   const keyOf = period === 'week' ? isoWeekKey : monthKey;
-  const groups: Array<{ key: string; items: RawBar[] }> = [];
 
   for (const bar of bars) {
     const key = keyOf(bar.date);
@@ -194,6 +259,28 @@ export function aggregateBars(bars: RawBar[], period: KlinePeriod): RawBar[] {
   });
 }
 
+/**
+ * 把交易标记映射到每根图表 K 线上（T152）。
+ *
+ * - 日 K：交易日有对应 bar 直接映射；无对应 bar（周末/停牌）归入其后最近一根，不插值、不改写日期
+ * - 周/月 K：按桶覆盖的 `startDate~endDate` 归入对应周期 K 线；跨桶交易归入后续桶
+ * - 交易只追加到 `ChartBar.trades`，不改变 OHLCV 与既有指标值
+ */
+export function mapTradesToBars(bars: RawBar[], period: KlinePeriod, trades: TradeMarker[]): TradeMarker[][] {
+  const buckets = buildBarBuckets(bars, period);
+  const result: TradeMarker[][] = buckets.map(() => []);
+
+  for (const trade of trades) {
+    // 第一个 endDate >= trade_date 的桶 = 交易日所在桶（日 K 下即精确匹配 / 下一个交易日）
+    const index = buckets.findIndex((bucket) => bucket.endDate >= trade.trade_date);
+    if (index < 0) continue;
+    if (buckets[index].startDate > trade.trade_date) continue;
+    result[index].push(trade);
+  }
+
+  return result;
+}
+
 /* ------------------------------------------------------------------ *
  * 指标计算 + 灌值
  * ------------------------------------------------------------------ */
@@ -218,8 +305,10 @@ export function buildChartBars(
   period: KlinePeriod,
   signals: SignalMarker[] = [],
   params: IndicatorParams = DEFAULT_INDICATOR_PARAMS,
+  trades: TradeMarker[] = [],
 ): ChartBar[] {
   const aggregated = aggregateBars(bars, period);
+  const tradesByBar = mapTradesToBars(bars, period, trades);
 
   const closes = aggregated.map((b) => b.close);
   const highs = aggregated.map((b) => b.high);
@@ -252,6 +341,7 @@ export function buildChartBars(
     d: kdj.d[i] ?? NaN,
     j: kdj.j[i] ?? NaN,
     signal: signalByDate.get(bar.date) ?? null,
+    trades: tradesByBar[i] ?? [],
     changePct:
       i > 0 && aggregated[i - 1].close
         ? ((bar.close - aggregated[i - 1].close) / aggregated[i - 1].close) * 100

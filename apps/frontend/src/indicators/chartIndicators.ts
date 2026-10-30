@@ -32,7 +32,7 @@
 
 import type { DeepPartial, IndicatorFigure, IndicatorTemplate, KLineData } from 'klinecharts';
 import { COLORS } from '../theme/tokens';
-import type { ChartBar } from './chartBars';
+import type { ChartBar, TradeMarker } from './chartBars';
 import { MA_FIELD_KEYS } from './chartParams';
 
 /* ------------------------------------------------------------------ *
@@ -78,6 +78,12 @@ export interface VolIndicatorResult {
   open: number;
   /** 当根的 close */
   close: number;
+}
+
+/** 交易标记 */
+export interface TradeMarkerIndicatorResult {
+  /** 该 K 线的交易标记（没有就是空数组；同一根可多笔）*/
+  trades: TradeMarker[];
 }
 
 /* ------------------------------------------------------------------ *
@@ -323,6 +329,187 @@ export function createKdjIndicator(getBars?: BarsProvider): IndicatorTemplate<Kd
 
 /** KDJ 指标模板（默认：取图表数据列表自带的那份）*/
 export const KDJ_INDICATOR: IndicatorTemplate<KdjIndicatorResult> = createKdjIndicator();
+
+/**
+ * 交易标记 —— 主图叠加（T152 / SDD_v3 §9.9）
+ *
+ * 视觉规格（ui-spec §7）：
+ * - 圆形（区别于信号三角形）；半径 4px
+ * - 建仓 / 清仓 = 实心圆；加仓 / 减仓 = 空心圆
+ * - 建仓 / 加仓 = 红 `COLORS.candleUp`；减仓 / 清仓 = 绿 `COLORS.candleDown`
+ * - 外描边 1px `COLORS.cardBg`
+ * - 同日多笔聚合成 1 个 9px 空心圆环；同向取方向色，混合方向用 `COLORS.info`
+ */
+export const TRADE_INDICATOR: IndicatorTemplate<TradeMarkerIndicatorResult> = {
+  name: 'APP_TRADE',
+  shortName: 'TRADE',
+  series: 'price',
+  figures: [],
+  calc: (dataList: KLineData[]) =>
+    dataList.map((bar) => ({ trades: (bar as unknown as ChartBar).trades ?? [] })),
+  draw: ({ ctx, chart, xAxis, yAxis }) => {
+    const list = chart.getDataList() as unknown as ChartBar[];
+    const markers = computeTradeMarkerPositions(
+      list,
+      (index) => xAxis.convertToPixel(index),
+      (value) => yAxis.convertToPixel(value),
+    );
+    markers.forEach((marker) => drawTradeMarker(ctx, marker));
+    return false;
+  },
+};
+
+/* ------------------------------------------------------------------ *
+ * 交易标记几何计算（可单测的纯函数）
+ * ------------------------------------------------------------------ */
+
+export type TradeMarkerShape = 'solid' | 'hollow' | 'aggregated';
+
+export interface TradeMarkerGeometry {
+  index: number;
+  date: string;
+  x: number;
+  y: number;
+  color: string;
+  /** 单个标记：实心 / 空心；聚合标记：aggregated */
+  shape: TradeMarkerShape;
+  radius: number;
+  /** 这根 K 线里全部交易（明细面板 / hover 用）*/
+  trades: TradeMarker[];
+}
+
+/** 交易标记半径（px）*/
+export const TRADE_MARKER_RADIUS = 4;
+/** 同日多笔聚合圆环半径（px）*/
+export const TRADE_AGGREGATED_RADIUS = 9;
+/** 交易标记外描边宽度（px）*/
+export const TRADE_MARKER_STROKE_WIDTH = 1;
+/** 点击命中交易标记的像素容差（移动端手指更大，取 14）*/
+export const TRADE_MARKER_HIT_RADIUS = 14;
+
+/** 买入侧颜色（建仓 / 加仓 = 红）*/
+export const TRADE_BUY_COLOR = COLORS.candleUp;
+/** 卖出侧颜色（减仓 / 清仓 = 绿）*/
+export const TRADE_SELL_COLOR = COLORS.candleDown;
+/** 混合方向（同日既有买又有卖）颜色 */
+export const TRADE_MIXED_COLOR = COLORS.info;
+
+const TRADE_SOLID_MARKER_TYPES: ReadonlySet<TradeMarker['marker_type']> = new Set(['open', 'close']);
+const TRADE_BUY_MARKER_TYPES: ReadonlySet<TradeMarker['marker_type']> = new Set(['open', 'add']);
+
+function tradeMarkerDirectionColor(trades: TradeMarker[]): string {
+  const hasBuy = trades.some((trade) => TRADE_BUY_MARKER_TYPES.has(trade.marker_type));
+  const hasSell = trades.some((trade) => !TRADE_BUY_MARKER_TYPES.has(trade.marker_type));
+  if (hasBuy && hasSell) return TRADE_MIXED_COLOR;
+  return hasBuy ? TRADE_BUY_COLOR : TRADE_SELL_COLOR;
+}
+
+function tradeMarkerAnchorPrice(trades: TradeMarker[]): number {
+  // 单笔用该笔复权价；多笔聚合成一个锚点时取算术平均（不能只取第一笔，否则同日第二笔的价格会被吞掉）
+  const valid = trades.filter((trade) => Number.isFinite(trade.adj_price));
+  if (valid.length === 0) return Number.NaN;
+  const sum = valid.reduce((acc, trade) => acc + trade.adj_price, 0);
+  return sum / valid.length;
+}
+
+/**
+ * 计算所有交易标记的绘制位置（同日多笔聚合为一个 9px 空心圆环）
+ *
+ * @param toX 下标 → 屏幕 x（klinecharts 的 xAxis.convertToPixel）
+ * @param toY 价格 → 屏幕 y（klinecharts 的 yAxis.convertToPixel）
+ */
+export function computeTradeMarkerPositions(
+  bars: ChartBar[],
+  toX: (index: number) => number,
+  toY: (value: number) => number,
+): TradeMarkerGeometry[] {
+  const result: TradeMarkerGeometry[] = [];
+  bars.forEach((bar, index) => {
+    const trades = bar.trades ?? [];
+    if (trades.length === 0) return;
+
+    const anchor = tradeMarkerAnchorPrice(trades);
+    if (!Number.isFinite(anchor)) return;
+
+    const isSingle = trades.length === 1;
+    const shape: TradeMarkerShape = isSingle
+      ? TRADE_SOLID_MARKER_TYPES.has(trades[0]?.marker_type)
+        ? 'solid'
+        : 'hollow'
+      : 'aggregated';
+
+    result.push({
+      index,
+      date: bar.date,
+      x: toX(index),
+      y: toY(anchor),
+      color: tradeMarkerDirectionColor(trades),
+      shape,
+      radius: isSingle ? TRADE_MARKER_RADIUS : TRADE_AGGREGATED_RADIUS,
+      trades,
+    });
+  });
+  return result;
+}
+
+/** 在 canvas 上画一个交易标记（实心圆 / 空心圆 / 聚合圆环）*/
+export function drawTradeMarker(ctx: CanvasRenderingContext2D, marker: TradeMarkerGeometry): void {
+  ctx.save();
+  ctx.lineWidth = TRADE_MARKER_STROKE_WIDTH;
+  ctx.strokeStyle = COLORS.cardBg;
+  ctx.beginPath();
+  ctx.arc(marker.x, marker.y, marker.radius, 0, Math.PI * 2);
+
+  if (marker.shape === 'solid') {
+    ctx.fillStyle = marker.color;
+    ctx.fill();
+    ctx.stroke();
+  } else if (marker.shape === 'hollow') {
+    ctx.fillStyle = COLORS.chartBg;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = marker.color;
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = COLORS.chartBg;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = marker.color;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * 点击命中判定（K 线容器 click 用；与 hover 同一套几何）
+ *
+ * ⚠️ 只命中「有交易标记的那一根 + 标记圆心附近」，避免整列点击都弹明细面板。
+ *
+ * @param clickX / clickY 点击点（**相对图表容器**的像素坐标）
+ * @param getMarkers 当前可见 bars 的标记几何（调用方注入，生产环境来自 klinecharts 坐标转换）
+ */
+export function findTradeMarkerAtPoint(
+  clickX: number,
+  clickY: number,
+  getMarkers: () => TradeMarkerGeometry[],
+): TradeMarkerGeometry | null {
+  const markers = getMarkers();
+  let best: TradeMarkerGeometry | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+
+  for (const marker of markers) {
+    const dx = marker.x - clickX;
+    const dy = marker.y - clickY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const hitRadius = marker.radius + TRADE_MARKER_HIT_RADIUS;
+    if (dist <= hitRadius && dist < bestDist) {
+      best = marker;
+      bestDist = dist;
+    }
+  }
+
+  return best;
+}
 
 /** 成交量 —— 副图（原始字段，无需计算）*/
 export const VOL_INDICATOR: IndicatorTemplate<VolIndicatorResult> = {

@@ -12,6 +12,14 @@ import {
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
 import { ok, fail } from '../lib/envelope.js';
+import { writeSystemLog } from '../services/logger.js';
+import {
+  attachAdjustedPrices,
+  deriveTradeMarkers,
+  filterMarkersToWindow,
+  loadKlineTradeMarkers,
+  type KlineTradeMarker,
+} from '../services/klineTrades.js';
 
 /**
  * K 线行情数据接口（SDD F5 验收项）
@@ -67,6 +75,16 @@ interface KlineRow {
   close: number;
   volume: number;
   amount: number;
+  /**
+   * 复权因子（仅 qfq/hfq 查询时附带）：
+   * - qfq 视图取 `qfq_factor`
+   * - hfq 视图取 `hfq_factor`
+   * - bfq / raw 视图没有对应因子列（bfq 直接不乘）
+   *
+   * ⚠️ 字段名以 `docs/tdx2db_schema.md` + 实测 DESCRIBE 为准：
+   *    `v_*_hfq` **没有** `qfq_factor`，不能统一按 qfq_factor 取。
+   */
+  adj_factor?: number | null;
 }
 
 /** fq 四值白名单 —— 视图/表名见 {@link FQ_VIEWS_BY_CLASS} */
@@ -232,8 +250,19 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       const views = FQ_VIEWS_BY_CLASS[symbolClass] ?? FQ_VIEWS_BY_CLASS.stock;
       const view = views[fq];
 
+      /**
+       * 复权因子必须与价格来自**同一视图 / 同一复权口径**：
+       * - qfq：`qfq_factor`（= hfq_factor / latest_hfq）
+       * - hfq：`hfq_factor`
+       * - bfq / raw：不需要因子（adj_price = price）
+       *
+       * ⚠️ `raw_kline_daily` 没有这些列；`v_*_hfq` 没有 `qfq_factor`，
+       *    故不能无条件 `SELECT qfq_factor`。
+       */
+      const factorExpr =
+        fq === 'qfq' ? ', qfq_factor AS adj_factor' : fq === 'hfq' ? ', hfq_factor AS adj_factor' : '';
       const rows = await queryDuckDB<KlineRow>(
-        `SELECT date, open, high, low, close, volume, amount
+        `SELECT date, open, high, low, close, volume, amount${factorExpr}
          FROM ${view}
          WHERE symbol = ?
          ORDER BY date DESC
@@ -247,7 +276,9 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       if (klines.length === 0) {
         // ⚠️ **形状一致性**：无论有没有 klines，响应里**必须有 `signals` 键**
         //    （空集合时为 `[]`）⇒ 前端不必写 `Array.isArray(body.data.signals)` 兜底。
-        return reply.send(ok({ symbol, fq, symbolClass, klines: [], indicators: null, signals: [] }));
+        return reply.send(
+          ok({ symbol, fq, symbolClass, klines: [], indicators: null, signals: [], trades: [] }),
+        );
       }
 
       const closes = klines.map((k) => k.close);
@@ -287,6 +318,54 @@ export async function registerKlineRoutes(app: FastifyInstance) {
         metrics_json: string | null;
       }>;
 
+      /**
+       * T152：当前用户在该标的上的交易标记。
+       *
+       * 🔴 **全历史回放**再筛窗口 —— 不能只回放窗口内记录，否则窗口首日买入会被
+       *    误判成「建仓」（实际早已持仓）。回放口径与 `calcPosition` 一致：
+       *    该用户该标的的跨券商合并持仓。
+       *
+       * ⚠️ **降级**：交易查询失败不能拖垮 K 线主数据（用户仍要看行情）。
+       *    失败时 `trades: []` + `system_log` WARN，外层仍返回 200。
+       */
+      let trades: KlineTradeMarker[] = [];
+      try {
+        const allRows = loadKlineTradeMarkers(user.sub, symbol);
+        const allMarkers = deriveTradeMarkers(allRows);
+        const startDate = klines[0]?.date ?? '';
+        const endDate = klines[klines.length - 1]?.date ?? '';
+        const windowed = filterMarkersToWindow(allMarkers, startDate, endDate);
+        const adjusted = attachAdjustedPrices(
+          windowed,
+          fq,
+          klines.map((k) => ({ date: k.date, factor: k.adj_factor })),
+        );
+        trades = adjusted.trades;
+
+        if (adjusted.missingFactorDates.length > 0) {
+          app.log.warn(
+            { symbol, fq, dates: adjusted.missingFactorDates },
+            'K 线交易标记复权因子缺失，已回退成交价',
+          );
+          writeSystemLog({
+            logType: 'trade',
+            level: 'WARN',
+            message: 'K 线交易标记复权因子缺失，已回退成交价',
+            detail: `symbol=${symbol} fq=${fq} dates=${adjusted.missingFactorDates.join(',')}`,
+          });
+        }
+      } catch (tradeErr: unknown) {
+        const msg = tradeErr instanceof Error ? tradeErr.message : String(tradeErr);
+        app.log.warn({ err: tradeErr, symbol }, 'K 线交易标记查询失败，已降级为空');
+        writeSystemLog({
+          logType: 'trade',
+          level: 'WARN',
+          message: 'K 线交易标记查询失败，已降级为空',
+          detail: `symbol=${symbol} error=${msg}`,
+        });
+        trades = [];
+      }
+
       return reply.send(
         ok({
           symbol,
@@ -308,6 +387,7 @@ export async function registerKlineRoutes(app: FastifyInstance) {
             },
           },
           signals,
+          trades,
         }),
       );
     } catch (err: unknown) {

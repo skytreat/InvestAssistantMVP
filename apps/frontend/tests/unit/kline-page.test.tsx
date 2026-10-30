@@ -40,13 +40,16 @@ import {
   aggregateBars,
   formatIndicator,
   parseMetricsJson,
+  mapTradesToBars,
   type ChartBar,
   type RawBar,
   type SignalMarker,
+  type TradeMarker,
 } from '../../src/indicators/chartBars';
 import {
   computeSignalMarkerPositions,
   drawSignalMarker,
+  computeTradeMarkerPositions,
   type KdjIndicatorResult,
   type MacdIndicatorResult,
   type MaIndicatorResult,
@@ -86,11 +89,18 @@ vi.mock('../../src/api/client', () => ({
  *    图表组件的真实行为在「图表组件」describe 里单独验。
  */
 vi.mock('../../src/components/KlineChart', () => ({
-  default: (props: { bars: unknown[]; showMa: boolean; subIndicator: string; period: string }) => (
+  default: (props: {
+    bars: unknown[];
+    showMa: boolean;
+    showTrades?: boolean;
+    subIndicator: string;
+    period: string;
+  }) => (
     <div
       data-testid="kline-chart-stub"
       data-bars={String(props.bars.length)}
       data-show-ma={String(props.showMa)}
+      data-show-trades={String(props.showTrades ?? true)}
       data-sub={props.subIndicator}
       data-period={props.period}
     />
@@ -149,6 +159,16 @@ function klinePayload(
     plugin_id: string;
   }> = [],
   symbolClass = 'stock',
+  trades: Array<{
+    id: number;
+    trade_date: string;
+    trade_time: string | null;
+    trade_type: string;
+    marker_type: 'open' | 'add' | 'reduce' | 'close';
+    quantity: number;
+    price: number;
+    adj_price: number;
+  }> = [],
 ) {
   return {
     symbol: 'sh600000',
@@ -157,6 +177,7 @@ function klinePayload(
     klines,
     indicators: null,
     signals,
+    trades,
   };
 }
 
@@ -759,6 +780,101 @@ describe('T70 · 信号标记（F-K8）', () => {
 /* ------------------------------------------------------------------ *
  * ⑥ 周期聚合（F-K7 纯函数层）
  * ------------------------------------------------------------------ */
+
+describe('T152 · 交易标记页交互', () => {
+  function tradePayload(date: string, markerType: TradeMarker['marker_type']) {
+    return {
+      id: 1,
+      trade_date: date,
+      trade_time: '09:35:00',
+      trade_type: markerType === 'open' ? 'buy' : markerType === 'add' ? 'add' : 'reduce',
+      marker_type: markerType,
+      quantity: 100,
+      price: 10,
+      adj_price: 10.5,
+    };
+  }
+
+  it('T152: K 线响应中的 trades[] 进入图表 bars，交易点开关默认开', async () => {
+    const user = userEvent.setup();
+    getMock.mockImplementation(async (url: string) => {
+      if (String(url).includes('/kline')) {
+        return mockResponse(klinePayload(makeBars(30), [], 'stock', [tradePayload('2026-01-07', 'open')]));
+      }
+      return mockResponse([]);
+    });
+    const { default: Kline } = await import('../../src/pages/Kline');
+    renderWithRouter(<Kline />, { initialEntries: ['/kline'] });
+
+    await waitFor(() => expect(screen.getByTestId('kline-chart-stub')).toBeInTheDocument());
+    expect(screen.getByTestId('kline-chart-stub')).toHaveAttribute('data-show-trades', 'true');
+
+    await user.click(screen.getByLabelText('交易点'));
+    await waitFor(() =>
+      expect(screen.getByTestId('kline-chart-stub')).toHaveAttribute('data-show-trades', 'false'),
+    );
+  });
+
+  it('T152: 无交易记录时不渲染交易图例，开关仍可用', async () => {
+    const { default: Kline } = await import('../../src/pages/Kline');
+    renderWithRouter(<Kline />, { initialEntries: ['/kline'] });
+
+    await waitFor(() => expect(screen.getByTestId('kline-chart-stub')).toBeInTheDocument());
+    expect(screen.queryByText('建仓')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('交易点')).toBeInTheDocument();
+  });
+});
+
+describe('T152 · 交易标记映射', () => {
+  function trade(overrides: Partial<TradeMarker> = {}): TradeMarker {
+    return {
+      id: 1,
+      trade_date: '2026-01-07',
+      trade_time: null,
+      trade_type: 'buy',
+      marker_type: 'open',
+      quantity: 100,
+      price: 10,
+      adj_price: 10,
+      ...overrides,
+    };
+  }
+
+  it('日K：周末交易归入其后最近一根，不改写交易日期', () => {
+    // makeBars 从 2026-01-05（周一）开始
+    const mapped = mapTradesToBars(makeBars(7), 'day', [trade({ trade_date: '2026-01-11' })]);
+    const withTrade = mapped.find((group) => group.length > 0);
+    expect(withTrade).toBeDefined();
+    expect(withTrade!).toHaveLength(1);
+    expect(withTrade![0].trade_date).toBe('2026-01-11');
+  });
+
+  it('周K：桶内任意交易归入同一根周期K线', () => {
+    const weekly = buildChartBars(makeBars(14), 'week', [], undefined, [
+      trade({ id: 1, trade_date: '2026-01-05' }),
+      trade({ id: 2, trade_date: '2026-01-09', marker_type: 'add' }),
+    ]);
+    const withTrades = weekly.filter((bar) => bar.trades.length > 0);
+    expect(withTrades).toHaveLength(1);
+    expect(withTrades[0].trades.map((t) => t.id)).toEqual([1, 2]);
+  });
+
+  it('标记几何：单笔实心、同日多笔聚合为圆环', () => {
+    const bars = buildChartBars(makeBars(10), 'day', [], undefined, [
+      trade({ id: 1, marker_type: 'open' }),
+      trade({ id: 2, trade_date: '2026-01-07', marker_type: 'reduce' }),
+    ]);
+    const markers = computeTradeMarkerPositions(
+      bars,
+      (index) => index * 10,
+      () => 100,
+    );
+    expect(markers).toHaveLength(1);
+    expect(markers[0].shape).toBe('aggregated');
+    expect(markers[0].radius).toBe(9);
+    expect(markers[0].trades).toHaveLength(2);
+  });
+});
 
 describe('T70 · 周期聚合', () => {
   it('T70: 周K 聚合口径（首开 / 最高 / 最低 / 末收 / 量额求和 / 日期取最后交易日）', () => {

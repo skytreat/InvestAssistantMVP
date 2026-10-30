@@ -28,7 +28,7 @@ export const TDX2DB_UNIT = 'tdx2db.service';
  * 再加 5 分钟余量），因此这里必须比等待窗口更宽：否则一次正常但耗时 31 分钟的更新
  * 会在等待结束后被误判为「不属于本轮」。45 分钟 > 35 分钟等待上限。
  */
-const MAX_RUN_AGE_MS = 45 * 60 * 1000;
+const MAX_RUN_AGE_MS = 75 * 60 * 1000;
 
 export type Tdx2dbRunState = 'SUCCESS' | 'FAIL' | 'NOT_RUN' | 'RUNNING' | 'UNKNOWN';
 
