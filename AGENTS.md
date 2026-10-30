@@ -1,9 +1,9 @@
 # AGENTS.md — 项目全局编码规则
-> 本项目严格依据 **`docs/client/code_implementation_plan_v2.md`** 执行，所有开发任务以该文档为唯一真相源。
-> **该文档含 §12.7「Wave 出口门槛（硬阻断）」—— 未过 gate 的 Wave，其 commit 一律不得合入 `main`（见本文「里程碑边界与 Wave Gate」）。**
-> SDD基线文档：`docs/client/SDD.md`；产品需求：`docs/client/PRD.md`；业务规则最高优先级：`docs/client/Requirements_simplified.md`
-> **`docs/client/MVP_code_implementation_plan.md` 已被 `code_implementation_plan_v2.md` 超越（Phase1-4 旧任务体系，T49-T94 已完全重写），禁止再作为执行依据。**
-> 不要参考 `docs/web/` 目录下的任何文档；`docs/archive/` 下均为已归档的过期文档。
+> **执行依据按范围切换**：V3 范围内优先依据 **`docs/client/code_implementation_plan_v3.md`**；V3 范围外（Wave 1-8 / MVP 完整化）继续依据 **`docs/client/code_implementation_plan_v2.md`**。
+> **V3 文档栈**：业务规则 `docs/client/InvestAssistantV3_NewRequirements.md`；交互 `docs/client/PRD_v3.md`；技术契约 `docs/client/SDD_v3.md`；实施计划 `docs/client/code_implementation_plan_v3.md`。
+> **V3 是增量契约**：`SDD_v3.md` §0 明确，V1 的 `SDD.md` 等除 V3 覆盖项外继续有效；同一行为同时有 V1/V3 定义时，**V3 范围内以 V3 文档为准**，V3 未覆盖项回 V1。
+> **Wave/阶段出口门槛**：v2 计划 §12.7 的硬阻断继续适用于 Wave 1-8；V3 阶段 Gate 见 `code_implementation_plan_v3.md` §4，未过 gate 不得合入 `main`。
+> **`docs/client/MVP_code_implementation_plan.md` 已被 v2 超越（Phase1-4 旧体系，T49-T94 已完全重写），禁止作为执行依据；`docs/web/` 与 `docs/archive/` 不作为执行依据。**
 
 ## 📐 文档分层与层界规则（2026-10-17 确立，违反即视为缺陷）
 
@@ -17,12 +17,12 @@
 
 | 层 | 文档 | **只回答** | **明确不写** |
 |---|---|---|---|
-| L1 业务 | `Requirements_simplified.md` | **业务规则与不变量**（成本算法、双口径、七类交易、**C1-C12「要检什么」**）| 任何技术实现、SQL、界面细节 |
-| L2 体验 | `PRD.md` | **用户可见的旅程与交互** | 业务规则、技术契约 |
+| L1 业务 | `Requirements_simplified.md`（V3 外）<br>`InvestAssistantV3_NewRequirements.md`（V3） | **业务规则与不变量**（成本算法、双口径、七类交易、**C1-C12「要检什么」**）| 任何技术实现、SQL、界面细节 |
+| L2 体验 | `PRD.md`（V3 外）<br>`PRD_v3.md`（V3） | **用户可见的旅程与交互** | 业务规则、技术契约 |
 | L2.5 规格 | `ui-spec.md` | **UI 长什么样**（Token / 组件规格 / 断点）| 什么时候做、排期 |
-| L3 契约 | `SDD.md` | **技术契约唯一权威**：API / DDL / 插件接口 / **C1-C12「怎么检」的 SQL** / 性能与安全门槛 | 用户故事、排期 |
+| L3 契约 | `SDD.md`（V1 基线）<br>`SDD_v3.md`（V3 增量） | **技术契约唯一权威**：API / DDL / 插件接口 / **C1-C12「怎么检」的 SQL** / 性能与安全门槛；V3 范围取 V3，未覆盖项回 V1 | 用户故事、排期 |
 | **L3.5 行情** | `docs/tdx2db_schema.md`<br>`docs/tdx2db_schema_dump.sql` | **DuckDB 行情层的真实表/视图结构**（由 `tdx2db` Go 二进制写入，**代码只读**）| 业务规则、后端 API |
-| L4 计划 | `code_implementation_plan_v2.md` | **任务拆解 + 排期 + 依赖 + 验收 Gate + 偏差待办** | **不复述技术契约** |
+| L4 计划 | `code_implementation_plan_v2.md`（Wave 1-8）<br>`code_implementation_plan_v3.md`（V3） | **任务拆解 + 排期 + 依赖 + 验收 Gate + 偏差待办** | **不复述技术契约** |
 | **L5 运维** | `docs/deploy.md` | **怎么部署与运维**（systemd unit / 环境变量 / 目录权限）| 业务规则、任务排期 |
 | 决策 | `docs/adr/` | **为什么这么定** + 代价 + 备选方案否决理由 | 具体怎么做 |
 | 旁路 | `AGENTS.md`（本文）| agent 硬约束**摘要 + 指针** | 不复述细节 |
@@ -36,10 +36,10 @@
 
 | 冲突类型 | 谁赢 |
 |---|---|
-| 业务规则 / 计算口径 / 校验项定义 | **`Requirements_simplified.md`** |
-| 交互 / 界面行为 / 用户旅程 | **`PRD.md`** |
-| 技术契约（API / DDL / SQL 实现 / 性能与安全门槛）| **`SDD.md`** |
-| 「什么时候做 / 谁做 / 什么顺序」| **实施计划** |
+| 业务规则 / 计算口径 / 校验项定义 | **`InvestAssistantV3_NewRequirements.md`（V3）/ `Requirements_simplified.md`（V3 外）** |
+| 交互 / 界面行为 / 用户旅程 | **`PRD_v3.md`（V3）/ `PRD.md`（V3 外）** |
+| 技术契约（API / DDL / SQL 实现 / 性能与安全门槛）| **`SDD_v3.md`（V3）/ `SDD.md`（V1 未覆盖项）** |
+| 「什么时候做 / 谁做 / 什么顺序」| **`code_implementation_plan_v3.md`（V3）/ `code_implementation_plan_v2.md`（Wave 1-8）** |
 | 「为什么这么设计」| **`docs/adr/`（已接受 ADR 优先于 SDD 的旧表述）** |
 
 ### 写入文档前的自检
@@ -407,10 +407,14 @@ Wave 1-8 合计 52 个任务 / ~64 人天，**人工逐任务 review 不现实**
 
 | 文档 | 路径 | 定位 |
 |------|------|------|
-| 需求权威源 | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
-| PRD | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
-| SDD 设计文档 | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
-| MVP 实施计划 | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T103，Wave 1-10）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
+| **V3 需求权威源** | `docs/client/InvestAssistantV3_NewRequirements.md` | **V3 业务规则与不变量（WHAT，非 HOW）；V3 范围内优先** |
+| **V3 PRD** | `docs/client/PRD_v3.md` | **V3 用户可见旅程与交互** |
+| **V3 SDD** | `docs/client/SDD_v3.md` | **V3 技术契约（增量；V1 未覆盖项仍以 `SDD.md` 为准）** |
+| **V3 实施计划** | **`docs/client/code_implementation_plan_v3.md`** | **V3 任务拆解（T119+）、阶段 Gate、偏差登记；V3 范围内优先** |
+| 需求权威源（V3 外） | `docs/client/Requirements_simplified.md` | 业务规则唯一真相源（WHAT，非 HOW）|
+| PRD（V3 外） | `docs/client/PRD.md` | 用户视角产品需求（用户故事、交互体验、成功指标）|
+| SDD 设计文档（V1 基线） | `docs/client/SDD.md` | 工程落地设计（技术选型 Trade-off、DDL、时序图、测试策略、运维）|
+| MVP 实施计划（Wave 1-8） | **`docs/client/code_implementation_plan_v2.md`** | **开发任务拆解（T49-T103，Wave 1-10）；§12 Wave 出口门槛；§13 PRD/SDD 偏差待办清单** |
 | **决策归档** | `docs/adr/` | **已接受 ADR 8 份** —— 决策结论 + 理由 + 代价 + 备选方案否决理由；索引见 `docs/adr/README.md`。**本文档与实施计划只引用决策，不重复决策理由** |
 | ~~旧实施计划~~ | `docs/archive/MVP_code_implementation_plan_SUPERSEDED-2026-10-17.md` | ❌ **已被 v2 超越，禁止作为执行依据**（Phase1-4 旧体系），已归档 |
 | ~~旧需求原件~~ | `docs/archive/Requirements_original_SUPERSEDED-2026-10-13.md` | ❌ **需求 V1.1（OCI 架构）**，已被 `Requirements_simplified.md` 取代，已归档 |

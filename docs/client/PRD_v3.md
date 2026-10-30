@@ -4,7 +4,7 @@
 **日期**：2026-10-20
 **范围**：V3 新增能力的**用户可见旅程与交互**
 **上游**：`InvestAssistantV3_NewRequirements.md`（业务规则，唯一权威）、`SDD_v3.md`（接口契约）
-**下游**：`plan_v3.md`（实施计划）
+**下游**：`code_implementation_plan_v3.md`（实施计划）
 
 > **本文档定义「长什么样、怎么用」。** 业务规则（「要什么」）在 Requirements，
 > 接口形状（「怎么传」）在 SDD —— 本文档**只引用不复述**。
