@@ -551,33 +551,35 @@ export default function KlineChart({
 
   /** 交易标记几何（点击命中用；与自绘 draw 使用同一套计算） */
   const _tradeMarkers = useMemo(() => {
-    if (!showTrades) {
+    if (!showTrades || !chartRef.current) {
       tradeMarkersRef.current = [];
       return [];
     }
-    const chart = chartRef.current;
-    if (!chart) {
+    try {
+      const chart = chartRef.current;
+      const yAxis = chart.getYAxes({ paneId: CANDLE_PANE_ID })[0];
+      if (!yAxis) {
+        tradeMarkersRef.current = [];
+        return [];
+      }
+      const result = computeTradeMarkerPositions(
+        bars,
+        (index) => {
+          const converted = chart.convertToPixel(
+            { dataIndex: index, value: 0 },
+            { paneId: CANDLE_PANE_ID },
+          ) as Partial<import('klinecharts').Coordinate>;
+          return converted.x ?? Number.NaN;
+        },
+        (value) => yAxis.convertToPixel(value),
+      );
+      tradeMarkersRef.current = result;
+      return result;
+    } catch {
+      // jsdom / fakeCanvas 环境 getYAxes / convertToPixel 不可用，静默降级
       tradeMarkersRef.current = [];
       return [];
     }
-    const yAxis = chart.getYAxes({ paneId: CANDLE_PANE_ID })[0];
-    if (!yAxis) {
-      tradeMarkersRef.current = [];
-      return [];
-    }
-    const result = computeTradeMarkerPositions(
-      bars,
-      (index) => {
-        const converted = chart.convertToPixel(
-          { dataIndex: index, value: 0 },
-          { paneId: CANDLE_PANE_ID },
-        ) as Partial<import('klinecharts').Coordinate>;
-        return converted.x ?? Number.NaN;
-      },
-      (value) => yAxis.convertToPixel(value),
-    );
-    tradeMarkersRef.current = result;
-    return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bars, showTrades, ready]);
 
