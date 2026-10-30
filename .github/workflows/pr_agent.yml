@@ -1,0 +1,40 @@
+
+name: AI Pull Request Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  pr_review:
+    runs-on: ubuntu-latest
+
+    if: github.event.sender.type != 'Bot'
+
+    steps:
+      - name: Run PR-Agent
+        uses: the-pr-agent/pr-agent@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # Third-party OpenAI-compatible API
+          OPENAI__KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI__API_BASE: ${{ secrets.OPENAI_API_BASE }}
+
+          # Automatically review PR
+          github_action_config.auto_review: "true"
+
+          # Disable automatic description and code modification
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "false"
+
+          # Trigger on new PR and new commits
+          github_action_config.pr_actions: '["opened", "reopened", "synchronize", "ready_for_review"]'

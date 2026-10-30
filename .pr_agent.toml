@@ -1,0 +1,39 @@
+
+[config]
+# Third-party model ID
+model = "openai/agnes-3.0-flash"
+
+# No fallback model for now
+fallback_models = []
+
+# Set this according to your provider's actual context limit
+custom_model_max_tokens = 131072
+
+# Avoid operations requiring broader GitHub permissions
+restricted_mode = true
+
+# Increase timeout for slower third-party APIs
+ai_timeout = 300
+
+[pr_reviewer]
+# Only report actionable findings
+require_tests_review = true
+require_estimate_effort_to_review = false
+
+extra_instructions = """
+请使用中文进行代码审查和评论。
+
+重点检查：
+1. 确定性的逻辑错误和潜在 Bug。
+2. 空值、边界条件和异常处理。
+3. 并发、资源释放和数据一致性。
+4. SQL 注入、权限控制和敏感信息泄露。
+5. 是否破坏现有接口或业务逻辑。
+
+审查原则：
+- 优先报告真实、可复现的问题。
+- 不要将代码风格偏好当成 Bug。
+- 不要报告缺乏证据的猜测。
+- 每个问题应包含原因、影响和修改建议。
+- 没有实质问题时，不要为了凑数量而生成评论。
+"""
