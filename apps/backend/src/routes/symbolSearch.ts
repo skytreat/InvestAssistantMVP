@@ -10,7 +10,6 @@ interface SymbolRow {
   code6?: string;
   pinyin?: string;
   market?: string;
-  class?: string;
   asset_class?: string;
   matchType?: string;
 }
@@ -38,7 +37,6 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
               code6: r.code6,
               name: r.name,
               market: r.market,
-              class: r.class,
               asset_class: r.asset_class,
               pinyin: r.pinyin,
               matchType: 'code',

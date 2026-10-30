@@ -257,14 +257,14 @@ CREATE TABLE IF NOT EXISTS asset_class (
 CREATE INDEX IF NOT EXISTS idx_asset_class_kind ON asset_class(asset_class);
 
 -- 标的字典快照（T136，V3 SDD_v3 §11.1.4）：联想走业务层快照，不扫行情层。
--- 由 symbolDict.syncSymbolDict() 从行情层只读同步；pinyin 为预计算首字母。
+-- 定位：只做名称联想搜索 + code6 歧义消解；存在性判定走行情层 raw_symbol_class。
+-- 由 symbolDict.syncSymbolDict() 从行情层 raw_symbol_name 只读同步；pinyin 为预计算首字母。
 CREATE TABLE IF NOT EXISTS symbol_dict (
     symbol        TEXT PRIMARY KEY,
     code6         TEXT NOT NULL,
     name          TEXT,
     pinyin        TEXT,
     market        TEXT,
-    class         TEXT,
     asset_class   TEXT NOT NULL CHECK (asset_class IN ('risk', 'cash')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );

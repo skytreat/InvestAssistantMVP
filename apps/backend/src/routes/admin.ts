@@ -21,7 +21,7 @@ import { defaultMessage } from '../lib/errorMessages.js';
  * - GET  /api/admin/system-log      分页查询 system_log
  * - GET  /api/admin/system-log/fallback  读取降级日志文件尾部（I-13）
  * - POST /api/admin/rerun-quotes    手动触发行情更新补跑（Requirements §5.1）
- * - POST /api/admin/symbol-dict/refresh  强制刷新标的字典（含 unknown 类标的补刷）
+ * - POST /api/admin/symbol-dict/refresh  强制刷新标的字典（名称快照补刷）
  */
 
 /** 降级日志回读的最大行数（契约：只回读尾部 N 行，不回传整个文件）*/
@@ -227,7 +227,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   });
 
-  // 强制刷新标的字典（部署后 / 字典未覆盖 unknown 类标的时手动调用）
+  // 强制刷新标的字典（部署后 / 字典快照过期时手动调用）
   app.post('/api/admin/symbol-dict/refresh', async (request, reply) => {
     const user = (request as any).user;
     if (user.role !== 'admin')

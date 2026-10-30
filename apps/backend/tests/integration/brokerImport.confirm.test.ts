@@ -46,8 +46,8 @@ async function codesOf(name: string): Promise<string[]> {
 
 function seedDict(codes: string[]): void {
   const ins = bundle.db.db.prepare(
-    `INSERT OR REPLACE INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-     VALUES (?, ?, '', '', ?, 'unknown', 'risk')`,
+    `INSERT OR REPLACE INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+     VALUES (?, ?, '', '', ?, 'risk')`,
   );
   for (const code of codes) ins.run(code, code.replace(/^[a-z]+/i, ''), code.slice(0, 2));
 }

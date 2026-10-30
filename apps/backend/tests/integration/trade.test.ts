@@ -796,8 +796,8 @@ describe('Trade · 标的存在性校验（raw_symbol_class）', () => {
     const db = bundle.db.db;
     db.prepare('DELETE FROM symbol_dict').run();
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('sh600000','600000','浦发银行','','sh','risk')`,
     ).run();
     // 存在性判定源 = DuckDB raw_symbol_class：仅 sh600000 已知
     queryDuckDBMock.mockReset();

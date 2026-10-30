@@ -249,8 +249,8 @@ describe('T122 · 未知标的整文件拒绝', () => {
     db.prepare('DELETE FROM symbol_dict').run();
     // symbol_dict 仅用于名称补全（code6 歧义消解）：给 known 补名称，unknown 无名称
     const ins = db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES (?, ?, '', '', ?, 'unknown', 'risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES (?, ?, '', '', ?, 'risk')`,
     );
     for (const code of known) ins.run(code, code.replace(/^[a-z]+/i, ''), code.slice(0, 2));
 
@@ -364,16 +364,16 @@ describe('PR#60 review · normalizeAssetCode 字典权威 + 兜底修正', () =>
     expect(empty.size).toBe(0);
     // 造两条：一条唯一命中、一条同 code6 两个 symbol → 歧义
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('bj920999','920999','测试北交A','','bj','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('bj920999','920999','测试北交A','','bj','risk')`,
     ).run();
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sh600001','600001','测试沪A','','sh','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('sh600001','600001','测试沪A','','sh','risk')`,
     ).run();
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sz600001','600001','测试深A','','sz','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('sz600001','600001','测试深A','','sz','risk')`,
     ).run();
     try {
       const dict = buildCode6Dict(db);

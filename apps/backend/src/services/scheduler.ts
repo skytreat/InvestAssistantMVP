@@ -246,7 +246,8 @@ export async function refreshSymbolDictSnapshot(
       logType: 'datacheck',
       level: rows > 0 ? 'SUCCESS' : 'WARN',
       checkItem: 'symbol_dict',
-      message: rows > 0 ? `标的字典刷新完成: ${rows} 行` : '标的字典刷新跳过: 行情层 raw_symbol_class 无数据',
+      message:
+        rows > 0 ? `标的字典刷新完成: ${rows} 行` : '标的字典刷新跳过: 行情层 raw_symbol_name 无数据',
     });
     return rows;
   } catch (err: any) {
