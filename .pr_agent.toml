@@ -19,6 +19,13 @@ num_retries = 3
 
 [pr_reviewer]
 # Only report actionable findings
+# Enable large PR splitting
+enable_large_pr_chunking = true
+
+# Maximum number of separate review calls
+max_number_of_calls = 4
+
+require_score_review = true
 require_tests_review = true
 require_estimate_effort_to_review = false
 
