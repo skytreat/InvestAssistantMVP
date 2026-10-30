@@ -4,9 +4,8 @@
 **日期**：2026-10-20
 **范围**：V3 新增能力的**技术契约**
 **上游**：`InvestAssistantV3_NewRequirements.md`（业务规则与不变量，186 条，唯一权威）
-**下游**：`InvestAssistantV3_PRD.md`（交互）、`plan_v3.md`（实施计划）
+**下游**：`PRD_v3.md`（交互）、`code_implementation_plan_v3.md`（实施计划）
 
-> **本文档只定义 HOW。** 业务规则（「要什么」）一律在 `InvestAssistantV3_NewRequirements.md`，
 > **本文档只定义 HOW。** 业务规则（「要什么」）一律在 `InvestAssistantV3_NewRequirements.md`，
 > 本文档**只引用不复述**；交互（「长什么样」）在 PRD，本文档只定义接口形状。
 
