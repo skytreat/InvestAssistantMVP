@@ -46,7 +46,7 @@
 ```mermaid
 graph TB
     subgraph Client["客户端（桌面 + 手机浏览器共用）"]
-        SPA["桌面 Web 应用<br/>（React SPA + klinecharts K 线）"]
+        SPA["桌面 Web 应用<br/>（React SPA + Canvas 自绘 K 线）"]
     end
 
     subgraph Server["服务器（单实例）"]
@@ -697,7 +697,7 @@ WantedBy=timers.target
 
 ### 2.12 前端架构设计
 
-> 决策结论见 §2.4（React + Vite）与 §2.5（**已裁决：klinecharts@10.1.0，只画不算**）。
+> 决策结论见 §2.4（React + Vite）与 §2.5（**已裁决：不引第三方图表库，自写 Canvas**）。
 
 #### 2.12.1 组件分层结构
 
@@ -715,7 +715,7 @@ graph TD
     end
 
     subgraph Business["业务组件层（含业务逻辑、直连 API）"]
-        B1[KLineChart<br/>klinecharts]
+        B1[KLineChart<br/>Canvas 自绘]
         B2[TradeForm<br/>交易录入弹窗]
         B3[PositionCard<br/>持仓卡片]
         B4[SignalPanel<br/>策略信号面板]
@@ -1434,7 +1434,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/trade/:id/soft-delete` | POST | 是 | 软删除（is_deleted=1）；已删除记录默认不返回 |
 | `/api/trade/check-duplicate` | GET | 是 | **交易时刻占用预检**（G4.5 · T87 配套，只读）：query `asset_code` / `trade_type` / `trade_date` / `trade_time`（**4 个全必填**）；命中 → `{ taken: true, taken_at: "<ISO8601>" }`，未命中 → `{ taken: false }`；**只查当前用户**（`user_id` 取自 token，**绝不信请求参数**）；**口径 = 实际唯一键**（§3.2 部分唯一索引 `WHERE is_deleted = 0`）—— **软删除记录不再占用唯一键** ⇒ 预检**带 `is_deleted = 0`**（与 `POST /api/trade` 的实际行为一致：软删后同一键可重新录入）；⚠️ 该条件同时是**性能前提**（不带则部分索引不可用，查询退化为 `SCAN`）；参数缺失/非法 → **400 `PARAM_INVALID`**（**不得**返回 `taken:false` —— 前端须把 4xx/5xx 当作「无法确定」并**仍允许提交**，最终以 `POST /api/trade` 的结果为准）|
 | `/api/holding` | GET | 是 | 实时聚合；返回每只持仓的移动加权成本 + 盈亏 + 收益率 + 仓位占比 + **昨收 `prevClose`**（`number \| null`，该标的上一根日线收盘价）+ **最新信号 `signal`**（`{plugin_id, direction, label, trade_date} \| null`）+ **中文名 `name`**（`string \| null`，取自 `raw_symbol_name.name`，实测覆盖率约 70%，查不到即 null）+ **行业 `industry`**（`string \| null`，**契约预留字段，当前恒为 null** —— 板块数据源 `raw_tdx_blocks_member` / `raw_tdx_blocks_info` 实测 0 行）（T67 加字段，**只增不改**；行情/名称/信号不可用时降级为 null，接口不 500）|
-| `/api/quote/:symbol/kline` | GET | 是 | **K 线 + 指标 + 信号 + 交易标记**（T53 落地 + **T70 配套补下发 `metrics_json`**）：`?days=120`（10~500，缺省 120）+ `?fq=qfq\|bfq\|hfq\|raw`（**四值白名单**，非法值 → **400 `PARAM_INVALID`**，**绝不静默回落 qfq**）+ `?rsi_period=14` / `?macd_fast=12` / `?macd_slow=26` / `?macd_signal=9`（越界 → 400 `PARAM_INVALID`）。返回 `{symbol, fq, symbolClass, klines[]（**升序** OHLCV）, indicators{macd, rsi, ma5/ma10/ma20/ma60, params}, signals[], trades[]（契约见 §4.4.1）}`。<br>🔴 **`signals[]` = **当前用户**该标的近 20 条信号（`user_id` **按 token 隔离**，**绝不信请求参数**；`is_deleted=1` 不下发）**，每项 = `trade_date` / `direction` / `label` / `strength` / `plugin_id` + **`metrics_json`（信号指标明细）**。<br>⚠️ **窗口口径 = 「最近 20 条，按 `trade_date` 升序排列」**（内层 `ORDER BY trade_date DESC` + `LIMIT 20` 取最近，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）—— 与 `GET /api/signal` 的分页窗口**完全同口径** ⇒ 同一用户 + 同一标的 + 同一条数时，两个端点返回**同一个行集合**（G5.5 的「signals 升序」= **页内行的排列方向**，与「取哪 N 条」不冲突）。<br>**`metrics_json` 的形态 = 原始 JSON 文本**（SQLite TEXT 列，由 `signalService.serializeMetrics` 写入；无明细时为 **`null`**，不是字符串 `'null'`）—— 与 `GET /api/signal`（`SELECT *`）**同形态、逐字节一致** ⇒ 两个端点口径统一，前端用**同一套** `parseMetricsJson` 解析即可。<br>**为何不下发解析后的对象**：解析属展示层职责；后端解析会让两个端点的字段类型分叉，且遇历史脏数据（非 JSON 文本）会把整个端点打成 500。<br>**收益**：K 线页信号标记 hover tooltip（PRD §5.2「策略信号标记：鼠标悬停显示方向 + 强度 + **指标明细**」）**无需**再发 `GET /api/signal?asset_code=` 补取 ⇒ **少一次网络往返**（PRD §5.2「参数实时生效 … **零网络请求**」）。<br>⚠️ **体积**：明细随 `SIGNAL_LIMIT=20` 天然封顶（内置插件产出的 metrics ≤ 7 键 / ≤ 200 字节）⇒ **实测**（120 根日线 + 20 条各带 6 键明细的信号）：整包响应 ≈ **20.3 KB**，摘掉 `metrics_json` 后 ≈ **17.9 KB** ⇒ 明细净增 ≈ **2.3 KB（+13%）** ⇒ **不需要**「只给最近 N 条带明细」的裁剪。<br>✅ **形状一致性**：`klines` 为空时该分支**同样返回 `signals: [], trades: []`** ⇒ 响应里 `signals` / `trades` 键**恒存在**（前端不必写 `Array.isArray(body.data.signals)` 兜底）|
+| `/api/quote/:symbol/kline` | GET | 是 | **K 线 + 指标 + 信号**（T53 落地 + **T70 配套补下发 `metrics_json`**）：`?days=120`（10~500，缺省 120）+ `?fq=qfq\|bfq\|hfq\|raw`（**四值白名单**，非法值 → **400 `PARAM_INVALID`**，**绝不静默回落 qfq**）+ `?rsi_period=14` / `?macd_fast=12` / `?macd_slow=26` / `?macd_signal=9`（越界 → 400 `PARAM_INVALID`）。返回 `{symbol, fq, symbolClass, klines[]（**升序** OHLCV）, indicators{macd, rsi, ma5/ma10/ma20/ma60, params}, signals[]}`。<br>🔴 **`signals[]` = **当前用户**该标的近 20 条信号（`user_id` **按 token 隔离**，**绝不信请求参数**；`is_deleted=1` 不下发）**，每项 = `trade_date` / `direction` / `label` / `strength` / `plugin_id` + **`metrics_json`（信号指标明细）**。<br>⚠️ **窗口口径 = 「最近 20 条，按 `trade_date` 升序排列」**（内层 `ORDER BY trade_date DESC` + `LIMIT 20` 取最近，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）—— 与 `GET /api/signal` 的分页窗口**完全同口径** ⇒ 同一用户 + 同一标的 + 同一条数时，两个端点返回**同一个行集合**（G5.5 的「signals 升序」= **页内行的排列方向**，与「取哪 N 条」不冲突）。<br>**`metrics_json` 的形态 = 原始 JSON 文本**（SQLite TEXT 列，由 `signalService.serializeMetrics` 写入；无明细时为 **`null`**，不是字符串 `'null'`）—— 与 `GET /api/signal`（`SELECT *`）**同形态、逐字节一致** ⇒ 两个端点口径统一，前端用**同一套** `parseMetricsJson` 解析即可。<br>**为何不下发解析后的对象**：解析属展示层职责；后端解析会让两个端点的字段类型分叉，且遇历史脏数据（非 JSON 文本）会把整个端点打成 500。<br>**收益**：K 线页信号标记 hover tooltip（PRD §5.2「策略信号标记：鼠标悬停显示方向 + 强度 + **指标明细**」）**无需**再发 `GET /api/signal?asset_code=` 补取 ⇒ **少一次网络往返**（PRD §5.2「参数实时生效 … **零网络请求**」）。<br>⚠️ **体积**：明细随 `SIGNAL_LIMIT=20` 天然封顶（内置插件产出的 metrics ≤ 7 键 / ≤ 200 字节）⇒ **实测**（120 根日线 + 20 条各带 6 键明细的信号）：整包响应 ≈ **20.3 KB**，摘掉 `metrics_json` 后 ≈ **17.9 KB** ⇒ 明细净增 ≈ **2.3 KB（+13%）** ⇒ **不需要**「只给最近 N 条带明细」的裁剪。<br>✅ **形状一致性**：`klines` 为空时该分支**同样返回 `signals: []`** ⇒ 响应里 `signals` 键**恒存在**（前端不必写 `Array.isArray(body.data.signals)` 兜底）|
 | `/api/strategy/plugins` | GET | 是 | 内置 + 自定义插件列表（含 enabled 状态）|
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
 | `/api/strategy/plugins/:id/toggle` | PUT | 是 | **启用 / 禁用**单个插件。body `{ enabled }`（接受 `true/false` / `1/0` / `'1'/'0'/'true'/'false'`，后端统一收口成 SQLite 的 `0/1`）；**无法识别的取值 → 400 `PARAM_INVALID`**（不是 500）。⚠️ **方法必须是 PUT** —— Fastify 不做方法回退，用 POST 会 404 |
@@ -1458,65 +1458,6 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/admin/backup` | POST | 是（仅 admin）| 手动触发**备份**（SQLite 恒常 + DuckDB 受 `ENABLE_QUOTE_BACKUP` 控制）；响应 `{ code: 0, data: { sqlite: { success, size }, duckdb: { success, size, skipped? } }, timestamp }`<br>⚠️ **嵌套的 `success`** 是**备份服务自己的结果字段**（`services/backup.ts`），**不是** envelope 的 `success`（§4.2 已删）—— 语义不同，勿混淆<br>⚠️ **`duckdb.skipped=true`** = `ENABLE_QUOTE_BACKUP=false` 的配置跳过（此时 `duckdb.success=true`、无 `size`）；前端必须显示「已跳过（配置关闭）」，**不得**当成成功或失败 |
 | `/api/admin/backups` | GET | 是（仅 admin）| 备份文件列表（按 `modified` **倒序**）；元素 = `{ name, size, modified }`。<br>⚠️ **`size` 的单位 = 字节**（`stat.size`）—— 前端只做可读化换算，**不得改单位口径**；`modified` = ISO 8601 字符串 |
 | `/api/admin/backup/:file/restore` | POST | 是（仅 admin）| 从备份恢复 SQLite 业务库（**破坏性操作**）。<br>🔴 **必须带 body `{ "confirm": true }`** —— 缺失 → **400 `CONFIRM_REQUIRED`**。<br>⚠️ **仅 `business.db.YYYY-MM-DD` 形态可恢复**（文件名白名单）；`*.parquet` 与 `*.pre-restore-*` 一律失败 → 400 `RESTORE_FAILED`。<br>⚠️ `:file` 需 **URL 编码**（服务端 `decodeURIComponent`）。<br>响应 `{ file, safetyBackup }`（恢复前的安全备份文件名）|
-
-#### 4.4.1 K 线交易标记契约（2026-10-30 新增）
-
-**路由**：随 `GET /api/quote/:symbol/kline` 同响应下发 `trades[]`；不新增独立端点，也不复用 `GET /api/trade` 分页端点（后者上限 200 条/页且无全历史回放）。
-
-**返回项**：仅当前用户、`is_deleted = 0`、`trade_type ∈ {buy, add, reduce, clear}`、且 `quantity > 0` / `price > 0` 的记录。
-
-```jsonc
-{
-  "id": 123,
-  "trade_date": "2026-10-12",
-  "trade_time": "09:35:00",   // 可空（V3 券商导入后）；空时前端省略时间
-  "trade_type": "buy",        // 原始录入类型，保留供审计
-  "marker_type": "open",      // 展示推导类型：open / add / reduce / close
-  "quantity": 100,
-  "price": 10.50,             // 实际成交价（不复权）
-  "adj_price": 10.72          // 当前 fq 口径下的复权价；前端唯一显示价
-}
-```
-
-**窗口口径**：
-
-- `trades[]` 只包含 `trade_date` 落在本次返回的 `klines[]` 首尾日期（闭区间）内的记录；`days` 上限沿用 500。
-- **推导回放必须从该标的全历史活记录开始**（不能只回放窗口内）—— 否则窗口首日的买入会被误判为建仓。回放顺序与 `calcPosition` 一致：同日 `bonus` 优先于 `dividend`，`dividend` 优先于买卖，买卖之间按 `trade_time / id`；**不能只用 SQL 的 `trade_time` 排序**。
-- 回放口径与持仓计算 `calcPosition` 一致（`buy/add` 增加数量、`reduce/clear` 减少数量、`bonus` 增加数量、`dividend` 不影响数量；其余类型按持仓计算口径）。超卖按 `calcPosition` 的容错口径结算（按实际可卖数量，绝不允许负持仓）。分红/送股/转增**不进入 `trades[]`**。
-- 推导规则：
-  - 买入前持仓 ≤ 0 → `open`；买入前持仓 > 0 → `add`。
-  - 卖出后持仓 ≤ 0 → `close`；卖出后持仓 > 0 → `reduce`。
-  - 卖出前持仓 ≤ 0 的异常记录，按原始 `trade_type` 兜底映射（`reduce`→`reduce`，`clear`→`close`），**不丢点**；原始 `trade_type` 保留供审计。
-- 同一标的同一天多笔：后端逐笔返回，前端按日/周/月桶聚合展示；API **不得**把同日多笔合并成一条（否则丢失明细）。
-- `klines` 为空时同样返回 `trades: []`，保证 `trades` 键恒存在。
-
-**复权换算**：
-
-- `fq=qfq`：`adj_price = price × qfq_factor(交易日)`；`fq=hfq`：`adj_price = price × hfq_factor(交易日)`；`fq=bfq/raw`：`adj_price = price`。
-- 因子取该交易日行情行的 `qfq_factor` / `hfq_factor`；无当日 K 线（停牌/非交易日）时取**之前最近一个交易日**的因子；仍无则 `adj_price = price` 并写 `system_log`（WARN）。禁止用窗口最后一天的因子统一换算。
-- 换算在后端完成；前端不重新计算复权，避免双端口径漂移。
-
-**安全与过滤**：
-
-- `user_id` 只从 JWT 取，绝不接受请求参数；`is_deleted = 0`；`asset_code` 归一化后再查；ETF/北交所同一套。
-- 只返回 4 类交易；`dividend / bonus / transfer` 即使落在窗口内也不返回。
-- 不得因为 `trades[]` 查询失败而让整个 K 线端点 500：交易查询异常时降级为 `trades: []` 并写 `system_log`（WARN），K 线主数据仍返回。
-
-**前端映射**：
-
-- 日 K：`trade_date` 有对应 bar 时直接映射；无对应 bar（周末/停牌）时归入其后最近一根，**不插值、不改写交易日期**；超出窗口不画。
-- 周/月 K：按 `trade_date` 归入所属周/月桶；同一桶多笔聚合为一个标记，明细保留全部记录。周/月聚合必须保留桶起止日期，**不得只按 `bar.date` 精确匹配**。
-- `ChartBar` 需从单值 `signal` 扩展为可承载多笔 `trades`（同日多笔不能只留一笔）。
-
-**性能**：
-
-- 全历史回放只取必要列（`id, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted`），一次查询后内存回放，禁止逐笔 `calcPosition`。
-- `trades[]` 只返回窗口内记录，响应体积与窗口内交易笔数线性，不随全历史增长。
-
-**测试要点**：
-
-- 单测：空仓买入→`open`；有仓买入→`add`；卖光→`close`；部分卖→`reduce`；`clear` 部分卖→`reduce`；`clear` 卖光→`close`；`bonus` 参与数量但不输出；`dividend` 不输出；软删除不参与；窗口首日买入仍判 `open`（全历史回放）；同日 `bonus` 先于卖出。
-- 集成：K 线响应含 `trades[]`；`fq=qfq/hfq/bfq/raw` 的 `adj_price` 正确；同日多笔不合并；无交易时 `trades: []`；交易查询异常降级不 500。
 
 ---
 
@@ -2453,7 +2394,7 @@ flowchart TD
 | 场景 | 目标 | 实现方式 | 验证方法 |
 |------|------|---------|---------|
 | 首屏加载 | ≤ 1.5s | React + Vite 生产构建 gzip ≈ 150KB；K 线图按需加载 | Lighthouse Chrome DevTools |
-| K 线渲染 | ≤ 500ms | **klinecharts 渲染耗时**（Chrome Performance Profiler 实测） | Chrome Performance Profiler |
+| K 线渲染 | ≤ 500ms | **自写 Canvas 渲染耗时**（Chrome Performance Profiler 实测） | Chrome Performance Profiler |
 | 选股 ≤ 3s | 5000+ 标的 | DuckDB OLAP 查询列式压缩；一次 IN 查询批量拿日线 | `time curl -X POST /api/stockscan` |
 | 信号生成 ≤ 20s | 50 插件 × 30 标的 | 一次批量日线加载 → 多插件共享；IN 查询 | 插入 system_log 记录前后时间戳 |
 | 行情更新 ≤ 120s | — | tdx2db 全量增量；HTTP 下载通达信日线包 | C8 校验 |
@@ -3096,7 +3037,7 @@ afterEach(async () => {
 | F2 | 支持 7 种交易类型录入（**买入/加仓/减仓/清仓/分红/送股/转增**）| trade.test.ts → `create_trade_all_types` | 每种类型 201，CHECK 约束拦截非法值 400 |
 | F3 | 持仓实时聚合查询正确（移动加权成本）| holding.test.ts → `avg_cost_calc_5_scenarios` | 与手写计算器对比，误差 < 0.001 元 |
 | F4 | 双口径收益率切换正确 | holding.test.ts → `yield_caliber_switch` | 价格收益率 / 复权收益率独立可查 |
-| F5 | K 线图 + 副图指标渲染正确 | `frontend.test.tsx` → `kline_render` | klinecharts 绘制无异常，副图 MACD/RSI 覆盖层正确 |
+| F5 | K 线图 + 副图指标渲染正确 | `frontend.test.tsx` → `kline_render` | Canvas 绘制无异常，副图 MACD/RSI 覆盖层正确 |
 | F6 | 策略插件信号生成 + 状态机（有→有不写信号，有→无只清除）| plugin.test.ts → `state machine_4_paths` | UNIQUE 约束正确触发 ON CONFLICT DO NOTHING |
 | F7 | 全市场条件选股 ≤ 3s | integration → `scan_5000_target` | `time curl -X POST /api/stockscan` ≤ 3.0s |
 | F8 | 每日 5 段自动化正确触发（17:00/17:01/17:02/17:03/17:05）| integration → `cron_sequence_trigger` | mock system time，验证 5 段按序执行 |

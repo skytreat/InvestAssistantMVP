@@ -195,7 +195,7 @@ T62 已列前四项；`focusRingStyle` 归 T63。
 
 ### 7. K 线交易标记（2026-10-30）
 
-> 交互口径见 PRD §5.2；本节只定义视觉。标记通过 `klinecharts` 自定义 `draw` 叠加（与 `APP_SIGNAL` 同机制），不新增第三方依赖。
+> 交互口径见 `PRD_v3 §5.4`；本节只定义视觉。标记通过 `klinecharts` 自定义 `draw` 叠加（与 `APP_SIGNAL` 同机制），不新增第三方依赖。
 >
 > ⚠️ §5 第 3 条「不引图表库 / 手写 Canvas」已被 **DEC-11 / SDD §2.5** 推翻；K 线实际使用 `klinecharts@10.1.0`，本节以该实现为准。
 
