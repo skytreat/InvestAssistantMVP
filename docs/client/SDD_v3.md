@@ -3,7 +3,7 @@
 **版本**：V3.0（第 1 部分）
 **日期**：2026-10-20
 **范围**：V3 新增能力的**技术契约**
-**上游**：`InvestAssistantV3_NewRequirements.md`（业务规则与不变量，178 条，唯一权威）
+**上游**：`InvestAssistantV3_NewRequirements.md`（业务规则与不变量，186 条，唯一权威）
 **下游**：`PRD_v3.md`（交互）、`code_implementation_plan_v3.md`（实施计划）
 
 > **本文档只定义 HOW。** 业务规则（「要什么」）一律在 `InvestAssistantV3_NewRequirements.md`，
@@ -29,6 +29,7 @@
 | `SDD.md` §4 | `GET /api/symbols/search` 支持裸 6 位匹配（Wave 6 已建 `symbolSearch.ts`） | 增强：返回名称 + 拼音首字母 + 分类（§9.4） | Requirements §1 |
 | `SDD.md` §5 插件引擎 | 4 个内置插件、单一 `category` | V3 不改插件引擎；**新增**现金类资产分类维度（§2） | Requirements §3.5 |
 | `SDD.md` §4 | `GET /api/review/*`（Wave 4 已建 `review.ts`） | 扩展：交易对视图 + 新字段（§9.7） | Requirements §6 |
+| `SDD.md` §4.4 | `GET /api/quote/:symbol/kline` 返回 K 线/指标/信号 | 增加 `trades[]`（K 线交易标记，§9.9） | Requirements §6.3 |
 | `SDD.md` §6 数据模型 | `user_trade_record` 单一来源 | 新增事实层三表（§11.1），业务层加券商维度（§11.2，DDL 待定稿） | Requirements §2.4.3 |
 | `SDD.md` §9/§10/§11 测试映射 | 无 V3 用例 | 新增 §12 映射 | Requirements §9 |
 | `packages/core` 公开类型 | `CoreTrade.direction: 'buy' \| 'sell'` | 扩展支持送股 / 分红（§8） | Requirements §3.6 |
@@ -788,6 +789,67 @@ transfer         -> 忽略（转托管不改变总持仓）
 
 **约束**：集中度分母**必须排除现金类资产**（§2）；组合回撤基于**净值曲线**（含费用）。
 
+### 9.9 K 线交易标记（T152）
+
+**路由**：扩展既有 `GET /api/quote/:symbol/kline`，在响应中新增 `trades[]`；**不新增独立端点**，也不复用 `GET /api/trade` 分页端点（后者上限 200 条/页且无全历史回放）。
+
+**返回项**：仅当前用户、`is_deleted = 0`、`trade_type ∈ {buy, add, reduce, clear}`、且 `quantity > 0` / `price > 0` 的记录。
+
+```jsonc
+{
+  "id": 123,
+  "trade_date": "2026-10-12",
+  "trade_time": "09:35:00",   // 可空（V3 券商导入后）；空时前端省略时间
+  "trade_type": "buy",        // 原始录入/导入类型，保留供审计
+  "marker_type": "open",      // 展示推导类型：open / add / reduce / close
+  "quantity": 100,
+  "price": 10.50,             // 实际成交价（不复权）
+  "adj_price": 10.72          // 当前 fq 口径下的复权价；前端唯一显示价
+}
+```
+
+**窗口口径**：
+
+- `trades[]` 只包含 `trade_date` 落在本次返回的 `klines[]` 首尾日期（闭区间）内的记录；`days` 上限沿用 500。
+- **推导回放必须从该标的全历史活记录开始**（不能只回放窗口内）—— 否则窗口首日的买入会被误判为建仓。
+- **持仓口径 = 该用户该标的的跨券商合并持仓**（与 `calcPosition` 一致），**不按券商分组**。⚠️ 与 §3.2 的导入推导不同：那里的「按券商分组」只用于确定单条 `trade_type`；K 线展示必须用合并持仓，否则同一标的在多券商持有时会把加仓误判为建仓。
+- 回放顺序与 `calcPosition` 一致：同日 `bonus` 优先于 `dividend`，`dividend` 优先于买卖，买卖之间按 `trade_time / id`；**不能只用 SQL 的 `trade_time` 排序**。
+- 回放口径与 `calcPosition` 一致（`buy/add` 增加数量、`reduce/clear` 减少数量、`bonus` 增加数量、`dividend` 不影响数量；其余类型按持仓计算口径）。超卖按 `calcPosition` 的容错口径结算（按实际可卖数量，绝不允许负持仓）。分红/送股/转增**不进入 `trades[]`**。
+- 推导规则：
+  - 买入前持仓 ≤ 0 → `open`；买入前持仓 > 0 → `add`。
+  - 卖出后持仓 ≤ 0 → `close`；卖出后持仓 > 0 → `reduce`。
+  - 卖出前持仓 ≤ 0 的异常记录，按原始 `trade_type` 兜底映射（`reduce`→`reduce`，`clear`→`close`），**不丢点**；原始 `trade_type` 保留供审计。
+- 同一标的同一天多笔：后端逐笔返回，前端按日/周/月桶聚合展示；API **不得**把同日多笔合并成一条。
+- `klines` 为空时同样返回 `trades: []`，保证 `trades` 键恒存在。
+
+**复权换算**：
+
+- `fq=qfq`：`adj_price = price × qfq_factor(交易日)`；`fq=hfq`：`adj_price = price × hfq_factor(交易日)`；`fq=bfq/raw`：`adj_price = price`。
+- 因子取该交易日行情行的 `qfq_factor` / `hfq_factor`；无当日 K 线（停牌/非交易日）时取**之前最近一个交易日**的因子；仍无则 `adj_price = price` 并写 `system_log`（WARN）。禁止用窗口最后一天的因子统一换算。
+- 换算在后端完成；前端不重新计算复权，避免双端口径漂移。
+
+**安全与过滤**：
+
+- `user_id` 只从 JWT 取，绝不接受请求参数；`is_deleted = 0`；`asset_code` 归一化后再查；ETF/北交所同一套。
+- 只返回 4 类交易；`dividend / bonus / transfer` 即使落在窗口内也不返回。
+- 不得因为 `trades[]` 查询失败而让整个 K 线端点 500：交易查询异常时降级为 `trades: []` 并写 `system_log`（WARN），K 线主数据仍返回。
+
+**前端映射**：
+
+- 日 K：`trade_date` 有对应 bar 时直接映射；无对应 bar（周末/停牌）时归入其后最近一根，**不插值、不改写交易日期**；超出窗口不画。
+- 周/月 K：按 `trade_date` 归入所属周/月桶；同一桶多笔聚合为一个标记，明细保留全部记录。周/月聚合必须保留桶起止日期，**不得只按 `bar.date` 精确匹配**。
+- `ChartBar` 需从单值 `signal` 扩展为可承载多笔 `trades`（同日多笔不能只留一笔）。
+
+**性能**：
+
+- 全历史回放只取必要列（`id, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted`），一次查询后内存回放，禁止逐笔 `calcPosition`。
+- `trades[]` 只返回窗口内记录，响应体积与窗口内交易笔数线性，不随全历史增长。
+
+**测试要点**：
+
+- 单测：空仓买入→`open`；有仓买入→`add`；卖光→`close`；部分卖→`reduce`；`clear` 部分卖→`reduce`；`clear` 卖光→`close`；`bonus` 参与数量但不输出；`dividend` 不输出；软删除不参与；窗口首日买入仍判 `open`（全历史回放）；同日 `bonus` 先于卖出；跨券商合并持仓下加仓不被误判为建仓。
+- 集成：K 线响应含 `trades[]`；`fq=qfq/hfq/bfq/raw` 的 `adj_price` 正确；同日多笔不合并；无交易时 `trades: []`；交易查询异常降级不 500。
+
 ---
 
 ## 10. 性能与安全门槛
@@ -802,6 +864,7 @@ transfer         -> 忽略（转托管不改变总持仓）
 | 跨文件去重 + 回填 | < 5s / 千行 | |
 | 收益率三口径计算 | < 1s | 单次全量持仓 |
 | 对账报告生成 | < 10s | 覆盖 3 年区间 |
+| K 线交易标记回放 | < 300ms | 单标的全历史一次查询 + 内存回放；禁止逐笔 `calcPosition` |
 
 **禁止**：逐标的循环查行情层（一律 `IN (...)` 批量）。
 
@@ -1100,6 +1163,7 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | `INV-S4-27` ~ `INV-S4-29`（三口径收益） | `portfolio_return.test.ts` |
 | `INV-S3-*`（交易类型与成本语义） | `movingWeightedCost`（core）+ `positionCalculator.test.ts` |
 | `INV-S1-1` ~ `INV-S1-7`（标的联想） | `symbolSearch.test.ts` + `symbolDict.test.ts`（T136 快照 / 拼音 / 免前缀） |
+| `INV-S6-10` ~ `INV-S6-17`（K 线交易标记） | `klineTrades.test.ts` + `Kline.test.tsx`（T152） |
 
 **V3.7 补录映射（2026-10-26 交叉审计，测试载体待 T138~T141 后续 commit 补齐）**：
 
@@ -1147,6 +1211,7 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | `/portfolio/risk-check` | 组合体检（四指标卡片/行业分布） | `GET /api/portfolio/risk-check` | §5.3 | T150 |
 | （Review 页 tab） | 流水 / **交易对**双 tab + 复盘编辑 | `GET /api/review/pairs`、`PATCH /api/review/pairs/:id` | §5.1/5.2 | T150 |
 | （持仓页增强） | 券商列 / 现金类分区 / 手工成组 | `GET /api/holding` + `asset_class` 快照 | §3.4.1 | T146 |
+| （现有 Kline 页增强） | 4 类交易标记 + 图例/开关 + 同日明细面板 | `GET /api/quote/:symbol/kline`（新增 `trades[]`） | §5.4 | T152 |
 | （全端联想增强） | 防抖/键盘/现金标签/唯一命中自动确认 | `GET /api/symbols/search`（T136 symbol_dict 快照） | §2.1/2.2 | T142 |
 
 ### 13.2 组件分层（沿用 `SDD.md` §2.12 的 Pages / Business / Common / Feature 四层）
@@ -1154,7 +1219,7 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | 层 | 新增 | 依赖 |
 |---|---|---|
 | Pages | `BrokerImport` / `BrokerReconcile` / `PortfolioReturn` / `RiskCheck` / `StrategyEffectiveness` 路由容器 | Business + Common |
-| Business | `BrokerImportWizard`、`ReconcileReport`、`ComplementDialog`、`PortfolioReturnCard`、`RiskCheckCard`、`StrategyConfigForm`、`SignalLifecyclePanel`（采纳/忽略/快照/关联）、`ReviewPairsTable`、`ReviewEditForm` | Common + Feature + `@/api/client` |
+| Business | `BrokerImportWizard`、`ReconcileReport`、`ComplementDialog`、`PortfolioReturnCard`、`RiskCheckCard`、`StrategyConfigForm`、`SignalLifecyclePanel`（采纳/忽略/快照/关联）、`ReviewPairsTable`、`ReviewEditForm`、`KlineTradeMarkerOverlay` | Common + Feature + `@/api/client` |
 | Feature（store） | 扩展 `holdingStore`（含 broker/asset_class 维度）；新增 `brokerStore`（批次/报告缓存，React Query） | API client |
 
 **硬约束**：前端**只走 HTTP API**（`apps/frontend` 禁止 import `packages/core`，AGENTS 硬约束）；
@@ -1174,3 +1239,4 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | 2026-10-20 | V3.0-1 | 初稿（第 1 部分）。基于 6 份真实券商文件（1627 行）的实测分析。DDL 覆盖新增 5 表；`user_trade_record` 改造留白（依赖 Wave 1-8 稳定） |
 | 2026-10-26 | V3.2-1 | 交叉审计补全：§11.2 T128/T129 定稿回填；§12 补 V3.7 不变量映射（T138~T141）；**新增 §13 前端 V3 架构**（V3.8 T142~T150 页面规格）；§11 新增 `user_fee_config`（T140，见 §13/plan V3.7） |
 | 2026-10-26 | V3.3-1 | §11 DDL 同步：user_trade_record 复盘/费用列、user_strategy_signal 生命周期列、user_fee_config 表（与 configStore.ts 权威源对齐） |
+| 2026-10-30 | V3.9-1 | 新增 §9.9 K 线交易标记契约（T152）：`trades[]`、跨券商合并持仓回放、复权价、窗口/同日多笔/降级；§10.1 性能门槛、§12 验收映射、§13 前端组件同步 |
