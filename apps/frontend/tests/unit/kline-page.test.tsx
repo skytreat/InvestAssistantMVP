@@ -874,6 +874,62 @@ describe('T152 · 交易标记映射', () => {
     expect(markers[0].radius).toBe(9);
     expect(markers[0].trades).toHaveLength(2);
   });
+
+  it('mapTradesToBars：多笔交易跨多个桶时各自归入正确的桶', () => {
+    // 10 个桶：2026-01-05 ~ 2026-01-14（日K）
+    const bars = makeBars(10);
+    // 3 笔交易分别落在第 0、4、9 个桶
+    const mapped = mapTradesToBars(bars, 'day', [
+      trade({ id: 1, trade_date: '2026-01-05' }),
+      trade({ id: 2, trade_date: '2026-01-09', marker_type: 'add' }),
+      trade({ id: 3, trade_date: '2026-01-14', marker_type: 'close' }),
+    ]);
+    expect(mapped[0].map((t) => t.id)).toEqual([1]);
+    expect(mapped[4].map((t) => t.id)).toEqual([2]);
+    expect(mapped[9].map((t) => t.id)).toEqual([3]);
+    // 其余桶应为空
+    for (let i = 0; i < 10; i++) {
+      if (i !== 0 && i !== 4 && i !== 9) {
+        expect(mapped[i]).toHaveLength(0);
+      }
+    }
+  });
+
+  it('mapTradesToBars：同日多笔归入同一桶', () => {
+    const bars = makeBars(10);
+    const mapped = mapTradesToBars(bars, 'day', [
+      trade({ id: 1, trade_date: '2026-01-05', marker_type: 'open' }),
+      trade({ id: 2, trade_date: '2026-01-05', marker_type: 'add' }),
+      trade({ id: 3, trade_date: '2026-01-05', marker_type: 'reduce' }),
+    ]);
+    expect(mapped[0].map((t) => t.id)).toEqual([1, 2, 3]);
+    for (let i = 1; i < 10; i++) {
+      expect(mapped[i]).toHaveLength(0);
+    }
+  });
+
+  it('mapTradesToBars：空交易列表返回全空桶', () => {
+    const bars = makeBars(10);
+    const mapped = mapTradesToBars(bars, 'day', []);
+    expect(mapped).toHaveLength(10);
+    for (const group of mapped) {
+      expect(group).toHaveLength(0);
+    }
+  });
+
+  it('mapTradesToBars：桶为空数组时不崩溃', () => {
+    const mapped = mapTradesToBars([], 'day', [trade({ id: 1 })]);
+    expect(mapped).toEqual([]);
+  });
+
+  it('mapTradesToBars：交易日期落在所有桶 endDate 之后时跳过', () => {
+    const bars = makeBars(5); // 2026-01-05 ~ 2026-01-09
+    const mapped = mapTradesToBars(bars, 'day', [trade({ id: 1, trade_date: '2026-03-01' })]);
+    expect(mapped).toHaveLength(5);
+    for (const group of mapped) {
+      expect(group).toHaveLength(0);
+    }
+  });
 });
 
 describe('T70 · 周期聚合', () => {

@@ -285,7 +285,12 @@ export function mapTradesToBars(
     ) {
       bucketIdx += 1;
     }
-    if ((buckets[bucketIdx].startDate as string) > trade.trade_date) continue;
+    if (
+      (buckets[bucketIdx].endDate as string) < trade.trade_date ||
+      (buckets[bucketIdx].startDate as string) > trade.trade_date
+    ) {
+      continue;
+    }
     result[bucketIdx].push(trade);
   }
 
