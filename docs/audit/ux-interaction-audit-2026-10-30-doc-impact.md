@@ -3,7 +3,7 @@
 > **输入**：`docs/audit/ux-interaction-audit-2026-10-30.md`（15 张工单）。
 > **目的**：在改代码前先判断每张工单是否真的需要改 V3 文档，避免「四份文档全改」或「代码先跑、文档后补」。
 > **裁决规则**：V3 范围内以 `InvestAssistantV3_NewRequirements.md` / `PRD_v3.md` / `SDD_v3.md` / `code_implementation_plan_v3.md` 为准；V3 未覆盖项回 V1 文档；现有契约已经明确时，只修代码和测试，不为了改代码而改文档。
-> **状态**：映射待 owner 确认；确认后才进入文档修改和代码修复。
+> **状态**：owner 2026-10-30 已确认 `UX-06` 采用“金额 + 条数”、缺失/多余按记录笔数；v2 文档不加 V3 引用（A）。其余 ticket 待确认。
 
 ## 1. 总表
 
@@ -14,7 +14,7 @@
 | `UX-03` 券商下拉含已撤销/伪券商 | P1 | `PRD_v3 §3.2.1`（券商下拉选项）；`SDD_v3 §9.2`（`brokerCode` 参数）、`§9.1`（批次列表） | **改 PRD + SDD** | PRD 明确只列“有效批次且券商标识唯一”的券商；SDD 补 `brokerCode` 合法性/批次状态校验；`plan_v3 T143/T144/T151` 更新验收 |
 | `UX-04` 导入页丢失券商上下文、完成态仍可重复确认 | P1 | `PRD_v3 §3.1.1`（入口）、`§3.1.2`（三步流程/完成态）；`SDD_v3 §9.1`（导入请求）；`plan_v3 T143` | **改 PRD + plan；SDD 视情况小补** | PRD 补从对账页带 `brokerCode` 进入并锁定券商；成功后禁用原确认按钮、保留“查看对账报告”；若服务端需要显式上下文，再在 SDD 补可选 `brokerCode` |
 | `UX-05` 资金校验字段错位 | P1 | `SDD_v3 §9.2`（`fundCheck` 已定义为 `applicable/passed/notApplicable/...`）；`PRD_v3 §3.2.1`；`Requirements §2.9.3` | **只修代码/测试** | 文档已经正确，后端返回了另一套 `checked/hit/...` 字段；按 SDD 修后端并加契约测试（`broker_fundcheck.test.ts`），不改 V3 文档 |
-| `UX-06` 339 条“多余”无下钻、归因单位混用 | P1 | `Requirements §2.6.3 INV-S2-62/63/64`、`§2.10`；`PRD_v3 §3.2.1`、`§3.2.2 U7/U9`；`SDD_v3 §9.2`（`attribution` / `diff`） | **改 Requirements + PRD + SDD** | 先裁决 `caliberDiff` 口径（当前实现是条数，其余归因项是金额）；按裁决统一 Requirements 定义、SDD 单位/下钻字段和 PRD 表头；`extra` 必须可下钻；`plan_v3 T126/T144` 加验收 |
+| `UX-06` 339 条“多余”无下钻、归因单位混用 | P1 | `Requirements §2.6.3 INV-S2-62/63/64`、`§2.10`；`PRD_v3 §3.2.1`、`§3.2.2 U7/U9`；`SDD_v3 §9.2`（`attribution` / `diff`） | **已裁决：改 Requirements + PRD + SDD** | 口径差异 = **金额（元）+ 条数**；缺失/多余 = **记录笔数**（组数仅 tooltip）；`extra` 必须可下钻；Requirements/PRD/SDD/plan 已同步 |
 | `UX-07` 日志脱敏误伤日期/阈值 | P1 | 无 V3 文档；V1 `Requirements_simplified §8.3`、`SDD.md §6.1 S6`、`PRD.md §5.7` | **回 V1；只修代码/测试** | V1 只要求金额/用户标识末 4 位，代码把任意 4+ 位数字都替换了；修 `maskAmount` 只处理金额，加日志测试；不改 V3 |
 | `UX-08` 唯一 admin 无法转移 | P1 | 无 V3 文档；V1 `PRD.md §5.7`（admin 仅 1 人、可转移）、`SDD.md §4`（admin API）、`plan_v2` | **回 V1；改 SDD + plan_v2** | PRD 已写“可转移”，实现缺原子转移接口；补 SDD 契约、UI 和并发校验；V3 不改 |
 | `UX-09` 管理员单页堆叠 | P2 | 无 V3 文档；V1 `PRD.md §5.7`、`ui-spec.md`、`plan_v2` | **回 V1；改 PRD/ui-spec + plan_v2** | 管理员页分区/tab/锚点属于 V1 信息架构；V3 只要求新增券商页面挂在“数据”分组，不改全局 admin 结构 |
@@ -31,10 +31,11 @@
 - **只修代码/测试，不改文档**：`UX-05`、`UX-07`（2 张）。
 - **需改 V1 文档**：`UX-08`、`UX-09`、`UX-10`、`UX-12`、`UX-14`（5 张）。
 - **暂缓**：`UX-15`（1 张）。
+- **v2 文档处理**：按 A 处理，不追加 V3 引用；V3 文档内部旧引用已修正。
 
 建议顺序：
 
-1. 先定 `UX-06` 的 `caliberDiff` 单位/计数口径，以及 `UX-01`、`UX-02` 的 P0 空态与补录契约。
+1. `UX-06` 口径已定（金额 + 条数 / 记录笔数）；接下来定 `UX-01`、`UX-02` 的 P0 空态与补录契约。
 2. 同步补 `PRD_v3` 的券商切换、导入上下文、完成态和文案。
 3. 对 `UX-05` 直接按现有 SDD 契约修代码 + 回归测试，不等文档。
 4. `UX-08` 起的管理员/日志/导航项回到 V1 文档，不塞进 V3。
