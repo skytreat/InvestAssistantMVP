@@ -266,16 +266,27 @@ export function aggregateBars(bars: RawBar[], period: KlinePeriod): RawBar[] {
  * - 周/月 K：按桶覆盖的 `startDate~endDate` 归入对应周期 K 线；跨桶交易归入后续桶
  * - 交易只追加到 `ChartBar.trades`，不改变 OHLCV 与既有指标值
  */
-export function mapTradesToBars(bars: RawBar[], period: KlinePeriod, trades: TradeMarker[]): TradeMarker[][] {
+export function mapTradesToBars(
+  bars: RawBar[],
+  period: KlinePeriod,
+  trades: TradeMarker[],
+): TradeMarker[][] {
   const buckets = buildBarBuckets(bars, period);
   const result: TradeMarker[][] = buckets.map(() => []);
+  if (trades.length === 0 || buckets.length === 0) return result;
 
+  // 双指针：trades 已按日期升序，buckets 已按 endDate 升序；一次线性扫描 O(n+m)
+  let bucketIdx = 0;
   for (const trade of trades) {
-    // 第一个 endDate >= trade_date 的桶 = 交易日所在桶（日 K 下即精确匹配 / 下一个交易日）
-    const index = buckets.findIndex((bucket) => bucket.endDate >= trade.trade_date);
-    if (index < 0) continue;
-    if (buckets[index].startDate > trade.trade_date) continue;
-    result[index].push(trade);
+    // 找到第一个 endDate >= trade_date 的桶（交易归入其后最近一根）
+    while (
+      bucketIdx < buckets.length - 1 &&
+      (buckets[bucketIdx].endDate as string) < trade.trade_date
+    ) {
+      bucketIdx += 1;
+    }
+    if ((buckets[bucketIdx].startDate as string) > trade.trade_date) continue;
+    result[bucketIdx].push(trade);
   }
 
   return result;
