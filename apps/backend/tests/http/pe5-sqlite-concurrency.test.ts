@@ -23,8 +23,12 @@
  * ⚠️ 写操作用**不同的标的 + 不同时刻**，否则会撞 T87b 的部分唯一索引
  *   （`user_id, asset_code, trade_type, trade_date, trade_time`）⇒ 那是业务 409，不是锁问题。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { assertRealListen, createHttpApp, getDb, seedUser, type HttpTestApp } from './_helpers.js';
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注 SQLite 并发压测，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 /** SDD §12.5 PE5 的并发档 */
 const CONCURRENCY = 10;
@@ -39,6 +43,8 @@ let http: HttpTestApp;
 let token = '';
 
 beforeAll(async () => {
+  // 默认放行：mock raw_symbol_class 返回空（本文件专注 SQLite 并发压测，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   http = await createHttpApp({ portStart: 51280, portEnd: 51299 });
   await seedUser(TEST_UID, 'pe5_user');
   const { signToken } = await import('../../src/services/auth.js');

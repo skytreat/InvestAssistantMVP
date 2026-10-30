@@ -11,7 +11,14 @@
  *   - 非法 trade_type → 400
  *   - **交易类型白名单 ≡ DDL CHECK（7 种）**：add（加仓）→ 201、sell → 400 PARAM_INVALID
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 各用例按需在用例内设 mockImplementation
+const { queryDuckDBMock } = vi.hoisted(() => ({
+  queryDuckDBMock: vi.fn(async () => [] as Array<{ symbol: string }>),
+}));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
+
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
@@ -784,14 +791,17 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
   });
 });
 
-describe('Trade · 标的字典校验', () => {
-  it('字典非空时：裸码归一化后可录入，未知标的返回 400 SYMBOL_NOT_FOUND', async () => {
+describe('Trade · 标的存在性校验（raw_symbol_class）', () => {
+  it('市场已知标的：裸码归一化后可录入，未知标的返回 400 SYMBOL_NOT_FOUND', async () => {
     const db = bundle.db.db;
     db.prepare('DELETE FROM symbol_dict').run();
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sh600000','600000','浦发银行','','sh','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('sh600000','600000','浦发银行','','sh','risk')`,
     ).run();
+    // 存在性判定源 = DuckDB raw_symbol_class：仅 sh600000 已知
+    queryDuckDBMock.mockReset();
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
     try {
       const bad = await bundle.app.inject({
         method: 'POST',
@@ -836,6 +846,8 @@ describe('Trade · 标的字典校验', () => {
         bundle.userId,
         'sh600000',
       );
+      queryDuckDBMock.mockReset();
+      queryDuckDBMock.mockImplementation(async () => [] as Array<{ symbol: string }>);
     }
   });
 });

@@ -9,7 +9,12 @@
  *   - GET /api/review/yield 胜率/盈亏比按移动加权成本算（PRD §5.5）
  *   - 软删除后统计口径同步排除
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注复盘闭环，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
+
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 
@@ -33,6 +38,8 @@ async function postTrade(payload: Record<string, unknown>) {
 }
 
 beforeAll(async () => {
+  // 默认放行：mock raw_symbol_class 返回空（本文件专注复盘闭环，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   bundle = await createTestApp();
   bundle.db.db
     .prepare('DELETE FROM user_trade_record WHERE user_id = ? AND asset_code = ?')

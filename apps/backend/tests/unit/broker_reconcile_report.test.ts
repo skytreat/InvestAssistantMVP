@@ -8,7 +8,7 @@
  * 4) 性能：3 年覆盖 < 10s（MVP 样本 6 文件 1627 行，本地 < 1s）
  * ⚠️ sequence.shuffle=true ⇒ 每个用例自包含（专属 userId，无共享可变状态）
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,6 +16,10 @@ import os from 'node:os';
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-broker-reconcile-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注对账报告行为，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import type Database from 'better-sqlite3';
@@ -51,6 +55,8 @@ async function ensureImported(uid: number, brokerCode: string, files: string[]):
 
 beforeAll(async () => {
   db = ConfigStore.getInstance().db;
+  // 默认放行：mock raw_symbol_class 返回空（本文件专注对账报告，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   db.prepare(
     `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
   ).run(7401, 'user_7401', 'x');

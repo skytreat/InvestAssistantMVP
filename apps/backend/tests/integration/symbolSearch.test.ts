@@ -36,13 +36,15 @@ const CASH_ETF = {
   asset_class: 'cash',
 };
 
-function seed(row: typeof PUFA): void {
+function seed(
+  row: Pick<typeof PUFA, 'symbol' | 'code6' | 'name' | 'pinyin' | 'market' | 'asset_class'>,
+): void {
   bundle.db.db
     .prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(row.symbol, row.code6, row.name, row.pinyin, row.market, row.class, row.asset_class);
+    .run(row.symbol, row.code6, row.name, row.pinyin, row.market, row.asset_class);
 }
 
 async function search(q: string) {

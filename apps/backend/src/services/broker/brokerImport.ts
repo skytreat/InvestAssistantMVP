@@ -17,6 +17,7 @@ import { parseBrokerFile } from './brokerParser.js';
 import { normalizeEvent, isExcludedFromSystemRecord } from './eventNormalize.js';
 import type { BrokerFileInput, BrokerFileParseResult } from './types.js';
 import { buildCode6Dict, normalizeAssetCode } from '../assetCode.js';
+import { queryDuckDB } from '../../db/duckdb.js';
 
 export { buildCode6Dict, normalizeAssetCode } from '../assetCode.js';
 
@@ -171,10 +172,20 @@ export async function preflightBrokerFile(
     );
   }
 
+  // 存在性判定源：DuckDB raw_symbol_class（覆盖 raw_kline_daily 全部标的，含 unknown 类）；
+  // symbol_dict 只做名称补全（code6 歧义消解 + 显示名称），**不做存在性判定**。
+  // 行情库不可读/无数据时**降级跳过校验**（与既有「字典未同步则放行」语义一致），不误拒。
+  let symbolSet: Set<string> | null = null;
+  try {
+    symbolSet = new Set(
+      (
+        await queryDuckDB<{ symbol: string }>(`SELECT symbol FROM raw_symbol_class WHERE class <> 'block'`)
+      ).map((r) => r.symbol),
+    );
+  } catch {
+    symbolSet = null;
+  }
   const code6Dict = buildCode6Dict(db);
-  const symbolSet = new Set(
-    (db.prepare(`SELECT symbol FROM symbol_dict`).all() as Array<{ symbol: string }>).map((r) => r.symbol),
-  );
   const rows = parse.rows.map((row) => ({
     normalized: normalizeBrokerRow(parse, row, code6Dict),
     rowIndex: row.rowIndex,
@@ -183,7 +194,7 @@ export async function preflightBrokerFile(
   const unknownMap = new Map<string, string | null>();
   for (const r of rows) {
     const code = r.normalized.asset_code;
-    if (symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code)) {
+    if (symbolSet !== null && symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code)) {
       const existing = unknownMap.get(code);
       const name = (r.normalized.raw_name as string | null | undefined) ?? null;
       if (existing === undefined || (existing === null && name !== null && name !== '')) {
@@ -191,17 +202,16 @@ export async function preflightBrokerFile(
       }
     }
   }
-  // 歧义消解：6 位裸码 + 名称 → symbol_dict 精确匹配 code6 + name（如 000070 + 特发信息 → sz000070）
+  // 歧义消解：6 位裸码 + 名称 → symbol_dict 精确匹配 code6 + name（仅名称补全，不做存在性判定）
   const resolveStmt = db.prepare(`SELECT symbol FROM symbol_dict WHERE code6 = ? AND name = ?`);
   const resolveMap = new Map<string, string>(); // bare code → full symbol
   for (const [code, name] of unknownMap) {
     if (!/^\d{6}$/.test(code) || !name) continue;
     const hit = resolveStmt.get(code, name) as { symbol: string } | undefined;
-    if (hit) {
+    if (hit && symbolSet?.has(hit.symbol)) {
       resolveMap.set(code, hit.symbol);
       unknownMap.delete(code);
       unknownMap.set(hit.symbol, name);
-      symbolSet.add(hit.symbol);
     }
   }
   for (const r of rows) {
@@ -230,13 +240,38 @@ export async function preflightBrokerFile(
   };
 }
 
-/** 落盘预检结果：创建批次 + 写事实层（调用方必须先完成未知标的检查） */
+/** 落盘预检结果：创建批次 + 写事实层（调用方必须先完成未知标的检查）
+ *
+ * @param skipUnknownAssetCodes 用户选择跳过的标的代码集合；
+ *   提供时按代码过滤行与 unknownAssets，不再因这些代码抛错。
+ */
 export function persistPreparedBrokerFile(
   db: Database.Database,
   userId: number,
   brokerCode: string,
   prepared: PreparedBrokerFile,
+  skipUnknownAssetCodes: string[] = [],
 ): ImportResult {
+  if (skipUnknownAssetCodes.length > 0) {
+    const skipSet = new Set(skipUnknownAssetCodes);
+    const filteredRows = prepared.rows.filter((r) => !skipSet.has(r.normalized.asset_code as string));
+    const keptCodes: string[] = [];
+    const keptNames: (string | null)[] = [];
+    for (let i = 0; i < prepared.unknownAssets.length; i++) {
+      if (!skipSet.has(prepared.unknownAssets[i])) {
+        keptCodes.push(prepared.unknownAssets[i]);
+        keptNames.push(prepared.unknownAssetNames[i] ?? null);
+      }
+    }
+    prepared = {
+      ...prepared,
+      rows: filteredRows,
+      unknownAssets: keptCodes,
+      unknownAssetNames: keptNames,
+      rowTotal: filteredRows.length,
+    };
+  }
+
   if (prepared.unknownAssets.length > 0) {
     throw new UnknownAssetCodesError([
       {

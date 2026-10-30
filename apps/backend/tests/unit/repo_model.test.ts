@@ -2,7 +2,7 @@
  * repo_model.test.ts — T127（V3.1）现金类资产建模
  * 对应 SDD_v3 §12.1：INV-S4-18~22（逆回购）/ INV-S4-23~26（货币 ETF）；gate G9（利息 7501.46 ±0.5、配对 180/180）
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,6 +10,10 @@ import os from 'node:os';
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-repo-model-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注逆回购建模，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import type Database from 'better-sqlite3';
@@ -39,6 +43,8 @@ async function ensure(uid: number, broker: string, files: string[]): Promise<voi
 
 beforeAll(async () => {
   db = ConfigStore.getInstance().db;
+  // 默认放行：mock raw_symbol_class 返回空（本文件专注逆回购建模，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   db.prepare(
     `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (7301, 'user_7301', 'x', 'user')`,
   ).run();

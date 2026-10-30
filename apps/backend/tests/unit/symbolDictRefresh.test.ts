@@ -2,9 +2,12 @@
  * symbolDictRefresh.test.ts — 标的字典全量刷新
  *
  * 钉死：
- *  - syncSymbolDict 全量 upsert（新增 + 改名同步）
+ *  - syncSymbolDict 全量 upsert（新增 + 改名同步），源 = raw_symbol_name
  *  - DuckDB 不可读时**抛出**，不得伪装成 0 行
  *  - ensureSymbolDict 仍只在表为空时懒加载，表非空不重复拉全量
+ *
+ * 字典定位（2026-10-29 收窄）：只做名称联想 + code6 歧义消解；
+ * 存在性/孤儿判定走 raw_symbol_class（见 symbolDict.test.ts）。
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
@@ -49,12 +52,12 @@ afterAll(() => {
 
 function seed(symbol: string, name: string): void {
   db.prepare(
-    `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-     VALUES (?, ?, ?, '', ?, 'unknown', 'risk')`,
+    `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+     VALUES (?, ?, ?, '', ?, 'risk')`,
   ).run(symbol, symbol.replace(/^[a-z]+/i, ''), name, symbol.slice(0, 2));
 }
 
-describe('symbol_dict · 全量刷新', () => {
+describe('symbol_dict · 全量刷新（源 = raw_symbol_name）', () => {
   it('新增标的并更新已有标的名称/拼音', async () => {
     seed('sh600000', '旧名称');
     queryDuckDBMock.mockResolvedValue([
@@ -73,6 +76,20 @@ describe('symbol_dict · 全量刷新', () => {
     expect(rows[0]).toMatchObject({ symbol: 'sh600000', name: '浦发银行' });
     expect(rows[0].pinyin.length).toBeGreaterThan(0);
     expect(rows[1]).toMatchObject({ symbol: 'sz000001', name: '平安银行' });
+  });
+
+  it('名称缺失（name=null）时落库为空串，pinyin 为空', async () => {
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000', name: null }]);
+
+    await expect(syncSymbolDict()).resolves.toBe(1);
+
+    const row = db.prepare('SELECT symbol, name, pinyin FROM symbol_dict').get() as {
+      symbol: string;
+      name: string;
+      pinyin: string;
+    };
+    expect(row.name).toBe('');
+    expect(row.pinyin).toBe('');
   });
 
   it('DuckDB 不可读时抛出，不返回 0 伪装成功', async () => {

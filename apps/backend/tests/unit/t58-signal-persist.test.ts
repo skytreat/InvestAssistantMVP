@@ -10,7 +10,7 @@
  *
  * 本文件用 `app.inject()`（进程内，不 listen、不占端口）。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -22,6 +22,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-t58-persist-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回空（本文件专注 signal/hold 行为，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import { persistSignals, persistBatchSignals, SIGNAL_INSERT_SQL } from '../../src/services/signalService.js';
@@ -39,6 +43,8 @@ let db: ReturnType<typeof ConfigStore.getInstance>;
 
 beforeAll(async () => {
   db = ConfigStore.getInstance();
+  // 默认放行：mock raw_symbol_class 返回空（本文件专注 signal/hold 行为，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   db.db
     .prepare(
       `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'dummy-hash', 'user')`,

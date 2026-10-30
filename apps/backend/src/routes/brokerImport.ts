@@ -12,7 +12,6 @@ import { ConfigStore } from '../config/configStore.js';
 import { ok, fail } from '../lib/envelope.js';
 import { parseBrokerFile } from '../services/broker/brokerParser.js';
 import {
-  importBrokerFile,
   persistPreparedBrokerFile,
   preflightBrokerFile,
   revokeBatch,
@@ -41,6 +40,17 @@ function unknownAssetsMessage(details: UnknownAssetDetail[]): string {
     return `${d.filename}: ${items.join('、')}${more}`;
   });
   return `标的代码不存在，本次未导入任何数据：${parts.join('；')}。请核对代码后重新导入。`;
+}
+
+/** 构建 pending_unknown_assets 响应体（200 返回，供前端弹窗让用户选择跳过） */
+function buildPendingUnknownBody(prepared: Awaited<ReturnType<typeof preflightBrokerFile>>[]): {
+  pending_unknown_assets: Array<{ filename: string; assetCodes: string[]; assetNames: (string | null)[] }>;
+} {
+  return {
+    pending_unknown_assets: prepared
+      .filter((p) => p.unknownAssets.length > 0)
+      .map((p) => ({ filename: p.filename, assetCodes: p.unknownAssets, assetNames: p.unknownAssetNames })),
+  };
 }
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // SDD §3：上传 10MB 上限，扩展名不可信 → 以内容嗅探为准
@@ -168,7 +178,11 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
         );
     }
     try {
-      const r = await importBrokerFile(db, userId, brokerCode, input);
+      const prepared = await preflightBrokerFile(db, userId, brokerCode, input);
+      if (prepared.unknownAssets.length > 0) {
+        return ok(buildPendingUnknownBody([prepared]));
+      }
+      const r = persistPreparedBrokerFile(db, userId, brokerCode, prepared);
       // 导入后自动回填：交割单缺 trade_time 时，从该券商已有成交流水行补齐（L1/L2/L3）
       const backfill = backfillTradeTime(db, userId, brokerCode);
       return ok({ ...r, backfill });
@@ -234,11 +248,9 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
           );
       }
     }
-    const unknown = prepared
-      .filter((p) => p.unknownAssets.length > 0)
-      .map((p) => ({ filename: p.filename, assetCodes: p.unknownAssets, assetNames: p.unknownAssetNames }));
-    if (unknown.length > 0) {
-      return reply.code(422).send(fail(422, 'UNKNOWN_ASSET_CODES', unknownAssetsMessage(unknown)));
+    const unknownPrepared = prepared.filter((p) => p.unknownAssets.length > 0);
+    if (unknownPrepared.length > 0) {
+      return ok(buildPendingUnknownBody(unknownPrepared));
     }
 
     // 第二步：整批落盘（单事务；任一文件失败则全部回滚）
@@ -259,6 +271,118 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     const backfill = backfillTradeTime(db, userId, brokerCode);
     return ok({
       files: prepared.map((p, i) => ({ filename: p.filename, ...results[i] })),
+      backfill,
+    });
+  });
+
+  /**
+   * 携带 skipUnknownAssetCodes 的最终确认端点。
+   * 由前端在用户选择了要跳过的未知标的后调用（二次确认，非幂等）。
+   */
+  app.post('/api/broker-import/confirm-final', async (request, reply) => {
+    const req = request as { user?: { sub?: number | string; role?: string } };
+    const userId = userIdOf(req);
+    if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    if (req.user?.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
+    const body = request.body as {
+      brokerCode?: string;
+      files?: UploadBody[];
+      skipUnknownAssetCodes?: string[];
+    };
+    if (!body?.brokerCode?.trim()) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
+    }
+    if (!Array.isArray(body.files) || body.files.length === 0) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', 'files 不能为空'));
+    }
+    if (body.files.length > 5) {
+      return reply.code(400).send(fail(400, 'INVALID_BODY', '单次批量导入不超过 5 个文件'));
+    }
+    const skipCodes: string[] = Array.isArray(body.skipUnknownAssetCodes) ? body.skipUnknownAssetCodes : [];
+    const db = ConfigStore.getInstance().db;
+    const brokerCode = body.brokerCode.trim();
+    const dictCount = await ensureSymbolDict();
+    if (dictCount === 0) {
+      return reply
+        .code(422)
+        .send(
+          fail(
+            422,
+            'SYMBOL_DICT_UNAVAILABLE',
+            '标的字典未同步，无法校验标的代码；请先确认行情库可用并打开一次标的搜索',
+          ),
+        );
+    }
+    const prepared: Awaited<ReturnType<typeof preflightBrokerFile>>[] = [];
+    for (const f of body.files) {
+      const got = toInput(f);
+      if (got.err) {
+        return reply.code(got.err.code).send(got.err.body);
+      }
+      try {
+        prepared.push(await preflightBrokerFile(db, userId, brokerCode, got.input!));
+      } catch (e) {
+        return reply
+          .code(422)
+          .send(
+            fail(
+              422,
+              'BROKER_IMPORT_FAILED',
+              `文件 ${f.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            ),
+          );
+      }
+    }
+    // 应用 skip 逻辑后再检查残留未知标的
+    for (const p of prepared) {
+      if (skipCodes.length > 0) {
+        const skipSet = new Set(skipCodes);
+        const keptCodes: string[] = [];
+        const keptNames: (string | null)[] = [];
+        for (let i = 0; i < p.unknownAssets.length; i++) {
+          if (!skipSet.has(p.unknownAssets[i])) {
+            keptCodes.push(p.unknownAssets[i]);
+            keptNames.push(p.unknownAssetNames[i] ?? null);
+          }
+        }
+        p.unknownAssets = keptCodes;
+        p.unknownAssetNames = keptNames;
+      }
+    }
+    const remainingUnknown = prepared.filter((p) => p.unknownAssets.length > 0);
+    if (remainingUnknown.length > 0) {
+      return reply.code(422).send(
+        fail(
+          422,
+          'UNKNOWN_ASSET_CODES',
+          unknownAssetsMessage(
+            remainingUnknown.map((p) => ({
+              filename: p.filename,
+              assetCodes: p.unknownAssets,
+              assetNames: p.unknownAssetNames,
+            })),
+          ),
+        ),
+      );
+    }
+    const results: ImportResult[] = [];
+    try {
+      const persistAll = db.transaction(() => {
+        for (const p of prepared) {
+          results.push(persistPreparedBrokerFile(db, userId, brokerCode, p, skipCodes));
+        }
+      });
+      persistAll();
+    } catch (e) {
+      return reply
+        .code(422)
+        .send(fail(422, 'BROKER_IMPORT_FAILED', e instanceof Error ? e.message : String(e)));
+    }
+    const backfill = backfillTradeTime(db, userId, brokerCode);
+    return ok({
+      files: prepared.map((p, i) => ({ filename: p.filename, ...results[i] })),
+      skippedCodes: skipCodes,
       backfill,
     });
   });

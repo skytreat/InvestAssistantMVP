@@ -615,8 +615,9 @@ transfer         -> 忽略（转托管不改变总持仓）
 |---|---|---|
 | `/api/broker-import/upload` | POST | 上传文件 → 探测 + 预览 + 映射建议（**不落库**） |
 | `/api/broker-import/preview` | POST | 按给定映射重新预览 |
- | `/api/broker-import/confirm` | POST | 确认导入 → 落事实层（**不写系统记录**）；导入后自动调用 `backfillTradeTime` 回填交割单缺失的 `trade_time`（L1/L2/L3），响应体含 `backfill` 统计 |
- | `/api/broker-import/confirm-batch` | POST | 同券商多文件一次提交（≤5 个，如成交流水+交割单）；全部导入后统一回填一次；**不支持跨券商**（body 仅一个 `brokerCode`） |
+ | `/api/broker-import/confirm` | POST | 确认导入 → 落事实层（**不写系统记录**）；导入前做**存在性预检**（查行情层 `raw_symbol_class`）：检测到未知标的 → 200 + `pending_unknown_assets`（不整批拒绝），前端弹窗让用户选择跳过；导入后自动调用 `backfillTradeTime` 回填交割单缺失的 `trade_time`（L1/L2/L3），响应体含 `backfill` 统计 |
+ | `/api/broker-import/confirm-batch` | POST | 同券商多文件一次提交（≤5 个，如成交流水+交割单）；整批预检，未知标的一致走 `pending_unknown_assets` 弹窗；全部导入后统一回填一次；**不支持跨券商**（body 仅一个 `brokerCode`） |
+ | `/api/broker-import/confirm-final` | POST | 携带 `skipUnknownAssetCodes` 的最终确认端点（二次确认，非幂等）：跳过代码对应行被过滤后落盘 |
  | `/api/broker-import/batches` | GET | 导入批次列表（含统计与撤销入口） |
 | `/api/broker-import/batches/:id/revoke` | POST | 撤销批次（软删该批次全部事实层记录） |
 | `/api/broker-import/templates` | GET / POST | 列映射模板的读取 / 保存 |
@@ -645,6 +646,8 @@ transfer         -> 忽略（转托管不改变总持仓）
 
 - **幂等**：服务端按**文件内容指纹**（SHA-256）+ 批次号去重；重复上传返回既有批次 ID，**不重复落库**
 - **只落事实层**；`user_trade_record` **不在此端点写入**（§9.3）
+- **存在性判定**：标的代码归一化后查行情层 `raw_symbol_class`（`class <> 'block'`，见 §11.1.4）；命中未知标的 → 200 + `pending_unknown_assets`（前端弹窗选跳过），**不再整批 422 拒绝**；行情库不可读时跳过校验放行（不误拒）
+  - 裸 6 位码歧义（同 code6 多 symbol）：用该行的 `raw_name` 在 `symbol_dict` 精确消解（`code6 + name`），消解结果须同时存在于 `raw_symbol_class` 才生效
 
 ### 9.2 对账
 
@@ -697,6 +700,7 @@ transfer         -> 忽略（转托管不改变总持仓）
 | 必须可回溯 | 新增 `user_trade_record.source_broker_record_id` |
 | 撤销只影响业务层 | 撤销补录 = 软删 `user_trade_record`；**事实层永不删除** |
 | 事务边界 | 一次确认的补录**整体一个事务**，部分失败整体回滚 |
+| **存在性判定** | 补录前校验 `asset_code` 存在于行情层 `raw_symbol_class`（见 §11.1.4），不存在 → 行级 `invalid`（reason `标的不存在于行情层`），**不阻断整批**；行情库不可读时降级放行 |
 
 **T129 实现补充（2026-10-26，V3.2）**：
 
@@ -726,7 +730,6 @@ transfer         -> 忽略（转托管不改变总持仓）
     code6: string;         // 6 位裸码
     name: string;          // 中文名（缺失时为空串，不报错）
     market: 'sh' | 'sz' | 'bj';
-    class: 'stock' | 'etf' | 'index' | 'bond' | 'unknown';
     assetClass: 'risk' | 'cash';      // 现金类标识（§2）
     pinyin: string;        // 拼音首字母（用于「gzzq」→「贵州茅台」）
     matchType: 'code' | 'name' | 'pinyin';
@@ -951,7 +954,6 @@ CREATE TABLE IF NOT EXISTS symbol_dict (
     name          TEXT,
     pinyin        TEXT,
     market        TEXT,
-    class         TEXT,
     asset_class   TEXT NOT NULL CHECK (asset_class IN ('risk','cash')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -959,8 +961,15 @@ CREATE INDEX IF NOT EXISTS idx_symbol_dict_code6 ON symbol_dict(code6);
 CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 ```
 
-> 由行情层**只读**同步而来；`asset_class` 来自 §2 的分类表。
-> **快照而非实时查行情层** —— 联想是高频操作，且行情层按需开关连接（`AGENTS.md`）。
+> **定位（2026-10-29 收窄）**：字典只做**名称联想搜索 + code6 歧义消解**，**不做存在性判定**。
+> - 由行情层 `raw_symbol_name` **只读**同步（有名称的标的）；`asset_class` 来自 §2 的分类表。
+> - **快照而非实时查行情层** —— 联想是高频操作，且行情层按需开关连接（`AGENTS.md`）。
+>
+> **存在性判定源 = 行情层 `raw_symbol_class`**（覆盖 `raw_kline_daily` 全部标的，含 `unknown` 类）：
+> - `raw_symbol_name` 只收录有名称的标的（实测 8,791 / 14,711 ≈ 59%），**不能**作为存在性判定源；
+> - `raw_symbol_class` 与 `raw_kline_daily` 标的数完全一致（14,711 = 14,711，0 缺失），排除 `block`（板块分组非可交易证券）后即为「已知标的」全集；
+> - 券商导入（`preflightBrokerFile`）、补录（`confirmTrades`）、手工录入（`POST /api/trade`）的存在性校验均查 `raw_symbol_class`（`class <> 'block'`）；
+> - 孤儿判定（`listOrphanUserTradeRecords` / `softDeleteOrphanUserTradeRecords`）同样以 `raw_symbol_class` 为判定源，行情库不可读时保持「无法判定 → 禁止批量清理」语义。
 
 #### 11.1.5 资产分类
 

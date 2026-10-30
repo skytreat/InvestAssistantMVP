@@ -4,7 +4,7 @@
  * 验收点①~⑤（plan T122 卡）：重复上传零重复 / 同内容多笔不误判 / 撤销只软删 / 确认不写业务层 / raw_row_json 可重放
  * ⚠️ sequence.shuffle=true ⇒ 用例自包含（专属 userId 段 + 专属文件组合）。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,6 +12,10 @@ import os from 'node:os';
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-broker-import-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
+
+// 存在性判定源 = DuckDB raw_symbol_class；测试用可控 mock 替代真实行情库
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import type Database from 'better-sqlite3';
@@ -38,9 +42,30 @@ function file(name: string, broker = '测试券商', userId = 0): BrokerFileInpu
   return { buffer: fs.readFileSync(path.join(FIX, name)), filename: name, userId };
 }
 
-beforeAll(() => {
+/** 收集文件中全部 asset_code（经 normalizeBrokerRow 归一化） */
+async function codesOf(f: { buffer: Buffer; filename: string }): Promise<string[]> {
+  const parse = await parseBrokerFile({ buffer: f.buffer, filename: f.filename });
+  expect(parse.ok).toBe(true);
+  return [
+    ...new Set(
+      parse.rows
+        .map((row) => normalizeBrokerRow(parse, row).asset_code)
+        .filter((c): c is string => typeof c === 'string' && c.length > 0),
+    ),
+  ];
+}
+
+/** mock raw_symbol_class：仅列出的 code 判定为存在 */
+function mockMarketData(codes: string[]): void {
+  queryDuckDBMock.mockResolvedValue(codes.map((c) => ({ symbol: c })));
+}
+
+beforeAll(async () => {
   db = ConfigStore.getInstance().db;
 });
+
+// 默认 mock：所有 code 视为市场已知（各验收用例专注业务行为，不做存在性判定）
+queryDuckDBMock.mockImplementation(async () => []);
 
 afterAll(() => {
   try {
@@ -213,26 +238,19 @@ describe('T122 · 验收⑤ match_status 五态与排除项', () => {
 });
 
 describe('T122 · 未知标的整文件拒绝', () => {
-  it('symbol_dict 非空时，任一未知标的 → 整文件拒绝，不创建批次/不写事实层', async () => {
+  it('raw_symbol_class 非空时，任一未知标的 → 整文件拒绝，不创建批次/不写事实层', async () => {
     await seedUser(9009);
     const f = file('2026-10-20-国泰股票成交.xlsx');
-    const parse = await parseBrokerFile({ buffer: f.buffer, filename: f.filename });
-    expect(parse.ok).toBe(true);
-    const codes = [
-      ...new Set(
-        parse.rows
-          .map((row) => normalizeBrokerRow(parse, row).asset_code)
-          .filter((c): c is string => typeof c === 'string' && c.length > 0),
-      ),
-    ];
+    const codes = await codesOf(f);
     expect(codes.length).toBeGreaterThan(1);
     const unknown = codes[codes.length - 1];
     const known = codes.slice(0, -1);
 
     db.prepare('DELETE FROM symbol_dict').run();
+    // symbol_dict 仅用于名称补全（code6 歧义消解）：给 known 补名称，unknown 无名称
     const ins = db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES (?, ?, '', '', ?, 'unknown', 'risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES (?, ?, '', '', ?, 'risk')`,
     );
     for (const code of known) ins.run(code, code.replace(/^[a-z]+/i, ''), code.slice(0, 2));
 
@@ -242,6 +260,8 @@ describe('T122 · 未知标的整文件拒绝', () => {
       }
     ).c;
     try {
+      // 存在性判定源：mock raw_symbol_class 只含 known
+      mockMarketData(known);
       let caught: unknown;
       try {
         await importBrokerFile(db, 9009, '国泰', {
@@ -273,6 +293,7 @@ describe('T122 · 未知标的整文件拒绝', () => {
       ).toBe(0);
     } finally {
       db.prepare('DELETE FROM symbol_dict').run();
+      queryDuckDBMock.mockImplementation(async () => []);
     }
   });
 });
@@ -343,16 +364,16 @@ describe('PR#60 review · normalizeAssetCode 字典权威 + 兜底修正', () =>
     expect(empty.size).toBe(0);
     // 造两条：一条唯一命中、一条同 code6 两个 symbol → 歧义
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('bj920999','920999','测试北交A','','bj','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('bj920999','920999','测试北交A','','bj','risk')`,
     ).run();
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sh600001','600001','测试沪A','','sh','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('sh600001','600001','测试沪A','','sh','risk')`,
     ).run();
     db.prepare(
-      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-       VALUES ('sz600001','600001','测试深A','','sz','unknown','risk')`,
+      `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+       VALUES ('sz600001','600001','测试深A','','sz','risk')`,
     ).run();
     try {
       const dict = buildCode6Dict(db);

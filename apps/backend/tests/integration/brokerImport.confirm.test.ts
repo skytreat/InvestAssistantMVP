@@ -1,14 +1,21 @@
 /**
- * 券商导入确认路由 —— 未知标的“整批拒绝”契约
+ * 券商导入确认路由 —— 未知标的"弹窗选择跳过"契约
  *
- * 旧行为是跳过未知行、其余照常写事实层；新契约：
- *   - 单文件：任一未知标的 → 422 UNKNOWN_ASSET_CODES，0 批次 / 0 事实行
- *   - 多文件：任一文件有未知标的 → 整批拒绝，所有文件都不写
- *   - 修正字典后重试 → 全部文件一次成功
+ * 存在性判定源 = DuckDB raw_symbol_class（mock 控制）；symbol_dict 只做名称补全。
+ * confirm / confirm-batch：检测到未知标的时返回 200 + pending_unknown_assets，
+ *   不再整批拒绝；前端据此弹窗让用户选择跳过哪些代码。
+ * confirm-final：携带 skipUnknownAssetCodes 完成落盘，跳过代码对应行被过滤。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// mock DuckDB raw_symbol_class（存在性判定源）
+const { queryDuckDBMock } = vi.hoisted(() => ({
+  queryDuckDBMock: vi.fn(async (_sql: string, _params?: unknown[]) => [] as Array<{ symbol: string }>),
+}));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
+
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
 import { parseBrokerFile } from '../../src/services/broker/brokerParser.js';
@@ -39,10 +46,16 @@ async function codesOf(name: string): Promise<string[]> {
 
 function seedDict(codes: string[]): void {
   const ins = bundle.db.db.prepare(
-    `INSERT OR REPLACE INTO symbol_dict (symbol, code6, name, pinyin, market, class, asset_class)
-     VALUES (?, ?, '', '', ?, 'unknown', 'risk')`,
+    `INSERT OR REPLACE INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class)
+     VALUES (?, ?, '', '', ?, 'risk')`,
   );
   for (const code of codes) ins.run(code, code.replace(/^[a-z]+/i, ''), code.slice(0, 2));
+}
+
+function clearAll(): void {
+  bundle.db.db.prepare('DELETE FROM broker_trade_record').run();
+  bundle.db.db.prepare('DELETE FROM broker_import_batch').run();
+  bundle.db.db.prepare('DELETE FROM symbol_dict').run();
 }
 
 beforeAll(async () => {
@@ -58,27 +71,50 @@ function authHeaders() {
   return { authorization: `Bearer ${bundle.adminToken}` };
 }
 
-describe('broker-import confirm · 未知标的整批拒绝', () => {
-  it('单文件/多文件任一未知标的 → 422，且不留下任何批次或事实行', async () => {
-    const [codesA, codesB] = await Promise.all([codesOf(FILE_A), codesOf(FILE_B)]);
-    expect(codesA.length).toBeGreaterThan(0);
+describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
+  it('单文件 confirm 含未知标的 → 200 + pending_unknown_assets，不落盘', async () => {
+    const codesB = await codesOf(FILE_B);
     expect(codesB.length).toBeGreaterThan(0);
     const unknown = codesB[codesB.length - 1];
-    seedDict([...codesA, ...codesB.filter((c) => c !== unknown)]);
+    // 存在性判定源 = DuckDB raw_symbol_class：只放行除 unknown 外的 code
+    clearAll();
+    seedDict(codesB.filter((c) => c !== unknown));
+    queryDuckDBMock.mockResolvedValue(codesB.filter((c) => c !== unknown).map((c) => ({ symbol: c })));
 
-    // ① 单文件确认：含未知标的 → 整文件拒绝
     const single = await bundle.app.inject({
       method: 'POST',
       url: '/api/broker-import/confirm',
       headers: authHeaders(),
       payload: { brokerCode: '国泰', ...filePayload(FILE_B) },
     });
-    expect(single.statusCode).toBe(422);
-    const singleBody = JSON.parse(single.body);
-    expect(singleBody.error).toBe('UNKNOWN_ASSET_CODES');
-    expect(singleBody.message).toContain(unknown);
+    expect(single.statusCode).toBe(200);
+    const body = JSON.parse(single.body);
+    expect(body.data.pending_unknown_assets).toBeDefined();
+    expect(body.data.pending_unknown_assets.length).toBeGreaterThan(0);
+    expect(body.data.pending_unknown_assets[0].assetCodes).toContain(unknown);
 
-    // ② 多文件批量：第二个文件含未知标的 → 整批拒绝（第一个文件也不能写入）
+    // 未落盘
+    const counts = bundle.db.db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM broker_import_batch WHERE user_id = ?) AS batches,
+           (SELECT COUNT(*) FROM broker_trade_record WHERE user_id = ? AND is_deleted = 0) AS facts`,
+      )
+      .get(bundle.userId, bundle.userId) as { batches: number; facts: number };
+    expect(counts).toEqual({ batches: 0, facts: 0 });
+  });
+
+  it('confirm-batch 含未知标的 → 200 + pending_unknown_assets，不落盘', async () => {
+    const [codesA, codesB] = await Promise.all([codesOf(FILE_A), codesOf(FILE_B)]);
+    expect(codesA.length).toBeGreaterThan(0);
+    expect(codesB.length).toBeGreaterThan(0);
+    const unknown = codesB[codesB.length - 1];
+    clearAll();
+    seedDict([...codesA, ...codesB.filter((c) => c !== unknown)]);
+    queryDuckDBMock.mockResolvedValue(
+      [...codesA, ...codesB.filter((c) => c !== unknown)].map((c) => ({ symbol: c })),
+    );
+
     const batch = await bundle.app.inject({
       method: 'POST',
       url: '/api/broker-import/confirm-batch',
@@ -88,9 +124,12 @@ describe('broker-import confirm · 未知标的整批拒绝', () => {
         files: [filePayload(FILE_A), filePayload(FILE_B)],
       },
     });
-    expect(batch.statusCode).toBe(422);
-    expect(JSON.parse(batch.body).error).toBe('UNKNOWN_ASSET_CODES');
+    expect(batch.statusCode).toBe(200);
+    const body = JSON.parse(batch.body);
+    expect(body.data.pending_unknown_assets).toBeDefined();
+    expect(body.data.pending_unknown_assets.length).toBeGreaterThan(0);
 
+    // 未落盘
     const counts = bundle.db.db
       .prepare(
         `SELECT
@@ -99,9 +138,68 @@ describe('broker-import confirm · 未知标的整批拒绝', () => {
       )
       .get(bundle.userId, bundle.userId) as { batches: number; facts: number };
     expect(counts).toEqual({ batches: 0, facts: 0 });
+  });
 
-    // ③ 修正字典后重试：两文件一次成功
+  it('confirm-final 携带 skipCodes 跳过未知标的后正常落盘', async () => {
+    const codesA = await codesOf(FILE_A);
+    expect(codesA.length).toBeGreaterThan(0);
+    const unknownA = codesA[codesA.length - 1];
+    clearAll();
+    seedDict(codesA.filter((c) => c !== unknownA));
+    queryDuckDBMock.mockResolvedValue(codesA.filter((c) => c !== unknownA).map((c) => ({ symbol: c })));
+
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/broker-import/confirm-final',
+      headers: authHeaders(),
+      payload: {
+        brokerCode: '国泰',
+        files: [filePayload(FILE_A)],
+        skipUnknownAssetCodes: [unknownA],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.files).toHaveLength(1);
+    expect(body.data.skippedCodes).toContain(unknownA);
+
+    // 确认事实层有写入
+    const facts = bundle.db.db
+      .prepare('SELECT COUNT(*) c FROM broker_trade_record WHERE user_id = ? AND is_deleted = 0')
+      .get(bundle.userId) as { c: number };
+    expect(facts.c).toBeGreaterThan(0);
+  });
+
+  it('confirm-final 未完全跳过未知标的 → 仍返回 422', async () => {
+    const codesB = await codesOf(FILE_B);
+    expect(codesB.length).toBeGreaterThan(0);
+    const unknown = codesB[codesB.length - 1];
+    clearAll();
+    seedDict(codesB.filter((c) => c !== unknown));
+    queryDuckDBMock.mockResolvedValue(codesB.filter((c) => c !== unknown).map((c) => ({ symbol: c })));
+
+    // 传一个与 unknown 无关的 skipCode → unknown 仍在 → 422
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/broker-import/confirm-final',
+      headers: authHeaders(),
+      payload: {
+        brokerCode: '国泰',
+        files: [filePayload(FILE_B)],
+        skipUnknownAssetCodes: ['sh999999'],
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('UNKNOWN_ASSET_CODES');
+    expect(body.message).toContain(unknown);
+  });
+
+  it('行情层全覆盖后直接 confirm-batch 无需 skip 即可成功', async () => {
+    const [codesA, codesB] = await Promise.all([codesOf(FILE_A), codesOf(FILE_B)]);
+    clearAll();
     seedDict([...codesA, ...codesB]);
+    queryDuckDBMock.mockResolvedValue([...codesA, ...codesB].map((c) => ({ symbol: c })));
     const retry = await bundle.app.inject({
       method: 'POST',
       url: '/api/broker-import/confirm-batch',
@@ -114,15 +212,5 @@ describe('broker-import confirm · 未知标的整批拒绝', () => {
     expect(retry.statusCode).toBe(200);
     const retryBody = JSON.parse(retry.body);
     expect(retryBody.data.files).toHaveLength(2);
-
-    const after = bundle.db.db
-      .prepare(
-        `SELECT
-           (SELECT COUNT(*) FROM broker_import_batch WHERE user_id = ?) AS batches,
-           (SELECT COUNT(*) FROM broker_trade_record WHERE user_id = ? AND is_deleted = 0) AS facts`,
-      )
-      .get(bundle.userId, bundle.userId) as { batches: number; facts: number };
-    expect(after.batches).toBe(2);
-    expect(after.facts).toBeGreaterThan(0);
   });
 });

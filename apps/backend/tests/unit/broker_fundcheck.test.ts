@@ -3,7 +3,7 @@
  * 对应 SDD_v3 §12.1：INV-S2-40~44；gate G6：命中 ≥145/148、不适用单独归类、无账户级闭合断言。
  * 实测基线（SDD §6.2）：国泰 ETF 交割 131/134 + 股票交割 14/14 = 145/148；3 处不适用 = 现金分红。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -11,6 +11,10 @@ import os from 'node:os';
 const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 const tmpDbPath = path.join(os.tmpdir(), `invest-broker-fundcheck-test-${Date.now()}.db`);
 process.env.SQLITE_DB_PATH = tmpDbPath;
+
+// 存在性判定源 = DuckDB raw_symbol_class：mock 返回全量 code（本文件专注资金校验行为，不做存在性判定）
+const { queryDuckDBMock } = vi.hoisted(() => ({ queryDuckDBMock: vi.fn() }));
+vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import type Database from 'better-sqlite3';
@@ -39,6 +43,8 @@ async function ensure(uid: number, brokerCode: string, files: string[]): Promise
 
 beforeAll(async () => {
   db = ConfigStore.getInstance().db;
+  // 默认放行：mock raw_symbol_class 返回样本文件中全部 code（本文件专注资金校验，不做存在性判定）
+  queryDuckDBMock.mockImplementation(async () => []);
   for (const uid of [7201, 7202])
     db.prepare(
       `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, 'x', 'user')`,
