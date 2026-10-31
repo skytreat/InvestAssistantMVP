@@ -16,9 +16,10 @@ jobs:
   #    （GitHub Docs: Troubleshooting required status checks）
   #
   # 判定规则：本次变更的**所有**文件都落在非代码路径
-  # (`docs/**`、`*.md`、`deploy/**`、`*.sh`、`*.bash`) ⇒ `skip_full_ci=true`。
+  # (`docs/**`、`*.md`、`deploy/**`、`*.sh`、`*.bash`、`*.toml`) ⇒ `skip_full_ci=true`。
   # - 空变更 / 检测失败 / 新分支首次 push ⇒ 一律跑全量（安全侧）
-  # - `.github/**`、源码、配置、脚本改动都不算 docs-only
+  # - `.github/**`、源码、脚本改动都不算 docs-only
+  # - `*.toml` 仅用于工具配置（当前为 `.pr_agent.toml`），不影响构建产物
   # ============================================================================
   changes:
     runs-on: ubuntu-latest
@@ -61,7 +62,7 @@ jobs:
             [ -n "$file" ] || continue
             count=$((count + 1))
             case "$file" in
-              docs/*|*.md|deploy/*|*.sh|*.bash) ;;
+              docs/*|*.md|deploy/*|*.sh|*.bash|*.toml) ;;
               *) skip_full_ci=false ;;
             esac
           done
