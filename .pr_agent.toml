@@ -29,6 +29,9 @@ require_score_review = true
 require_tests_review = true
 require_estimate_effort_to_review = false
 
+# 将关键问题发布为 Diff 行内评论
+inline_key_issues = true
+
 extra_instructions = """
 请使用中文进行代码审查和评论。
 
