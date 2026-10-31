@@ -587,11 +587,14 @@ export default function KlineChart({
   const selectedTradeBar = selectedTradeBarIndex !== null ? bars[selectedTradeBarIndex] : null;
 
   const handleChartClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    const marker = findTradeMarkerAtPoint(
-      event.nativeEvent.offsetX,
-      event.nativeEvent.offsetY,
-      () => tradeMarkersRef.current,
-    );
+    // 用 getBoundingClientRect 取容器在视口中的绝对坐标，
+    // 再换算为容器内的局部坐标，避免 canvas 因 padding/margin 与容器原点不一致
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const localX = event.clientX - rect.left;
+    const localY = event.clientY - rect.top;
+    const marker = findTradeMarkerAtPoint(localX, localY, () => tradeMarkersRef.current);
     if (marker) {
       setSelectedTradeBarIndex(marker.index);
       return;

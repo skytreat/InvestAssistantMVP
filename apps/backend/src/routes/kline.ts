@@ -332,27 +332,32 @@ export async function registerKlineRoutes(app: FastifyInstance) {
       try {
         const allRows = loadKlineTradeMarkers(user.sub, symbol);
         const allMarkers = deriveTradeMarkers(allRows);
-        const startDate = klines[0]?.date ?? '';
-        const endDate = klines[klines.length - 1]?.date ?? '';
-        const windowed = filterMarkersToWindow(allMarkers, startDate, endDate);
-        const adjusted = attachAdjustedPrices(
-          windowed,
-          fq,
-          klines.map((k) => ({ date: k.date, factor: k.adj_factor })),
-        );
-        trades = adjusted.trades;
-
-        if (adjusted.missingFactorDates.length > 0) {
-          app.log.warn(
-            { symbol, fq, dates: adjusted.missingFactorDates },
-            'K 线交易标记复权因子缺失，已回退成交价',
+        if (klines.length === 0) {
+          // 无 K 线（无数据）时跳过窗口筛选与复权价
+          trades = [];
+        } else {
+          const startDate = klines[0].date;
+          const endDate = klines[klines.length - 1].date;
+          const windowed = filterMarkersToWindow(allMarkers, startDate, endDate);
+          const adjusted = attachAdjustedPrices(
+            windowed,
+            fq,
+            klines.map((k) => ({ date: k.date, factor: k.adj_factor })),
           );
-          writeSystemLog({
-            logType: 'trade',
-            level: 'WARN',
-            message: 'K 线交易标记复权因子缺失，已回退成交价',
-            detail: `symbol=${symbol} fq=${fq} dates=${adjusted.missingFactorDates.join(',')}`,
-          });
+          trades = adjusted.trades;
+
+          if (adjusted.missingFactorDates.length > 0) {
+            app.log.warn(
+              { symbol, fq, dates: adjusted.missingFactorDates },
+              'K 线交易标记复权因子缺失，已回退成交价',
+            );
+            writeSystemLog({
+              logType: 'trade',
+              level: 'WARN',
+              message: 'K 线交易标记复权因子缺失，已回退成交价',
+              detail: `symbol=${symbol} fq=${fq} dates=${adjusted.missingFactorDates.join(',')}`,
+            });
+          }
         }
       } catch (tradeErr: unknown) {
         const msg = tradeErr instanceof Error ? tradeErr.message : String(tradeErr);

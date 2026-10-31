@@ -25,7 +25,12 @@ import {
   type IndicatorParams,
 } from '../indicators/chartParams';
 import type { SubIndicatorKind } from '../components/KlineChart';
-import { MA_LINE_STYLES, TRADE_BUY_COLOR, TRADE_SELL_COLOR } from '../indicators/chartIndicators';
+import {
+  MA_LINE_STYLES,
+  TRADE_BUY_COLOR,
+  TRADE_SELL_COLOR,
+  TRADE_MIXED_COLOR,
+} from '../indicators/chartIndicators';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -565,17 +570,18 @@ export default function Kline() {
           {showTrades && trades.length > 0 && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8, fontSize: 12 }}>
               {[
-                { label: '建仓', color: TRADE_BUY_COLOR, filled: true },
-                { label: '加仓', color: TRADE_BUY_COLOR, filled: false },
-                { label: '减仓', color: TRADE_SELL_COLOR, filled: false },
-                { label: '清仓', color: TRADE_SELL_COLOR, filled: true },
+                { label: '建仓', color: TRADE_BUY_COLOR, filled: true, ring: false },
+                { label: '加仓', color: TRADE_BUY_COLOR, filled: false, ring: false },
+                { label: '减仓', color: TRADE_SELL_COLOR, filled: false, ring: false },
+                { label: '清仓', color: TRADE_SELL_COLOR, filled: true, ring: false },
+                { label: '同日多笔', color: TRADE_MIXED_COLOR, filled: false, ring: true },
               ].map((item) => (
                 <span key={item.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                   <span
                     style={{
                       display: 'inline-block',
-                      width: 8,
-                      height: 8,
+                      width: item.ring ? 12 : 8,
+                      height: item.ring ? 12 : 8,
                       borderRadius: '50%',
                       border: `2px solid ${item.color}`,
                       background: item.filled ? item.color : 'transparent',
