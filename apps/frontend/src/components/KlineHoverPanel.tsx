@@ -1,5 +1,5 @@
 import { COLORS, TYPO } from '../theme/tokens';
-import { formatIndicator, type ChartBar } from '../indicators/chartBars';
+import { formatIndicator, type ChartBar, type TradeMarker } from '../indicators/chartBars';
 import { DEFAULT_MA_PERIODS } from '../indicators/chartParams';
 import type { SubIndicatorKind } from './KlineChart';
 
@@ -51,6 +51,22 @@ export function signalDirectionText(direction: string): string {
   if (direction === 'buy') return '买入';
   if (direction === 'sell') return '卖出';
   return direction;
+}
+
+/** 交易标记展示类型 → 中文（T152） */
+export function tradeMarkerTypeLabel(type: TradeMarker['marker_type']): string {
+  switch (type) {
+    case 'open':
+      return '建仓';
+    case 'add':
+      return '加仓';
+    case 'reduce':
+      return '减仓';
+    case 'close':
+      return '清仓';
+    default:
+      return type;
+  }
 }
 
 /** 指标明细（`metrics_json`）→ 可读文本 */
@@ -138,6 +154,24 @@ export default function KlineHoverPanel({
       )}
       {bar.signal?.metrics && (
         <div data-testid="kline-hover-signal-metrics">指标 {formatMetrics(bar.signal.metrics)}</div>
+      )}
+      {bar.trades.length > 0 && (
+        <div data-testid="kline-hover-trades">
+          交易 {bar.trades.length} 笔：
+          {bar.trades
+            .map((trade) => {
+              const label =
+                trade.marker_type === 'open'
+                  ? '建仓'
+                  : trade.marker_type === 'add'
+                    ? '加仓'
+                    : trade.marker_type === 'reduce'
+                      ? '减仓'
+                      : '清仓';
+              return `${label} ${trade.quantity} @ ${formatIndicator(trade.adj_price)}`;
+            })
+            .join('；')}
+        </div>
       )}
     </div>
   );

@@ -25,8 +25,8 @@ const execFileAsync = promisify(execFile);
 /** 单次补跑超时（SDD：5 分钟） */
 const RERUN_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_TIMEOUT_MS ?? 300_000);
 
-/** systemctl 补跑的轮询上限（对齐 tdx2db.service 的 TimeoutStartSec=1800） */
-const RERUN_SYSTEMCTL_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_SYSTEMCTL_TIMEOUT_MS ?? 1_800_000);
+/** systemctl 补跑的轮询上限（对齐 tdx2db.service 的 TimeoutStartSec=3600） */
+const RERUN_SYSTEMCTL_TIMEOUT_MS = Number(process.env.TDX2DB_RERUN_SYSTEMCTL_TIMEOUT_MS ?? 3_600_000);
 
 /** 补跑后等待落库稳定的最长时间 */
 const RETRY_SETTLE_MS = Number(process.env.TDX2DB_RERUN_SETTLE_MS ?? 3_000);

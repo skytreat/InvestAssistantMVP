@@ -33,7 +33,7 @@ export const CRON_TIMEZONE = 'Asia/Shanghai';
  * 17:01 的校验不能只等 120s —— 2026-10-28 生产实测 tdx2db 跑了 10 分 50 秒，
  * 120s 等待必然超时，导致当天 `tdx2db_update` 成功日志缺失、信号/除权段在写窗口内报错。
  */
-const DEFAULT_QUOTE_UPDATE_WAIT_MS = 35 * 60_000;
+const DEFAULT_QUOTE_UPDATE_WAIT_MS = 65 * 60_000;
 
 /**
  * 轮询哨兵直到 tdx2db 写窗口结束。

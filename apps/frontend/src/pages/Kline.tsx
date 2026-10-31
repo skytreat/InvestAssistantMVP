@@ -17,6 +17,7 @@ import {
   type KlinePeriod,
   type RawBar,
   type SignalMarker,
+  type TradeMarker,
 } from '../indicators/chartBars';
 import {
   DEFAULT_INDICATOR_PARAMS,
@@ -24,7 +25,12 @@ import {
   type IndicatorParams,
 } from '../indicators/chartParams';
 import type { SubIndicatorKind } from '../components/KlineChart';
-import { MA_LINE_STYLES } from '../indicators/chartIndicators';
+import {
+  MA_LINE_STYLES,
+  TRADE_BUY_COLOR,
+  TRADE_SELL_COLOR,
+  TRADE_MIXED_COLOR,
+} from '../indicators/chartIndicators';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -132,6 +138,16 @@ interface KlineApiResponse {
       plugin_id: string;
       metrics_json?: string | null;
     }>;
+    trades?: Array<{
+      id: number;
+      trade_date: string;
+      trade_time: string | null;
+      trade_type: string;
+      marker_type: TradeMarker['marker_type'];
+      quantity: number;
+      price: number;
+      adj_price: number;
+    }>;
   };
 }
 
@@ -152,6 +168,8 @@ export default function Kline() {
   const [days, setDays] = useState(120);
   const [period, setPeriod] = useState<KlinePeriod>('day');
   const [showMa, setShowMa] = useState(true);
+  /** T152：交易标记开关（默认开） */
+  const [showTrades, setShowTrades] = useState(true);
   const [subIndicator, setSubIndicator] = useState<SubIndicatorKind>('macd');
   /** 🔴 T71：指标参数（改参数 → 即时重绘，**零网络请求**）*/
   const [params, setParams] = useState<IndicatorParams>(() => cloneIndicatorParams(DEFAULT_INDICATOR_PARAMS));
@@ -163,6 +181,8 @@ export default function Kline() {
   const [rawBars, setRawBars] = useState<RawBar[]>([]);
   /** 信号标记 */
   const [signals, setSignals] = useState<SignalMarker[]>([]);
+  /** T152：K 线窗口内交易标记 */
+  const [trades, setTrades] = useState<TradeMarker[]>([]);
   /** 取数次数（每次成功加载 +1）—— 参与数据指纹，保证新数据一定重新灌进图表 */
   const [loadSeq, setLoadSeq] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -224,6 +244,7 @@ export default function Kline() {
 
         const raw = Array.isArray(body.data.klines) ? body.data.klines : [];
         const klineSignals = Array.isArray(body.data.signals) ? body.data.signals : [];
+        const klineTrades = Array.isArray(body.data.trades) ? body.data.trades : [];
 
         // 🔴 T73：信号指标明细（`metrics_json`）**由 K 线接口一并下发**
         //    ⇒ 不再单独请求 `/api/signal` 补取（省一次网络往返）。
@@ -240,15 +261,28 @@ export default function Kline() {
           metrics: parseMetricsJson(s.metrics_json),
         }));
 
+        const tradeMarkers: TradeMarker[] = klineTrades.map((t) => ({
+          id: t.id,
+          trade_date: t.trade_date,
+          trade_time: t.trade_time,
+          trade_type: t.trade_type,
+          marker_type: t.marker_type,
+          quantity: t.quantity,
+          price: t.price,
+          adj_price: t.adj_price,
+        }));
+
         // 🔴 T71：这里只存**原始日线 + 信号**，指标由前端按当前参数算
         //    （`bars` 是 `useMemo` 派生值 ⇒ 改参数不需要重新取数）
         setRawBars(raw);
         setSignals(signalMarkers);
+        setTrades(tradeMarkers);
         setLoadSeq((n) => n + 1);
       } catch (e) {
         setErr('请求失败: ' + extractErrorMessageOrErrorMessage(e));
         setRawBars([]);
         setSignals([]);
+        setTrades([]);
       } finally {
         setLoading(false);
       }
@@ -267,8 +301,8 @@ export default function Kline() {
    * 参数一变 → 这里重算 → 新的 `bars` 传给图表 → 图表只重算指标、**不取数**。
    */
   const bars = useMemo<ChartBar[]>(
-    () => buildChartBars(rawBars, period, signals, params),
-    [rawBars, period, signals, params],
+    () => buildChartBars(rawBars, period, signals, params, trades),
+    [rawBars, period, signals, params, trades],
   );
 
   /**
@@ -429,6 +463,18 @@ export default function Kline() {
             显示 MA({params.ma.periods.join('/')})
           </label>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input
+            id="kline-checkbox-trades"
+            data-testid="kline-trades-toggle"
+            type="checkbox"
+            checked={showTrades}
+            onChange={(e) => setShowTrades(e.target.checked)}
+          />
+          <label htmlFor="kline-checkbox-trades" style={{ fontSize: TYPO.bodySize }}>
+            交易点
+          </label>
+        </div>
         <button
           onClick={applySymbol}
           disabled={loading}
@@ -521,6 +567,31 @@ export default function Kline() {
               ))}
             </div>
           )}
+          {showTrades && trades.length > 0 && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8, fontSize: 12 }}>
+              {[
+                { label: '建仓', color: TRADE_BUY_COLOR, filled: true, ring: false },
+                { label: '加仓', color: TRADE_BUY_COLOR, filled: false, ring: false },
+                { label: '减仓', color: TRADE_SELL_COLOR, filled: false, ring: false },
+                { label: '清仓', color: TRADE_SELL_COLOR, filled: true, ring: false },
+                { label: '同日多笔', color: TRADE_MIXED_COLOR, filled: false, ring: true },
+              ].map((item) => (
+                <span key={item.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: item.ring ? 12 : 8,
+                      height: item.ring ? 12 : 8,
+                      borderRadius: '50%',
+                      border: `2px solid ${item.color}`,
+                      background: item.filled ? item.color : 'transparent',
+                    }}
+                  />
+                  {item.label}
+                </span>
+              ))}
+            </div>
+          )}
           <Suspense fallback={<Spinner label="加载图表..." />}>
             <KlineChart
               symbol={symbol}
@@ -529,6 +600,7 @@ export default function Kline() {
               dataSignature={dataSignature}
               params={params}
               showMa={showMa}
+              showTrades={showTrades}
               subIndicator={subIndicator}
               height={isMobile ? 420 : 560}
               mainHeight={isMobile ? 250 : 380}
