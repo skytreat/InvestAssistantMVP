@@ -47,6 +47,8 @@ vi.mock('../../src/api/client', () => ({
 interface TradeFixture {
   id: number;
   asset_code: string;
+  /** 标的中文名（后端 raw_symbol_name；测试可按需注入） */
+  asset_name?: string | null;
   trade_type: string;
   trade_date: string;
   quantity: number;
@@ -684,6 +686,11 @@ describe('T150 · 交易对 tab（未平仓单独成组 + 情绪状态枚举编�
     // 已平仓组含 sh600000，未平仓组含 sz000001（开仓中，剩余 100）
     expect((await screen.findAllByText('sh600000'))[0]).toBeInTheDocument();
     expect((await screen.findAllByText('sz000001'))[0]).toBeInTheDocument();
+    // 标的列是 K 线跳转链接
+    const closedLink = screen.getAllByText('sh600000')[0].closest('a');
+    expect(closedLink).toHaveAttribute('href', '/kline?symbol=sh600000');
+    const openLink = screen.getAllByText('sz000001')[0].closest('a');
+    expect(openLink).toHaveAttribute('href', '/kline?symbol=sz000001');
   });
 
   it('改情绪状态下拉 → PATCH /review/pairs/:id（INV-S6-2 复盘字段独立存取）', async () => {
@@ -696,5 +703,55 @@ describe('T150 · 交易对 tab（未平仓单独成组 + 情绪状态枚举编�
     await waitFor(() =>
       expect(patchMock).toHaveBeenCalledWith('/review/pairs/1', { emotion_status: '恐慌' }),
     );
+  });
+});
+
+describe('交易复盘表格 · 标的列显示名称 + K 线链接', () => {
+  it('逐笔流水：asset_name 主行显示中文名，副行代码，整格链接 K 线页', async () => {
+    installApiMock({ trades: [trade({ id: 31, asset_code: 'sh600519', asset_name: '贵州茅台' })] });
+    renderWithRouter(<Review />);
+
+    const link = await screen.findByRole('link', { name: /贵州茅台/ });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600519');
+    expect(link).toHaveTextContent('贵州茅台');
+    expect(link).toHaveTextContent('sh600519');
+  });
+});
+
+describe('收益曲线 · 历史快照补齐（user_asset_stat 为空时）', () => {
+  it('空历史 → 显示「补齐」按钮；点击后 POST /asset-stat/backfill 并重新拉 history 渲染曲线', async () => {
+    installApiMock({ history: [] });
+    postMock.mockImplementation(async (url: string) =>
+      url === '/asset-stat/backfill' ? mockResponse({ filled: 3 }) : mockResponse(null),
+    );
+    // history 第一次（挂载）返回空，补齐后重拉返回数据
+    let historyHits = 0;
+    const inner = getMock.getMockImplementation()!;
+    getMock.mockImplementation(async (url: string, cfg?: ApiGetConfig) => {
+      if (url === '/asset-stat/history') {
+        historyHits++;
+        return historyHits === 1 ? mockResponse([]) : mockResponse(HISTORY);
+      }
+      return inner(url, cfg);
+    });
+
+    renderWithRouter(<Review />);
+    const btn = await screen.findByTestId('backfill-snapshots');
+    expect(btn).toHaveTextContent('补齐 365 天历史快照');
+
+    await userEvent.click(btn);
+
+    expect(postMock).toHaveBeenCalledWith('/asset-stat/backfill', { days: 365 });
+    await waitFor(() => expect(historyHits).toBe(2));
+    // 曲线重新渲染（HISTORY 非空 → SVG 出现，空态按钮消失）
+    expect(await screen.findByRole('img', { name: /收益率曲线/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('backfill-snapshots')).not.toBeInTheDocument();
+  });
+
+  it('历史非空 → 不显示补齐按钮', async () => {
+    installApiMock(); // history 默认 = HISTORY（非空）
+    renderWithRouter(<Review />);
+    await screen.findByRole('img', { name: /收益率曲线/ });
+    expect(screen.queryByTestId('backfill-snapshots')).not.toBeInTheDocument();
   });
 });

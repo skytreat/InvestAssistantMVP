@@ -12,7 +12,7 @@
  *   - 纯分红用户（无买卖）→ 只写分红收益
  *   - 加仓后成本正确（移动加权）
  */
-import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,10 +22,20 @@ const TEST_DB = path.join(tmpDir, 'as-test.db');
 const ORIGINAL_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
-// mock marketData（assetStat 内部调 batchGetDaily 取当日收盘价）
-const { batchGetDailyMock } = vi.hoisted(() => ({
+// mock marketData（assetStat 内部调 batchGetDaily 取当日收盘价；
+// backfill 调 fetchAssetClasses + batchGetDailyRangeByView 取区间 qfq 日线）
+const { batchGetDailyMock, fetchAssetClassesMock, batchGetDailyRangeByViewMock } = vi.hoisted(() => ({
   batchGetDailyMock:
     vi.fn<(symbols: string[], date: string, period?: string) => Promise<Map<string, { close: number }>>>(),
+  fetchAssetClassesMock: vi.fn<() => Promise<Map<string, string>>>(),
+  batchGetDailyRangeByViewMock:
+    vi.fn<
+      (
+        byView: Map<string, string[]>,
+        from: string,
+        to: string,
+      ) => Promise<Map<string, Array<{ date: string; close: number }>>>
+    >(),
 }));
 
 vi.mock('../../src/services/marketData.js', () => ({
@@ -34,6 +44,8 @@ vi.mock('../../src/services/marketData.js', () => ({
   getDailyRange: vi.fn(),
   batchGetDailyRange: vi.fn(),
   batchGetLatestClose: vi.fn(),
+  fetchAssetClasses: fetchAssetClassesMock,
+  batchGetDailyRangeByView: batchGetDailyRangeByViewMock,
   isTradingDay: vi.fn(),
   getLatestTradingDay: vi.fn(),
   resolveLatestQuoteDate: vi.fn().mockResolvedValue(null),
@@ -42,7 +54,8 @@ vi.mock('../../src/services/marketData.js', () => ({
 }));
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
-const { insertAssetStatSnapshots } = await import('../../src/services/assetStat.js');
+const { insertAssetStatSnapshots, backfillAssetStatSnapshots } =
+  await import('../../src/services/assetStat.js');
 
 function cleanup(): void {
   (ConfigStore as any)._instance = null;
@@ -294,5 +307,166 @@ describe('assetStat — insertAssetStatSnapshots', () => {
     const priceProfit = 200 * 11 - costBasis; // -2.5
     expect(snap.total_profit_price).toBeCloseTo(priceProfit, 4);
     expect(snap.total_assets_price_yield).toBeCloseTo(priceProfit / costBasis, 6);
+  });
+});
+
+describe('assetStat — backfillAssetStatSnapshots（历史快照回补）', () => {
+  /** 相对「今天」往前 N 天的 ISO 日期（保证落在 days=365 的回补窗口内，与运行年份无关） */
+  function isoDaysAgo(n: number): string {
+    return new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+  }
+
+  /** mock 区间 K 线：给定 symbol → 按日收盘价序列（升序） */
+  function mockRangeKlines(series: Record<string, Array<[string, number]>>): void {
+    batchGetDailyRangeByViewMock.mockImplementation(async (_byView, _from, _to) => {
+      const m = new Map<string, Array<{ date: string; close: number }>>();
+      for (const [sym, rows] of Object.entries(series)) {
+        m.set(
+          sym,
+          [...rows].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([date, close]) => ({ date, close })),
+        );
+      }
+      return m;
+    });
+  }
+
+  // ⚠️ 套件 `sequence.shuffle=true`：mock 状态必须**每个用例前**重置，不能靠用例顺序
+  beforeEach(() => {
+    fetchAssetClassesMock.mockReset();
+    fetchAssetClassesMock.mockResolvedValue(new Map());
+    batchGetDailyRangeByViewMock.mockReset();
+    batchGetDailyRangeByViewMock.mockResolvedValue(new Map());
+  });
+
+  it('无交易记录 → 不查行情、不写库，filled=0', async () => {
+    const userId = seedUser('no_trade_user');
+    const result = await backfillAssetStatSnapshots(userId, 365);
+    expect(result.filled).toBe(0);
+    expect(batchGetDailyRangeByViewMock).not.toHaveBeenCalled();
+  });
+
+  it('按 as-of 当日回放：逐日持仓 × 收盘价（前向填充）写入快照', async () => {
+    const userId = seedUser('bf_basic');
+    const d0 = isoDaysAgo(3); // 买入日（K 线里**没有**这天 → 前向填充 = 0）
+    const d1 = isoDaysAgo(2);
+    const d2 = isoDaysAgo(1);
+    const d3 = isoDaysAgo(0);
+    seedTrade(userId, 'sh600000', 'buy', 100, 10, 1, d0); // cost = 1001
+    mockRangeKlines({
+      sh600000: [
+        [d1, 10],
+        [d2, 11],
+        [d3, 12],
+      ],
+    });
+
+    const result = await backfillAssetStatSnapshots(userId, 365);
+    expect(result.filled).toBe(3);
+    expect(result.marketDays).toBe(3);
+
+    // d1：持仓 100（≤d1 有买入），close=10 → mv=1000，priceProfit=-1
+    let snap = readSnapshot(userId, d1)!;
+    expect(snap.total_profit_price).toBeCloseTo(100 * 10 - 1001, 4);
+    // d2：close=11 → 100*11-1001=99
+    snap = readSnapshot(userId, d2)!;
+    expect(snap.total_profit_price).toBeCloseTo(100 * 11 - 1001, 4);
+    // d3：close=12 → 199
+    snap = readSnapshot(userId, d3)!;
+    expect(snap.total_profit_price).toBeCloseTo(100 * 12 - 1001, 4);
+    // 无分红 → 双口径一致
+    expect(snap.total_profit_actual).toBeCloseTo(snap.total_profit_price, 4);
+  });
+
+  it('无前向可填的收盘价 → close=0 兜底（市值 0，成本照记）', async () => {
+    const userId = seedUser('bf_nofill');
+    const d0 = isoDaysAgo(2);
+    seedTrade(userId, 'sh600000', 'buy', 100, 10, 1, d0);
+    mockRangeKlines({}); // 窗口内该标的无任何 K 线
+
+    const result = await backfillAssetStatSnapshots(userId, 365);
+    expect(result.filled).toBe(0); // 没有行情日 ⇒ 没有可写快照的交易日
+    expect(result.marketDays).toBe(0);
+  });
+
+  it('已有快照的日期不被覆盖（ON CONFLICT DO NOTHING）', async () => {
+    const userId = seedUser('bf_keep');
+    const d1 = isoDaysAgo(1);
+    const d2 = isoDaysAgo(0);
+    seedTrade(userId, 'sh600000', 'buy', 100, 10, 1, isoDaysAgo(2));
+    mockRangeKlines({
+      sh600000: [
+        [d1, 10],
+        [d2, 11],
+      ],
+    });
+    // 先写一条哨兵快照（模拟 cron 某天写过的）
+    ConfigStore.getInstance()
+      .db.prepare(
+        `INSERT INTO user_asset_stat
+           (user_id, trade_date, total_assets_price_yield, total_assets_actual_yield,
+            total_profit_price, total_profit_actual)
+         VALUES (?, ?, 0.4242, 0.4242, 4242, 4242)`,
+      )
+      .run(userId, d1);
+
+    const result = await backfillAssetStatSnapshots(userId, 365);
+    expect(result.filled).toBe(1); // 只补 d2
+    expect(result.skippedExisting).toBe(1);
+
+    // 哨兵行原样保留
+    const kept = readSnapshot(userId, d1)!;
+    expect(kept.total_profit_price).toBe(4242);
+    // 补写行是正常口径
+    expect(readSnapshot(userId, d2)!.total_profit_price).toBeCloseTo(100 * 11 - 1001, 4);
+  });
+
+  it('有分红：actual 口径 = price 口径 + 截至当日的累计分红', async () => {
+    const userId = seedUser('bf_div');
+    const dBuy = isoDaysAgo(3);
+    const dDiv = isoDaysAgo(2);
+    const dEnd = isoDaysAgo(0);
+    seedTrade(userId, 'sh600000', 'buy', 100, 10, 1, dBuy); // cost=1001
+    seedTrade(userId, 'sh600000', 'dividend', 100, 0.5, 0, dDiv); // 分红 50
+    mockRangeKlines({
+      sh600000: [
+        [dBuy, 10],
+        [dDiv, 10.5],
+        [dEnd, 11],
+      ],
+    });
+
+    await backfillAssetStatSnapshots(userId, 365);
+    const snap = readSnapshot(userId, dEnd)!;
+    const priceProfit = 100 * 11 - 1001; // 99
+    expect(snap.total_profit_price).toBeCloseTo(priceProfit, 4);
+    expect(snap.total_profit_actual).toBeCloseTo(priceProfit + 50, 4);
+    expect(snap.total_assets_actual_yield).toBeCloseTo((priceProfit + 50) / 1001, 6);
+    expect(snap.total_assets_actual_yield).toBeGreaterThan(snap.total_assets_price_yield);
+  });
+
+  it('ETF 标的走 v_etf_qfq 组（分类路由正确）', async () => {
+    const userId = seedUser('bf_etf');
+    fetchAssetClassesMock.mockResolvedValue(new Map([['sh510300', 'etf']]));
+    const d1 = isoDaysAgo(1);
+    seedTrade(userId, 'sh510300', 'buy', 1000, 4, 1, isoDaysAgo(2));
+    mockRangeKlines({
+      sh510300: [[d1, 4.1]],
+    });
+
+    await backfillAssetStatSnapshots(userId, 365);
+    expect(batchGetDailyRangeByViewMock).toHaveBeenCalled();
+    const byView = batchGetDailyRangeByViewMock.mock.calls[0][0] as Map<string, string[]>;
+    expect(byView.get('v_etf_qfq')).toEqual(['sh510300']);
+    expect(byView.get('v_stock_qfq') ?? []).toEqual([]);
+    expect(readSnapshot(userId, d1)!.total_profit_price).toBeCloseTo(1000 * 4.1 - (1000 * 4 + 1), 4);
+  });
+
+  it('行情库不可用（品种查询抛错）→ 服务抛错，不落任何快照', async () => {
+    const userId = seedUser('bf_down');
+    seedTrade(userId, 'sh600000', 'buy', 100, 10, 1, isoDaysAgo(2));
+    fetchAssetClassesMock.mockRejectedValue(new Error('duckdb down'));
+
+    await expect(backfillAssetStatSnapshots(userId, 365)).rejects.toThrow('行情库不可用');
+    expect(readSnapshot(userId, isoDaysAgo(0))).toBeUndefined();
   });
 });

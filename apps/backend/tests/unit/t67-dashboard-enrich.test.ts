@@ -121,6 +121,10 @@ vi.mock('../../src/db/duckdb.js', async (importOriginal) => {
 
   /** 假 queryDuckDB：只认「按 symbol 分区取最近 N 根日线」的窗口查询 */
   function fakeQuery(sql: string, params?: unknown[]): Array<Record<string, unknown>> {
+    // ⓪ 品种批量查询（1 次 IN）—— 假数据全是股票，故返回空 → 全部落 stock 组
+    if (sql.includes('FROM raw_symbol_class')) {
+      return [];
+    }
     // ② 名称批量查询（1 次 IN）
     if (sql.includes('FROM raw_symbol_name')) {
       const symbols = (params ?? []).map((p) => String(p));
@@ -537,14 +541,15 @@ describe('T67-③ signal —— 最新一条信号', () => {
 // ══════════════════════════════════════════════════════════
 
 describe('T67-④ 批量取数 —— 禁止 N+1', () => {
-  it('20 只持仓 → DuckDB 只查 2 次（行情 1 + 名称 1），不随标的数线性增长', async () => {
+  it('20 只持仓 → DuckDB 只查 3 次（品种 1 + 行情 1 + 名称 1），不随标的数线性增长', async () => {
     const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
     spy.mockClear();
     await getHolding();
-    // ⚠️ T67 卡 1 起 DuckDB 往返 = **2 次**（行情 1 + 名称 1），仍是**常数**
-    //   —— 与持仓数无关（25 只 → 2 次；若退化成 N+1 则是 25 次）
-    expect(spy.mock.calls.length).toBe(2);
-    // 且这两次查询都带了全部 20+ 个标的（IN 批量，不是逐个）
+    // ⚠️ DuckDB 往返 = **3 次**（品种 1 + 行情 1 + 名称 1），仍是**常数**
+    //   —— 与持仓数无关（20 只 → 3 次；若退化成 N+1 则是 25 次）
+    //   品种那 1 次是 ETF/LOF 取价走 v_etf_* 视图必需的，只查 stock 会把 ETF 现价算成 null
+    expect(spy.mock.calls.length).toBe(3);
+    // 且这几次查询都带了全部 20+ 个标的（IN 批量，不是逐个）
     for (const call of spy.mock.calls) {
       const params = call[1] as unknown[];
       expect(params.length).toBeGreaterThanOrEqual(ALL_CODES.length);
@@ -779,8 +784,8 @@ describe('T67-⑨ 真实行情库交叉验证', () => {
     expect(typeof p!.currentPrice).toBe('number');
     expect(typeof p!.prevClose).toBe('number');
     expect(p!.prevClose).not.toBe(p!.currentPrice);
-    // 仍是常数次的批量查询（行情 1 + 名称 1）
-    expect(spy.mock.calls.length).toBe(2);
+    // 仍是常数次的批量查询（品种 1 + 行情 1 + 名称 1）
+    expect(spy.mock.calls.length).toBe(3);
   });
 });
 

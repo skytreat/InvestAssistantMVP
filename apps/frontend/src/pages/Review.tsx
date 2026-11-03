@@ -6,6 +6,7 @@ import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { truncatedTextStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
+import AssetLink from '../components/AssetLink';
 import ReviewPairsView from '../components/ReviewPairsView';
 import TriStateGroup, { type TriState } from '../components/TriStateGroup';
 import { ReviewTagLegend, ReviewTagPill, reviewTagOf } from '../components/ReviewTag';
@@ -128,14 +129,81 @@ export function bucketByPeriod(rows: HistoryPoint[], period: CurvePeriod): Histo
  * 每个数据点有一个透明命中圆（`fill="transparent"` + `pointerEvents:'all'`），
  * 鼠标移上去显示该点的日期 + 两个口径的收益率（T69 ⑤）。
  */
-function YieldCurve({ points, caliber }: { points: HistoryPoint[]; caliber: Caliber }) {
+/**
+ * 收益曲线空态的「补齐历史快照」按钮
+ *
+ * 快照平时由 17:02 cron 逐日写入；后端没在跑的日子没有数据 ⇒ 曲线空白。
+ * 点按钮调 `POST /api/asset-stat/backfill`（按 as-of 口径重算缺失日，幂等），
+ * 成功后由父组件重新拉取 `/asset-stat/history`。
+ */
+function BackfillSnapshotButton({ onBackfilled }: { onBackfilled: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const res = await api.post('/asset-stat/backfill', { days: 365 });
+      if (isOkEnvelope(res.data)) {
+        const filled = (res.data.data as { filled?: number } | undefined)?.filled ?? 0;
+        setNote(filled > 0 ? `已补齐 ${filled} 天快照` : '近一年无待补齐的日期');
+        onBackfilled();
+      } else {
+        setNote((res.data as { message?: string }).message ?? '补齐失败');
+      }
+    } catch (err) {
+      setNote(extractErrorMessage(err, '补齐失败（行情库可能不可用）'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <button
+        onClick={() => void run()}
+        disabled={busy}
+        data-testid="backfill-snapshots"
+        style={{
+          ...buttonStyle,
+          fontSize: TYPO.smallSize,
+          padding: '3px 12px',
+          opacity: busy ? 0.6 : 1,
+        }}
+      >
+        {busy ? '正在补齐…' : '补齐 365 天历史快照'}
+      </button>
+      {note && <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>{note}</span>}
+    </div>
+  );
+}
+
+function YieldCurve({
+  points,
+  caliber,
+  onBackfilled,
+}: {
+  points: HistoryPoint[];
+  caliber: Caliber;
+  onBackfilled?: () => void;
+}) {
   /** 当前悬浮的数据点下标（null = 未悬浮）*/
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
   if (points.length === 0) {
     return (
-      <div style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize }}>
-        暂无历史快照（每天 17:02 自动写入）
+      <div
+        style={{
+          color: COLORS.textMuted,
+          fontSize: TYPO.smallSize,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        <span>暂无历史快照（每天 17:02 自动写入）</span>
+        {onBackfilled && <BackfillSnapshotButton onBackfilled={onBackfilled} />}
       </div>
     );
   }
@@ -563,7 +631,11 @@ export default function Review() {
                 ))}
               </div>
             </div>
-            {historyLoading ? <Spinner size={16} /> : <YieldCurve points={curvePoints} caliber={caliber} />}
+            {historyLoading ? (
+              <Spinner size={16} />
+            ) : (
+              <YieldCurve points={curvePoints} caliber={caliber} onBackfilled={() => void fetchHistory()} />
+            )}
           </div>
 
           {/* 统计卡片 */}
@@ -762,12 +834,7 @@ export default function Review() {
                       <tr key={t.id}>
                         <td style={thTdStyle}>{t.trade_date}</td>
                         <td style={thTdStyle}>
-                          <code>{t.asset_code}</code>
-                          {(t.asset_name ?? t.name) && (
-                            <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
-                              {t.asset_name ?? t.name}
-                            </div>
-                          )}
+                          <AssetLink assetCode={t.asset_code} assetName={t.asset_name ?? t.name} />
                         </td>
                         <td style={thTdStyle}>{tradeTypeLabel(t.trade_type)}</td>
                         <td style={thTdStyle}>{t.quantity}</td>
