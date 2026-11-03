@@ -754,4 +754,27 @@ describe('收益曲线 · 历史快照补齐（user_asset_stat 为空时）', ()
     await screen.findByRole('img', { name: /收益率曲线/ });
     expect(screen.queryByTestId('backfill-snapshots')).not.toBeInTheDocument();
   });
+
+  it('无可补日期（filled=0）→ 不重拉 history，提示保持可见', async () => {
+    installApiMock({ history: [] });
+    let historyHits = 0;
+    const inner = getMock.getMockImplementation()!;
+    getMock.mockImplementation(async (url: string, cfg?: ApiGetConfig) => {
+      if (url === '/asset-stat/history') historyHits++;
+      return inner(url, cfg);
+    });
+    postMock.mockImplementation(async (url: string) =>
+      url === '/asset-stat/backfill' ? mockResponse({ filled: 0 }) : mockResponse(null),
+    );
+
+    renderWithRouter(<Review />);
+    const btn = await screen.findByTestId('backfill-snapshots');
+    const hitsAfterMount = historyHits;
+    await userEvent.click(btn);
+
+    expect(await screen.findByText('近一年无待补齐的日期')).toBeInTheDocument();
+    // 没补到数据就不重拉：否则按钮被 Spinner 替换，提示反而看不到
+    expect(historyHits).toBe(hitsAfterMount);
+    expect(screen.getByTestId('backfill-snapshots')).toBeInTheDocument();
+  });
 });

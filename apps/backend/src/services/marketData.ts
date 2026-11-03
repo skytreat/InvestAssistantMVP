@@ -526,7 +526,13 @@ async function fetchMergedLatestClose(
       : Promise.resolve(new Map<string, Array<{ date: string; close: number; rn: number }>>()),
   ]);
   const merged = new Map<string, Array<{ date: string; close: number; rn: number }>>();
-  for (const m of [stockM, etfM]) for (const [k, v] of m) merged.set(k, v);
+  // resolveClassGroups 保证两组互斥（同一 symbol 只落一组）；这里仍「只在键不存在时写入」，
+  // 避免将来分组逻辑变化时后一组静默覆盖前一组的数据。
+  for (const m of [stockM, etfM]) {
+    for (const [k, v] of m) {
+      if (!merged.has(k)) merged.set(k, v);
+    }
+  }
   return merged;
 }
 

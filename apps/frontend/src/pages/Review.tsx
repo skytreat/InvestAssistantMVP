@@ -148,7 +148,9 @@ function BackfillSnapshotButton({ onBackfilled }: { onBackfilled: () => void }) 
       if (isOkEnvelope(res.data)) {
         const filled = (res.data.data as { filled?: number } | undefined)?.filled ?? 0;
         setNote(filled > 0 ? `已补齐 ${filled} 天快照` : '近一年无待补齐的日期');
-        onBackfilled();
+        // 没有补到任何一天就别重拉：重拉会让按钮被 Spinner 替换，
+        // 这条「无待补齐日期」的提示反而看不到。
+        if (filled > 0) onBackfilled();
       } else {
         setNote((res.data as { message?: string }).message ?? '补齐失败');
       }
