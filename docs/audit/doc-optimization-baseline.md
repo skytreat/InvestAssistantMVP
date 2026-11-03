@@ -1,7 +1,7 @@
 # 文档优化 · 前后对照基准（doc-optimization baseline）
 
 > **性质**：证据 / 实验协议（`docs/audit/`），**默认不加载**，仅在「检查优化效果 / gate 证据」时检索。
-> **状态**：🟡 **DRAFT —— before 已采 b1（单样本）；b2 跳过；after（a1/a2）待 ADR-018 §6 落地后采集**
+> **状态**：🟡 **DRAFT —— before 采 b1（单样本）+ b2 两次无效尝试归档（§7.1）；after（a1/a2）待 ADR-018 §6 落地后采集**
 > **关联**：`docs/adr/ADR-018`（本实验要验证的对象）、`opencode.db`（数据采集源）
 > **目的**：用**同一个真实开发任务**，量化「文档结构优化（ADR-018 §6）」前后 coding agent 的
 > 读取文件数、输入 Token、完成时间、遗漏规格数，把「优化有效」从判断变成可复现实验。
@@ -95,7 +95,7 @@ GROUP BY 1;
 | run | 条件 | M1(AGENTS) | M2(读文件) | M3(输入token) | M4 | M5(命中/8) | 备注 |
 |---|---|---|---|---|---|---|---|
 | b1 | before | 37KB≈17k | **48**（read38+grep9+glob1） | **458,148**（另 cache_read 6,582,272 / output 28,501） | **≈8,781s（146min）** | ~7/8（transcript 判，C8 未跑 bench-probe） | session `ses_e5fad31a4ffezIpNxPolKNcN1M` |
-| b2 | before | 37KB≈17k | — | — | — | — | ⏭️ **owner 决定跳过**（首轮 b2 在脏树上起跑已污染；重跑前被中止） |
+| b2 | before | 37KB≈17k | ⚠️17 / ⚠️27（两次尝试，**均无效**） | ⚠️76,594 / ⚠️168,328 | ⚠️≈34.6min / ≈55.5min | — | ⏭️ **owner 决定跳过**（首轮 b2 在脏树上起跑已污染；重跑前被中止）；实测值归档见 §7.1，**不计入对照** |
 | a1 | after | ~10KB≈5k | | | | | 待 §6 实施后采 |
 | a2 | after | ~10KB≈5k | | | | | 待 §6 实施后采 |
 
@@ -104,6 +104,17 @@ GROUP BY 1;
 - M3 为 provider 上报累计值；`cache_read` 高达 6.58M（agnes-3.0-flash 命中缓存）
 - M5（transcript 判定，未跑 `bench-probe` 全量）：C1 回归 / C2 多券商数组 / C3 手工归组 / C4 单券商 / C6 角色 200-401 / C7 可加性 均命中；C8 相关子集「91 tests pass」，但独立 bench-probe golden 断言未跑 → 保守记 ~7/8
 - b1 产出 6 文件（`portfolio.ts` / `portfolioReturn.ts` / `positionCalculator.ts` / 单测 / `envelopeContract.test.ts` / 新增 breakdown 集成测试），已快照于临时区，未并入仓库
+
+### 7.1 b2 采集取证（**无效样本归档，不计入对照**）
+
+两次 before 采样均不满足 §5 协议，故 b2 判定为 **无效并跳过重跑**（owner 决定）。原始数值仍归档以便复现/审计：
+
+| 尝试 | session | M2（read/grep/glob） | M3（tokens_input） | cache_read / output | M4（time_updated − time_created） | 无效原因 |
+|---|---|---|---|---|---|---|
+| 首轮 | `ses_e5f253d06ffewe8VcDCetZp6LR`（`bench-b2`） | 17（13/3/1） | 76,594 | 2,522,624 / 10,100 | 2,075,312ms ≈ **34.6min** | **脏树起跑**：工作区已有 b1 残留改动 ⇒ 违反 §5「同一 base commit、代码基干净」 |
+| 重跑 | `ses_e5f02bc67ffebtSnoreiqfOUyT`（`bench-b2b`） | 27（17/8/2） | 168,328 | 1,529,088 / 5,976 | 3,332,200ms ≈ **55.5min** | **未达停止判据即被中止**：`tokens_output` 5,976 远低于 b1 的 28,501，会话无终态交付 |
+
+> ⚠️ 两样本的 M3/M4 均**不可用作 before 的第二样本**：一个受脏树影响（读取了本不属于基线的文件），另一个未完成（时间与 token 都被截断）。这正是 §8「随机性/污染」风险的实测证据，也是 b2 只能跳过、before 仅剩 1 样本的原因。
 
 **判定（当前）**：仅有 before 单样本（b1），**H1 尚不可判定** —— 需 §6 实施后采 a1/a2 才能对照 M2/M3/M5。b2 跳过使 before 只剩 1 样本，M2/M3/M4 的离散度无法估计（噪声风险，尤其 M4=146min 偏长）。
 
@@ -118,8 +129,8 @@ GROUP BY 1;
 
 ## 9. 下一步
 
-1. ✅ **b1 已采**（before，单样本，见 §7）。
-2. ⏭️ **b2 跳过**（owner 决定；首轮在脏树污染、重跑前被中止 → 未采）。
+1. ✅ **b1 已采**（before，单样本，见 §7；数据 2026-11-03 复核与 `opencode.db` 一致）。
+2. ⏭️ **b2 跳过**（owner 决定）；两次尝试的实测值已归档于 §7.1 并标注无效（脏树 / 未完成）。
 3. 实施 ADR-018 §6（INDEX/卡/生成物/AGENTS 瘦身/audit 排除）。
 4. 在 after 文档下采 a1/a2（`opencode run`），跑 `bench-probe` 补 M5，填 §7 出 H1 判定。
 
