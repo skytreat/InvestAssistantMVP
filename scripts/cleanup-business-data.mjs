@@ -14,10 +14,12 @@
  *   node scripts/cleanup-business-data.mjs --admin admin          # 指定保留的 admin
  *   node scripts/cleanup-business-data.mjs --admin admin --execute # 备份后执行
  *   node scripts/cleanup-business-data.mjs --admin admin --execute --purge-logs  # 同时清空 system_log
+ *   node scripts/cleanup-business-data.mjs --purge-admin --execute # 连 admin 一起清空（全量重置）
  *
  * 选项：
  *   --execute       实际执行（默认只打印计划）；执行前自动生成 `<db>.pre-clean-<时间戳>` 备份
  *   --admin <name>  要保留的 admin 用户名；库中只有一个 admin 时可省略
+ *   --purge-admin   连 admin 账号及其数据一起删除（user_account 清空）；首次注册会自动重建 admin
  *   --db <path>     指定 SQLite 路径（默认 SQLITE_DB_PATH，再默认 data/business.db）
  *   --env <path>    指定环境变量文件（默认依次尝试 .env.local / apps/backend/.env.local）
  *   --purge-logs    同时清空 system_log
@@ -35,6 +37,7 @@ if (args.includes('--help') || args.includes('-h')) {
 
 const execute = args.includes('--execute');
 const purgeLogs = args.includes('--purge-logs');
+const purgeAdmin = args.includes('--purge-admin');
 const adminArg = readArg('--admin');
 const envArg = readArg('--env');
 const dbArg = readArg('--db');
@@ -103,39 +106,55 @@ const tableExists = (name) =>
 const columnsOf = (name) => db.prepare(`PRAGMA table_info(${quoteIdent(name)})`).all();
 const countAll = (name) => db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(name)}`).get().c;
 
-// ---------- 选择要保留的 admin ----------
-const admins = db.prepare("SELECT id, username FROM user_account WHERE role = 'admin' ORDER BY id").all();
-
-if (admins.length === 0) {
-  console.error('\n❌ 库中没有 admin 用户，拒绝执行（避免把库清成无管理员状态）。');
+// ---------- 选择要保留的 admin（--purge-admin 时一个都不保留） ----------
+if (purgeAdmin && adminArg) {
+  console.error('\n❌ --purge-admin 与 --admin 互斥：要么保留一个 admin，要么连 admin 一起清空。');
   db.close();
   process.exit(1);
 }
 
-if (!adminArg && admins.length > 1) {
-  console.error('\n❌ 存在多个 admin，请用 --admin <username> 指定要保留的一个：');
-  for (const a of admins) console.error(`   id=${a.id}  ${a.username}`);
-  db.close();
-  process.exit(1);
+let admin = null;
+if (!purgeAdmin) {
+  const admins = db.prepare("SELECT id, username FROM user_account WHERE role = 'admin' ORDER BY id").all();
+
+  if (admins.length === 0) {
+    console.error(
+      '\n❌ 库中没有 admin 用户，拒绝执行（避免把库清成无管理员状态；确需清空请加 --purge-admin）。',
+    );
+    db.close();
+    process.exit(1);
+  }
+
+  if (!adminArg && admins.length > 1) {
+    console.error('\n❌ 存在多个 admin，请用 --admin <username> 指定要保留的一个：');
+    for (const a of admins) console.error(`   id=${a.id}  ${a.username}`);
+    db.close();
+    process.exit(1);
+  }
+
+  admin = adminArg
+    ? db.prepare('SELECT id, username FROM user_account WHERE username = ?').get(adminArg)
+    : admins[0];
+
+  if (!admin) {
+    console.error(`\n❌ 找不到用户：${adminArg}`);
+    db.close();
+    process.exit(1);
+  }
+  const adminRole = db.prepare('SELECT role FROM user_account WHERE id = ?').get(admin.id)?.role;
+  if (adminRole !== 'admin') {
+    console.error(`\n❌ 用户 ${admin.username} 的 role=${adminRole}，不是 admin，拒绝执行。`);
+    db.close();
+    process.exit(1);
+  }
+
+  console.log(`保留 admin: id=${admin.id} username=${admin.username}\n`);
+} else {
+  console.log('保留 admin: 无（--purge-admin：账号与数据全部清空）\n');
 }
 
-const admin = adminArg
-  ? db.prepare('SELECT id, username FROM user_account WHERE username = ?').get(adminArg)
-  : admins[0];
-
-if (!admin) {
-  console.error(`\n❌ 找不到用户：${adminArg}`);
-  db.close();
-  process.exit(1);
-}
-const adminRole = db.prepare('SELECT role FROM user_account WHERE id = ?').get(admin.id)?.role;
-if (adminRole !== 'admin') {
-  console.error(`\n❌ 用户 ${admin.username} 的 role=${adminRole}，不是 admin，拒绝执行。`);
-  db.close();
-  process.exit(1);
-}
-
-console.log(`保留 admin: id=${admin.id} username=${admin.username}\n`);
+/** 保留的用户 id；--purge-admin 时为 null（不保留任何用户） */
+const keepUserId = admin ? admin.id : null;
 
 // ---------- 识别需要处理的表 ----------
 const allTables = db
@@ -173,26 +192,33 @@ if (unhandledRefs.length > 0) {
 }
 
 if (unknownTables.length > 0) {
-  console.warn(`⚠️ 发现未登记的用户表（将一并清理，仅保留 admin 行）：${unknownTables.join(', ')}\n`);
+  const scope = keepUserId === null ? '清空全部行' : '仅保留 admin 行';
+  console.warn(`⚠️ 发现未登记的用户表（将一并清理，${scope}）：${unknownTables.join(', ')}\n`);
 }
 
 // ---------- 统计 ----------
 const plan = [];
 for (const name of deleteOrder) {
   const total = countAll(name);
-  const keep = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(name)} WHERE user_id = ?`).get(admin.id).c;
+  const keep =
+    keepUserId === null
+      ? 0
+      : db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(name)} WHERE user_id = ?`).get(keepUserId).c;
   plan.push({ table: name, total, keep, remove: total - keep });
 }
 
 const usersTotal = countAll('user_account');
-const usersRemove = usersTotal - 1;
+const usersKeep = keepUserId === null ? 0 : 1;
+const usersRemove = usersTotal - usersKeep;
 
 const hasAssetClass =
   tableExists('asset_class') && columnsOf('asset_class').some((c) => c.name === 'updated_by');
 const assetClassDeref = hasAssetClass
-  ? db
-      .prepare('SELECT COUNT(*) AS c FROM asset_class WHERE updated_by IS NOT NULL AND updated_by <> ?')
-      .get(admin.id).c
+  ? keepUserId === null
+    ? db.prepare('SELECT COUNT(*) AS c FROM asset_class WHERE updated_by IS NOT NULL').get().c
+    : db
+        .prepare('SELECT COUNT(*) AS c FROM asset_class WHERE updated_by IS NOT NULL AND updated_by <> ?')
+        .get(keepUserId).c
   : 0;
 
 const logsTotal = tableExists('system_log') ? countAll('system_log') : 0;
@@ -202,7 +228,7 @@ console.log('-'.repeat(52));
 console.log(
   'user_account'.padEnd(28) +
     String(usersTotal).padStart(8) +
-    '1'.padStart(8) +
+    String(usersKeep).padStart(8) +
     String(usersRemove).padStart(8),
 );
 for (const p of plan) {
@@ -231,26 +257,36 @@ console.log(`\n已备份到：${backupPath}`);
 
 // ---------- 执行清理（单事务） ----------
 const tx = db.transaction(() => {
-  // 防御：admin 记录若误引用将被删除的跨用户记录，先断链，避免 FK 失败
-  db.prepare(
-    `UPDATE user_strategy_signal SET linked_trade_id = NULL
-     WHERE linked_trade_id IN (SELECT id FROM user_trade_record WHERE user_id <> ?)`,
-  ).run(admin.id);
-  db.prepare(
-    `UPDATE user_trade_record SET source_broker_record_id = NULL
-     WHERE user_id = ? AND source_broker_record_id IN
-       (SELECT id FROM broker_trade_record WHERE user_id <> ?)`,
-  ).run(admin.id, admin.id);
+  if (keepUserId !== null) {
+    // 防御：admin 记录若误引用将被删除的跨用户记录，先断链，避免 FK 失败
+    db.prepare(
+      `UPDATE user_strategy_signal SET linked_trade_id = NULL
+       WHERE linked_trade_id IN (SELECT id FROM user_trade_record WHERE user_id <> ?)`,
+    ).run(keepUserId);
+    db.prepare(
+      `UPDATE user_trade_record SET source_broker_record_id = NULL
+       WHERE user_id = ? AND source_broker_record_id IN
+         (SELECT id FROM broker_trade_record WHERE user_id <> ?)`,
+    ).run(keepUserId, keepUserId);
+  }
   if (hasAssetClass) {
     db.prepare(
-      'UPDATE asset_class SET updated_by = NULL WHERE updated_by IS NOT NULL AND updated_by <> ?',
-    ).run(admin.id);
+      keepUserId === null
+        ? 'UPDATE asset_class SET updated_by = NULL WHERE updated_by IS NOT NULL'
+        : 'UPDATE asset_class SET updated_by = NULL WHERE updated_by IS NOT NULL AND updated_by <> ?',
+    ).run(...(keepUserId === null ? [] : [keepUserId]));
   }
 
   for (const name of deleteOrder) {
-    db.prepare(`DELETE FROM ${quoteIdent(name)} WHERE user_id IS NULL OR user_id <> ?`).run(admin.id);
+    db.prepare(
+      keepUserId === null
+        ? `DELETE FROM ${quoteIdent(name)}`
+        : `DELETE FROM ${quoteIdent(name)} WHERE user_id IS NULL OR user_id <> ?`,
+    ).run(...(keepUserId === null ? [] : [keepUserId]));
   }
-  db.prepare('DELETE FROM user_account WHERE id <> ?').run(admin.id);
+  db.prepare(keepUserId === null ? 'DELETE FROM user_account' : 'DELETE FROM user_account WHERE id <> ?').run(
+    ...(keepUserId === null ? [] : [keepUserId]),
+  );
 
   if (purgeLogs) db.prepare('DELETE FROM system_log').run();
 
@@ -272,7 +308,11 @@ try {
   tx();
   db.pragma('wal_checkpoint(TRUNCATE)');
   console.log('\n✅ 清理完成。');
-  console.log(`保留：admin=${admin.username}（id=${admin.id}）；业务记录已按上表收缩。`);
+  console.log(
+    keepUserId === null
+      ? '保留：无（--purge-admin，user_account 已清空）；业务记录已按上表清空。'
+      : `保留：admin=${admin.username}（id=${admin.id}）；业务记录已按上表收缩。`,
+  );
   console.log(
     '提示：如担心旧 access token 仍有效（JWT 有效期 7 天），请更换 .env.local 的 JWT_SECRET 并重启后端。',
   );
