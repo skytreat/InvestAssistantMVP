@@ -194,6 +194,9 @@ export async function preflightBrokerFile(
   const unknownMap = new Map<string, string | null>();
   for (const r of rows) {
     const code = r.normalized.asset_code;
+    // 排除行（场外申赎 / 占位 / 忽略）不进入系统记录，其伪代码（如 799999 指定登记）
+    // 不需要存在于行情库 —— 否则每份含「指定登记」的成交单都会被未知标的弹窗拦截。
+    if (r.normalized.match_status === 'EXCLUDED') continue;
     if (symbolSet !== null && symbolSet.size > 0 && typeof code === 'string' && !symbolSet.has(code)) {
       const existing = unknownMap.get(code);
       const name = (r.normalized.raw_name as string | null | undefined) ?? null;
@@ -209,9 +212,10 @@ export async function preflightBrokerFile(
     if (!/^\d{6}$/.test(code) || !name) continue;
     const hit = resolveStmt.get(code, name) as { symbol: string } | undefined;
     if (hit && symbolSet?.has(hit.symbol)) {
+      // 解析成功 ⇒ 该代码**不再是未知标的**：只记映射，必须从 unknownMap 移除。
+      // （旧实现又 set(hit.symbol) 回来 ⇒ 合法歧义码仍被计入 unknownAssets ⇒ 整文件误拒。）
       resolveMap.set(code, hit.symbol);
       unknownMap.delete(code);
-      unknownMap.set(hit.symbol, name);
     }
   }
   for (const r of rows) {

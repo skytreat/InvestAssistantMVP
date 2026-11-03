@@ -317,3 +317,35 @@ describe('Review · 胜率 / 盈亏比统计（PRD §5.5）', () => {
     expect(stats.profitLossRatio).toBeNull();
   });
 });
+
+describe('Review · 交易对标的中文名（asset_name）', () => {
+  it('GET /api/review/pairs 从 raw_symbol_name 补齐名称；缺失时为 null', async () => {
+    queryDuckDBMock.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('raw_symbol_name')) {
+        const symbols = Array.isArray(params) ? params.map(String) : [];
+        return symbols.filter((s) => s === CODE).map((s) => ({ symbol: s, name: '复盘测试标的' }));
+      }
+      return [];
+    });
+    try {
+      const res = await bundle.app.inject({
+        method: 'GET',
+        url: '/api/review/pairs',
+        headers: authHeaders(),
+      });
+      expect(res.statusCode).toBe(200);
+      const pairs = JSON.parse(res.body).data as Array<{
+        asset_code: string;
+        asset_name: string | null;
+      }>;
+      const mine = pairs.find((p) => p.asset_code === CODE);
+      expect(mine).toBeTruthy();
+      expect(mine?.asset_name).toBe('复盘测试标的');
+      // 行情层未覆盖的标的 → null（前端回退显示代码，不留空）
+      const others = pairs.filter((p) => p.asset_code !== CODE);
+      expect(others.every((p) => p.asset_name === null)).toBe(true);
+    } finally {
+      queryDuckDBMock.mockImplementation(async () => []);
+    }
+  });
+});

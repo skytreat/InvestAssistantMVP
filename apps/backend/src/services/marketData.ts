@@ -7,16 +7,14 @@ type DailyKlineRow = DailyKline & { symbol: string };
 /** 复权类型：qfq 前复权 / bfq 不复权 / hfq 后复权 */
 export type AdjustPeriod = 'qfq' | 'bfq' | 'hfq';
 
-function resolveTable(period: AdjustPeriod): string {
-  switch (period) {
-    case 'qfq':
-      return 'v_stock_qfq';
-    case 'hfq':
-      return 'v_stock_hfq';
-    case 'bfq':
-    default:
-      return 'v_stock_bfq';
-  }
+/**
+ * 复权口径 → 品种视图。
+ * ⚠️ `v_stock_*` 与 `v_etf_*` 是**两个互不相交的视图族**（INNER JOIN 品种过滤，
+ *   见 `routes/kline.ts` 的 FQ_VIEWS_BY_CLASS 注释）—— 拿 ETF 代码去查 v_stock_* 恒 0 行。
+ */
+function resolveTable(period: AdjustPeriod, assetClass: 'stock' | 'etf' = 'stock'): string {
+  const table = period === 'qfq' ? 'qfq' : period === 'hfq' ? 'hfq' : 'bfq';
+  return assetClass === 'etf' ? `v_etf_${table}` : `v_stock_${table}`;
 }
 
 /**
@@ -66,6 +64,26 @@ export async function getDailyRange(
  * SDD §5.3 硬约束：插件和校验共用入口，一次拿全，禁止逐标的循环查 DuckDB。
  * IN 查询 100 标的 DuckDB 秒级响应，MVP 不需要分批。
  */
+async function viewQueryOneDate(
+  tableName: string,
+  symbols: string[],
+  date: string,
+  result: Map<string, DailyKline>,
+): Promise<void> {
+  if (symbols.length === 0) return;
+  const placeholders = symbols.map(() => '?').join(', ');
+  const rows = await queryDuckDB<DailyKlineRow>(
+    `SELECT symbol, date, open, high, low, close, volume, amount
+      FROM ${tableName}
+      WHERE date = ? AND symbol IN (${placeholders})`,
+    [date, ...symbols],
+  );
+  for (const row of rows) {
+    const { symbol, date: d, open, high, low, close, volume, amount } = row;
+    result.set(symbol, { date: d, open, high, low, close, volume, amount });
+  }
+}
+
 export async function batchGetDaily(
   symbols: string[],
   date: string,
@@ -76,20 +94,11 @@ export async function batchGetDaily(
     return result;
   }
 
-  const tableName = resolveTable(period);
-  const placeholders = symbols.map(() => '?').join(', ');
-
-  const rows = await queryDuckDB<DailyKlineRow>(
-    `SELECT symbol, date, open, high, low, close, volume, amount
-     FROM ${tableName}
-     WHERE date = ? AND symbol IN (${placeholders})`,
-    [date, ...symbols],
-  );
-
-  for (const row of rows) {
-    const { symbol, date: d, open, high, low, close, volume, amount } = row;
-    result.set(symbol, { date: d, open, high, low, close, volume, amount });
-  }
+  // 2026-11-01：按品种拆两组各查对应视图族 —— 原实现硬编码 v_stock_*，
+  // ETF/LOF 的当日收盘价恒查不到（资产快照的 ETF 市值因此被算成 0）。
+  const groups = await resolveClassGroups(symbols);
+  await viewQueryOneDate(resolveTable(period, 'stock'), groups.stock, date, result);
+  await viewQueryOneDate(resolveTable(period, 'etf'), groups.etf, date, result);
 
   return result;
 }
@@ -99,6 +108,33 @@ export async function batchGetDaily(
  *
  * 返回结构：Map<symbol, DailyKline[]>
  */
+async function viewQueryDateRange(
+  tableName: string,
+  symbols: string[],
+  fromDate: string,
+  toDate: string,
+  result: Map<string, DailyKline[]>,
+): Promise<void> {
+  if (symbols.length === 0) return;
+  const placeholders = symbols.map(() => '?').join(', ');
+  const rows = await queryDuckDB<DailyKlineRow>(
+    `SELECT symbol, date, open, high, low, close, volume, amount
+      FROM ${tableName}
+      WHERE date BETWEEN ? AND ? AND symbol IN (${placeholders})
+      ORDER BY symbol, date ASC`,
+    [fromDate, toDate, ...symbols],
+  );
+  for (const row of rows) {
+    const { symbol, date: d, open, high, low, close, volume, amount } = row;
+    const list = result.get(symbol);
+    if (list) {
+      list.push({ date: d, open, high, low, close, volume, amount });
+    } else {
+      result.set(symbol, [{ date: d, open, high, low, close, volume, amount }]);
+    }
+  }
+}
+
 export async function batchGetDailyRange(
   symbols: string[],
   fromDate: string,
@@ -110,26 +146,10 @@ export async function batchGetDailyRange(
     return result;
   }
 
-  const tableName = resolveTable(period);
-  const placeholders = symbols.map(() => '?').join(', ');
-
-  const rows = await queryDuckDB<DailyKlineRow>(
-    `SELECT symbol, date, open, high, low, close, volume, amount
-     FROM ${tableName}
-     WHERE date BETWEEN ? AND ? AND symbol IN (${placeholders})
-     ORDER BY symbol, date ASC`,
-    [fromDate, toDate, ...symbols],
-  );
-
-  for (const row of rows) {
-    const { symbol, date: d, open, high, low, close, volume, amount } = row;
-    const list = result.get(symbol);
-    if (list) {
-      list.push({ date: d, open, high, low, close, volume, amount });
-    } else {
-      result.set(symbol, [{ date: d, open, high, low, close, volume, amount }]);
-    }
-  }
+  // 2026-11-01：按品种拆两组各查对应视图族（同 batchGetDaily）。
+  const groups = await resolveClassGroups(symbols);
+  await viewQueryDateRange(resolveTable(period, 'stock'), groups.stock, fromDate, toDate, result);
+  await viewQueryDateRange(resolveTable(period, 'etf'), groups.etf, fromDate, toDate, result);
 
   return result;
 }
@@ -330,21 +350,23 @@ export async function batchGetDailyRangeByView(
 }
 
 /**
- * 🔴 **批量取价的收盘价表达式** —— **逐字对齐 `v_stock_*` 视图的定义**
+ * 🔴 **批量取价的收盘价表达式** —— **逐字对齐 `v_stock_*` / `v_etf_*` 视图的定义**
  *
- * | 口径 | 视图定义（`docs/tdx2db_schema_dump.sql` 实测导出）|
- * |---|---|
- * | `qfq` | `round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), 2)` |
- * | `hfq` | `round(s."close" * COALESCE(f.hfq_factor, 1), 2)`（**不除** latest_hfq）|
- * | `bfq` | `s."close"`（**不取整**）|
+ * | 口径 | stock（`v_stock_*`）| etf（`v_etf_*`）|
+ * |---|---|---|
+ * | `qfq` | `round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), 2)` | 同式，取整 **3** 位 |
+ * | `hfq` | `round(s."close" * COALESCE(f.hfq_factor, 1), 2)` | 同式，取整 **3** 位 |
+ * | `bfq` | `s."close"`（**不取整**）| 同 |
  *
  * ⚠️ 三个口径的公式**互不相同** ⇒ 不可用同一段 SQL 糊弄过去。
+ * ⚠️ 取整位数按 `tdx2db_schema_dump.sql` 实测：股票 2 位 / ETF 3 位（与 `QFQ_ROUND_DIGITS` 同口径）。
  */
-const BATCH_CLOSE_EXPR: Record<AdjustPeriod, string> = {
-  qfq: 'round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), 2)',
-  hfq: 'round(s."close" * COALESCE(f.hfq_factor, 1), 2)',
-  bfq: 's."close"',
-};
+function batchCloseExpr(period: AdjustPeriod, assetClass: 'stock' | 'etf'): string {
+  if (period === 'bfq') return 's."close"';
+  const digits = assetClass === 'etf' ? 3 : 2;
+  if (period === 'hfq') return `round(s."close" * COALESCE(f.hfq_factor, 1), ${digits})`;
+  return `round(s."close" * COALESCE(f.hfq_factor, 1) / COALESCE(lf.latest_hfq, 1), ${digits})`;
+}
 
 /**
  * 🔴 **批量取价 SQL 构造器：基表 + `symbol IN (…)` 谓词下推**
@@ -373,11 +395,17 @@ const BATCH_CLOSE_EXPR: Record<AdjustPeriod, string> = {
  *
  * @param symbols 标的代码列表
  * @param maxRn 取每个 symbol 的最近几条（1 = 只要最新；2 = 最新 + 上一根）
+ * @param assetClass 品种过滤（`raw_symbol_class."class"`）：
+ *   - `'stock'`（默认）—— 与 `v_stock_*` 视图的品种过滤一致；
+ *   - `'etf'` —— 与 `v_etf_*` 一致（**ETF/LOF 在 stock 组里一行都没有**，
+ *     2026-11-01 实测：持仓里全部 sh51xxxx/sz15xxxx 标的的现价因此恒为 null
+ *     → 仪表盘「资产组成」ETF 段 0%）。
  */
 function buildBatchLatestCloseSql(
   period: AdjustPeriod,
   symbols: string[],
   maxRn: number,
+  assetClass: 'stock' | 'etf' = 'stock',
 ): { sql: string; params: unknown[] } {
   const placeholders = symbols.map(() => '?').join(', ');
   // 只有 qfq 口径需要 `latest_factors`（分母）
@@ -386,21 +414,21 @@ function buildBatchLatestCloseSql(
     SELECT symbol, date, close, rn FROM (
       SELECT s.symbol AS symbol,
              s.date AS date,
-             ${BATCH_CLOSE_EXPR[period]} AS close,
+             ${batchCloseExpr(period, assetClass)} AS close,
              ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY s.date DESC) AS rn
-        FROM raw_kline_daily s
-        INNER JOIN raw_symbol_class sc ON sc.symbol = s.symbol AND sc."class" = 'stock'
-        LEFT JOIN raw_adjust_factor f ON s.symbol = f.symbol AND s.date = f.date
-        ${
-          needLatestFactors
-            ? `LEFT JOIN (SELECT symbol, argmax(hfq_factor, date) AS latest_hfq
-                            FROM raw_adjust_factor
-                           WHERE symbol IN (${placeholders})
-                           GROUP BY symbol) lf
-                 ON s.symbol = lf.symbol`
-            : ''
-        }
-       WHERE s.symbol IN (${placeholders})
+         FROM raw_kline_daily s
+         INNER JOIN raw_symbol_class sc ON sc.symbol = s.symbol AND sc."class" = '${assetClass}'
+         LEFT JOIN raw_adjust_factor f ON s.symbol = f.symbol AND s.date = f.date
+         ${
+           needLatestFactors
+             ? `LEFT JOIN (SELECT symbol, argmax(hfq_factor, date) AS latest_hfq
+                             FROM raw_adjust_factor
+                            WHERE symbol IN (${placeholders})
+                            GROUP BY symbol) lf
+                  ON s.symbol = lf.symbol`
+             : ''
+         }
+        WHERE s.symbol IN (${placeholders})
     ) WHERE rn <= ${maxRn}`;
 
   // ⚠️ 参数顺序必须与 SQL 里的占位符出现顺序**严格一致**：
@@ -412,10 +440,110 @@ function buildBatchLatestCloseSql(
 }
 
 /**
- * 批量取多个标的的最新收盘价（**1 次查询**，T33 仪表盘持仓卡用）
+ * 批量查标的的品种分类（`raw_symbol_class."class"`，**1 次 IN 查询**）
+ *
+ * ⚠️ **权威来源 = 行情层分类**，不是前端 `isEtf` 的代码前缀启发（`sz16xxxx` LOF 实测
+ *   class='etf'；前缀启发把 LOF 判对纯属巧合，北交所 `bj` 前缀等边界判不了）。
+ *
+ * @returns symbol → class（'stock' / 'etf' / 'index' / 'block' …）；查不到的 symbol 不在 Map 里。
+ * @throws DuckDB 不可用时抛错 —— **调用方必须自行 catch 并降级**（见 {@link resolveClassGroups}）。
+ */
+export async function fetchAssetClasses(symbols: string[]): Promise<Map<string, string>> {
+  const unique = Array.from(new Set(symbols.filter((s) => typeof s === 'string' && s.length > 0)));
+  if (unique.length === 0) return new Map();
+  const placeholders = unique.map(() => '?').join(', ');
+  const rows = await queryDuckDB<{ symbol: string; class?: string }>(
+    `SELECT symbol, "class" FROM raw_symbol_class WHERE symbol IN (${placeholders})`,
+    [...unique],
+  );
+  const m = new Map<string, string>();
+  for (const r of rows) {
+    if (typeof r.class === 'string' && r.class.length > 0) m.set(r.symbol, r.class);
+  }
+  return m;
+}
+
+/**
+ * 按品种把 symbols 分成「stock 组 / etf 组」（去重、保持原序）。
+ *
+ * ⚠️ **降级策略**：品种查询失败（DuckDB 不可用等）→ 全部落 stock 组 = **改动前的既有行为**
+ *   （ETF 查不到价），不让降级路径比原来更差。
+ * ⚠️ 非 stock/etf 的 class（index / block / unknown / 查不到）一律归 **stock 组** ——
+ *   与 `routes/kline.ts` 的既有口径一致（「落到 stock 组只是保持既有行为（返回空 klines）」）。
+ */
+async function resolveClassGroups(symbols: string[]): Promise<{ stock: string[]; etf: string[] }> {
+  let classes: Map<string, string>;
+  try {
+    classes = await fetchAssetClasses(symbols);
+  } catch {
+    classes = new Map();
+  }
+  const stock: string[] = [];
+  const etf: string[] = [];
+  for (const s of Array.from(new Set(symbols))) {
+    if (classes.get(s) === 'etf') etf.push(s);
+    else stock.push(s);
+  }
+  return { stock, etf };
+}
+
+/**
+ * 单个品种组的「最近 N 根收盘价」查询（基表 + 谓词下推，口径见 {@link buildBatchLatestCloseSql}）。
+ * 返回 Map<symbol, 按 rn 升序的 {date, close, rn}[]>（rn=1 最新）。
+ */
+async function runLatestCloseByClass(
+  period: AdjustPeriod,
+  symbols: string[],
+  maxRn: number,
+  assetClass: 'stock' | 'etf',
+): Promise<Map<string, Array<{ date: string; close: number; rn: number }>>> {
+  const { sql, params } = buildBatchLatestCloseSql(period, symbols, maxRn, assetClass);
+  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number; rn: number }>(sql, params);
+  const m = new Map<string, Array<{ date: string; close: number; rn: number }>>();
+  for (const row of rows) {
+    const entry = { date: toDateString(row.date), close: row.close, rn: row.rn };
+    const list = m.get(row.symbol);
+    if (list) list.push(entry);
+    else m.set(row.symbol, [entry]);
+  }
+  for (const list of m.values()) list.sort((a, b) => a.rn - b.rn);
+  return m;
+}
+
+/** stock + etf 两组各 1 条查询并行取价并合并（组内为空则跳过该组） */
+async function fetchMergedLatestClose(
+  symbols: string[],
+  period: AdjustPeriod,
+  maxRn: number,
+): Promise<Map<string, Array<{ date: string; close: number; rn: number }>>> {
+  const groups = await resolveClassGroups(symbols);
+  const [stockM, etfM] = await Promise.all([
+    groups.stock.length
+      ? runLatestCloseByClass(period, groups.stock, maxRn, 'stock')
+      : Promise.resolve(new Map<string, Array<{ date: string; close: number; rn: number }>>()),
+    groups.etf.length
+      ? runLatestCloseByClass(period, groups.etf, maxRn, 'etf')
+      : Promise.resolve(new Map<string, Array<{ date: string; close: number; rn: number }>>()),
+  ]);
+  const merged = new Map<string, Array<{ date: string; close: number; rn: number }>>();
+  // resolveClassGroups 保证两组互斥（同一 symbol 只落一组）；这里仍「只在键不存在时写入」，
+  // 避免将来分组逻辑变化时后一组静默覆盖前一组的数据。
+  for (const m of [stockM, etfM]) {
+    for (const [k, v] of m) {
+      if (!merged.has(k)) merged.set(k, v);
+    }
+  }
+  return merged;
+}
+
+/**
+ * 批量取多个标的的最新收盘价（stock + etf 各 1 条查询，T33 仪表盘持仓卡用）
  *
  * 用窗口函数 ROW_NUMBER 取每个 symbol 最新一条，避免"先按日期定位再 IN 查"两次往返。
  * 返回 Map<symbol, { date, close }>，没有行情的标的不出现在结果里。
+ *
+ * ⚠️ 品种拆分见 {@link resolveClassGroups}：ETF/LOF 走 `class='etf'` 组
+ *   （2026-11-01 修复：原实现硬编码 stock 组，ETF 持仓现价恒为 null）。
  */
 export async function batchGetLatestClose(
   symbols: string[],
@@ -424,12 +552,10 @@ export async function batchGetLatestClose(
   const result = new Map<string, { date: string; close: number }>();
   if (symbols.length === 0) return result;
 
-  const { sql, params } = buildBatchLatestCloseSql(period, symbols, 1);
-
-  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(sql, params);
-
-  for (const row of rows) {
-    result.set(row.symbol, { date: toDateString(row.date), close: row.close });
+  const merged = await fetchMergedLatestClose(symbols, period, 1);
+  for (const [sym, rows] of merged) {
+    const latest = rows[0];
+    if (latest) result.set(sym, { date: latest.date, close: latest.close });
   }
 
   return result;
@@ -484,27 +610,27 @@ export async function batchGetLatestAndPrevClose(
 
   // 🔴 基表 + `symbol IN (…)` 下推（不再是视图）—— 见 buildBatchLatestCloseSql 的实测依据：
   //   30 只标的：视图口径 3.5–3.9s ⇒ PE4 的 200ms 门槛不可达；基表口径 ≈ 41ms。
-  const { sql, params } = buildBatchLatestCloseSql(period, symbols, 2);
+  // 🔴 2026-11-01：按品种拆两组（stock + etf）并行各 1 条查询 ——
+  //   原实现硬编码 stock 组，ETF/LOF 持仓（sh51xxxx / sz15xxxx / sz16xxxx LOF）恒查不到价。
+  const merged = await fetchMergedLatestClose(symbols, period, 2);
 
-  const rows = await queryDuckDB<{ symbol: string; date: unknown; close: number; rn: number }>(sql, params);
-
-  // ⚠️ SQL 不保证行序（rn=2 可能先于 rn=1 返回）→ 先收集再定型
-  for (const row of rows) {
-    const d = toDateString(row.date);
-    const cur = bySymbol.get(row.symbol) ?? {
+  for (const [sym, rows] of merged) {
+    const cur: LatestAndPrevClose = {
       date: '',
       close: 0,
       prevDate: null,
       prevClose: null,
     };
-    if (row.rn === 1) {
-      cur.date = d;
-      cur.close = row.close;
-    } else if (row.rn === 2) {
-      cur.prevDate = d;
-      cur.prevClose = row.close;
+    for (const r of rows) {
+      if (r.rn === 1) {
+        cur.date = r.date;
+        cur.close = r.close;
+      } else if (r.rn === 2) {
+        cur.prevDate = r.date;
+        cur.prevClose = r.close;
+      }
     }
-    bySymbol.set(row.symbol, cur);
+    bySymbol.set(sym, cur);
   }
 
   return bySymbol;

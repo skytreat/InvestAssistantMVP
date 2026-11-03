@@ -47,6 +47,20 @@ interface ConfirmResult {
   duplicateFile?: boolean;
 }
 
+/** 后端 confirm/confirm-batch 返回的待确认未知标的（SDD_v3 §11.1.4） */
+interface PendingUnknownAsset {
+  filename: string;
+  assetCodes: string[];
+  assetNames: (string | null)[];
+}
+
+interface PendingUnknownState {
+  /** 该批实际落库的券商标识 */
+  brokerCode: string;
+  files: File[];
+  entries: PendingUnknownAsset[];
+}
+
 /** 导入批次（GET /api/broker-import/batches 的 batch 行，字段见 broker_import_batch DDL） */
 interface BatchRow {
   id: number;
@@ -122,6 +136,8 @@ export default function BrokerImport() {
   >([]);
   /** 整批拒绝原因（如未知标的：本次未导入任何数据） */
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  /** 待用户处理的未知标的（后端 200 + pending_unknown_assets） */
+  const [pendingUnknown, setPendingUnknown] = useState<PendingUnknownState | null>(null);
 
   // ── 导入批次（列表 + 撤销）──
   const [batches, setBatches] = useState<BatchRow[]>([]);
@@ -161,6 +177,7 @@ export default function BrokerImport() {
       setDetects((d) => ({ ...d, [f.name]: 'detecting' as unknown as string }));
       setConfirmResults([]);
       setConfirmError(null);
+      setPendingUnknown(null);
       try {
         const fileBase64 = await fileToBase64(f);
         const res = await api.post('/broker-import/upload', { filename: f.name, fileBase64, brokerCode });
@@ -216,6 +233,7 @@ export default function BrokerImport() {
       return next;
     });
     setConfirmResults([]);
+    setPendingUnknown(null);
   };
 
   const detectOk = (f: File): f is File & { detect: DetectResult } =>
@@ -247,8 +265,20 @@ export default function BrokerImport() {
         }
         const data = res.data.data as {
           files?: Array<{ filename: string } & ConfirmResult>;
+          pending_unknown_assets?: PendingUnknownAsset[];
         };
+        // 后端检测到未知标的时返回 200 + pending_unknown_assets（不是 422）：
+        // 此前前端直接当成功处理 → 什么都不落库却出现「导入完成」→ 对账页 404。
+        if (data.pending_unknown_assets && data.pending_unknown_assets.length > 0) {
+          setPendingUnknown({
+            brokerCode: groupCode,
+            files: groupFiles,
+            entries: data.pending_unknown_assets,
+          });
+          return;
+        }
         const out = (data.files ?? []).map(({ filename, ...result }) => ({ filename, result }));
+        setPendingUnknown(null);
         setConfirmResults((prev) => [
           ...prev.filter((g) => g.key !== groupCode),
           { key: groupCode, results: out },
@@ -262,6 +292,43 @@ export default function BrokerImport() {
     },
     [loadBatches],
   );
+
+  /** 用户确认跳过未知标的后重新提交（POST /confirm-final，携带 skipUnknownAssetCodes） */
+  const runConfirmFinal = useCallback(async () => {
+    const pending = pendingUnknown;
+    if (!pending) return;
+    setBusy(true);
+    setConfirmError(null);
+    try {
+      const payloadFiles = await Promise.all(
+        pending.files.map(async (f) => ({ filename: f.name, fileBase64: await fileToBase64(f) })),
+      );
+      const skipUnknownAssetCodes = [
+        ...new Set(pending.entries.flatMap((e) => e.assetCodes.map((c) => String(c)))),
+      ];
+      const res = await api.post('/broker-import/confirm-final', {
+        brokerCode: pending.brokerCode,
+        files: payloadFiles,
+        skipUnknownAssetCodes,
+      });
+      if (!isOkEnvelope(res.data)) {
+        setConfirmError(String(res.data?.message ?? '导入失败'));
+        return;
+      }
+      const data = res.data.data as { files?: Array<{ filename: string } & ConfirmResult> };
+      const out = (data.files ?? []).map(({ filename, ...result }) => ({ filename, result }));
+      setConfirmResults((prev) => [
+        ...prev.filter((g) => g.key !== pending.brokerCode),
+        { key: pending.brokerCode, results: out },
+      ]);
+      setPendingUnknown(null);
+      await loadBatches();
+    } catch (err) {
+      setConfirmError(extractErrorMessage(err, '导入失败'));
+    } finally {
+      setBusy(false);
+    }
+  }, [pendingUnknown, loadBatches]);
 
   /** 撤销批次（二次确认后调用；后端软删事实层，原始证据保留） */
   const doRevoke = useCallback(
@@ -513,6 +580,37 @@ export default function BrokerImport() {
               {confirmError}
             </p>
           )}
+        </div>
+      )}
+
+      {/* 未知标的：用户选择跳过（后端 200 + pending_unknown_assets） */}
+      {pendingUnknown !== null && (
+        <div style={{ ...cardStyle, marginTop: 16 }} data-testid="pending-unknown-assets">
+          <h2 style={subtitleStyle}>发现不在行情库的标的</h2>
+          <p style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary, margin: '0 0 4px' }}>
+            以下标的不在行情库中（可能为新股 / 新 ETF，或行情库尚未更新）。
+          </p>
+          <p style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary, margin: '0 0 8px' }}>
+            跳过后这些标的的成交行不会写入事实层，其余行正常导入。
+          </p>
+          {pendingUnknown.entries.map((e) => (
+            <div key={e.filename} style={{ fontSize: TYPO.smallSize, marginBottom: 8 }}>
+              <strong>{e.filename}</strong>：
+              {e.assetCodes.map((c, i) => (e.assetNames[i] ? `${c}（${e.assetNames[i]}）` : c)).join('、')}
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              style={{ ...buttonStyle, ...primaryButton }}
+              onClick={() => void runConfirmFinal()}
+              disabled={busy}
+            >
+              跳过这些标的并导入
+            </button>
+            <button style={buttonStyle} onClick={() => setPendingUnknown(null)} disabled={busy}>
+              取消
+            </button>
+          </div>
         </div>
       )}
 

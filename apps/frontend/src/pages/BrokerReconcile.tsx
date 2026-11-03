@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
+import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
-import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } from './_shared';
+import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, successStyle, titleStyle } from './_shared';
 
 /**
  * BrokerReconcile.tsx —— 券商对账报告 `/broker/reconcile`（V3.8 T144/T145 · PRD_v3 §3.2/§3.3）
@@ -86,6 +87,7 @@ export default function BrokerReconcile() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // ── 差异明细 ──
   const [category, setCategory] = useState<string>('unmatched');
@@ -123,16 +125,24 @@ export default function BrokerReconcile() {
       .catch(() => undefined);
   }, []);
 
-  const loadReport = useCallback(async (bc: string) => {
-    if (!bc) return;
+  const loadReport = useCallback(async (bc: string): Promise<boolean> => {
+    if (!bc) return false;
     setLoading(true);
     setError(null);
     try {
       const res = await api.get('/broker-reconcile/latest', { params: { brokerCode: bc } });
-      if (isOkEnvelope(res.data)) setReport(res.data.data as Report);
-      else setError(String(res.data?.message ?? '无对账报告'));
+      if (isOkEnvelope(res.data)) {
+        setReport(res.data.data as Report);
+        return true;
+      }
+      // 切换券商 / 无数据时**必须清空旧报告**，否则会残留上一个券商的数字（UX-01）
+      setReport(null);
+      setError(String(res.data?.message ?? '无对账报告'));
+      return false;
     } catch (e) {
-      setError(String((e as Error).message));
+      setReport(null);
+      setError(extractErrorMessage(e, '加载对账报告失败'));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -140,14 +150,32 @@ export default function BrokerReconcile() {
 
   const loadDiff = useCallback(async (bc: string, cat: string, p: number) => {
     if (!bc) return;
-    const res = await api.get('/broker-reconcile/diff', {
-      params: { brokerCode: bc, category: cat, page: p, pageSize: 50 },
-    });
-    if (isOkEnvelope(res.data)) {
-      setDiffRows((res.data.data as { rows: DiffRow[] }).rows);
-      setDiffTotal((res.data as { data: unknown; pagination?: { total?: number } }).pagination?.total ?? 0);
+    try {
+      const res = await api.get('/broker-reconcile/diff', {
+        params: { brokerCode: bc, category: cat, page: p, pageSize: 50 },
+      });
+      if (isOkEnvelope(res.data)) {
+        setDiffRows((res.data.data as { rows: DiffRow[] }).rows);
+        setDiffTotal((res.data as { data: unknown; pagination?: { total?: number } }).pagination?.total ?? 0);
+      } else {
+        setDiffRows([]);
+        setDiffTotal(0);
+      }
+    } catch {
+      setDiffRows([]);
+      setDiffTotal(0);
     }
   }, []);
+
+  // 切换券商：清空上一个券商的状态（报告 / 差异 / 勾选 / 提示），避免旧数据残留
+  useEffect(() => {
+    setReport(null);
+    setError(null);
+    setNotice(null);
+    setDiffRows([]);
+    setDiffTotal(0);
+    setSelected(new Map());
+  }, [brokerCode]);
 
   useEffect(() => {
     void loadReport(brokerCode);
@@ -160,13 +188,23 @@ export default function BrokerReconcile() {
 
   /** 触发一次对账（重算去重/回填/归因，幂等） */
   const runReconcile = async () => {
+    if (!brokerCode) {
+      setError('请先选择券商');
+      return;
+    }
     setLoading(true);
+    setError(null);
+    setNotice(null);
     try {
-      await api.post('/broker-reconcile/run', { brokerCode });
-      await loadReport(brokerCode);
-      setError('对账已刷新');
+      const res = await api.post('/broker-reconcile/run', { brokerCode });
+      if (!isOkEnvelope(res.data)) {
+        setError(String(res.data?.message ?? '重新对账失败'));
+        return;
+      }
+      const ok = await loadReport(brokerCode);
+      if (ok) setNotice('对账已刷新');
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(extractErrorMessage(e, '重新对账失败'));
     } finally {
       setLoading(false);
     }
@@ -237,7 +275,7 @@ export default function BrokerReconcile() {
         setError(String(res.data?.message ?? '补录失败'));
       }
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(extractErrorMessage(e, '补录失败'));
     } finally {
       setConfirmBusy(false);
     }
@@ -254,7 +292,7 @@ export default function BrokerReconcile() {
         setError(String(res.data?.message ?? '标记失败'));
       }
     } catch (e) {
-      setError(String((e as Error).message));
+      setError(extractErrorMessage(e, '标记失败'));
     }
   };
 
@@ -290,7 +328,7 @@ export default function BrokerReconcile() {
               ))}
             </select>
           </label>
-          <button style={buttonStyle} onClick={() => void runReconcile()} disabled={!brokerCode || loading}>
+          <button style={buttonStyle} onClick={() => void runReconcile()} disabled={loading}>
             重新对账
           </button>
           <button
@@ -308,7 +346,16 @@ export default function BrokerReconcile() {
             {new Date(report.generatedAt).toLocaleString()}
           </div>
         )}
-        {error && <p style={errorStyle}>{error}</p>}
+        {notice && (
+          <p style={successStyle} role="status">
+            {notice}
+          </p>
+        )}
+        {error && (
+          <p style={errorStyle} role="alert">
+            {error}
+          </p>
+        )}
       </div>
 
       {report && (
@@ -607,7 +654,9 @@ export default function BrokerReconcile() {
 
       {!report && !loading && brokerCode && (
         <div style={cardStyle}>
-          <p style={{ color: COLORS.textMuted }}>暂无对账报告，点「重新对账」生成。</p>
+          <p style={{ color: COLORS.textMuted }}>
+            该券商暂无对账数据。请先在「券商文件导入」完成导入并确认落库（撤销的批次不计入）；导入成功后再点「重新对账」。
+          </p>
         </div>
       )}
     </div>

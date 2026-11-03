@@ -122,7 +122,8 @@ describe('T76 ④ · 容器 fluid（去掉固定 maxWidth 硬编码）', () => {
         else if (/\.(ts|tsx)$/.test(entry.name)) {
           const text = fs.readFileSync(full, 'utf8');
           if (/maxWidth:\s*(MAX_WIDTH|1200)/.test(text)) {
-            hits.push(path.relative(SRC_DIR, full));
+            // Windows 的 path.relative 返回反斜杠 ⇒ 统一成正斜杠再断言
+            hits.push(path.relative(SRC_DIR, full).replace(/\\/g, '/'));
           }
         }
       }

@@ -46,6 +46,8 @@ vi.mock('../../src/services/marketData.js', () => ({
   getDailyRange: vi.fn(),
   batchGetDailyRange: vi.fn(),
   batchGetLatestClose: vi.fn(),
+  fetchAssetClasses: vi.fn().mockResolvedValue(new Map()),
+  batchGetDailyRangeByView: vi.fn().mockResolvedValue(new Map()),
   isTradingDay: vi.fn(),
   getLatestTradingDay: vi.fn(),
   toDateString: (v: unknown) => String(v),
