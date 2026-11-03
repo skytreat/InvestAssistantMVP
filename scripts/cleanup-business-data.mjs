@@ -1,0 +1,284 @@
+/**
+ * 清理业务库数据：只保留指定 admin 账号及其名下业务记录，删除其余用户与数据。
+ *
+ * 保留项：
+ *   - user_account 中指定 admin（role='admin'）
+ *   - 该 admin 在 user_trade_record / user_asset_rel / user_strategy_signal /
+ *     user_fee_config / user_plugin_config / user_asset_stat / broker_* 中的全部记录
+ *   - asset_class（全局分类字典，非用户数据；引用已删用户的 updated_by 置 NULL）
+ *   - symbol_dict（由行情层自动重建的字典快照，不动）
+ *   - system_log 默认全保留（无 user_id，无法按用户区分）
+ *
+ * 用法（仓库根目录执行，先停后端）：
+ *   node scripts/cleanup-business-data.mjs                        # 预览（不写入）
+ *   node scripts/cleanup-business-data.mjs --admin admin          # 指定保留的 admin
+ *   node scripts/cleanup-business-data.mjs --admin admin --execute # 备份后执行
+ *   node scripts/cleanup-business-data.mjs --admin admin --execute --purge-logs  # 同时清空 system_log
+ *
+ * 选项：
+ *   --execute       实际执行（默认只打印计划）；执行前自动生成 `<db>.pre-clean-<时间戳>` 备份
+ *   --admin <name>  要保留的 admin 用户名；库中只有一个 admin 时可省略
+ *   --db <path>     指定 SQLite 路径（默认 SQLITE_DB_PATH，再默认 data/business.db）
+ *   --env <path>    指定环境变量文件（默认依次尝试 .env.local / apps/backend/.env.local）
+ *   --purge-logs    同时清空 system_log
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import Database from 'better-sqlite3';
+
+const args = process.argv.slice(2);
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(readFileSync(new URL(import.meta.url), 'utf-8').split('*/')[0] + '*/');
+  process.exit(0);
+}
+
+const execute = args.includes('--execute');
+const purgeLogs = args.includes('--purge-logs');
+const adminArg = readArg('--admin');
+const envArg = readArg('--env');
+const dbArg = readArg('--db');
+
+function readArg(name) {
+  const i = args.indexOf(name);
+  return i !== -1 ? args[i + 1] : null;
+}
+
+function loadEnvFile(p) {
+  try {
+    const fullPath = resolve(p);
+    if (!existsSync(fullPath)) return false;
+    const content = readFileSync(fullPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const m = line.match(/^\s*(\w+)\s*=\s*(.+)\s*$/);
+      if (m && !process.env[m[1]]) {
+        process.env[m[1]] = m[2].trim().replace(/^['"](.*)['"]$/, '$1');
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (envArg) {
+  loadEnvFile(envArg);
+} else {
+  loadEnvFile('.env.local');
+  loadEnvFile('apps/backend/.env.local');
+}
+
+const dbPath = resolve(dbArg ?? process.env.SQLITE_DB_PATH ?? 'data/business.db');
+
+/** 有 user_id 的表：删除顺序 = 数组顺序（子表在前，父表在后） */
+const PER_USER_TABLES = [
+  'user_strategy_signal', // linked_trade_id -> user_trade_record
+  'user_trade_record', // source_broker_record_id -> broker_trade_record
+  'broker_trade_record',
+  'broker_import_batch',
+  'broker_import_template',
+  'user_asset_rel',
+  'user_fee_config',
+  'user_plugin_config',
+  'user_asset_stat',
+];
+
+const SPECIAL_TABLES = ['asset_class'];
+
+console.log(`SQLite: ${dbPath}`);
+console.log(`模式: ${execute ? '执行清理' : '预览（不写入）'}`);
+
+if (!existsSync(dbPath)) {
+  console.error(`\n❌ 数据库不存在：${dbPath}`);
+  process.exit(1);
+}
+
+const db = new Database(dbPath);
+db.pragma('busy_timeout = 5000');
+db.pragma('foreign_keys = ON');
+
+const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`;
+const tableExists = (name) =>
+  !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+const columnsOf = (name) => db.prepare(`PRAGMA table_info(${quoteIdent(name)})`).all();
+const countAll = (name) => db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(name)}`).get().c;
+
+// ---------- 选择要保留的 admin ----------
+const admins = db.prepare("SELECT id, username FROM user_account WHERE role = 'admin' ORDER BY id").all();
+
+if (admins.length === 0) {
+  console.error('\n❌ 库中没有 admin 用户，拒绝执行（避免把库清成无管理员状态）。');
+  db.close();
+  process.exit(1);
+}
+
+if (!adminArg && admins.length > 1) {
+  console.error('\n❌ 存在多个 admin，请用 --admin <username> 指定要保留的一个：');
+  for (const a of admins) console.error(`   id=${a.id}  ${a.username}`);
+  db.close();
+  process.exit(1);
+}
+
+const admin = adminArg
+  ? db.prepare('SELECT id, username FROM user_account WHERE username = ?').get(adminArg)
+  : admins[0];
+
+if (!admin) {
+  console.error(`\n❌ 找不到用户：${adminArg}`);
+  db.close();
+  process.exit(1);
+}
+const adminRole = db.prepare('SELECT role FROM user_account WHERE id = ?').get(admin.id)?.role;
+if (adminRole !== 'admin') {
+  console.error(`\n❌ 用户 ${admin.username} 的 role=${adminRole}，不是 admin，拒绝执行。`);
+  db.close();
+  process.exit(1);
+}
+
+console.log(`保留 admin: id=${admin.id} username=${admin.username}\n`);
+
+// ---------- 识别需要处理的表 ----------
+const allTables = db
+  .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+  .all()
+  .map((r) => r.name);
+
+const perUserTables = [];
+for (const name of allTables) {
+  if (name === 'user_account') continue;
+  if (!columnsOf(name).some((c) => c.name === 'user_id')) continue;
+  perUserTables.push(name);
+}
+
+const unknownTables = perUserTables.filter((t) => !PER_USER_TABLES.includes(t));
+const deleteOrder = [...unknownTables, ...PER_USER_TABLES.filter(tableExists)];
+
+// 引用 user_account 但既无 user_id 也不在 SPECIAL 里的表：无法按用户过滤，直接拒绝
+const unhandledRefs = allTables.filter((name) => {
+  if (name === 'user_account' || perUserTables.includes(name) || SPECIAL_TABLES.includes(name)) {
+    return false;
+  }
+  return db
+    .prepare(`PRAGMA foreign_key_list(${quoteIdent(name)})`)
+    .all()
+    .some((fk) => fk.table === 'user_account');
+});
+
+if (unhandledRefs.length > 0) {
+  console.error(
+    `\n❌ 以下表引用 user_account 但无法按 user_id 过滤，请先人工处理：${unhandledRefs.join(', ')}`,
+  );
+  db.close();
+  process.exit(1);
+}
+
+if (unknownTables.length > 0) {
+  console.warn(`⚠️ 发现未登记的用户表（将一并清理，仅保留 admin 行）：${unknownTables.join(', ')}\n`);
+}
+
+// ---------- 统计 ----------
+const plan = [];
+for (const name of deleteOrder) {
+  const total = countAll(name);
+  const keep = db.prepare(`SELECT COUNT(*) AS c FROM ${quoteIdent(name)} WHERE user_id = ?`).get(admin.id).c;
+  plan.push({ table: name, total, keep, remove: total - keep });
+}
+
+const usersTotal = countAll('user_account');
+const usersRemove = usersTotal - 1;
+
+const hasAssetClass =
+  tableExists('asset_class') && columnsOf('asset_class').some((c) => c.name === 'updated_by');
+const assetClassDeref = hasAssetClass
+  ? db
+      .prepare('SELECT COUNT(*) AS c FROM asset_class WHERE updated_by IS NOT NULL AND updated_by <> ?')
+      .get(admin.id).c
+  : 0;
+
+const logsTotal = tableExists('system_log') ? countAll('system_log') : 0;
+
+console.log('表'.padEnd(28) + '总行数'.padStart(8) + '保留'.padStart(8) + '删除'.padStart(8));
+console.log('-'.repeat(52));
+console.log(
+  'user_account'.padEnd(28) +
+    String(usersTotal).padStart(8) +
+    '1'.padStart(8) +
+    String(usersRemove).padStart(8),
+);
+for (const p of plan) {
+  console.log(
+    p.table.padEnd(28) +
+      String(p.total).padStart(8) +
+      String(p.keep).padStart(8) +
+      String(p.remove).padStart(8),
+  );
+}
+console.log('-'.repeat(52));
+console.log(`asset_class.updated_by 置 NULL（保留分类数据）：${assetClassDeref} 行`);
+console.log(`symbol_dict：保留（行情层自动重建的字典快照）`);
+console.log(`system_log：${purgeLogs ? `清空 ${logsTotal} 行（--purge-logs）` : `保留 ${logsTotal} 行`}`);
+
+if (!execute) {
+  console.log('\n预览模式，未修改数据库。确认无误后加 --execute 执行。');
+  db.close();
+  process.exit(0);
+}
+
+// ---------- 备份 ----------
+const backupPath = `${dbPath}.pre-clean-${Date.now()}`;
+await db.backup(backupPath);
+console.log(`\n已备份到：${backupPath}`);
+
+// ---------- 执行清理（单事务） ----------
+const tx = db.transaction(() => {
+  // 防御：admin 记录若误引用将被删除的跨用户记录，先断链，避免 FK 失败
+  db.prepare(
+    `UPDATE user_strategy_signal SET linked_trade_id = NULL
+     WHERE linked_trade_id IN (SELECT id FROM user_trade_record WHERE user_id <> ?)`,
+  ).run(admin.id);
+  db.prepare(
+    `UPDATE user_trade_record SET source_broker_record_id = NULL
+     WHERE user_id = ? AND source_broker_record_id IN
+       (SELECT id FROM broker_trade_record WHERE user_id <> ?)`,
+  ).run(admin.id, admin.id);
+  if (hasAssetClass) {
+    db.prepare(
+      'UPDATE asset_class SET updated_by = NULL WHERE updated_by IS NOT NULL AND updated_by <> ?',
+    ).run(admin.id);
+  }
+
+  for (const name of deleteOrder) {
+    db.prepare(`DELETE FROM ${quoteIdent(name)} WHERE user_id IS NULL OR user_id <> ?`).run(admin.id);
+  }
+  db.prepare('DELETE FROM user_account WHERE id <> ?').run(admin.id);
+
+  if (purgeLogs) db.prepare('DELETE FROM system_log').run();
+
+  // 重置 AUTOINCREMENT 序列，避免清理后 id 从历史最大值继续跳号
+  const seqTables = [...deleteOrder, 'user_account', ...(purgeLogs ? ['system_log'] : [])];
+  const hasSeq = tableExists('sqlite_sequence');
+  if (hasSeq) {
+    for (const name of seqTables) {
+      if (!tableExists(name)) continue;
+      if (!db.prepare('SELECT 1 FROM sqlite_sequence WHERE name = ?').get(name)) continue;
+      db.prepare(
+        `UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM ${quoteIdent(name)}) WHERE name = ?`,
+      ).run(name);
+    }
+  }
+});
+
+try {
+  tx();
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  console.log('\n✅ 清理完成。');
+  console.log(`保留：admin=${admin.username}（id=${admin.id}）；业务记录已按上表收缩。`);
+  console.log(
+    '提示：如担心旧 access token 仍有效（JWT 有效期 7 天），请更换 .env.local 的 JWT_SECRET 并重启后端。',
+  );
+} catch (err) {
+  console.error('\n❌ 清理失败，事务已回滚：', err.message);
+  process.exitCode = 1;
+} finally {
+  db.close();
+}
