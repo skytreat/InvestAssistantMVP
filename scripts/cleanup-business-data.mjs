@@ -266,6 +266,18 @@ if (!execute) {
   process.exit(0);
 }
 
+// ---------- 写锁预检 ----------
+// 先取一次写锁再立刻释放：若后端还在跑（或其他进程持有写锁），这里就会在 busy_timeout 后失败，
+// 此时**尚未生成备份**、库也未被修改，不会出现「备份了但没清成」的误导状态。
+try {
+  db.exec('BEGIN IMMEDIATE');
+  db.exec('ROLLBACK');
+} catch (err) {
+  console.error('\n❌ 数据库正被其他进程占用（请先停后端再执行）：', err.message);
+  db.close();
+  process.exit(1);
+}
+
 // ---------- 备份 ----------
 // `.mjs` 是 ESM，顶层 await 可用（`db.backup()` 返回 Promise）；备份失败必须中止，不能带着无备份的库去删数据。
 const backupPath = `${dbPath}.pre-clean-${Date.now()}`;
