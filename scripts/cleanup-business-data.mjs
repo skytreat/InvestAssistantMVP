@@ -7,22 +7,22 @@
  *     user_fee_config / user_plugin_config / user_asset_stat / broker_* 中的全部记录
  *   - asset_class（全局分类字典，非用户数据；引用已删用户的 updated_by 置 NULL）
  *   - symbol_dict（由行情层自动重建的字典快照，不动）
- *   - system_log 默认全保留（无 user_id，无法按用户区分）
+ *   - system_log 默认清零（无 user_id，无法按用户区分；--keep-log-days N 可保留最近 N 天）
  *
  * 用法（仓库根目录执行，先停后端）：
  *   node scripts/cleanup-business-data.mjs                        # 预览（不写入）
  *   node scripts/cleanup-business-data.mjs --admin admin          # 指定保留的 admin
- *   node scripts/cleanup-business-data.mjs --admin admin --execute # 备份后执行
- *   node scripts/cleanup-business-data.mjs --admin admin --execute --purge-logs  # 同时清空 system_log
+ *   node scripts/cleanup-business-data.mjs --admin admin --execute # 备份后执行（system_log 一并清零）
+ *   node scripts/cleanup-business-data.mjs --admin admin --execute --keep-log-days 30  # 只留最近 30 天日志
  *   node scripts/cleanup-business-data.mjs --purge-admin --execute # 连 admin 一起清空（全量重置）
  *
  * 选项：
- *   --execute       实际执行（默认只打印计划）；执行前自动生成 `<db>.pre-clean-<时间戳>` 备份
- *   --admin <name>  要保留的 admin 用户名；库中只有一个 admin 时可省略
- *   --purge-admin   连 admin 账号及其数据一起删除（user_account 清空）；首次注册会自动重建 admin
- *   --db <path>     指定 SQLite 路径（默认 SQLITE_DB_PATH，再默认 data/business.db）
- *   --env <path>    指定环境变量文件（默认依次尝试 .env.local / apps/backend/.env.local）
- *   --purge-logs    同时清空 system_log
+ *   --execute            实际执行（默认只打印计划）；执行前自动生成 `<db>.pre-clean-<时间戳>` 备份
+ *   --admin <name>       要保留的 admin 用户名；库中只有一个 admin 时可省略
+ *   --purge-admin        连 admin 账号及其数据一起删除（user_account 清空）；首次注册会自动重建 admin
+ *   --keep-log-days <n>  保留最近 n 天 system_log（默认 0 = 清零；n 需为非负整数）
+ *   --db <path>          指定 SQLite 路径（默认 SQLITE_DB_PATH，再默认 data/business.db）
+ *   --env <path>         指定环境变量文件（默认依次尝试 .env.local / apps/backend/.env.local）
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -36,9 +36,10 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 
 const execute = args.includes('--execute');
-const purgeLogs = args.includes('--purge-logs');
 const purgeAdmin = args.includes('--purge-admin');
 const adminArg = readArg('--admin');
+const keepLogDaysRaw = readArg('--keep-log-days');
+const keepLogDays = keepLogDaysRaw === null ? 0 : Number(keepLogDaysRaw);
 const envArg = readArg('--env');
 const dbArg = readArg('--db');
 
@@ -69,6 +70,11 @@ if (envArg) {
 } else {
   loadEnvFile('.env.local');
   loadEnvFile('apps/backend/.env.local');
+}
+
+if (!Number.isInteger(keepLogDays) || keepLogDays < 0) {
+  console.error('\n❌ --keep-log-days 需为非负整数（0 = 清零 system_log）。');
+  process.exit(1);
 }
 
 const dbPath = resolve(dbArg ?? process.env.SQLITE_DB_PATH ?? 'data/business.db');
@@ -222,6 +228,13 @@ const assetClassDeref = hasAssetClass
   : 0;
 
 const logsTotal = tableExists('system_log') ? countAll('system_log') : 0;
+const logsKeep =
+  logsTotal === 0 || keepLogDays === 0
+    ? 0
+    : db
+        .prepare("SELECT COUNT(*) AS c FROM system_log WHERE created_at >= datetime('now', ?, 'localtime')")
+        .get(`-${keepLogDays} days`).c;
+const logsRemove = logsTotal - logsKeep;
 
 console.log('表'.padEnd(28) + '总行数'.padStart(8) + '保留'.padStart(8) + '删除'.padStart(8));
 console.log('-'.repeat(52));
@@ -242,7 +255,10 @@ for (const p of plan) {
 console.log('-'.repeat(52));
 console.log(`asset_class.updated_by 置 NULL（保留分类数据）：${assetClassDeref} 行`);
 console.log(`symbol_dict：保留（行情层自动重建的字典快照）`);
-console.log(`system_log：${purgeLogs ? `清空 ${logsTotal} 行（--purge-logs）` : `保留 ${logsTotal} 行`}`);
+console.log(
+  `system_log：保留 ${logsKeep} 行 / 删除 ${logsRemove} 行` +
+    (keepLogDays === 0 ? '（默认清零）' : `（--keep-log-days ${keepLogDays}）`),
+);
 
 if (!execute) {
   console.log('\n预览模式，未修改数据库。确认无误后加 --execute 执行。');
@@ -288,10 +304,17 @@ const tx = db.transaction(() => {
     ...(keepUserId === null ? [] : [keepUserId]),
   );
 
-  if (purgeLogs) db.prepare('DELETE FROM system_log').run();
+  // system_log 默认清零；--keep-log-days N 只保留最近 N 天（created_at 为本地时间字符串）
+  if (tableExists('system_log')) {
+    if (keepLogDays === 0) db.prepare('DELETE FROM system_log').run();
+    else
+      db.prepare("DELETE FROM system_log WHERE created_at < datetime('now', ?, 'localtime')").run(
+        `-${keepLogDays} days`,
+      );
+  }
 
   // 重置 AUTOINCREMENT 序列，避免清理后 id 从历史最大值继续跳号
-  const seqTables = [...deleteOrder, 'user_account', ...(purgeLogs ? ['system_log'] : [])];
+  const seqTables = [...deleteOrder, 'user_account', 'system_log'];
   const hasSeq = tableExists('sqlite_sequence');
   if (hasSeq) {
     for (const name of seqTables) {
