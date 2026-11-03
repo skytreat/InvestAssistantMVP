@@ -171,7 +171,16 @@ export async function registerReviewRoutes(app: FastifyInstance) {
   app.get('/api/review/pairs', async (request, reply) => {
     const user = (request as any).user as { sub: number };
     const pairs = buildReviewPairs(user.sub);
-    return reply.send(ok(pairs));
+
+    // 标的中文名（行情层 raw_symbol_name；查不到 → null，前端回退显示代码）
+    const names = new Map<string, string>();
+    try {
+      const fetched = await batchGetSymbolNames(pairs.map((p) => p.asset_code));
+      for (const [k, v] of fetched) names.set(k, v);
+    } catch {
+      /* DuckDB 不可用时整体降级，不阻断复盘 */
+    }
+    return reply.send(ok(pairs.map((p) => ({ ...p, asset_name: names.get(p.asset_code) ?? null }))));
   });
 
   // 复盘字段更新（T131）：买入/卖出逻辑独立 + 情绪状态 5 档枚举

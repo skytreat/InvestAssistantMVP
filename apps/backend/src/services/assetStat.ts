@@ -10,7 +10,7 @@
 
 import { ConfigStore } from '../config/configStore.js';
 import { calcAllPositions } from './positionCalculator.js';
-import { batchGetDaily } from './marketData.js';
+import { batchGetDaily, batchGetDailyRangeByView, fetchAssetClasses } from './marketData.js';
 
 /**
  * 查用户累计收到的除权福利（分红 + 送转 + 配股）
@@ -100,4 +100,218 @@ export async function insertAssetStatSnapshots(tradeDate: string): Promise<{ ins
   }
 
   return { inserted };
+}
+
+export interface AssetStatBackfillResult {
+  /** 实际补写的快照条数（已存在的日期跳过） */
+  filled: number;
+  /** 实际覆盖的首个交易日（YYYY-MM-DD；窗口内无行情时回落为请求窗口起点） */
+  from: string;
+  /** 实际覆盖的最后一个交易日（窗口内无行情时回落为请求窗口终点） */
+  to: string;
+  /** 窗口内有行情数据的交易日数 */
+  marketDays: number;
+  /** 窗口内已有快照、被跳过的日期数 */
+  skippedExisting: number;
+}
+
+/**
+ * 回补缺失的双口径资产快照（近 N 天，只补没有的日期）
+ *
+ * 背景：快照平时由 cron 每天 17:02 写入（{@link insertAssetStatSnapshots}）。
+ * 后端没在跑的日子（开发机 / 服务重启 / 部署初期）`user_asset_stat` 就没有数据，
+ * 交易复盘页的「收益曲线」因此整段空白。本函数按「as-of 当日」口径重算缺失日：
+ *
+ * - **持仓/成本**：`user_trade_record` 按日回放（同 {@link calcAllPositions} 的移动加权
+ *   成本口径，含 T119 送股摊薄；同日顺序 bonus < dividend < 买卖，与 core 一致）；
+ * - **收盘价**：取「≤ 当日」的 qfq 收盘（前向填充；窗口内无行情 → 0，与 cron 的
+ *   `kline?.close ?? 0` 兜底同向）。按 stock / etf 两组各 1 条基表区间查询
+ *   （`batchGetDailyRangeByView`，**禁止逐标的循环查 DuckDB**）；
+ * - **actual 口径**：price 口径 + 截至当日的累计除权福利（`getTotalDividends` 同公式，
+ *   dividend / bonus / transfer 的 price × quantity 累计）。
+ *
+ * ⚠️ 写库用 `ON CONFLICT(user_id, trade_date) DO NOTHING` —— **绝不覆盖 cron 写过的
+ * 真实快照**（补跑是「补洞」，不是「重写历史」）。
+ *
+ * @throws DuckDB 不可用 / 行情表缺失时抛错（调用方应转 503，不静默假绿）。
+ */
+export async function backfillAssetStatSnapshots(
+  userId: number,
+  days: number,
+): Promise<AssetStatBackfillResult> {
+  const db = ConfigStore.getInstance().db;
+  const to = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+
+  const empty: AssetStatBackfillResult = { filled: 0, from, to, marketDays: 0, skippedExisting: 0 };
+
+  const trades = db
+    .prepare(
+      `SELECT asset_code, trade_type, trade_date, quantity, price, fee
+       FROM user_trade_record
+       WHERE user_id = ? AND is_deleted = 0
+       ORDER BY trade_date ASC, trade_time ASC, id ASC`,
+    )
+    .all(userId) as Array<{
+    asset_code: string;
+    trade_type: string;
+    trade_date: string;
+    quantity: number;
+    price: number;
+    fee: number;
+  }>;
+
+  if (trades.length === 0) return empty;
+
+  // ── 1. 一次拿全窗口 qfq 日线（stock / etf 两组各 1 条查询）──
+  const assets = [...new Set(trades.map((t) => t.asset_code))];
+  let classes: Map<string, string>;
+  try {
+    classes = await fetchAssetClasses(assets);
+  } catch (err) {
+    throw new Error(`行情库不可用，无法回补资产快照：${String(err)}`);
+  }
+  const etfSyms = assets.filter((s) => classes.get(s) === 'etf');
+  const stockSyms = assets.filter((s) => classes.get(s) !== 'etf');
+  const klines = await batchGetDailyRangeByView(
+    new Map<string, string[]>([
+      ['v_stock_qfq', stockSyms],
+      ['v_etf_qfq', etfSyms],
+    ]),
+    from,
+    to,
+  );
+
+  // 窗口内「有行情」的交易日 = 全部标的 K 线日期的并集（升序）
+  const daySet = new Set<string>();
+  for (const list of klines.values()) for (const k of list) daySet.add(k.date);
+  const marketDays = [...daySet].sort();
+  if (marketDays.length === 0) return empty;
+
+  const existing = new Set(
+    (
+      db
+        .prepare(
+          'SELECT trade_date FROM user_asset_stat WHERE user_id = ? AND trade_date >= ? AND trade_date <= ?',
+        )
+        .all(userId, from, to) as Array<{ trade_date: string }>
+    ).map((r) => r.trade_date),
+  );
+  const skippedExisting = marketDays.filter((d) => existing.has(d)).length;
+
+  // ── 2. 每标的持仓检查点（回放口径与 core `calculateMovingWeightedCost` 一致）──
+  //    同日顺序 bonus(0) < dividend(1) < 其它(2)，同级保持输入顺序（time/id）。
+  const orderOf: Record<string, number> = { bonus: 0, dividend: 1 };
+  const byAsset = new Map<string, Array<{ date: string; qty: number; cost: number }>>();
+  for (const asset of assets) {
+    const rows = trades
+      .filter((t) => t.asset_code === asset)
+      .map((t, i) => ({ t, i }))
+      .sort((a, b) => {
+        if (a.t.trade_date !== b.t.trade_date) return a.t.trade_date < b.t.trade_date ? -1 : 1;
+        const d = (orderOf[a.t.trade_type] ?? 2) - (orderOf[b.t.trade_type] ?? 2);
+        if (d !== 0) return d;
+        return a.i - b.i;
+      })
+      .map((x) => x.t);
+
+    let qty = 0;
+    let cost = 0;
+    const cps: Array<{ date: string; qty: number; cost: number }> = [];
+    for (const t of rows) {
+      switch (t.trade_type) {
+        case 'buy':
+        case 'add':
+          cost += t.quantity * t.price + t.fee;
+          qty += t.quantity;
+          break;
+        case 'bonus':
+          qty += t.quantity;
+          break;
+        case 'reduce':
+        case 'clear':
+          if (qty > 0) {
+            const sellQty = Math.min(t.quantity, qty); // 超卖容错：按实际持仓结算，不出负数
+            const avg = cost / qty;
+            qty -= sellQty;
+            cost = qty * avg;
+          }
+          break;
+        default:
+          break; // dividend / transfer 不改持仓与成本
+      }
+      cps.push({ date: t.trade_date, qty, cost });
+    }
+    byAsset.set(asset, cps);
+  }
+
+  // ── 3. 累计除权福利检查点（dividend / bonus / transfer 的 price×qty，同 getTotalDividends）──
+  const divEvents = trades
+    .filter((t) => t.trade_type === 'dividend' || t.trade_type === 'bonus' || t.trade_type === 'transfer')
+    .map((t) => ({ date: t.trade_date, amount: t.price * t.quantity }));
+
+  // ── 4. 逐交易日计算 + 写库（指针单调推进，总复杂度 O(交易日 × 标的)）──
+  const insertStmt = db.prepare(
+    `INSERT INTO user_asset_stat
+       (user_id, trade_date, total_assets_price_yield, total_assets_actual_yield,
+        total_profit_price, total_profit_actual)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, trade_date) DO NOTHING`,
+  );
+
+  let filled = 0;
+  const cpPtr = new Map<string, number>(); // 每标的检查点指针（-1 = 尚无事件）
+  const kPtr = new Map<string, number>(); // 每标的 K 线指针（-1 = 窗口内首根还没到）
+  let divPtr = -1;
+  let divCum = 0;
+
+  for (const day of marketDays) {
+    if (existing.has(day)) continue; // cron 写过的日子不动
+
+    // 累计除权福利（≤ 当日）
+    while (divPtr + 1 < divEvents.length && divEvents[divPtr + 1].date <= day) {
+      divPtr++;
+      divCum += divEvents[divPtr].amount;
+    }
+
+    let mv = 0;
+    let costBasis = 0;
+    for (const asset of assets) {
+      // 持仓检查点（≤ 当日）
+      const cps = byAsset.get(asset)!;
+      let p = cpPtr.get(asset) ?? -1;
+      while (p + 1 < cps.length && cps[p + 1].date <= day) p++;
+      cpPtr.set(asset, p);
+      const qty = p >= 0 ? cps[p].qty : 0;
+      const cost = p >= 0 ? cps[p].cost : 0;
+      costBasis += cost;
+
+      // 收盘价前向填充（≤ 当日的最后一根；窗口内没有行情 → 0）
+      const arr = klines.get(asset);
+      let kp = kPtr.get(asset) ?? -1;
+      if (arr) {
+        while (kp + 1 < arr.length && arr[kp + 1].date <= day) kp++;
+      }
+      kPtr.set(asset, kp);
+      const close = arr && kp >= 0 ? arr[kp].close : 0;
+      mv += qty * close;
+    }
+
+    const priceProfit = mv - costBasis;
+    const actualProfit = priceProfit + divCum;
+    const priceYield = costBasis > 0 ? priceProfit / costBasis : 0;
+    const actualYield = costBasis > 0 ? actualProfit / costBasis : 0;
+
+    const info = insertStmt.run(userId, day, priceYield, actualYield, priceProfit, actualProfit);
+    filled += info.changes;
+  }
+
+  // 返回**实际覆盖**的交易日区间（行情库可能落后于今天，别把请求窗口当成已覆盖区间）
+  return {
+    filled,
+    from: marketDays[0] ?? from,
+    to: marketDays[marketDays.length - 1] ?? to,
+    marketDays: marketDays.length,
+    skippedExisting,
+  };
 }

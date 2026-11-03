@@ -4,6 +4,7 @@ import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import { COLORS, TYPO } from '../theme/tokens';
 import { cardStyle, errorStyle } from '../pages/_shared';
+import AssetLink from './AssetLink';
 import Spinner from './Spinner';
 
 /**
@@ -18,6 +19,8 @@ import Spinner from './Spinner';
 export interface PairRow {
   id: number;
   asset_code: string;
+  /** 标的中文名（`raw_symbol_name`，查不到为 null → 回退显示代码） */
+  asset_name?: string | null;
   open_trade_id: number;
   close_trade_id: number | null;
   open_date: string;
@@ -107,7 +110,7 @@ export default function ReviewPairsView() {
             {closed.map((p) => (
               <tr key={p.id}>
                 <td style={tdStyle}>
-                  <code>{p.asset_code}</code>
+                  <AssetLink assetCode={p.asset_code} assetName={p.asset_name} />
                 </td>
                 <td style={tdStyle}>{p.broker_code ? p.broker_code : '手工'}</td>
                 <td style={tdStyle}>{p.open_date}</td>
@@ -176,7 +179,7 @@ export default function ReviewPairsView() {
             {open.map((p) => (
               <tr key={p.id}>
                 <td style={tdStyle}>
-                  <code>{p.asset_code}</code>
+                  <AssetLink assetCode={p.asset_code} assetName={p.asset_name} />
                 </td>
                 <td style={tdStyle}>{p.broker_code ? p.broker_code : '手工'}</td>
                 <td style={tdStyle}>{p.open_date}</td>

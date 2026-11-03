@@ -21,6 +21,7 @@ import { ConfigStore } from '../../src/config/configStore.js';
 import type Database from 'better-sqlite3';
 import {
   importBrokerFile,
+  preflightBrokerFile,
   revokeBatch,
   listBatches,
   saveTemplate,
@@ -293,6 +294,65 @@ describe('T122 · 未知标的整文件拒绝', () => {
       ).toBe(0);
     } finally {
       db.prepare('DELETE FROM symbol_dict').run();
+      queryDuckDBMock.mockImplementation(async () => []);
+    }
+  });
+});
+
+describe('preflight · 歧义码消解与 EXCLUDED 行不参与存在性校验', () => {
+  const TRADE_HEADER =
+    '成交日期\t成交时间\t证券代码\t证券名称\t委托类别\t成交价格\t成交数量\t发生金额\t剩余金额\t成交编号\t委托编号';
+
+  function tradeFile(lines: string[], name = '歧义码样本.xls'): BrokerFileInput {
+    return { buffer: Buffer.from([TRADE_HEADER, ...lines].join('\n'), 'utf8'), filename: name };
+  }
+
+  it('歧义 6 位码经 symbol_dict+名称解析成功后 ⇒ 不计入 unknownAssets；799999 排除项也不计', async () => {
+    await seedUser(9011);
+    db.prepare('DELETE FROM symbol_dict').run();
+    try {
+      // 000070 同时映射 sh000070（能源等权）与 sz000070（特发信息）⇒ code6 歧义 ⇒ 裸码 000070
+      const ins = db.prepare(
+        `INSERT INTO symbol_dict (symbol, code6, name, pinyin, market, asset_class) VALUES (?, ?, ?, '', ?, 'risk')`,
+      );
+      ins.run('sh000070', '000070', '能源等权', 'sh');
+      ins.run('sz000070', '000070', '特发信息', 'sz');
+      // 存在性源：仅 sz000070（模拟真实行情库）
+      mockMarketData(['sz000070']);
+
+      const r = await preflightBrokerFile(
+        db,
+        9011,
+        '华宝',
+        tradeFile([
+          '20260128\t10:00:00\t000070\t特发信息\t买入\t10.00\t100\t-1000.00\t5000.00\tT1\tC1',
+          '20260128\t00:00:00\t799999\t指定登记\t指定\t0.00\t1\t0.00\t5000.00\tT2\tC2',
+        ]),
+      );
+      // 歧义码已被解析为 sz000070 ⇒ 不得再出现在未知标的中（回归：旧实现 set 回去导致误拒）
+      expect(r.unknownAssets).toEqual([]);
+      expect(r.rows[0]!.normalized.asset_code).toBe('sz000070');
+      expect(r.rows[1]!.normalized.match_status).toBe('EXCLUDED');
+    } finally {
+      db.prepare('DELETE FROM symbol_dict').run();
+      queryDuckDBMock.mockImplementation(async () => []);
+    }
+  });
+
+  it('真正不存在的标的仍被报告（且名称一并返回）', async () => {
+    await seedUser(9012);
+    db.prepare('DELETE FROM symbol_dict').run();
+    try {
+      mockMarketData(['sz000070']);
+      const r = await preflightBrokerFile(
+        db,
+        9012,
+        '华宝',
+        tradeFile(['20260128\t10:00:00\t600123\t未知股\t买入\t10.00\t100\t-1000.00\t5000.00\tT1\tC1']),
+      );
+      expect(r.unknownAssets).toEqual(['sh600123']);
+      expect(r.unknownAssetNames).toEqual(['未知股']);
+    } finally {
       queryDuckDBMock.mockImplementation(async () => []);
     }
   });

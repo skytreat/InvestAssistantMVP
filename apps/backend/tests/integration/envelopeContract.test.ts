@@ -171,6 +171,7 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/portfolio/risk-check' },
   { method: 'GET', url: '/api/asset-stat/latest' },
   { method: 'GET', url: '/api/asset-stat/history' },
+  { method: 'POST', url: '/api/asset-stat/backfill', payload: { days: 1 }, timeout: 60_000 },
 
   // ── 行情 / 选股 ──
   { method: 'GET', url: '/api/quote/:symbol/kline', timeout: 60_000 },
@@ -267,12 +268,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
-  rmSync(TMP_DIR, { recursive: true, force: true });
+  // Windows 下 SQLite 句柄未释放会让 rmSync 报 EPERM ⇒ 先关连接
+  ConfigStore.resetInstance();
+  rmSync(TMP_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   if (ORIG_SQLITE_PATH === undefined) delete process.env.SQLITE_DB_PATH;
   else process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
   if (ORIG_BACKUP_DIR === undefined) delete process.env.BACKUP_DIR;
   else process.env.BACKUP_DIR = ORIG_BACKUP_DIR;
-  (ConfigStore as unknown as { _instance: unknown })._instance = null;
 });
 
 describe('T89b · 路由覆盖完整性（遍历表必须覆盖**全部已注册路由**）', () => {

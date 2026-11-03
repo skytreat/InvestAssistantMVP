@@ -253,6 +253,72 @@ describe('T143 券商导入向导 /broker/import', () => {
     expect(screen.queryByText('导入完成')).not.toBeInTheDocument();
   });
 
+  it('未知标的（200 + pending_unknown_assets）→ 展示待确认列表，跳过后可完成落库', async () => {
+    postMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/upload')
+        return Promise.resolve(
+          mockResponse({
+            fileKind: 'trade',
+            encoding: 'utf-8',
+            headerRowIndex: 0,
+            columns: [],
+            mappingSuggestion: { byField: {} },
+            previewRows: [],
+            rowTotal: 3,
+            warnings: [],
+          }),
+        );
+      if (url === '/broker-import/confirm-batch')
+        return Promise.resolve(
+          mockResponse({
+            files: [],
+            pending_unknown_assets: [
+              { filename: 'gt-trade.csv', assetCodes: ['sh999999'], assetNames: ['未知股'] },
+            ],
+          }),
+        );
+      if (url === '/broker-import/confirm-final')
+        return Promise.resolve(
+          mockResponse({
+            files: [
+              {
+                filename: 'gt-trade.csv',
+                batchId: 9,
+                rowTotal: 3,
+                rowInserted: 2,
+                rowDeduped: 0,
+                rowExcluded: 1,
+                duplicateFile: false,
+              },
+            ],
+            backfill: { updated: 0 },
+          }),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'gt-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+    await user.type(screen.getByPlaceholderText(/必填/), 'gt');
+    await user.click(screen.getByRole('button', { name: /确认导入/ }));
+
+    // 不再误显示「导入完成」，而是待用户确认是否跳过
+    const pending = await screen.findByTestId('pending-unknown-assets');
+    expect(pending.textContent).toContain('sh999999（未知股）');
+    expect(screen.queryByText('导入完成')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /跳过这些标的并导入/ }));
+
+    await waitFor(() => expect(screen.getByText('导入完成')).toBeInTheDocument());
+    const finalCall = postMock.mock.calls.find((c) => String(c[0]) === '/broker-import/confirm-final');
+    expect(finalCall).toBeTruthy();
+    expect((finalCall?.[1] as { skipUnknownAssetCodes?: string[] }).skipUnknownAssetCodes).toEqual([
+      'sh999999',
+    ]);
+  });
+
   it('导入批次：列表展示统计；撤销需二次确认，成功后刷新为已撤销', async () => {
     const user = userEvent.setup();
     renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
@@ -306,6 +372,35 @@ describe('T144 对账报告 /broker/reconcile', () => {
     // 差异明细行
     expect(screen.getByText('买入')).toBeInTheDocument();
     expect(screen.getByText('sh600000')).toBeInTheDocument();
+  });
+
+  it('无对账数据（404 BROKER_NO_DATA）→ 展示后端文案与空状态，不残留旧报告', async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest')
+        return Promise.reject(
+          mockErrorResponse(404, 'BROKER_NO_DATA', '该券商无已导入事实层记录（请先完成导入）'),
+        );
+      if (url === '/broker-reconcile/diff')
+        return Promise.resolve(mockResponse({ rows: [] }, { pagination: { total: 0 } }));
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('该券商无已导入事实层记录');
+    expect(screen.getByText(/请先在「券商文件导入」完成导入/)).toBeInTheDocument();
+    expect(screen.queryByText(/差额归因/)).not.toBeInTheDocument();
+  });
+
+  it('「重新对账」成功 → 显示「对账已刷新」提示（不再是红色错误样式）', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await waitFor(() => expect(screen.getByText(/差额归因/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: '重新对账' }));
+    await waitFor(() => expect(screen.getByText('对账已刷新')).toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('T145 补录：勾选缺失行 → 类型可修正 → 确认 → 结果（成功 1 / 不可补 1）', async () => {

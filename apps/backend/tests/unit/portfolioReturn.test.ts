@@ -9,7 +9,7 @@ const { ConfigStore } = await import('../../src/config/configStore.js');
 const { computePortfolioReturn } = await import('../../src/services/portfolioReturn.js');
 
 function fresh(tag: string) {
-  (ConfigStore as any)._instance = null;
+  ConfigStore.resetInstance();
   process.env.SQLITE_DB_PATH = path.join(TMP_DIR, `${tag}.db`);
   const store = ConfigStore.getInstance();
   store.db
@@ -22,7 +22,9 @@ function fresh(tag: string) {
 
 afterAll(() => {
   if (ORIG) process.env.SQLITE_DB_PATH = ORIG;
-  rmSync(TMP_DIR, { recursive: true, force: true });
+  // Windows 下 SQLite 句柄未释放会让 rmSync 报 EPERM ⇒ 先关连接
+  ConfigStore.resetInstance();
+  rmSync(TMP_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 describe('T132 三口径收益率 computePortfolioReturn', () => {

@@ -127,8 +127,9 @@ function readTrade(db: Database.Database, id: number): Record<string, unknown> {
 }
 
 afterAll(() => {
+  closeConfigStore();
   if (ORIG_SQLITE_PATH) process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
-  rmSync(TMP_DIR, { recursive: true, force: true });
+  rmSync(TMP_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 describe('T129 券商补录 brokerConfirm', () => {

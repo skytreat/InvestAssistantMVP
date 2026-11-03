@@ -87,10 +87,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
-  rmSync(TMP_DIR, { recursive: true, force: true });
+  // Windows 下 SQLite 句柄未释放会让 rmSync 报 EPERM ⇒ 先关连接
+  ConfigStore.resetInstance();
+  rmSync(TMP_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   if (ORIG_SQLITE_PATH === undefined) delete process.env.SQLITE_DB_PATH;
   else process.env.SQLITE_DB_PATH = ORIG_SQLITE_PATH;
-  (ConfigStore as unknown as { _instance: unknown })._instance = null;
 });
 
 beforeEach(() => {
