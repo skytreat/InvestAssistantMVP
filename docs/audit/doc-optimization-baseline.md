@@ -1,7 +1,7 @@
 # 文档优化 · 前后对照基准（doc-optimization baseline）
 
 > **性质**：证据 / 实验协议（`docs/audit/`），**默认不加载**，仅在「检查优化效果 / gate 证据」时检索。
-> **状态**：🟡 **DRAFT —— before 基准尚未开跑，待 owner 确认后启动**
+> **状态**：🟡 **DRAFT —— before 已采 b1（单样本）；b2 跳过；after（a1/a2）待 ADR-018 §6 落地后采集**
 > **关联**：`docs/adr/ADR-018`（本实验要验证的对象）、`opencode.db`（数据采集源）
 > **目的**：用**同一个真实开发任务**，量化「文档结构优化（ADR-018 §6）」前后 coding agent 的
 > 读取文件数、输入 Token、完成时间、遗漏规格数，把「优化有效」从判断变成可复现实验。
@@ -90,27 +90,38 @@ FROM part WHERE session_id='<ses_xxx>' AND json_extract(data,'$.type')='tool'
 GROUP BY 1;
 ```
 
-## 7. 结果对照表（开跑后填）
+## 7. 结果对照表（b1 已采集；b2 owner 决定跳过）
 
-| run | 条件 | M1(AGENTS) | M2(读文件) | M3(输入token) | M4(秒) | M5(命中/8) | 备注 |
+| run | 条件 | M1(AGENTS) | M2(读文件) | M3(输入token) | M4 | M5(命中/8) | 备注 |
 |---|---|---|---|---|---|---|---|
-| b1 | before | 37KB≈17k | | | | | |
-| b2 | before | 37KB≈17k | | | | | |
-| a1 | after | ~10KB≈5k | | | | | |
-| a2 | after | ~10KB≈5k | | | | | |
+| b1 | before | 37KB≈17k | **48**（read38+grep9+glob1） | **458,148**（另 cache_read 6,582,272 / output 28,501） | **≈8,781s（146min）** | ~7/8（transcript 判，C8 未跑 bench-probe） | session `ses_e5fad31a4ffezIpNxPolKNcN1M` |
+| b2 | before | 37KB≈17k | — | — | — | — | ⏭️ **owner 决定跳过**（首轮 b2 在脏树上起跑已污染；重跑前被中止） |
+| a1 | after | ~10KB≈5k | | | | | 待 §6 实施后采 |
+| a2 | after | ~10KB≈5k | | | | | 待 §6 实施后采 |
 
-**判定**：after 的 M2/M3 相对 before **显著下降**（报告均值+区间）且 M5 **不低于** before ⇒ H1 成立。
+**b1 明细（`opencode.db` → `part`/`session`）**：
+- 工具调用：`read=38, grep=9, glob=1`（读文件 48）+ `edit=19, write=2, bash=12, todowrite=4`
+- M3 为 provider 上报累计值；`cache_read` 高达 6.58M（agnes-3.0-flash 命中缓存）
+- M5（transcript 判定，未跑 `bench-probe` 全量）：C1 回归 / C2 多券商数组 / C3 手工归组 / C4 单券商 / C6 角色 200-401 / C7 可加性 均命中；C8 相关子集「91 tests pass」，但独立 bench-probe golden 断言未跑 → 保守记 ~7/8
+- b1 产出 6 文件（`portfolio.ts` / `portfolioReturn.ts` / `positionCalculator.ts` / 单测 / `envelopeContract.test.ts` / 新增 breakdown 集成测试），已快照于临时区，未并入仓库
+
+**判定（当前）**：仅有 before 单样本（b1），**H1 尚不可判定** —— 需 §6 实施后采 a1/a2 才能对照 M2/M3/M5。b2 跳过使 before 只剩 1 样本，M2/M3/M4 的离散度无法估计（噪声风险，尤其 M4=146min 偏长）。
 
 ## 8. 公平性 / 已知风险
 
-- **随机性**：agent 每 run 非确定，N=2 为下限；M4（时间）噪声最大，只作参考不作判定主指标。
+- **随机性**：agent 每 run 非确定；**b2 已跳过 → before 仅 1 样本**，均值/区间不可得，M4 时间噪声最大，只作参考。
+- **b1 采样污染已排除**：b1 在干净 portfolio 基线上起跑；其后 2 次 b2 尝试（首轮在脏树、重跑前被中止）均未并入，已 `git checkout` 复位 portfolio 文件。
 - **Token 口径**：`tokens_input` 为 provider 上报累计值；`tokens_cache_read` 单列，避免缓存稀释误判。
 - **污染**：被测 run 用全新会话；grader（人/我）持有 checklist，被测 agent 不持有。
 - **任务漂移**：task brief / fixture / checklist 全部冻结在本文件，前后不得改。
 - **代码改动不并入**：基准只测「agent 消费文档完成该任务」，产出的 breakdown 代码是副作用，不 merge。
 
-## 9. 下一步（待 owner 确认）
+## 9. 下一步
 
-1. **owner 确认本 DRAFT 后** → 在**当前文档（before）**下 `opencode run` 采 b1/b2。
-2. 实施 ADR-018 §6（INDEX/卡/生成物/AGENTS 瘦身/audit 排除）。
-3. 在 after 文档下采 a1/a2，填 §7，出判定。
+1. ✅ **b1 已采**（before，单样本，见 §7）。
+2. ⏭️ **b2 跳过**（owner 决定；首轮在脏树污染、重跑前被中止 → 未采）。
+3. 实施 ADR-018 §6（INDEX/卡/生成物/AGENTS 瘦身/audit 排除）。
+4. 在 after 文档下采 a1/a2（`opencode run`），跑 `bench-probe` 补 M5，填 §7 出 H1 判定。
+
+> 复现：`opencode run --title <bench-x> -m agnes/agnes-3.0-flash --dir <repo> "<§3 task brief>"`；
+> 指标取自 `~/.local/share/opencode/opencode.db`（`session` 取 M3/M4，`part` 取 M2）。
