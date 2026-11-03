@@ -267,11 +267,20 @@ if (!execute) {
 }
 
 // ---------- 备份 ----------
+// `.mjs` 是 ESM，顶层 await 可用（`db.backup()` 返回 Promise）；备份失败必须中止，不能带着无备份的库去删数据。
 const backupPath = `${dbPath}.pre-clean-${Date.now()}`;
-await db.backup(backupPath);
-console.log(`\n已备份到：${backupPath}`);
+try {
+  await db.backup(backupPath);
+  console.log(`\n已备份到：${backupPath}`);
+} catch (err) {
+  console.error('\n❌ 备份失败，已中止（未修改数据库）：', err.message);
+  db.close();
+  process.exit(1);
+}
 
 // ---------- 执行清理（单事务） ----------
+// 用 IMMEDIATE 在事务开始就取写锁：避免「先读后升级为写」时被其他进程插队导致 SQLITE_BUSY，
+// 也让「后端还在跑」这种情况在 busy_timeout（5s）后明确失败回滚，而不是删到一半。
 const tx = db.transaction(() => {
   if (keepUserId !== null) {
     // 防御：admin 记录若误引用将被删除的跨用户记录，先断链，避免 FK 失败
@@ -328,7 +337,7 @@ const tx = db.transaction(() => {
 });
 
 try {
-  tx();
+  tx.immediate();
   db.pragma('wal_checkpoint(TRUNCATE)');
   console.log('\n✅ 清理完成。');
   console.log(
