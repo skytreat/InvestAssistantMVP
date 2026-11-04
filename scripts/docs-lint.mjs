@@ -147,17 +147,21 @@ function collectCards() {
 function parsePlanV2OpenDeviations() {
   const src = read(PLAN_V2);
   const start = src.indexOf('## 13. 与 PRD / SDD 的已知偏差登记');
-  // 明细只取 §13.1–§13.3；§13.4 是「已裁决项」汇总，其 ✅ 行用于补判「明细行未标 ✅ 但已关闭」
+  // 明细只取 §13.1–§13.3；收口区 = §13.4「已裁决项」+ §13.5「裁决收口」+ 附录 A「本计划关闭的 Gap → 任务映射」
   const sec134 = src.indexOf('### 13.4', start);
   const appendix = src.indexOf('## 附录 A', start);
   const detail = src.slice(start, sec134 !== -1 ? sec134 : appendix);
-  const tail = sec134 !== -1 ? src.slice(sec134, appendix === -1 ? undefined : appendix) : '';
+  const closureEnd = src.indexOf('## 附录 B', start);
+  const tail = sec134 !== -1 ? src.slice(sec134, closureEnd === -1 ? undefined : closureEnd) : '';
   const idRe = /^\|\s*(?:\*\*)?((?:I|B|S|D)-\d+(?:[ab])?)(?:\*\*)?\s*\|/;
+  // 收口区只认「表格行首单元格里的 ID」（允许单元格内 ID 后仍有说明文字）；
+  // 正文叙述里顺带引用的编号（如「参见 S-7」）不计入，避免把未裁决项误判为已关闭。
+  const cellIdRe = /^\|\s*(?:\*\*)?((?:I|B|S|D)-\d+(?:[ab])?)(?:\*\*)?(?=[\s|])/;
 
   const closedIds = new Set();
   for (const line of tail.split(/\r?\n/)) {
-    const m = line.match(idRe);
-    if (m && line.includes('✅')) closedIds.add(m[1]);
+    const m = line.match(cellIdRe);
+    if (m) closedIds.add(m[1]);
   }
 
   const items = [];
@@ -219,7 +223,7 @@ function genStatus(cards, openDevs, openDecs) {
 > ⚠️ **本文件由 \`npm run docs:gen\` 生成，禁止手改**。事实源：\`docs/tasks/**\` front-matter（ADR-018 D4）。
 > 口径：活跃卡 = \`status ∈ {open, in_progress, blocked}\`；开放偏差/决策来自 plan_v2 §13 与 v3-pending（只统计未关闭项）。
 > 图例：卡状态 \`open\` 待开工 / \`in_progress\` 进行中 / \`blocked\` 阻塞（\`closed\` 不进本表）；
-> 「开放偏差」= plan_v2 §13.1–§13.3 明细行中**行内无 ✅** 的行（§13.4「已裁决项」里的 ID 一律算已关闭）；
+> 「开放偏差」= plan_v2 §13.1–§13.3 明细行中**行内无 ✅**、且**未以行首列登记在 §13.4–§13.5 / 附录 A 收口表**的行；
 > 「开放决策」= v3-pending 状态列非 ✅ 的行（🟡 = 待裁决；「已登记 → Txx」表示有承接任务，但仍未收口）。
 
 ## 概览
@@ -272,7 +276,7 @@ function genBacklog(cards, openDevs, openDecs) {
 
 > ⚠️ **本文件由 \`npm run docs:gen\` 生成，禁止手改**。每条**只链接**到卡或来源章节，**零复述**（ADR-018 D4）。
 > 「开放决策未上浮」由 \`docs-lint --check\` 兜底（ADR-018 D6）。
-> 图例：只收**未关闭**项 —— 偏差 = plan_v2 §13.1–§13.3 行内无 ✅；决策 = v3-pending 状态列非 ✅。
+> 图例：只收**未关闭**项 —— 偏差 = plan_v2 §13.1–§13.3 行内无 ✅ 且未在 §13.4–§13.5 / 附录 A 收口表行首列登记；决策 = v3-pending 状态列非 ✅。
 > 🟡 表示「已登记 / 待裁决、尚未收口」；「已派任务 → Txx」只说明有承接任务，**不等于**已关闭。
 
 ## 1. 活跃任务卡

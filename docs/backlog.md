@@ -2,7 +2,7 @@
 
 > ⚠️ **本文件由 `npm run docs:gen` 生成，禁止手改**。每条**只链接**到卡或来源章节，**零复述**（ADR-018 D4）。
 > 「开放决策未上浮」由 `docs-lint --check` 兜底（ADR-018 D6）。
-> 图例：只收**未关闭**项 —— 偏差 = plan_v2 §13.1–§13.3 行内无 ✅；决策 = v3-pending 状态列非 ✅。
+> 图例：只收**未关闭**项 —— 偏差 = plan_v2 §13.1–§13.3 行内无 ✅ 且未在 §13.4–§13.5 / 附录 A 收口表行首列登记；决策 = v3-pending 状态列非 ✅。
 > 🟡 表示「已登记 / 待裁决、尚未收口」；「已派任务 → Txx」只说明有承接任务，**不等于**已关闭。
 
 ## 1. 活跃任务卡
@@ -18,9 +18,7 @@
 
 | ID | 摘要 | 备注 |
 |---|---|---|
-| I-7 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-9 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| I-12 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-13 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-16 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-17 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
@@ -36,7 +34,6 @@
 | I-29 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-31 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-32 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| S-7 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | S-9 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 
 ## 3. 开放决策（v3-pending-decisions）
