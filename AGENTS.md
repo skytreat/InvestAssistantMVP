@@ -13,46 +13,31 @@
 - **双实体（ADR-018 D3）**：活跃实体是 **D 卡**（`docs/tasks/v3/D-*.md`），T-ID 只是历史计划号索引；`T` 号不再新增为「活跃卡」。
 - **生成物禁手改**：`docs/status.md`、`docs/backlog.md`、`docs/tasks/INDEX.md` 由 `npm run docs:gen` 生成；改完事实源跑 `npm run docs:lint`。
 - **`docs/audit/` 默认不加载**（ADR-018 D6 的 opencode 排除 + 本仓约定）：仅在下列情形才检索：① 用户显式点名；② 怀疑历史已裁决（D-ID 追认）；③ 本层事实冲突需取证；④ 要改某条硬约束的出处；⑤ 写/复核 Wave gate 或 benchmark。
-- **按需查阅**：起停服务/清端口 → playbook §1；本地绿 CI 红 → §2/§3；行情库相关测试 → §4；SQLite DDL → §5；找权威文档 → §6。
+- **按需查阅**：起停服务/清端口 → playbook §1；本地绿 CI 红 → §2/§3；行情库相关测试 → §4；SQLite DDL → §8；文档分层细则 → §7；找权威文档 → §6。
 
 ---
 
-## 📐 文档分层与层界规则（2026-10-17 确立，违反即视为缺陷）
+## 📐 文档分层与层界规则（摘要；细则见 playbook §7）
 
-### 核心规则：每条事实只在它所属的那一层定义，其他层只能引用
+> 核心规则：**每条事实只在它所属的那一层定义，其他层只能引用** —— 违反曾导致 B-14
+> （`Requirements_simplified.md` §7.1 与 `SDD.md` §5.7 对 C3-C8 两套定义，潜伏 3 轮审计），案例见 playbook §7。
 
-> 违反此规则已造成实际损失：**B-14（C1-C12 编号定义）** —— `Requirements_simplified.md` §7.1
-> 与 `SDD.md` §5.7 对 C3-C8 的定义**完全不同**（一为「数据新鲜度」，一为「数据内容」），
-> 而 `PRD.md` §6.4 站在 Requirements 一边。**三层文档、两套定义，潜伏 3 轮审计未被发现。**
+### 各层职责与冲突裁决（按域裁决，不用扁平优先级）
 
-### 各层职责边界
+| 层 | 权威文档 | 只回答 |
+|---|---|---|
+| L1 业务 | `InvestAssistantV3_NewRequirements.md` / `Requirements_simplified.md` | 业务规则与不变量（成本算法、双口径、七类交易、C1-C12「要检什么」） |
+| L2 体验 | `PRD_v3.md` / `PRD.md` | 用户可见的旅程与交互 |
+| L3 契约 | `SDD_v3.md` / `SDD.md` | API / DDL / 插件接口 / C1-C12 的 SQL / 性能与安全门槛 |
+| L3.5 行情 | `docs/tdx2db_schema.md` | DuckDB 表/视图真实结构（代码只读） |
+| L4 计划 | `code_implementation_plan_v3.md` / `_v2.md` | 任务拆解、排期、Gate、偏差待办 |
+| L5 运维 | `docs/deploy.md` | systemd / 环境变量 / 目录权限 |
+| 决策 | `docs/adr/` | 为什么这么定 + 代价 + 备选否决理由 |
+| 旁路 | `AGENTS.md` / `docs/coding-standards.md` | 硬约束摘要 + 指针 / 怎么写代码 |
+| 证据 | `docs/audit/` `docs/archive/` | 审计与留档（**不得作为执行依据**） |
 
-| 层 | 文档 | **只回答** | **明确不写** |
-|---|---|---|---|
-| L1 业务 | `Requirements_simplified.md`（V3 外）<br>`InvestAssistantV3_NewRequirements.md`（V3） | **业务规则与不变量**（成本算法、双口径、七类交易、**C1-C12「要检什么」**）| 任何技术实现、SQL、界面细节 |
-| L2 体验 | `PRD.md`（V3 外）<br>`PRD_v3.md`（V3） | **用户可见的旅程与交互** | 业务规则、技术契约 |
-| L2.5 规格 | `ui-spec.md` | **UI 长什么样**（Token / 组件规格 / 断点）| 什么时候做、排期 |
-| L3 契约 | `SDD.md`（V1 基线）<br>`SDD_v3.md`（V3 增量） | **技术契约唯一权威**：API / DDL / 插件接口 / **C1-C12「怎么检」的 SQL** / 性能与安全门槛；V3 范围取 V3，未覆盖项回 V1 | 用户故事、排期 |
-| **L3.5 行情** | `docs/tdx2db_schema.md`<br>`docs/tdx2db_schema_dump.sql` | **DuckDB 行情层的真实表/视图结构**（由 `tdx2db` Go 二进制写入，**代码只读**）| 业务规则、后端 API |
-| L4 计划 | `code_implementation_plan_v2.md`（Wave 1-8）<br>`code_implementation_plan_v3.md`（V3） | **任务拆解 + 排期 + 依赖 + 验收 Gate + 偏差待办** | **不复述技术契约** |
-| **L5 运维** | `docs/deploy.md` | **怎么部署与运维**（systemd unit / 环境变量 / 目录权限）| 业务规则、任务排期 |
-| 决策 | `docs/adr/` | **为什么这么定** + 代价 + 备选方案否决理由 | 具体怎么做 |
-| 旁路 | `AGENTS.md`（本文）| agent 硬约束**摘要 + 指针** | 不复述细节 |
-| 旁路 | `docs/coding-standards.md` | **怎么写代码**（命名 / 风格 / 测试写法）| 不复述架构与验收 |
-| 证据 | `docs/audit/` `docs/archive/` | 审计发现与历史留档 | **不得作为执行依据** |
-
-### 冲突裁决：按域，不按扁平优先级
-
-> ⚠️ **不要用「`Requirements > PRD > SDD > plan」的扁平优先级** —— 会计规则不该压过 UX 决策，
-> 技术契约也不该压过业务要求。**按冲突的类型裁决**：
-
-| 冲突类型 | 谁赢 |
-|---|---|
-| 业务规则 / 计算口径 / 校验项定义 | **`InvestAssistantV3_NewRequirements.md`（V3）/ `Requirements_simplified.md`（V3 外）** |
-| 交互 / 界面行为 / 用户旅程 | **`PRD_v3.md`（V3）/ `PRD.md`（V3 外）** |
-| 技术契约（API / DDL / SQL 实现 / 性能与安全门槛）| **`SDD_v3.md`（V3）/ `SDD.md`（V1 未覆盖项）** |
-| 「什么时候做 / 谁做 / 什么顺序」| **`code_implementation_plan_v3.md`（V3）/ `code_implementation_plan_v2.md`（Wave 1-8）** |
-| 「为什么这么设计」| **`docs/adr/`（已接受 ADR 优先于 SDD 的旧表述）** |
+- **裁决**：业务口径归 L1、交互归 L2、技术契约归 L3、先后归 L4、理由归 ADR；冲突裁决记入 `docs/adr/`。
+- **实现细节（表名/列名/API 路径）只进 L3**；L1/L2 只引用、不复述。
 
 ### 写入文档前的自检
 
@@ -61,32 +46,10 @@
 3. 改动会不会与另一层冲突？→ 冲突时按上表裁决，并把裁决记入 `docs/adr/`
 4. 如果是**实现细节**（表名 / 列名 / API 路径）→ 一律不写进 L1/L2，只进 L3
 
-> ⚠️ **SDD §3.3「放行某张表可读」≠「已知该表字段名」。**
-> 本项目已多次因照抄未验证的表名假设（`raw_symbol_class.is_st`、`raw_hfq_factor`、
-> `/opt/invest/plugins/`）而写错代码 —— **实现前必须 `DESCRIBE` 实测**。
-> 详见实施计划 §13.1 B-1 与 T85 卡点。
+> ⚠️ **表名/列名一律 `DESCRIBE` 实测**：SDD「放行可读某表」≠「已知字段名」（曾因照抄 `raw_symbol_class.is_st`、`raw_hfq_factor`、`/opt/invest/plugins/` 写错代码，见 plan §13.1 B-1 / T85）。
+>
+> 🔒 **改动既有代码前先证明「现状是错的」**：复现 → 找权威来源（真实响应 / DB 实测 / SDD 章节，**不是代码注释**）→ 注释与行为不一致时**先怀疑注释**。sub-agent 只许**报告**疑点，主 agent 复现后才可改（案例见 playbook §7）。
 
-> 🔒 **注释不是规格。改动既有代码前，先证明「现状是错的」（2026-10-17 确立）**
->
-> 上条只覆盖 DuckDB 表/列名。**同类错误在外部 API 与代码注释上同样发生过**，故扩展为通用动作门禁：
->
-> 1. **复现** —— 写一个会失败的测试，或跑一条命令让错误现象可见；
-> 2. **定位** —— 找**权威来源**（真实 API 响应 / DB 实测 / SDD 章节），**不是代码注释**；
-> 3. **注释与行为不一致时，先怀疑注释** —— 注释可能过期、可能一直是错的。
->
-> **实测案例（当天 4 次，第 4 次由 agent 犯）**：
-> `validator.ts` 用东方财富 `fields2=f51..f61` 取前复权收盘价。代码注释写着
-> `"2024-01-02,10.50,10.60,10.40,10.55"`，据此读是 `日期,开盘,高,低,收` → 收盘应在 `parts[4]`，
-> sub-agent 据此报告「`parts[2]` 是 bug」。**2026-10-17 真实响应实测**：
-> `2026-10-12,1262.95,1288.00,1288.00,1261.00` → `f53=收盘` 即 `parts[2]`，与本地 `close=1288` 吻合
-> —— **代码正确，注释错误**。主 agent 采信该报告去改注释，**误删 `const parts = ...` 代码行，
-> 引入真实缺陷并被 typecheck + 9 个测试抓到**。
->
-> **推论**：
-> - 权威来源只有**实测**。第三方 API 的字段序**一律以真实响应为准**，不以注释或记忆为准。
-> - 「报告疑似缺陷」与「动手修改」之间**必须插入取证步骤**。sub-agent 只被允许**报告**疑似问题，
->   不允许顺手改；主 agent 采信前必须自己复现。
-> - 同一天内前三次同类错误：C4/C5 字段名假设、资产快照表结构假设、C11/C12 阈值照抄 plan 而非 Requirements。
 ## 🔒 锁定技术栈，禁止擅自修改
 1. Node版本 **≥22**（2026-10-20 实测 **v26.12.0**；⚠️ Node ≥22 自带**实验性内置 `localStorage`**，不带 `--localstorage-file` 时 `globalThis.localStorage` 是 `undefined` 且**遮蔽 jsdom 的实现** —— 前端测试必须自备内存版 Storage，见 `apps/frontend/tests/setup.ts`）；使用 systemd 管理普通 Node 进程；**禁止使用 Bun**。
 2. 桌面SQLite：**推荐 better-sqlite3**（同步 API，成熟稳定，原生预编译二进制覆盖 linux-x64 / linux-arm64 / win32-x64）；
@@ -158,22 +121,9 @@
 5. 小程序消息订阅推送（MVP不做）；
 6. **不做 `schema_migrations` 迁移表 / 迁移框架**，但**改已有表的约束必须用幂等表重建**，见下。
 
-### DDL 变更判据（2026-10-17 实测澄清，违反会导致 T49/T87 无法实现）
+### DDL 变更判据（口诀：只加列 → ALTER；碰约束 → 表重建）
 
-`CREATE TABLE IF NOT EXISTS` **只对「表不存在」生效**；表已存在时它什么都不做，**无法改 CHECK / UNIQUE**。
-
-| 变更类型 | 可行手段 | 先例 |
-|---|---|---|
-| **加列** | `ALTER TABLE ... ADD COLUMN`（幂等：先 `PRAGMA table_info` 判存在） | `configStore.ts:180` `_ensureTradeRecordReviewColumns()` |
-| **改 CHECK / UNIQUE / 主键** | **幂等表重建**：`建新表 → INSERT SELECT → DROP 旧表 → ALTER RENAME` | `configStore.ts:164` `_ensureTradeRecordUniqueConstraint()`、`configStore.ts:167` `_ensureSystemLogCheckConstraint()` |
-
-> 根因（`configStore.ts:177` 注释原文）：**SQLite `ALTER TABLE ADD COLUMN` 不支持带 CHECK 之类的复杂约束，也不支持改 CHECK 值。**
->
-> ⚠️ **绝对禁止「直接 DROP 旧表」** —— 必须先 `INSERT INTO 新 SELECT * FROM 旧` 再 DROP，且必须包在 `db.transaction()` 里。T49 / T87 都要改 `user_trade_record` 的 CHECK 与 UNIQUE，走的就是这条路径。
->
-> ⚠️ 多个幂等重建若落在同一张表上（如 T49 改 CHECK + T87 改 UNIQUE），**合并为一次重建**，不要叠加多次 DROP/RENAME。
->
-> 判别口诀：**只加列 → ALTER；碰约束 → 表重建。**
+`CREATE TABLE IF NOT EXISTS` **无法改 CHECK / UNIQUE**。加列用 `ALTER TABLE ... ADD COLUMN`（先 `PRAGMA table_info` 判存在）；改 CHECK/UNIQUE/主键走**幂等表重建**（建新表 → `INSERT SELECT` → DROP → RENAME，包在 `db.transaction()`，**禁止直接 DROP 旧表**）。先例与合并规则见 playbook §8。
 
 ## 🔐 安全编码强制约束
 1. Tushare token、device凭证、绑定token禁止打印明文日志；禁止前端渲染明文token。
@@ -224,4 +174,4 @@
 ---
 
 > 📌 **被搬走的细则**（逐字保留在 [`docs/runbooks/agent-playbook.md`](docs/runbooks/agent-playbook.md)）：
-> §1 后台进程收尾四步 · §2 CI 三陷阱 · §3 测试执行节奏 · §4 行情库三档 · §5 better-sqlite3 · §6 参考文档路径（详细版）。
+> §1 后台进程收尾四步 · §2 CI 三陷阱 · §3 测试执行节奏 · §4 行情库三档 · §5 better-sqlite3 · §6 参考文档路径（详细版）· §7 文档分层细则 · §8 DDL 变更判据（先例）。

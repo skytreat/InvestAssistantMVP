@@ -9,6 +9,7 @@
  * 事实源（手维护）：docs/tasks/**.md 的 front-matter；plan_v2 §13 的开放偏差；v3-pending-decisions.md 的 D 项
  * 生成物（本脚本写）：docs/status.md、docs/backlog.md、docs/tasks/INDEX.md
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -36,6 +37,70 @@ const relLink = (outRel, targetRel) => {
   return r.startsWith('.') ? r : `./${r}`;
 };
 
+const ARCHIVE_PREFIX = 'docs/archive';
+const DOC_SOURCE = /\.(md|sql)$/i;
+/** 浅克隆 / 无 git 时，依赖历史的检查（D6 的 last_reviewed_commit 项）整体跳过 */
+const gitAvailable = (() => {
+  try {
+    return (
+      execFileSync('git', ['rev-parse', '--is-shallow-repository'], {
+        cwd: ROOT,
+        encoding: 'utf8',
+      }).trim() !== 'true'
+    );
+  } catch {
+    return false;
+  }
+})();
+
+/** 卡声明的权威来源（sources / audit_refs / source_decision） */
+function sourceEntries(c) {
+  return [
+    ...(c.data.sources ?? []),
+    ...(c.data.audit_refs ?? []),
+    ...(c.data.source_decision ? [c.data.source_decision] : []),
+  ];
+}
+
+/** 锚点可定位性：`§x.y` 按 `### x.y` 标题匹配；其余按小写包含（ADR-018 D6） */
+function anchorOk(content, frag) {
+  const f = decodeURIComponent(frag);
+  if (f.startsWith('§')) {
+    const sec = f
+      .slice(1)
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^#+\\s*${sec}\\b`, 'm').test(content);
+  }
+  return content.toLowerCase().includes(f.toLowerCase());
+}
+
+/** 来源文件是否在 last_reviewed_commit 之后被改过（D6 的过期复核 WARNING） */
+function changedSince(commit, rel) {
+  try {
+    return (
+      execFileSync('git', ['log', '--format=%H', `${commit}..HEAD`, '--', rel], {
+        cwd: ROOT,
+        encoding: 'utf8',
+      }).trim() !== ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** 递归收集某目录下的 .md（用于历史文档失效链接扫描） */
+function walkMd(dirRel, out = []) {
+  const abs = path.join(ROOT, dirRel);
+  if (!fs.existsSync(abs)) return out;
+  for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+    const rel = `${dirRel}/${entry.name}`;
+    if (entry.isDirectory()) walkMd(rel, out);
+    else if (entry.name.endsWith('.md')) out.push(rel);
+  }
+  return out;
+}
+
 /** 解析极简 YAML front-matter（只支持 `key: value` 与 `key: [a, b]`） */
 function parseFrontMatter(src) {
   if (!src.startsWith('---')) return { data: {}, body: src, hasFm: false };
@@ -49,7 +114,11 @@ function parseFrontMatter(src) {
     const [, k, vRaw] = m;
     const v = vRaw.trim();
     if (v.startsWith('[') && v.endsWith(']')) {
-      data[k] = v.slice(1, -1).split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      data[k] = v
+        .slice(1, -1)
+        .split(',')
+        .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+        .filter(Boolean);
     } else {
       data[k] = v.replace(/^['"]|['"]$/g, '');
     }
@@ -122,11 +191,17 @@ const fmtTask = (t) => (t.startsWith('T') ? t : t);
 function genStatus(cards, openDevs, openDecs) {
   const active = cards.filter((c) => ACTIVE.has(c.data.status));
   const rows = active
-    .map((c) => `| [${c.data.id}](${relLink('docs/status.md', c.rel)}) | ${c.data.priority ?? '—'} | ${c.data.title ?? '—'} | ${c.data.status} | ${c.data.gate ?? '—'} | ${(c.data.related_tasks ?? []).join(' ') || '—'} |`)
+    .map(
+      (c) =>
+        `| [${c.data.id}](${relLink('docs/status.md', c.rel)}) | ${c.data.priority ?? '—'} | ${c.data.title ?? '—'} | ${c.data.status} | ${c.data.gate ?? '—'} | ${(c.data.related_tasks ?? []).join(' ') || '—'} |`,
+    )
     .join('\n');
   const anchors = cards
     .filter((c) => c.data.verified_date || c.data.verified_commit)
-    .map((c) => `| [${c.data.id}](${relLink('docs/status.md', c.rel)}) | ${c.data.verified_date ?? '—'} | ${c.data.verified_commit ?? '—'} |`)
+    .map(
+      (c) =>
+        `| [${c.data.id}](${relLink('docs/status.md', c.rel)}) | ${c.data.verified_date ?? '—'} | ${c.data.verified_commit ?? '—'} |`,
+    )
     .join('\n');
   return `# 项目状态（生成物）
 
@@ -174,7 +249,10 @@ function genBacklog(cards, openDevs, openDecs) {
     .map((d) => `| ${d.id} | 见来源原文 | [${d.source}](${relLink('docs/backlog.md', d.source)}) |`)
     .join('\n');
   const decRows = openDecs
-    .map((d) => `| ${d.id} | ${d.title || '见来源原文'} | [${d.source}](${relLink('docs/backlog.md', d.source)}) |`)
+    .map(
+      (d) =>
+        `| ${d.id} | ${d.title || '见来源原文'} | [${d.source}](${relLink('docs/backlog.md', d.source)}) |`,
+    )
     .join('\n');
   return `# 开放项清单（生成物）
 
@@ -203,7 +281,10 @@ ${decRows || '| — | — | — |'}
 
 function genIndex(cards) {
   const rows = cards
-    .map((c) => `| [${c.data.id}](${relLink('docs/tasks/INDEX.md', c.rel)}) | ${c.data.version ?? '—'} | ${c.data.title ?? '—'} | ${c.data.status ?? '—'} | ${c.data.priority ?? '—'} | ${(c.data.related_tasks ?? []).join(' ') || '—'} |`)
+    .map(
+      (c) =>
+        `| [${c.data.id}](${relLink('docs/tasks/INDEX.md', c.rel)}) | ${c.data.version ?? '—'} | ${c.data.title ?? '—'} | ${c.data.status ?? '—'} | ${c.data.priority ?? '—'} | ${(c.data.related_tasks ?? []).join(' ') || '—'} |`,
+    )
     .join('\n');
   return `# 任务卡索引（生成物）
 
@@ -242,14 +323,43 @@ function lint(cards) {
         if (!exists(dep)) err('task-card', `${c.rel} depends_on 指向不存在的文件 ${dep}`);
       }
     }
-    if (c.size > CARD_SOFT_LIMIT) warn('task-card', `${c.rel} 正文超软上限（${c.size}B > ${CARD_SOFT_LIMIT}B）`);
+    if (c.size > CARD_SOFT_LIMIT)
+      warn('task-card', `${c.rel} 正文超软上限（${c.size}B > ${CARD_SOFT_LIMIT}B）`);
 
-    // 卡内相对链接存在性
+    // 卡内相对链接存在性 + 锚点可定位性
     for (const m of c.body.matchAll(/\]\(([^)#\s]+)(#[^)]*)?\)/g)) {
       const target = m[1];
       if (/^(http|https|mailto):/.test(target)) continue;
       const absRel = path.posix.normalize(path.posix.join(path.posix.dirname(c.rel), target));
       if (!exists(absRel)) err('link', `${c.rel} 链接不存在：${target}`);
+      else if (m[2] && !anchorOk(read(absRel), m[2].slice(1)))
+        err('anchor', `${c.rel} 链接锚点不存在：${target}${m[2]}`);
+    }
+
+    // D6① 任务卡引用已废弃规格：证据层 docs/archive 不得作为执行依据
+    const refs = [...sourceEntries(c), ...(c.data.depends_on ?? []), ...(c.data.related_tasks ?? [])];
+    if (refs.some((r) => r.includes(ARCHIVE_PREFIX)))
+      err('deprecated', `${c.rel} 引用 docs/archive 下的已废弃规格`);
+    for (const m of c.body.matchAll(/\]\(([^)\s]+)\)/g)) {
+      if (m[1].includes(ARCHIVE_PREFIX)) err('deprecated', `${c.rel} 正文链接指向 docs/archive：${m[1]}`);
+    }
+
+    // D6② 权威文档来源存在性 + 锚点
+    for (const s of sourceEntries(c)) {
+      const [p, frag] = s.split('#');
+      if (!DOC_SOURCE.test(p)) continue;
+      if (!exists(p)) err('source', `${c.rel} sources 指向不存在的文件 ${p}`);
+      else if (frag && !anchorOk(read(p), frag)) err('anchor', `${c.rel} sources 锚点不存在：${s}`);
+    }
+
+    // D6④ 来源章节晚于 last_reviewed_commit 变更（浅克隆/无 git 时跳过）
+    if (gitAvailable && c.data.last_reviewed_commit) {
+      for (const s of sourceEntries(c)) {
+        const p = s.split('#')[0];
+        if (!DOC_SOURCE.test(p) || !exists(p)) continue;
+        if (changedSince(c.data.last_reviewed_commit, p))
+          warn('stale-review', `${c.rel} 来源已晚于 last_reviewed_commit 变更：${p}`);
+      }
     }
   }
 
@@ -265,6 +375,28 @@ function lint(cards) {
         continue;
       }
       if (!taskIds.has(fmtTask(t))) warn('task-card', `${c.rel} related_tasks 引用未在计划中出现的 ${t}`);
+    }
+  }
+
+  // D6③ 已完成卡仍被活跃卡引用（活跃卡不应再依赖已并入产物的 closed 卡）
+  const statusById = new Map(cards.filter((c) => c.data.id).map((c) => [c.data.id, c.data.status]));
+  for (const c of cards) {
+    if (!ACTIVE.has(c.data.status)) continue;
+    for (const t of [...(c.data.related_tasks ?? []), ...(c.data.depends_on ?? [])]) {
+      const id = path.posix.basename(t).replace(/\.md$/, '');
+      if (statusById.get(id) === 'closed') warn('closed-ref', `${c.rel} 仍依赖已 closed 的 ${id}`);
+    }
+  }
+
+  // D6⑤ 历史文档（audit/archive）失效链接
+  for (const rel of [...walkMd('docs/audit'), ...walkMd('docs/archive')]) {
+    for (const m of read(rel).matchAll(/\]\(([^)\s]+)\)/g)) {
+      const target = m[1];
+      if (/^(http|https|mailto):/.test(target)) continue;
+      const t = target.split('#')[0];
+      if (!t) continue;
+      const absRel = path.posix.normalize(path.posix.join(path.posix.dirname(rel), t));
+      if (!exists(absRel)) warn('history-link', `${rel} 链接不存在：${target}`);
     }
   }
 }
