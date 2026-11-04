@@ -179,5 +179,6 @@ opencode run -m zen/deepseek-v4.1-flash-free --dir "$base\a1" --title "bench-oc-
 ## 8. 待 owner 确认
 
 1. **样本**：接受 N=1 与固定顺序 b1→a1；还是再加一组反向顺序（N=2，成本翻倍）来抵消顺序混淆。
-2. **超时**：已定为 **60 min 硬超时（不放宽）**，超时即判无效。
-3. **配置收紧**：接受「去密钥 `{file:}` + `external_directory` 拒绝 + `OPENCODE_CONFIG` 指向 worktree 外」作为偏离（两臂一致）。
+2. **配置收紧**：接受「去密钥 `{file:}` + `external_directory` 拒绝 + `OPENCODE_CONFIG` 指向 worktree 外」作为偏离（两臂一致）。
+
+> 超时已固定为 **60 min 硬超时（不放宽）**，见 §3 / §6。
