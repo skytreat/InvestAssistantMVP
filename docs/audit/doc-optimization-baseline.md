@@ -57,12 +57,14 @@ agent 完成**同一任务**所需的**读取文件数（M2）与输入 Token（
 | C2 | 多券商数组 | `?breakdown=broker` 且 ≥2 券商 → `data` 为**数组**，每元素含 `brokerCode` + `risk/cash/total` |
 | C3 | 手工归组 | `broker_code IS NULL` 记录归入一个明确组（如 `brokerCode:null`/`'manual'`），**不丢失、不误并入**某券商 |
 | C4 | 单券商 | 仅 1 个券商时数组长度 = 1 |
-| C5 | envelope | 成功体 `code=0 + data + timestamp + success=true`；错误走统一 `fail`，**不裸抛 500** |
+| C5 | envelope | 成功体 `code=0 + data + timestamp`（**无 `success`**，T89b 已删除）；错误走统一 `fail`，**不裸抛 500** |
 | C6 | 角色 | 用户级端点：普通登录用户可访问（**不 403 admin-only**）；未登录 401 |
 | C7 | 可加性 | 每组 `total.pnl ≈ risk.pnl + cash.pnl − fees`（复用现有 golden 断言方式） |
 | C8 | 测试 | 契约测试（走路由 + envelope）+ 单测（≥1 条多券商 + 1 条手工归组 golden：`001` group cost=1005 / `002`=2010 / 手工=5003）；相关子集全绿 |
 
 **grader 脚本（run 时写）**：`scripts/bench-probe.mjs` —— seed 上述 fixture，调 `computePortfolioReturn`（含 breakdown）与路由注入，逐条断言 C1–C7，输出 `C1..C7: PASS/FAIL` + C8 的 `npx vitest run` 结果。M5 据此计分。
+
+> **opencode pilot 偏离**：`doc-optimization-pilot-plan.md` 改用 `apps/backend/tests/unit/bench-probe.test.ts`（需 vitest/TS 加载），判据与 fixture 不变；该偏离已在 pilot 计划 §5 显式记录。
 
 ## 5. 运行协议（N=2 / 条件）
 
