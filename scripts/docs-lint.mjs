@@ -123,7 +123,8 @@ function parseFrontMatter(src) {
       data[k] = v.replace(/^['"]|['"]$/g, '');
     }
   }
-  return { data, body: src.slice(end + 4), hasFm: true };
+  // CRLF 文件在 `---` 后仍带一个 \r\n，先剥掉再交给链接/锚点扫描
+  return { data, body: src.slice(end + 4).replace(/^\r?\n/, ''), hasFm: true };
 }
 
 /** 收集任务卡 */
@@ -147,14 +148,27 @@ function collectCards() {
 function parsePlanV2OpenDeviations() {
   const src = read(PLAN_V2);
   const start = src.indexOf('## 13. 与 PRD / SDD 的已知偏差登记');
-  const end = src.indexOf('## 附录 A', start);
-  const seg = src.slice(start, end === -1 ? undefined : end);
+  // 明细只取 §13.1–§13.3；§13.4 是「已裁决项」汇总，其 ✅ 行用于补判「明细行未标 ✅ 但已关闭」
+  const sec134 = src.indexOf('### 13.4', start);
+  const appendix = src.indexOf('## 附录 A', start);
+  const detail = src.slice(start, sec134 !== -1 ? sec134 : appendix);
+  const tail = sec134 !== -1 ? src.slice(sec134, appendix === -1 ? undefined : appendix) : '';
+  const idRe = /^\|\s*(?:\*\*)?((?:I|B|S|D)-\d+(?:[ab])?)(?:\*\*)?\s*\|/;
+
+  const closedIds = new Set();
+  for (const line of tail.split(/\r?\n/)) {
+    const m = line.match(idRe);
+    if (m && line.includes('✅')) closedIds.add(m[1]);
+  }
+
   const items = [];
-  for (const line of seg.split(/\r?\n/)) {
-    const m = line.match(/^\|\s*(?:\*\*)?((?:I|B|S|D)-\d+(?:[ab])?)(?:\*\*)?\s*\|/);
+  for (const line of detail.split(/\r?\n/)) {
+    const m = line.match(idRe);
     if (!m) continue;
     const id = m[1];
-    const closed = /已关闭|已修（|已修 \(|已修0000|已裁决|已复核|误报|已兑现|已落地/.test(line);
+    // ✅ 是显式关闭标记（🟡 / 空白 = 未关闭）；§13.4 汇总 + 关键字兜底防历史写法
+    const closed =
+      line.includes('✅') || closedIds.has(id) || /已关闭|已修|已裁决|已复核|误报|已兑现|已落地/.test(line);
     if (!closed && !items.some((it) => it.id === id)) items.push({ id, source: PLAN_V2, line: line.trim() });
   }
   return items;
@@ -185,8 +199,6 @@ function knownTaskIds() {
   }
   return ids;
 }
-
-const fmtTask = (t) => (t.startsWith('T') ? t : t);
 
 function genStatus(cards, openDevs, openDecs) {
   const active = cards.filter((c) => ACTIVE.has(c.data.status));
@@ -374,7 +386,13 @@ function lint(cards) {
         err('task-card', `${c.rel} related_tasks 格式非法：${t}`);
         continue;
       }
-      if (!taskIds.has(fmtTask(t))) warn('task-card', `${c.rel} related_tasks 引用未在计划中出现的 ${t}`);
+      if (!taskIds.has(t)) err('task-card', `${c.rel} related_tasks 引用未在计划中出现的 ${t}`);
+    }
+    // depends_on 的 T-ID 分支同样按 D6 判 ERROR（.md 分支已在上面查过存在性）
+    for (const t of c.data.depends_on ?? []) {
+      if (t.endsWith('.md')) continue;
+      if (!/^T\d{2,3}[ab]?$/.test(t)) err('task-card', `${c.rel} depends_on 格式非法：${t}`);
+      else if (!taskIds.has(t)) err('task-card', `${c.rel} depends_on 引用未在计划中出现的 ${t}`);
     }
   }
 

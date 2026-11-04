@@ -80,6 +80,7 @@ agent 完成**同一任务**所需的**读取文件数（M2）与输入 Token（
 
 ```sql
 -- M3/M4（按 opencode run 新建的 session id）
+-- time_created / time_updated 为 13 位毫秒时间戳（2026-11-04 抽样实测），差值单位 = ms
 SELECT id, tokens_input, tokens_cache_read, tokens_output, cost,
        time_created, time_updated,
        (time_updated - time_created) AS dur_ms
@@ -94,7 +95,7 @@ GROUP BY 1;
 
 ## 7. 结果对照表（主样本 = Trae 实跑 b1；opencode 口径降为附注）
 
-| run | 条件 | M1(AGENTS) | M2(读文件) | M3(输入token) | M4 | M5(命中/8) | 备注 |
+| run | 条件 | M1(AGENTS) | M2(读文件) | M3(输入token) | M4 | M5(命中/8；遗漏=8−命中) | 备注 |
 |---|---|---|---|---|---|---|---|
 | **b1（主样本·Trae）** | before | 37KB≈17k | **NOT COLLECTED** | **NOT COLLECTED** | **≈16min**（2026-11-04 00:07→00:23） | **NOT COLLECTED** | 起始提交 `ef4f9d9`（`git status` 为空）；`DeepSeek-V4.1-Flash`；5 文件（4 改 + 1 新增）`314+/41-` 加新文件 153 行；明细见 §7.2 |
 | b1-opencode（附注） | before | 37KB≈17k | 48（read38+grep9+glob1） | 458,148（另 cache_read 6,582,272 / output 28,501） | ≈8,781s（146min） | ~7/8（transcript 判，C8 未跑 bench-probe） | ⚠️ **不同工具口径（`opencode run` + agnes-3.0-flash），不参与主对比**；session `ses_e5fad31a4ffezIpNxPolKNcN1M` |

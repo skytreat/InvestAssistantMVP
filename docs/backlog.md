@@ -16,12 +16,10 @@
 
 | ID | 摘要 | 备注 |
 |---|---|---|
-| I-2 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-7 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-9 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-12 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-13 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| I-15 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-16 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-17 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-19 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
@@ -36,29 +34,13 @@
 | I-29 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-31 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | I-32 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| I-35 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| I-36 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| S-3 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | S-7 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 | S-9 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-3 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-6 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-9 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-10 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-11 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-12 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-4 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-7 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-8 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-13 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| B-15 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
-| I-34 | 见来源原文 | [docs/client/code_implementation_plan_v2.md](./client/code_implementation_plan_v2.md) |
 
 ## 3. 开放决策（v3-pending-decisions）
 
 | ID | 事项 | 备注 |
 |---|---|---|
-| D-1 | V3 任务编号（撞 v2 T100~T111） | [docs/audit/v3-pending-decisions.md](./audit/v3-pending-decisions.md) |
 | D-3 | V3.1 样本文件 | [docs/audit/v3-pending-decisions.md](./audit/v3-pending-decisions.md) |
 | D-4 | V3 第一个 PR 的范围 | [docs/audit/v3-pending-decisions.md](./audit/v3-pending-decisions.md) |
 | D-6 | 文档 PR（#25）的验收落档名 | [docs/audit/v3-pending-decisions.md](./audit/v3-pending-decisions.md) |
