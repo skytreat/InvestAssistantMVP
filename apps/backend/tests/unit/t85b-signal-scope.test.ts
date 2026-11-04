@@ -26,9 +26,14 @@ const ORIGINAL_SQLITE_DB_PATH = process.env.SQLITE_DB_PATH;
 process.env.SQLITE_DB_PATH = TEST_DB;
 
 import { ConfigStore } from '../../src/config/configStore.js';
-import { resolveSignalSymbols, SIGNAL_USER_ID } from '../../src/services/signalService.js';
+import {
+  resolveSignalSymbols,
+  SIGNAL_USER_ID,
+  persistBatchSignals,
+} from '../../src/services/signalService.js';
 import { executeAllPlugins } from '../../src/services/pluginEngine.js';
 import { getAllPlugins } from '../../src/services/pluginEngine.js';
+import type { PluginSignal } from '../../src/services/pluginEngine.js';
 import * as duckdbMod from '../../src/db/duckdb.js';
 
 /**
@@ -39,6 +44,39 @@ import * as duckdbMod from '../../src/db/duckdb.js';
  */
 function installDuckDBMock(): void {
   vi.spyOn(duckdbMod, 'queryDuckDB').mockImplementation(async () => []);
+}
+
+/**
+ * G1.3a（2026-11-04 判据修订）用例专用行情 mock：
+ * 返回 120 根**单调下跌**日线 → `rsi_oversold` 落到超卖区必然产信号（SUCCESS），
+ * `macd_cross` 不产信号（SKIP）→ 一次覆盖四态里的两种正常终态。
+ */
+function installDecliningKlineMock(): void {
+  vi.spyOn(duckdbMod, 'queryDuckDB').mockImplementation(async (sql: string, params?: unknown[]) => {
+    if (sql.includes('raw_symbol_class')) return [];
+    if (sql.includes('v_stock_qfq') && sql.includes('BETWEEN')) {
+      // params 顺序 = [fromDate, toDate, ...symbols]（见 marketData.viewQueryDateRange）
+      const requested = (params ?? []).slice(2).map(String);
+      const rows: Array<Record<string, unknown>> = [];
+      for (const symbol of requested) {
+        for (let i = 0; i < 120; i += 1) {
+          const close = 100 - i * 0.5;
+          rows.push({
+            symbol,
+            date: new Date(Date.UTC(2026, 0, 1) + i * 86_400_000).toISOString().slice(0, 10),
+            open: close + 0.2,
+            high: close + 0.5,
+            low: close - 0.5,
+            close,
+            volume: 1000,
+            amount: 100_000,
+          });
+        }
+      }
+      return rows;
+    }
+    return [];
+  });
 }
 
 function cleanup(): void {
@@ -182,5 +220,48 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
     const result = await executeAllPlugins({ symbols: [] });
     expect(result.stats.total).toBe(0);
     expect(result.signals).toHaveLength(0);
+  });
+});
+
+/**
+ * G1.3a（plan §12.7，**2026-11-04 判据修订**）
+ *
+ * 原判据 `success === total` 与插件引擎的四态实现冲突：`SKIP` 是
+ * 「插件正常执行但目标无信号」（见 pluginEngine.executePlugin），不是失败。
+ * 修订后的口径：`success + skip === total`、`timeout === 0`、`error === 0`，
+ * 且信号确实落到 `user_strategy_signal`（新增行数 > 0）。
+ */
+describe('G1.3a — 信号段四态口径（2026-11-04 修订后）', () => {
+  it('success + skip === total、timeout = 0、error = 0，且新增信号行 > 0', async () => {
+    installDecliningKlineMock();
+    seedRelations([
+      ['sh600001', 'watch'],
+      ['sh600002', 'hold'],
+    ]);
+    const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
+    const result = await executeAllPlugins({ symbols });
+
+    // 四态口径：SUCCESS 与 SKIP 都算正常终态，失败态必须为 0
+    expect(result.stats.success + result.stats.skip).toBe(result.stats.total);
+    expect(result.stats.timeout).toBe(0);
+    expect(result.stats.error).toBe(0);
+
+    // `user_strategy_signal` 新增行数 > 0（按 pluginId 分组落库，与 scheduler 信号段一致）
+    const grouped = new Map<string, PluginSignal[]>();
+    for (const s of result.signals) {
+      const list = grouped.get(s.pluginId);
+      if (list) list.push(s);
+      else grouped.set(s.pluginId, [s]);
+    }
+    const persisted = persistBatchSignals(
+      [...grouped].map(([pluginId, signals]) => ({
+        pluginId,
+        pluginCategory: 'monitor' as const,
+        signals,
+      })),
+      '2026-11-04',
+      SIGNAL_USER_ID,
+    );
+    expect(persisted.inserted).toBeGreaterThan(0);
   });
 });
