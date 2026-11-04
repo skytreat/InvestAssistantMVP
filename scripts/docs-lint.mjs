@@ -14,7 +14,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = process.cwd();
-const DOCS = path.join(ROOT, 'docs');
 const TASK_DIRS = ['docs/tasks/v3', 'docs/tasks/v2'];
 const PLAN_V2 = 'docs/client/code_implementation_plan_v2.md';
 const PLAN_V3 = 'docs/client/code_implementation_plan_v3.md';
@@ -219,6 +218,9 @@ function genStatus(cards, openDevs, openDecs) {
 
 > ⚠️ **本文件由 \`npm run docs:gen\` 生成，禁止手改**。事实源：\`docs/tasks/**\` front-matter（ADR-018 D4）。
 > 口径：活跃卡 = \`status ∈ {open, in_progress, blocked}\`；开放偏差/决策来自 plan_v2 §13 与 v3-pending（只统计未关闭项）。
+> 图例：卡状态 \`open\` 待开工 / \`in_progress\` 进行中 / \`blocked\` 阻塞（\`closed\` 不进本表）；
+> 「开放偏差」= plan_v2 §13.1–§13.3 明细行中**行内无 ✅** 的行（§13.4「已裁决项」里的 ID 一律算已关闭）；
+> 「开放决策」= v3-pending 状态列非 ✅ 的行（🟡 = 待裁决；「已登记 → Txx」表示有承接任务，但仍未收口）。
 
 ## 概览
 
@@ -270,6 +272,8 @@ function genBacklog(cards, openDevs, openDecs) {
 
 > ⚠️ **本文件由 \`npm run docs:gen\` 生成，禁止手改**。每条**只链接**到卡或来源章节，**零复述**（ADR-018 D4）。
 > 「开放决策未上浮」由 \`docs-lint --check\` 兜底（ADR-018 D6）。
+> 图例：只收**未关闭**项 —— 偏差 = plan_v2 §13.1–§13.3 行内无 ✅；决策 = v3-pending 状态列非 ✅。
+> 🟡 表示「已登记 / 待裁决、尚未收口」；「已派任务 → Txx」只说明有承接任务，**不等于**已关闭。
 
 ## 1. 活跃任务卡
 

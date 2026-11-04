@@ -2,6 +2,9 @@
 
 > ⚠️ **本文件由 `npm run docs:gen` 生成，禁止手改**。事实源：`docs/tasks/**` front-matter（ADR-018 D4）。
 > 口径：活跃卡 = `status ∈ {open, in_progress, blocked}`；开放偏差/决策来自 plan_v2 §13 与 v3-pending（只统计未关闭项）。
+> 图例：卡状态 `open` 待开工 / `in_progress` 进行中 / `blocked` 阻塞（`closed` 不进本表）；
+> 「开放偏差」= plan_v2 §13.1–§13.3 明细行中**行内无 ✅** 的行（§13.4「已裁决项」里的 ID 一律算已关闭）；
+> 「开放决策」= v3-pending 状态列非 ✅ 的行（🟡 = 待裁决；「已登记 → Txx」表示有承接任务，但仍未收口）。
 
 ## 概览
 
