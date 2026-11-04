@@ -14,6 +14,7 @@
 | `v3-pending-decisions.md` | 开放决策**事实源**（被 `docs:gen` 读取，勿改名） |
 | `doc-optimization-baseline.md` | 文档优化前后**基准协议与数据** |
 | `doc-optimization-report-2026-11-04.md` | 同一实验的**分析报告**（结论 + 局限） |
+| `doc-optimization-pilot-plan.md` | opencode 试点**方案**（N=1 可行性验证，待确认） |
 
 ## 入口
 
