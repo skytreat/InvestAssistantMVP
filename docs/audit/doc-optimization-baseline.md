@@ -1,7 +1,7 @@
 # 文档优化 · 前后对照基准（doc-optimization baseline）
 
 > **性质**：证据 / 实验协议（`docs/audit/`），**默认不加载**，仅在「检查优化效果 / gate 证据」时检索。
-> **状态**：🟡 **DRAFT —— before 已采满 N=2（Trae 实跑 b1 §7.2 / b2 §7.4）；opencode 口径降为附注（§7/§7.1）；Trae 侧 3 次无效样本归档（§7.3）；after（a1/a2）待 ADR-018 §6 落地后采集**
+> **状态**：🟢 **COMPLETE（Trae 口径 N=2×2）—— before b1 §7.2 / b2 §7.4；after a1/a2 §7.5；4 次无效样本 §7.3；opencode 口径仅附注（§7/§7.1）。M2/M3/M5 全组 NOT COLLECTED（§8）**
 > **关联**：`docs/adr/ADR-018`（本实验要验证的对象）；**主口径采集源 = IDE 内 Trae 会话**（不读 `opencode.db`，§6 的 SQL 仅适用于附注口径）
 > **目的**：用**同一个真实开发任务**，量化「文档结构优化（ADR-018 §6）」前后 coding agent 的
 > 读取文件数、输入 Token、完成时间、遗漏规格数，把「优化有效」从判断变成可复现实验。
@@ -100,8 +100,8 @@ GROUP BY 1;
 | b1-opencode（附注） | before | 37KB≈17k | 48（read38+grep9+glob1） | 458,148（另 cache_read 6,582,272 / output 28,501） | ≈8,781s（146min） | ~7/8（transcript 判，C8 未跑 bench-probe） | ⚠️ **不同工具口径（`opencode run` + agnes-3.0-flash），不参与主对比**；session `ses_e5fad31a4ffezIpNxPolKNcN1M` |
 | **b2（主样本·Trae）** | before | 37KB≈17k | **NOT COLLECTED** | **NOT COLLECTED** | **≈9.5min**（2026-11-04 08:59→09:08） | **NOT COLLECTED** | 起始提交 `11d038a`（起跑前 `git status` 为空）；5 文件（4 改 + 1 新增）`258+/39-` 加新文件 114 行；明细见 §7.4 |
 | b2-opencode（附注） | before | 37KB≈17k | ⚠️17 / ⚠️27（两次尝试，**均无效**） | ⚠️76,594 / ⚠️168,328 | ⚠️≈34.6min / ≈55.5min | — | ⏭️ **owner 决定跳过**（首轮在脏树起跑、重跑前被中止）；实测值归档见 §7.1，**不计入对照** |
-| a1 | after | ~10KB≈5k | | | | | 待 §6 实施后采（须同工具同模型：Trae + `DeepSeek-V4.1-Flash`） |
-| a2 | after | ~10KB≈5k | | | | | 待 §6 实施后采（同上） |
+| **a1（Trae）** | after | **20.5KB≈9.3k**（−46%） | **NOT COLLECTED** | **NOT COLLECTED** | **≈8.9min**（09:18→09:27） | **NOT COLLECTED** | 起始 `617ba1f`；5 文件（4 改+1 新 151 行）`235+/36-`；明细 §7.5 |
+| **a2（Trae）** | after | 同上 | **NOT COLLECTED** | **NOT COLLECTED** | **≈46.9min**（09:27→10:14；⚠️含全量后端测试卡死 35min） | **NOT COLLECTED** | 起始 `617ba1f`；5 文件（4 改+1 新 107 行）`260+/34-`；明细 §7.5 |
 
 **b1-opencode 明细（`opencode.db` → `part`/`session`，附注口径）**：
 - 工具调用：`read=38, grep=9, glob=1`（读文件 48）+ `edit=19, write=2, bash=12, todowrite=4`
@@ -147,7 +147,13 @@ GROUP BY 1;
 | 无效样本 2 | 2026-11-04（≈14min） | 5 文件（4 改 + 1 新）、`+272/−30` | **并发污染**：两个 agent 并行跑同一任务，工作区互扰（§8「污染」风险的实测证据）；已归档 `git stash: bench-invalid-concurrent-2026-11-04`，判定无效 |
 | 无效样本 3 | 2026-11-04 00:23→00:35（≈12min） | 4 文件、`+200/−28` + 新文件 130 行 | **关机中断**：b2 首跑在最后一个文件 mtime `00:35:44` 后随机器关机中止，未达 §5 停止判据；已归档 `git stash: bench-b2-interrupted-2026-11-04`、补丁 `%TEMP%\bench-b2-interrupted.diff` |
 
-**判定（Trae 口径，before）**：before 已采满 **N=2**（b1 ≈16min / b2 ≈9.5min），但 M2/M3/M5 三项在 Trae 侧一律缺采 ⇒ **H1 只能判定 M4 与交付物规模**，M2/M3「显著下降」子命题须靠 after 侧能否取到对应指标。
+**判定（Trae 口径）**
+- **M1（已可判定）**：`AGENTS.md` 37,858B → **20,548B（−45.7%）**；新增单入口 `docs/INDEX.md` + 5 张 D 卡（均 < 4KB 软上限）+ 生成物。
+- **M4（噪声大，只作区间）**：before ≈16min / ≈9.5min；after a1 ≈8.9min、a2 ≈46.9min（其中 ≈35min 是全量测试卡死）。**有效对比只能取 a1 vs b2（≈8.9 vs ≈9.5，−6%）**；a2 归入已知局限，不作证据。
+- **交付物规模（近似持平）**：before `314+/41-`+153 行、`258+/39-`+114 行；after `235+/36-`+151 行、`260+/34-`+107 行 ⇒ 文档瘦身**未降低交付质量量级**，也未提升。
+- **M2/M3/M5**：Trae 侧**全部 NOT COLLECTED** ⇒ **H1 的「读取文件数与 token 显著下降」不可证**，只能证「M1 达成、M4 未见恶化」。**结论按此边界表述，不外推。**
+
+**H1 结论（受限）**：**部分成立** —— 结构优化（单入口 + 卡 + 生成物 + 审查排除）**已落地且指标可机器校验**（`docs-lint`：0 ERROR / 0 WARNING），但「读得更少、token 更省」**未获测量支撑**（工具侧取不到 M2/M3）。要闭环 H1，需在能导出 token/工具计数的 harness（`bench-probe`）就绪后重跑。
 
 ### 7.4 b2 主样本明细（**Trae 实跑**，2026-11-04）
 
@@ -165,13 +171,31 @@ GROUP BY 1;
 
 > ⚠️ **b1 与 b2 的分母一致但绝对值分化（≈16min vs ≈9.5min，−41%）**：同一冻结 brief、同一模型、同一代码提交族，说明**单样本 M4 噪声极大** ⇒ after 侧必须按 N=2 取区间，不能用单次耗时下结论。
 
+### 7.5 a1 / a2 主样本明细（**Trae 实跑**，2026-11-04，after）
+
+| 项 | a1 | a2 |
+|---|---|---|
+| 工具 / 模型 | IDE 内 Trae + `DeepSeek-V4.1-Flash`（与 b1/b2 同配置） | 同左 |
+| 起始提交 | `617ba1f`（ADR-018 §6 落地后：`AGENTS.md` 20,548B、`docs/INDEX.md`、5 张 D 卡、`docs-lint`） | 同左 |
+| 被测输入 | 与 §3 冻结 brief **逐字一致**（未给 checklist / audit） | 同左 |
+| 起止 / 耗时 | 09:18 → 09:27，**≈8.9 min** | 09:27 → 10:14，**≈46.9 min** |
+| 交付物 | 5 文件 = 4 改 + 1 新（`portfolioReturn.breakdown.test.ts` **151 行**） | 5 文件 = 4 改 + 1 新（**107 行**） |
+| 改动量 | `4 files changed, 235 insertions(+), 36 deletions(-)` + 新文件 151 行 ≈ **386 行** | `4 files changed, 260 insertions(+), 34 deletions(-)` + 新文件 107 行 ≈ **367 行** |
+| M2 / M3 / M5 | NOT COLLECTED | NOT COLLECTED |
+| 测试自报（未复核） | 新增 12/12、相关子集 153 通过 / 1 skip、`tsc` + ESLint + Prettier 通过 | 新增 12/12、`83 passed / 1 skipped`、持仓回归 67 通过、`tsc` + ESLint + Prettier 通过；**全量后端跑满 10min 工具上限卡死**（agent 自述：真行情库用例长时间等待，非本次改动） |
+| 归档 | `git stash: bench-a1-2026-11-04` / `%TEMP%\bench-a1.diff` | `git stash: bench-a2-2026-11-04` / `%TEMP%\bench-a2.diff` |
+
+> ⚠️ **a2 的 M4（≈46.9min）严重失真**：其中 **≈35min 是全量后端 vitest 卡死**（主进程 CPU 仅 7.6s，agent 自述卡在真行情库/网络类用例）。**主对比须用 a1（≈8.9min），a2 仅作上界参考**，并在 §8 记为已知局限。
+
 ## 8. 公平性 / 已知风险
 
 - **随机性**：agent 每 run 非确定；before 两样本 M4 已出现 **≈16min vs ≈9.5min（−41%）** 的离散 ⇒ 结论按区间表述，不用单次耗时下定论。
 - **污染已排除的 3 条**：流中断（零改动）、并发双 agent（`bench-invalid-concurrent-2026-11-04`）、关机中断（`bench-b2-interrupted-2026-11-04`）均**未并入**对照。
 - **Token 口径**：`tokens_input` 为 provider 上报累计值；`tokens_cache_read` 单列，避免缓存稀释误判。
 - **污染**：被测 run 用全新会话；grader（人/我）持有 checklist，被测 agent 不持有。
-- **M2/M3 缺采（Trae 口径）**：主样本 b1/b2 的读取文件数、token 用量均 **NOT COLLECTED** ⇒ H1 的「M2/M3 显著下降」子命题在当前工具下**暂不可证**；可用信号只有 M4（≈16min / ≈9.5min）与交付物规模（均 5 文件；+314−41+153 行 / +258−39+114 行）。
+- **M2/M3 缺采（Trae 口径）**：主样本 b1/b2/a1/a2 的读取文件数、token 用量均 **NOT COLLECTED** ⇒ H1 的「M2/M3 显著下降」子命题在当前工具下**暂不可证**；可用信号只有 M1（AGENTS 旧 37,858B → 新 20,548B，−45.7%）、M4（见 §7）与交付物规模（四组均 5 文件，≈367–386 行）。
+- **a2 的 M4 失真**：单次跑出 ≈46.9min，其中 ≈35min 卡在全量后端测试（非任务本身）⇒ 不计入主对比，只作上界。
+- **after 侧存在提示效应**：a1/a2 的 agent 与 b 组同模型，但仓库里多了 `docs/INDEX.md` 与 D 卡，可能改变其检索路径；这正是 H1 要测的变量，但也意味着**不能把 M4 差异全归因于 AGENTS 瘦身**。
 - **工具口径不可混用**：Trae（`DeepSeek-V4.1-Flash`）与 opencode（agnes-3.0-flash）的 M2/M3 采集机制不同，跨工具比较无效；a1/a2 必须与 b1 **同工具同模型**。
 - **任务漂移**：task brief / fixture / checklist 全部冻结在本文件，前后不得改。
 - **代码改动不并入**：基准只测「agent 消费文档完成该任务」，产出的 breakdown 代码是副作用，不 merge。
@@ -182,8 +206,10 @@ GROUP BY 1;
 2. ✅ **b2 已采（主样本 = Trae 实跑，2026-11-04，见 §7.4）**：起始提交 `11d038a`，≈9.5min，5 文件；M2/M3/M5 = NOT COLLECTED；归档 `git stash: bench-b2-2026-11-04`。**before 已满 N=2**。
 3. ✅ **Trae 侧 3 次无效样本已归档（§7.3）**：流中断（零改动）/ 并发污染 / 关机中断。
 4. ⏭️ **opencode 口径全部降为附注**（§7/§7.1），**不参与主对比**。
-5. 实施 ADR-018 §6（INDEX/卡/生成物/AGENTS 瘦身/audit 排除）。
-6. 在 after 文档下采 a1/a2（**同工具同模型：IDE 内 Trae + `DeepSeek-V4.1-Flash`**，串行单跑），填 §7 出对比结论。
+5. ✅ **ADR-018 §6 已落地**（提交 `617ba1f`）：`docs/INDEX.md` 单入口 + 5 张 D 卡 + `docs/status.md`/`backlog.md`/`tasks/INDEX.md` 生成物 + `scripts/docs-lint.mjs`（`--gen`/`--check`，0 ERROR/0 WARNING）+ `docs/runbooks/agent-playbook.md` + `AGENTS.md` 37858→20548B + `opencode.jsonc` 排除 `docs/audit/**`、`docs/archive/**` + `docs-lint` CI（report-only）。
+6. ✅ **a1/a2 已采**（同工具同模型、串行单跑、起始 `617ba1f`）：a1 ≈8.9min / a2 ≈46.9min（含 35min 测试卡死）；M2/M3/M5 = NOT COLLECTED；归档 `stash: bench-a1/a2-2026-11-04`。
+7. ⏭️ **剩余（需 harness）**：`scripts/bench-probe.mjs` 就绪后补 M5 判读；IDE 侧若能导出工具调用 / token 计数，再补 M2/M3 并重跑 a1/a2。
+8. ⏭️ **ADR-018 §6 第 6 项（V2 计划冻结）未执行**：需先按 D2 做 Tier A/B/C 校验（判分点反向投影、失效链接、重复事实抽取、卡 existence 校验）并为 42 张卡登记核验锚；本次只落地 1–5 项。
 
 > 主口径复现：IDE 内 Trae，模型 `DeepSeek-V4.1-Flash`，起始提交 `ef4f9d9`（干净树），prompt 逐字取 §3；
 > M4 取会话起止时间；M2/M3 需 IDE 侧工具调用 / token 能力，当前为 **NOT COLLECTED**。
