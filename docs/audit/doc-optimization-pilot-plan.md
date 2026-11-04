@@ -71,7 +71,11 @@ New-Item -ItemType Directory -Force "$base\_cfg" | Out-Null
     }
   },
   "permission": {
-    "bash": "allow",
+    "bash": {
+      "*": "allow",
+      "npm test*": "deny",
+      "npm run test*": "deny"
+    },
     "read": { "*": "allow", "docs/audit/**": "deny", "docs/archive/**": "deny" },
     "glob": { "*": "allow", "docs/audit/**": "deny", "docs/archive/**": "deny" },
     "grep": "allow",
@@ -90,6 +94,7 @@ $env:OPENCODE_CONFIG = "$base\_cfg\opencode.bench.jsonc"
 ```
 
 - 配置有意**不加载** `subagent-orchestration.md`（自定义配置在 worktree 外，相对路径会歧义）；两臂一致，已在 §5 标注为偏离。
+- `bash` 显式拒绝全量入口（`npm test*` / `npm run test*`），只允许定向测试命令；两臂一致。
 - 起跑前对每个 worktree 做一次 `pong` 冒烟，确认 `OPENCODE_CONFIG` 生效且 `zen` 可解析。
 
 ### 越界检测（不只看「标记污染」）
@@ -111,9 +116,9 @@ opencode run -m zen/deepseek-v4.1-flash-free --dir "$base\b1" --title "bench-oc-
 opencode run -m zen/deepseek-v4.1-flash-free --dir "$base\a1" --title "bench-oc-a1" $brief
 ```
 
-- 每个 run = 全新会话；**硬超时 180 min**（b1-opencode 历史 146 min），超时即 kill 并记为无效。
+- 每个 run = 全新会话；**硬超时 60 min**，超时即 kill 并记为无效。
 - 不给被测 agent 任何 checklist / grader；grader 在 run **结束后**才注入。
-- 不主动跑全量后端测试；若 agent 自行跑全量并卡住，由 180 min 硬超时兜底。
+- **harness 与 grader 均不运行全量后端测试**（C8 只跑相关子集）；`npm test*` / `npm run test*` 已在配置层拒绝，若仍有残留进程由 60 min 硬超时兜底。
 
 ## 4. 指标
 
@@ -161,7 +166,7 @@ opencode run -m zen/deepseek-v4.1-flash-free --dir "$base\a1" --title "bench-oc-
 ## 6. 有效 / 中止判据
 
 - 起跑 worktree 不干净（`git status --porcelain` 非空）→ 无效。
-- 超过 180 min 未返回 → 无效。
+- 超过 60 min 未返回 → 无效。
 - run 结束零代码改动 → 无效。
 - 越界检测（§2.1）出现主仓 `AGENTS.md` / `docs/**` 路径 → 样本作废。
 
@@ -174,5 +179,5 @@ opencode run -m zen/deepseek-v4.1-flash-free --dir "$base\a1" --title "bench-oc-
 ## 8. 待 owner 确认
 
 1. **样本**：接受 N=1 与固定顺序 b1→a1；还是再加一组反向顺序（N=2，成本翻倍）来抵消顺序混淆。
-2. **超时**：180 min 是否可接受（已按 b1-opencode 146 min 放宽）。
+2. **超时**：已定为 **60 min 硬超时（不放宽）**，超时即判无效。
 3. **配置收紧**：接受「去密钥 `{file:}` + `external_directory` 拒绝 + `OPENCODE_CONFIG` 指向 worktree 外」作为偏离（两臂一致）。
