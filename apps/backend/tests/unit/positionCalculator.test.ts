@@ -223,7 +223,7 @@ describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数�
     expect(calcClosedTradePnLs(uid)).toEqual([]);
   });
 
-  it('除权类交易（dividend/bonus/transfer）不参与回放', () => {
+  it('dividend 不改股数；bonus/transfer 参与股数但不产生平仓记录', () => {
     const uid = 2004;
     const code = 'sh601398';
     db.db
@@ -239,8 +239,56 @@ describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数�
     insert.run(uid, code, 'buy', '2025-07-01', '09:13:00', 100, 10.0, 0);
     insert.run(uid, code, 'dividend', '2025-07-02', '09:14:00', 100, 0.5, 0);
     insert.run(uid, code, 'bonus', '2025-07-03', '09:15:00', 10, 0, 0);
+    insert.run(uid, code, 'transfer', '2025-07-04', '09:16:00', 20, 0, 0);
 
     const closed = calcClosedTradePnLs(uid);
     expect(closed.length).toBe(0); // 只有买入，无平仓
+  });
+  it('部分超卖：卖出量 > 可用持仓时按持仓封顶结算（与 core clamping 同口径）', () => {
+    const uid = 2005;
+    const code = 'sz159516';
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
+    const insert = db.db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    );
+    insert.run(uid, code, 'buy', '2025-08-01', '09:17:00', 100, 10.0, 0);
+    // 卖出 160 > 当时持仓 100 → 只按 100 股结算，realized = 100*12 - 100*10 = 200
+    insert.run(uid, code, 'clear', '2025-08-02', '09:18:00', 160, 12.0, 0);
+
+    const closed = calcClosedTradePnLs(uid);
+    expect(closed.length).toBe(1);
+    expect(closed[0].quantity).toBe(100);
+    expect(closed[0].realized_pnl).toBeCloseTo(200, 6);
+  });
+
+  it('transfer 计入可用持仓：转入后再卖出不产生假超卖', () => {
+    const uid = 2006;
+    const code = 'sh515880';
+    db.db
+      .prepare(
+        `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+      )
+      .run(uid, `user_${uid}`, 'dummy-hash');
+    const insert = db.db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    );
+    insert.run(uid, code, 'buy', '2025-08-10', '09:19:00', 100, 10.0, 0);
+    // 调帐转入 50 股：成本基不变（仍 1000），均价摊薄到 1000/150
+    insert.run(uid, code, 'transfer', '2025-08-11', '09:20:00', 50, 0, 0);
+    // 全清 150 股 @8：净收入 1200，成本 1000 → realized 200
+    insert.run(uid, code, 'clear', '2025-08-12', '09:21:00', 150, 8.0, 0);
+
+    const closed = calcClosedTradePnLs(uid);
+    expect(closed.length).toBe(1);
+    expect(closed[0].quantity).toBe(150);
+    expect(closed[0].realized_pnl).toBeCloseTo(200, 6);
   });
 });

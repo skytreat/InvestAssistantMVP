@@ -200,8 +200,8 @@ export async function backfillAssetStatSnapshots(
   const skippedExisting = marketDays.filter((d) => existing.has(d)).length;
 
   // ── 2. 每标的持仓检查点（回放口径与 core `calculateMovingWeightedCost` 一致）──
-  //    同日顺序 bonus(0) < dividend(1) < 其它(2)，同级保持输入顺序（time/id）。
-  const orderOf: Record<string, number> = { bonus: 0, dividend: 1 };
+  //    同日顺序 bonus/transfer(0) < dividend(1) < 其它(2)，同级保持输入顺序（time/id）。
+  const orderOf: Record<string, number> = { bonus: 0, transfer: 0, dividend: 1 };
   const byAsset = new Map<string, Array<{ date: string; qty: number; cost: number }>>();
   for (const asset of assets) {
     const rows = trades
@@ -226,6 +226,7 @@ export async function backfillAssetStatSnapshots(
           qty += t.quantity;
           break;
         case 'bonus':
+        case 'transfer': // 转增/调帐转入：股数 +n，成本基不变（与 core bonus 分支同口径）
           qty += t.quantity;
           break;
         case 'reduce':
@@ -238,7 +239,7 @@ export async function backfillAssetStatSnapshots(
           }
           break;
         default:
-          break; // dividend / transfer 不改持仓与成本
+          break; // dividend 不改持仓与成本
       }
       cps.push({ date: t.trade_date, qty, cost });
     }

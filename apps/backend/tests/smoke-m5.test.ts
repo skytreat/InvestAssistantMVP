@@ -344,14 +344,14 @@ beforeAll(async () => {
     quantity: 10,
     price: 0,
   });
-  // ⑦ clear 清仓（1200 股全部卖出 → 该标的持仓归零）
-  // ⚠️ T119（V3.0）起送股计入持仓：reduce 后 1100 + bonus 100 = 1200，故清仓须卖 1200 才能归零
+  // ⑦ clear 清仓（1210 股全部卖出 → 该标的持仓归零）
+  // ⚠️ T119（V3.0）起送股/转增计入持仓：reduce 后 1100 + bonus 100 + transfer 10 = 1210，故清仓须卖 1210 才能归零
   snap.tradeClear = await postTrade({
     asset_code: MAIN_CODE,
     trade_type: 'clear',
     trade_date: '2026-02-20',
     trade_time: '09:00:07',
-    quantity: 1200,
+    quantity: 1210,
     price: 16,
     fee: 1,
     trade_reason: 'M5 清仓',
@@ -828,8 +828,8 @@ describe('M5 · 第 2 步 交易 7 类型', () => {
     expect(res.statusCode).toBe(201);
     const pos = body(res).data.position;
     expect(pos.totalQuantity).toBe(0);
-    // T119（V3.0）：reduce 1730 + clear（1200 股 @16，成本基 11737）7462 = 9192
-    expect(pos.realizedPnL).toBeCloseTo(9192, 3);
+    // T119（V3.0）：reduce 1730 + clear（1210 股 @16，成本基 11737）7622 = 9352
+    expect(pos.realizedPnL).toBeCloseTo(9352, 3);
   });
 
   it('7 种类型全部落库（交易列表里 7 种都在，且分属两个标的）', () => {
@@ -845,14 +845,14 @@ describe('M5 · 第 2 步 交易 7 类型', () => {
 // 第 3 步 · 持仓（双口径）
 // ════════════════════════════════════════════════════════════════════════
 describe('M5 · 第 3 步 持仓与双口径', () => {
-  it('单标的持仓：清仓后数量 0、成本基 0、已实现盈亏 9192', () => {
+  it('单标的持仓：清仓后数量 0、成本基 0、已实现盈亏 9352', () => {
     const res = snap.holding as Inject;
     expect(res.statusCode).toBe(200);
     const d = body(res).data;
     expect(d.asset_code).toBe(MAIN_CODE);
     expect(d.totalQuantity).toBe(0);
     expect(d.totalCostBasis).toBeCloseTo(0, 6);
-    expect(d.realizedPnL).toBeCloseTo(9192, 3);
+    expect(d.realizedPnL).toBeCloseTo(9352, 3);
     expect(d.totalFee).toBeCloseTo(8, 6); // 手续费 5 + 2 + 1
   });
 
@@ -1215,8 +1215,8 @@ describe('M5 · 第 8 步 复盘 4 色', () => {
     expect(s.winRate).toBe(100);
     // 全盈利无亏损 → 盈亏比为 null（不是 Infinity）
     expect(s.profitLossRatio).toBeNull();
-    // T119（V3.0）：reduce 1730 + clear 7462 = 9192
-    expect(s.totalRealizedPnl).toBeCloseTo(9192, 2);
+    // T119（V3.0）：reduce 1730 + clear（1210 股 @16，成本基 11737）7622 = 9352
+    expect(s.totalRealizedPnl).toBeCloseTo(9352, 2);
   });
 });
 

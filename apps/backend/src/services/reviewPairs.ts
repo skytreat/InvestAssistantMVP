@@ -130,6 +130,23 @@ export function buildReviewPairs(userId: number): ReviewPair[] {
         continue;
       }
 
+      if (t.trade_type === 'transfer') {
+        // 转增 / 调帐转入：股数 +n、成本基不变；无开仓时以转入日作为开仓起点（成本 0）
+        if (openQty <= 0) {
+          openQty = qty;
+          openCost = 0;
+          openDate = t.trade_date;
+          openTradeId = t.id;
+          openPrice = 0;
+          originalOpenQty = qty;
+          brokerCode = t.broker_code;
+        } else {
+          openQty += qty;
+          originalOpenQty += qty;
+        }
+        continue;
+      }
+
       if (t.trade_type === 'dividend') {
         continue; // 不影响数量/成本
       }

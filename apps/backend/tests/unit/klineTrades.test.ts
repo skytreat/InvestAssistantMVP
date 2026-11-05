@@ -4,7 +4,7 @@
  * 覆盖 SDD_v3 §9.9 / Requirements §6.3 的核心规则：
  * - 4 类标记按「交易发生前持仓」推导
  * - 全历史回放（不是只回放窗口）
- * - bonus / dividend 参与持仓、但不输出；transfer 忽略
+ * - bonus / transfer 参与持仓（转增股数 +n）、但不输出；dividend 不改变数量
  * - 同日 bonus 先于买卖（与 core `calculateMovingWeightedCost` 同序）
  * - 超卖容错与空仓卖出兜底
  * - 复权价：qfq / hfq / bfq / raw；无当日行情取之前最近因子；无因子回退原价
