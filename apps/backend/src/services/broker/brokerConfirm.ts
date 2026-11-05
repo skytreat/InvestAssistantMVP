@@ -20,12 +20,47 @@
 import type Database from 'better-sqlite3';
 import { queryDuckDB } from '../../db/duckdb.js';
 
-/** 可补录的事件族（成交类）；分红/送股仍走除权链路（D-36），不在此端点补录 */
-export const CONFIRMABLE_EVENTS = ['TRADE_BUY', 'TRADE_SELL', 'FUND_SUBSCRIBE', 'FUND_REDEEM'] as const;
+/**
+ * 补录事件 → 业务类型的**唯一判定点**（owner 可能调整口径时只改这一处）。
+ *
+ * - 成交族（buy/add/reduce/clear）由净持仓回放推导；
+ * - 非成交族直接映射固定类型，不参与 buy/add 推导：
+ *   - TRANSFER_IN    → transfer（Requirements §5.1「转增」：数量增加、成本基不变）
+ *   - DIVIDEND_BONUS → bonus（同上）
+ *   - DIVIDEND_CASH  → dividend（不改股数/成本，只用于「实际口径」加回分红）
+ * - 其它（REPO / EXCLUDED_OFFEXCHANGE / PLACEHOLDER / IGNORE）→ 不进业务层（INV-S3-5）
+ *
+ * ⚠️ 若要「破例」把场外申购建成 transfer（4 只 LOF 的场景），只需在本表加一行
+ *    `EXCLUDED_OFFEXCHANGE: 'transfer'`（并把该行从 match_status=EXCLUDED 的过滤中放行），
+ *    其余补录/回放逻辑无需改动。
+ */
+const TRADE_EVENTS = new Set<string>(['TRADE_BUY', 'TRADE_SELL', 'FUND_SUBSCRIBE', 'FUND_REDEEM']);
+const SELL_EVENTS = new Set<string>(['TRADE_SELL', 'FUND_REDEEM']);
+const FIXED_EVENT_TRADE_TYPE: Readonly<Record<string, BusinessTradeType>> = {
+  TRANSFER_IN: 'transfer',
+  DIVIDEND_BONUS: 'bonus',
+  DIVIDEND_CASH: 'dividend',
+};
+export const CONFIRMABLE_EVENTS: readonly string[] = [...TRADE_EVENTS, ...Object.keys(FIXED_EVENT_TRADE_TYPE)];
+
+/** 该事件是否进业务层 */
+export function shouldPromote(eventType: string): boolean {
+  return TRADE_EVENTS.has(eventType) || FIXED_EVENT_TRADE_TYPE[eventType] !== undefined;
+}
+
+/** 非成交族的固定业务类型；成交族与不补录事件均返回 null（交回放推导 / 不补录） */
+export function fixedTradeTypeOf(eventType: string): BusinessTradeType | null {
+  return FIXED_EVENT_TRADE_TYPE[eventType] ?? null;
+}
+
 
 /** 用户可修正的 trade_type 白名单（buttonApply = 成交族 4 种；其他 3 种不在补录范围） */
 export const CONFIRMABLE_TRADE_TYPES = ['buy', 'add', 'reduce', 'clear'] as const;
 export type ConfirmTradeType = (typeof CONFIRMABLE_TRADE_TYPES)[number];
+
+/** 补录写入业务层的全部类型（成交族 4 种 + 非成交族 3 种） */
+export type BusinessTradeType = ConfirmTradeType | 'dividend' | 'bonus' | 'transfer';
+
 
 export interface ConfirmItem {
   sourceId: number;
@@ -35,7 +70,7 @@ export interface ConfirmItem {
 export interface ConfirmResultRow {
   sourceId: number;
   status: 'imported' | 'already' | 'invalid' | 'manual_sheet';
-  tradeType: ConfirmTradeType | null;
+  tradeType: BusinessTradeType | null;
   tradeRecordId?: number;
   reason?: string;
 }
@@ -56,6 +91,8 @@ interface FactRow {
   trade_time: string | null;
   price: number | null;
   quantity: number | null;
+  /** 发生金额（红利行可能只给这个） */
+  cash_flow?: number | null;
   balance_after: number | null;
   fee_total: number | null;
   match_status: string;
@@ -118,13 +155,27 @@ function deriveFromBalance(eventType: string, dir: 1 | -1, qty: number, bal: num
 }
 
 /**
+ * 一行事实对「券商内净持仓」的影响（INV-S3-3 回放口径）。
+ *
+ * 成交买 / 场外申购 / 调帐转入 / 送股 → 增加；成交卖 / 场外赎回 → 减少；
+ * 红利不改变股数（数量列是分红基数，不能当持仓增量）。
+ */
+function netQtyDelta(r: FactRow): number {
+  const qty = r.quantity ?? 0;
+  if (r.event_type === 'DIVIDEND_CASH') return 0;
+  if (SELL_EVENTS.has(r.event_type)) return -qty;
+  if (shouldPromote(r.event_type)) return qty;
+  return 0;
+}
+
+/**
  * 推导一个 (user, broker, asset) 范围内若干事实行的 trade_type。
  *
- * @param allRows 该标的在该券商**全部**可补录成交事实（含已映射行，INV-S3-2/3），
+ * @param allRows 该标的在该券商**全部**可补录事实（含已映射行与非成交族，INV-S3-2/3），
  *                已按 sortKey 升序
  * @param targetIds 本次要确认的事实 id 集合
  * @param overrides 用户修正（sourceId → tradeType），修正优先（INV-S3-9）
- * @returns sourceId → tradeType
+ * @returns sourceId → tradeType（仅成交族）
  */
 export function deriveTradeTypes(
   allRows: FactRow[],
@@ -134,47 +185,90 @@ export function deriveTradeTypes(
   const out = new Map<number, ConfirmTradeType>();
   let netQty = 0; // 券商内回放持仓（INV-S3-3）：从该券商流水**起点**回放
   for (const r of allRows) {
-    const qty = r.quantity ?? 0;
-    const dir = r.event_type === 'TRADE_SELL' || r.event_type === 'FUND_REDEEM' ? -1 : 1;
-    // ① 用户修正优先（INV-S3-9）：修正后**不再被自动覆盖**
-    if (targetIds.has(r.id) && overrides.has(r.id)) {
-      out.set(r.id, overrides.get(r.id)!);
-    } else if (r.balance_after != null && r.quantity != null) {
-      // ② 单行判定（有证券余额 = 权威口径）
-      const derived = deriveFromBalance(r.event_type, dir, r.quantity, r.balance_after);
-      if (targetIds.has(r.id)) out.set(r.id, derived);
-    } else {
-      // ③ 回放判定（无余额）
-      const derived: ConfirmTradeType =
-        dir === 1 ? (netQty > 0 ? 'add' : 'buy') : netQty - qty > 0 ? 'reduce' : 'clear';
-      if (targetIds.has(r.id)) out.set(r.id, derived);
+    // 非成交族（transfer/bonus/dividend）不推导 buy/add，只参与净持仓回放
+    if (TRADE_EVENTS.has(r.event_type)) {
+      const qty = r.quantity ?? 0;
+      const dir = SELL_EVENTS.has(r.event_type) ? -1 : 1;
+      // ① 用户修正优先（INV-S3-9）：修正后**不再被自动覆盖**
+      if (targetIds.has(r.id) && overrides.has(r.id)) {
+        out.set(r.id, overrides.get(r.id)!);
+      } else if (r.balance_after != null && r.quantity != null) {
+        // ② 单行判定（有证券余额 = 权威口径）
+        const derived = deriveFromBalance(r.event_type, dir, r.quantity, r.balance_after);
+        if (targetIds.has(r.id)) out.set(r.id, derived);
+      } else {
+        // ③ 回放判定（无余额）
+        const derived: ConfirmTradeType =
+          dir === 1 ? (netQty > 0 ? 'add' : 'buy') : netQty - qty > 0 ? 'reduce' : 'clear';
+        if (targetIds.has(r.id)) out.set(r.id, derived);
+      }
     }
-    netQty += dir * qty;
+    netQty += netQtyDelta(r);
   }
   return out;
 }
 
 function loadFactRows(db: Database.Database, userId: number, brokerCode: string): FactRow[] {
+  const placeholders = CONFIRMABLE_EVENTS.map(() => '?').join(',');
   return db
     .prepare(
-      `SELECT id, event_type, asset_code, trade_date, trade_time, price, quantity,
+      `SELECT id, event_type, asset_code, trade_date, trade_time, price, quantity, amount, cash_flow,
               balance_after, fee_total, match_status, source_kind, source_row_no, content_seq
          FROM broker_trade_record
         WHERE user_id = ? AND broker_code = ? AND is_deleted = 0
-          AND event_type IN ('TRADE_BUY','TRADE_SELL','FUND_SUBSCRIBE','FUND_REDEEM')
+          AND event_type IN (${placeholders})
           AND match_status != 'EXCLUDED'`,
     )
-    .all(userId, brokerCode) as unknown as FactRow[];
+    .all(userId, brokerCode, ...CONFIRMABLE_EVENTS) as unknown as FactRow[];
+}
+
+/**
+ * 红利现金额：优先 `cash_flow`（发生金额），否则 `price × quantity`。
+ * 华宝成交单有 3 行红利只给了发生金额，明细列（价格/数量）为空。
+ */
+function dividendCash(r: FactRow): number {
+  if (r.cash_flow != null && r.cash_flow > 0) return r.cash_flow;
+  return (r.price ?? 0) * (r.quantity ?? 0);
+}
+
+/** 业务层落库的 (quantity, price, fee) —— 按业务类型取值 */
+function businessValues(
+  r: FactRow,
+  type: BusinessTradeType,
+): { quantity: number; price: number; fee: number } {
+  switch (type) {
+    case 'transfer':
+    case 'bonus':
+      // 转增/送股：增加股数，成本基不变 ⇒ price = 0（移动加权里保持总成本不变）
+      return { quantity: r.quantity ?? 0, price: 0, fee: 0 };
+    case 'dividend': {
+      // 分红：必须保证 price × quantity == 现金分红（「实际口径」按该乘积加回）
+      const qty = r.quantity ?? 0;
+      const price = r.price ?? 0;
+      if (qty > 0 && price > 0) return { quantity: qty, price, fee: 0 };
+      return { quantity: 1, price: Math.round(dividendCash(r) * 10000) / 10000, fee: 0 };
+    }
+    default:
+      return { quantity: r.quantity ?? 0, price: r.price ?? 0, fee: r.fee_total ?? 0 };
+  }
 }
 
 /** 事实行可补录性检查（INV-S2-44：manual_sheet 不进业务层；缺关键字段的行不可补） */
 function inabilityReason(r: FactRow): string | null {
   if (r.source_kind !== 'broker') return 'manual_sheet 来源不可补录（INV-S2-44）';
   if (r.match_status === 'EXCLUDED') return '该行已被排除（场外/占位）';
+  if (!shouldPromote(r.event_type)) return `该事件类型不进业务层：${r.event_type}`;
   if (!r.asset_code) return '事实行缺标的代码';
+  if (!r.trade_date) return '事实行缺成交日期';
+  const fixed = fixedTradeTypeOf(r.event_type);
+  if (fixed === 'transfer' || fixed === 'bonus') {
+    return r.quantity != null && r.quantity > 0 ? null : '事实行缺数量或数量非法';
+  }
+  if (fixed === 'dividend') {
+    return dividendCash(r) > 0 ? null : '事实行缺分红金额';
+  }
   if (r.quantity == null || r.quantity <= 0) return '事实行缺数量或数量非法';
   if (r.price == null || r.price < 0) return '事实行缺价格或价格非法';
-  if (!r.trade_date) return '事实行缺成交日期';
   return null;
 }
 
@@ -228,6 +322,34 @@ export async function confirmTrades(
     }
   }
 
+  // 请求里指向「不进业务层」或根本不存在的事实行 → invalid（显式告知，不静默吞掉）
+  const missing = [...targetIds].filter((id) => !byId.has(id) && !alreadyIds.has(id));
+  if (missing.length > 0) {
+    const info = db
+      .prepare(
+        `SELECT id, event_type, match_status, is_deleted FROM broker_trade_record
+          WHERE user_id = ? AND id IN (${missing.map(() => '?').join(',')})`,
+      )
+      .all(userId, ...missing) as Array<{
+      id: number;
+      event_type: string;
+      match_status: string;
+      is_deleted: number;
+    }>;
+    const infoById = new Map(info.map((x) => [x.id, x]));
+    for (const id of missing) {
+      const f = infoById.get(id);
+      const reason =
+        !f || f.is_deleted
+          ? '事实行不存在或已撤销'
+          : f.match_status === 'EXCLUDED'
+            ? '该行已被排除（场外/占位）'
+            : `该事件类型不进业务层：${f.event_type}`;
+      result.invalid++;
+      rows.push({ sourceId: id, status: 'invalid', tradeType: null, reason });
+    }
+  }
+
   const buckets = new Map<string, FactRow[]>();
   for (const r of allRows) {
     if (!r.asset_code) continue;
@@ -249,7 +371,7 @@ export async function confirmTrades(
     dictSet = null;
   }
 
-  const pending: Array<{ fact: FactRow; type: ConfirmTradeType }> = [];
+  const pending: Array<{ fact: FactRow; type: BusinessTradeType }> = [];
   for (const fact of byId.values()) {
     if (alreadyIds.has(fact.id)) continue;
     const reason = inabilityReason(fact);
@@ -273,13 +395,16 @@ export async function confirmTrades(
       });
       continue;
     }
-    pending.push({ fact, type: 'buy' }); // 占位，下方按桶推导
+    // 非成交族（transfer/bonus/dividend）直接定类型；成交族先占位，下方按桶推导
+    const fixed = fixedTradeTypeOf(fact.event_type);
+    pending.push({ fact, type: fixed ?? 'buy' });
   }
 
   for (const [, bucket] of buckets) {
     const ids = new Set(bucket.map((r) => r.id));
     const derived = deriveTradeTypes(bucket, ids, overrides);
     for (const p of pending) {
+      if (!TRADE_EVENTS.has(p.fact.event_type)) continue; // 非成交族类型已定
       const got = derived.get(p.fact.id);
       if (got !== undefined) p.type = got;
     }
@@ -305,15 +430,16 @@ export async function confirmTrades(
     for (const { fact, type } of pending) {
       // 事务内复检（同事务内已插入行也会被本查看到 ⇒ 防同批 sourceId 重复传入）
       if (reCheckAnchor.get(userId, fact.id)) continue;
+      const { quantity, price, fee } = businessValues(fact, type);
       const info = insertTrade.run(
         userId,
         fact.asset_code,
         type,
         normalizeDate(fact.trade_date),
         normalizeTime(fact.trade_time),
-        fact.quantity,
-        fact.price,
-        fact.fee_total ?? 0,
+        quantity,
+        price,
+        fee,
         brokerCode, // broker_code（INV-S3-1：借记所属券商）
         fact.content_seq ?? 0, // broker_seq == 事实层 content_seq
         fact.id, // source_broker_record_id（G3 回溯）

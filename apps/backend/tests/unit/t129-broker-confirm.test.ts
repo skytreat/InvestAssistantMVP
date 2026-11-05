@@ -80,6 +80,7 @@ interface FactSpec {
   matchStatus?: string;
   contentSeq?: number;
   fee?: number;
+  cashFlow?: number | null;
 }
 
 function seedFacts(db: Database.Database, specs: FactSpec[], brokerCode = 't129broker'): Map<number, number> {
@@ -93,9 +94,9 @@ function seedFacts(db: Database.Database, specs: FactSpec[], brokerCode = 't129b
   const ins = db.prepare(
     `INSERT INTO broker_trade_record
        (user_id, import_batch_id, broker_code, source_kind, event_type, asset_code,
-        trade_date, trade_time, price, quantity, fee_total, balance_after,
+        trade_date, trade_time, price, quantity, cash_flow, fee_total, balance_after,
         raw_row_json, row_hash, content_seq, match_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)`,
   );
   const ids = new Map<number, number>();
   specs.forEach((s, i) => {
@@ -110,6 +111,7 @@ function seedFacts(db: Database.Database, specs: FactSpec[], brokerCode = 't129b
       s.time ?? null,
       s.price ?? 10,
       s.qty ?? 100,
+      s.cashFlow ?? null,
       s.fee ?? 0,
       s.balance ?? null,
       `hash-t129-${i}`,
@@ -367,5 +369,115 @@ describe('T129 券商补录 brokerConfirm', () => {
     expect(
       db.prepare(`SELECT COUNT(*) c FROM user_trade_record WHERE user_id = ?`).get(UID) as { c: number },
     ).toEqual({ c: 1 });
+  });
+});
+
+/**
+ * T129 增量 · 事件覆盖（owner 2026-11-05 决策）
+ *
+ * 背景：旧实现只补录 TRADE_BUY/TRADE_SELL，导致 16 笔「假超卖」——
+ * 调帐转入 / 送股未入业务层，回放起点持仓被低估，positionCalculator 封顶归零。
+ */
+describe('T129 · 事件覆盖 TRANSFER_IN / DIVIDEND_BONUS / DIVIDEND_CASH', () => {
+  it('事件准入集中在 shouldPromote：调帐转入/送股/红利 = true，场外申购 = false', () => {
+    expect(Confirm.shouldPromote('TRANSFER_IN')).toBe(true);
+    expect(Confirm.shouldPromote('DIVIDEND_BONUS')).toBe(true);
+    expect(Confirm.shouldPromote('DIVIDEND_CASH')).toBe(true);
+    expect(Confirm.shouldPromote('TRADE_BUY')).toBe(true);
+    expect(Confirm.shouldPromote('EXCLUDED_OFFEXCHANGE')).toBe(false);
+    expect(Confirm.shouldPromote('REPO')).toBe(false);
+  });
+
+  it('TRANSFER_IN → transfer：qty 入账、price=0、参与净持仓回放（后续卖不再误判空仓）', async () => {
+    const store = freshStore('transfer');
+    const db = store.db;
+    const ids = seedFacts(db, [
+      { id: 1, eventType: 'TRANSFER_IN', asset: 'sh515880', date: '2026-07-03', price: 0, qty: 41000 },
+      { id: 2, eventType: 'TRADE_SELL', asset: 'sh515880', date: '2026-07-29', price: 0.604, qty: 20500 },
+      { id: 3, eventType: 'TRADE_SELL', asset: 'sh515880', date: '2026-07-31', price: 0.584, qty: 20500 },
+    ]);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh515880' }]);
+    const r = await confirmTrades(
+      db,
+      UID,
+      't129broker',
+      [...ids.values()].map((sourceId) => ({ sourceId })),
+    );
+    expect(r.imported).toBe(3);
+    expect(r.invalid).toBe(0);
+
+    const transfer = readTrade(db, r.rows.find((x) => x.sourceId === ids.get(1))!.tradeRecordId!);
+    expect(transfer.trade_type).toBe('transfer');
+    expect(transfer.quantity).toBe(41000);
+    expect(transfer.price).toBe(0);
+    expect(transfer.fee).toBe(0);
+
+    // 41000 → 卖 20500（余 20500>0 ⇒ reduce）→ 卖 20500（余 0 ⇒ clear）
+    const types = new Map(r.rows.map((x) => [x.sourceId, x.tradeType]));
+    expect(types.get(ids.get(2))).toBe('reduce');
+    expect(types.get(ids.get(3))).toBe('clear');
+  });
+
+  it('DIVIDEND_BONUS → bonus：qty=送股数、price=0，且计入净持仓', async () => {
+    const store = freshStore('bonus');
+    const db = store.db;
+    const ids = seedFacts(db, [
+      { id: 1, eventType: 'TRADE_BUY', asset: 'sz002837', date: '2026-05-20', qty: 200 },
+      { id: 2, eventType: 'DIVIDEND_BONUS', asset: 'sz002837', date: '2026-05-29', price: 0, qty: 60 },
+      { id: 3, eventType: 'TRADE_SELL', asset: 'sz002837', date: '2026-07-01', price: 74.91, qty: 260 },
+    ]);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sz002837' }]);
+    const r = await confirmTrades(
+      db,
+      UID,
+      't129broker',
+      [...ids.values()].map((sourceId) => ({ sourceId })),
+    );
+    expect(r.imported).toBe(3);
+    const bonus = readTrade(db, r.rows.find((x) => x.sourceId === ids.get(2))!.tradeRecordId!);
+    expect(bonus.trade_type).toBe('bonus');
+    expect(bonus.quantity).toBe(60);
+    expect(bonus.price).toBe(0);
+    // 200 + 送股 60 = 260 ⇒ 卖出 260 为 clear（旧实现为「持仓 200、超卖 60」）
+    expect(r.rows.find((x) => x.sourceId === ids.get(3))!.tradeType).toBe('clear');
+  });
+
+  it('DIVIDEND_CASH → dividend：明细齐全用 price×qty；明细为空用 cash_flow（qty=1）', async () => {
+    const store = freshStore('dividend');
+    const db = store.db;
+    const ids = seedFacts(db, [
+      { id: 1, eventType: 'DIVIDEND_CASH', asset: 'sh600000', date: '2026-07-01', price: 0.13, qty: 200 },
+      { id: 2, eventType: 'DIVIDEND_CASH', asset: 'sh600000', date: '2026-07-02', price: 0, qty: 0, cashFlow: 9 },
+    ]);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+    const r = await confirmTrades(
+      db,
+      UID,
+      't129broker',
+      [...ids.values()].map((sourceId) => ({ sourceId })),
+    );
+    expect(r.imported).toBe(2);
+    expect(r.invalid).toBe(0);
+    const d1 = readTrade(db, r.rows.find((x) => x.sourceId === ids.get(1))!.tradeRecordId!);
+    const d2 = readTrade(db, r.rows.find((x) => x.sourceId === ids.get(2))!.tradeRecordId!);
+    expect(d1.trade_type).toBe('dividend');
+    expect((d1.price as number) * (d1.quantity as number)).toBeCloseTo(26, 2);
+    expect(d2.trade_type).toBe('dividend');
+    expect((d2.price as number) * (d2.quantity as number)).toBeCloseTo(9, 2); // qty=1、price=9
+    // 分红不改变股数（回放净持仓不受影响）
+    expect(d1.fee).toBe(0);
+  });
+
+  it('EXCLUDED_OFFEXCHANGE 即使被手工传入也不进业务层（INV-S3-5）', async () => {
+    const store = freshStore('offexchange');
+    const db = store.db;
+    const ids = seedFacts(db, [
+      { id: 1, eventType: 'EXCLUDED_OFFEXCHANGE', asset: 'sz160723', price: 1, qty: 69, matchStatus: 'MISSING' },
+    ]);
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sz160723' }]);
+    const r = await confirmTrades(db, UID, 't129broker', [{ sourceId: ids.get(1)! }]);
+    expect(r.imported).toBe(0);
+    expect(r.invalid).toBe(1);
+    expect(r.rows[0].reason).toContain('不进业务层');
   });
 });
