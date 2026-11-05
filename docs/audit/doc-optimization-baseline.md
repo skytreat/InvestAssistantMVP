@@ -1,7 +1,7 @@
 # 文档优化 · 前后对照基准（doc-optimization baseline）
 
 > **性质**：证据 / 实验协议（`docs/audit/`），**默认不加载**，仅在「检查优化效果 / gate 证据」时检索。
-> **状态**：🟢 **COMPLETE（Trae 口径 N=2×2）—— before b1 §7.2 / b2 §7.4；after a1/a2 §7.5；4 次无效样本 §7.3；opencode 口径仅附注（§7/§7.1）。M2/M3/M5 全组 NOT COLLECTED（§8）**
+> **状态**：🟢 **COMPLETE（Trae 口径 N=2×2）—— before b1 §7.2 / b2 §7.4；after a1/a2 §7.5；4 次无效样本 §7.3；opencode 口径仅附注（§7/§7.1）。M2/M3/M5 全组 NOT COLLECTED（§8）**；另：**opencode pilot（N=1，§7.6）已采，M2/M3/M5 可采但非主对比**
 > **关联**：`docs/adr/ADR-018`（本实验要验证的对象）；**主口径采集源 = IDE 内 Trae 会话**（不读 `opencode.db`，§6 的 SQL 仅适用于附注口径）
 > **目的**：用**同一个真实开发任务**，量化「文档结构优化（ADR-018 §6）」前后 coding agent 的
 > 读取文件数、输入 Token、完成时间、遗漏规格数，把「优化有效」从判断变成可复现实验。
@@ -190,6 +190,30 @@ GROUP BY 1;
 
 > ⚠️ **a2 的 M4（≈46.9min）严重失真**：其中 **≈35min 是全量后端 vitest 卡死**（主进程 CPU 仅 7.6s，agent 自述卡在真行情库/网络类用例）。**主对比须用 a1（≈8.9min），a2 仅作上界参考**，并在 §8 记为已知局限。
 
+### 7.6 opencode pilot（N=1，非证据；2026-11-05）
+
+> ⚠️ **性质**：可行性试点，**N=1、顺序固定 b1→a1**，不得作为 H1 的证据；与 §7.2/§7.4/§7.5 的 Trae 主样本**不同工具、不同模型**，不可混用。
+> 协议与执行细节见 `doc-optimization-pilot-plan.md`。
+> **已知偏离**：b1 使用旧版配置，agent 自行跑了全量 `npx vitest run --config ...`；a1 使用收紧配置（全量被拒）。两臂测试权限不完全一致，M3/M4 受此影响。
+
+| run | 条件 | M1(AGENTS) | M2(读文件) | M3(输入token；cache/out) | M4 | 步数 | 交付规模 | M5(命中/8) |
+|---|---|---|---|---|---|---|---|---|
+| b1-oc | before（`main` 2c99bda） | 37,430B | 9（read6+grep3+glob0） | 191,594（cache 6,703,744 / out 12,389） | 550,535ms ≈**9m11s** | 76 tool calls / 266 parts | 4 改 +151/−12；新测试 109 行 | **3/8**（C1/C5/C6；缺 C2/C3/C4/C7/C8） |
+| a1-oc | after（2ce1257） | 16,368B | 8（read7+grep1+glob0） | 122,782（cache 2,797,568 / out 10,477） | 279,982ms ≈**4m40s** | 46 tool calls / 158 parts | 4 改 +249/−27；新测试 145 行 | **8/8** |
+
+**变化（a1 vs b1，N=1，仅方向性）**：M2 −11.1%；M3 input −35.9%、cache −58.3%；M4 −49.1%；tool calls −39.5%；parts −40.6%；M1 −56.3%；M5 5 遗漏 → 0。
+
+**判读**：
+- a1 是本实验**首次在可采 M2/M3/M5 的 harness 上命中全部冻结判据**（C1–C8）。
+- b1 的 3/8：结果放在 `data.breakdown`（对象）而非 checklist 要求的 `data` 数组（C2/C4/C7 连带失败）；手工记录被并入各券商组、未形成独立手工组（C3）；测试 golden 用自定义 A/B/2507/5512，未用冻结的 001/002/5003（C8）。
+- 越界检测：两样本 `badCount=0`（未读取主仓 `docs/` / `AGENTS.md`）。
+- 有效性：两样本均未超时、有交付、grader 可运行；a1 仅跑定向测试。
+
+**局限**：
+- N=1，无法估计离散度；顺序固定 b1→a1（时间 / 缓存混淆）。
+- b1 旧配置放行全量 `vitest`、a1 拒绝 ⇒ 两臂测试权限不一致，b1 的 M3/M4 偏高。
+- C2 的「`data` 为数组」未在 task brief / 文档中显式钉死，b1 的 `data.breakdown` 属合理实现选择；该判据的公平性需 owner 复核。
+
 ## 8. 公平性 / 已知风险
 
 - **随机性**：agent 每 run 非确定；before 两样本 M4 已出现 **≈16min vs ≈9.5min（−41%）** 的离散 ⇒ 结论按区间表述，不用单次耗时下定论。
@@ -213,6 +237,7 @@ GROUP BY 1;
 6. ✅ **a1/a2 已采**（同工具同模型、串行单跑、起始 `617ba1f`）：a1 ≈8.9min / a2 ≈46.9min（含 35min 测试卡死）；M2/M3/M5 = NOT COLLECTED；归档 `stash: bench-a1/a2-2026-11-04`。
 7. ⏭️ **剩余（需 harness）**：`scripts/bench-probe.mjs` 就绪后补 M5 判读；IDE 侧若能导出工具调用 / token 计数，再补 M2/M3 并重跑 a1/a2。
 8. ⏭️ **ADR-018 §6 第 6 项（V2 计划冻结）未执行**：需先按 D2 做 Tier A/B/C 校验（判分点反向投影、失效链接、重复事实抽取、卡 existence 校验）并为 42 张卡登记核验锚；本次只落地 1–5 项。
+9. ⚠️ **opencode pilot（N=1）已采（§7.6）**：b1 3/8、a1 8/8；M2/M3/M5 首次可采。**非证据**：N=1、顺序固定、b1 放行全量测试、C2 的 `data` 数组形状未在 brief 中钉死。
 
 > 主口径复现：IDE 内 Trae，模型 `DeepSeek-V4.1-Flash`，起始提交 `ef4f9d9`（干净树），prompt 逐字取 §3；
 > M4 取会话起止时间；M2/M3 需 IDE 侧工具调用 / token 能力，当前为 **NOT COLLECTED**。
