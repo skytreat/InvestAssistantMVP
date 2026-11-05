@@ -74,7 +74,11 @@ New-Item -ItemType Directory -Force "$base\_cfg" | Out-Null
     "bash": {
       "*": "allow",
       "npm test*": "deny",
-      "npm run test*": "deny"
+      "npm run test*": "deny",
+      "npx vitest run*": "deny",
+      "npx vitest run *tests/*.test.ts*": "allow",
+      "vitest run*": "deny",
+      "vitest run *tests/*.test.ts*": "allow"
     },
     "read": { "*": "allow", "docs/audit/**": "deny", "docs/archive/**": "deny" },
     "glob": { "*": "allow", "docs/audit/**": "deny", "docs/archive/**": "deny" },
@@ -94,7 +98,7 @@ $env:OPENCODE_CONFIG = "$base\_cfg\opencode.bench.jsonc"
 ```
 
 - 配置有意**不加载** `subagent-orchestration.md`（自定义配置在 worktree 外，相对路径会歧义）；两臂一致，已在 §5 标注为偏离。
-- `bash` 显式拒绝全量入口（`npm test*` / `npm run test*`），只允许定向测试命令；两臂一致。
+- `bash` 显式拒绝全量入口（`npm test*` / `npm run test*` / `npx vitest run*` / `vitest run*`），仅放行含 `tests/*.test.ts` 的定向命令；两臂一致。
 - 起跑前对每个 worktree 做一次 `pong` 冒烟，确认 `OPENCODE_CONFIG` 生效且 `zen` 可解析。
 
 ### 越界检测（不只看「标记污染」）
@@ -118,7 +122,7 @@ opencode run -m zen/deepseek-v4.1-flash-free --dir "$base\a1" --title "bench-oc-
 
 - 每个 run = 全新会话；**硬超时 60 min**，超时即 kill 并记为无效。
 - 不给被测 agent 任何 checklist / grader；grader 在 run **结束后**才注入。
-- **harness 与 grader 均不运行全量后端测试**（C8 只跑相关子集）；`npm test*` / `npm run test*` 已在配置层拒绝，若仍有残留进程由 60 min 硬超时兜底。
+- **harness 与 grader 均不运行全量后端测试**（C8 只跑相关子集）；`npm test*` / `npm run test*` / `npx vitest run*` / `vitest run*` 已在配置层拒绝，若仍有残留进程由 60 min 硬超时兜底。
 
 ## 4. 指标
 
