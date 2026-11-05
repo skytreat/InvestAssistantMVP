@@ -23,6 +23,13 @@
  *   --keep-log-days <n>  保留最近 n 天 system_log（默认 0 = 清零；n 需为非负整数）
  *   --db <path>          指定 SQLite 路径（默认 SQLITE_DB_PATH，再默认 data/business.db）
  *   --env <path>         指定环境变量文件（默认依次尝试 .env.local / apps/backend/.env.local）
+ *
+ * 注意：参数与值之间必须用空格分隔（`--db <path>` / `--env <path>`）；
+ *       写成等号形式 `--db=<path>` / `--env=<path>` 不会被识别，将静默回落到默认库 / 默认 env 查找。
+ *       `--env` 指定的文件不存在或不可读时会打印警告，仍按上述默认逻辑回落（不退出）。
+ *       预览（不带 `--execute`）以「读写打开 + 立即 `PRAGMA query_only = ON`」实现：统计查询前已禁止写入，
+ *       运行期可能短暂创建 `-wal`/`-shm`，连接正常关闭后由 SQLite 自动清理；
+ *       进程被强杀（Ctrl+C / kill -9）时可能残留，需手工清理或下次正常连接时自动处理。
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -66,7 +73,11 @@ function loadEnvFile(p) {
 }
 
 if (envArg) {
-  loadEnvFile(envArg);
+  if (!loadEnvFile(envArg)) {
+    console.warn(
+      `⚠️ --env 指定的环境变量文件不可用（不存在或不可读）：${resolve(envArg)}，将回落到默认 env 查找 / 默认库。`,
+    );
+  }
 } else {
   loadEnvFile('.env.local');
   loadEnvFile('apps/backend/.env.local');
@@ -102,7 +113,26 @@ if (!existsSync(dbPath)) {
   process.exit(1);
 }
 
-const db = new Database(dbPath);
+const db = (() => {
+  try {
+    // 预览用「读写打开 + query_only」：读写连接干净关闭时 SQLite 会自清 sidecar；query_only 挡住一切写入。
+    const handle = new Database(dbPath);
+    handle.pragma(`query_only = ${execute ? 'OFF' : 'ON'}`);
+    // SQLite 延迟到首条语句才初始化 WAL sidecar，这里先探一次，让 CANTOPEN 在本处暴露。
+    handle.prepare('SELECT 1 AS ok').get();
+    return handle;
+  } catch (err) {
+    console.error(`\n❌ 打开数据库失败（${err.code ?? 'UNKNOWN'}）：${err.message}`);
+    if (!execute) {
+      console.error(
+        '   预览以读写方式打开（随后立即 query_only）：需要数据库目录可写，用于短暂创建 -shm/-wal；',
+      );
+      console.error('   若以只读身份运行或目录不可写，会以 SQLITE_CANTOPEN 中止。');
+      console.error('   如需在只读挂载上预览，请先把库文件复制到可写目录，再用 --db <副本路径> 运行。');
+    }
+    process.exit(1);
+  }
+})();
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
 
