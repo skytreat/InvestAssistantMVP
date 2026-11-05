@@ -415,7 +415,10 @@ describe('费用映射 fee_total（有费用 / 无费用 / 费用列为空 + 成
     ];
     if (f.header !== HDR_NO_FEE) cells.push(f.comm, f.stamp, f.transfer, f.chengjiao);
     cells.push('T1', 'C1');
-    return { buffer: Buffer.from([f.header ?? HDR_FEE, cells.join('\t')].join('\n'), 'utf8'), filename: 'fee.csv' };
+    return {
+      buffer: Buffer.from([f.header ?? HDR_FEE, cells.join('\t')].join('\n'), 'utf8'),
+      filename: 'fee.csv',
+    };
   }
 
   async function feeOf(f: BrokerFileInput): Promise<number | null> {
@@ -433,7 +436,9 @@ describe('费用映射 fee_total（有费用 / 无费用 / 费用列为空 + 成
   });
 
   it('费用列为空（表头无费用列）→ null（保持「未提供费用」语义）', async () => {
-    expect(await feeOf(feeRow({ comm: '', stamp: '', transfer: '', chengjiao: '', header: HDR_NO_FEE }))).toBeNull();
+    expect(
+      await feeOf(feeRow({ comm: '', stamp: '', transfer: '', chengjiao: '', header: HDR_NO_FEE })),
+    ).toBeNull();
   });
 
   it('成交费去重：成交费 == 其它分项和时不重复累加；仅成交费有值时作为兜底', async () => {
@@ -445,9 +450,9 @@ describe('费用映射 fee_total（有费用 / 无费用 / 费用列为空 + 成
 
   it('成交费与分项同时非 0：只取分项（成交费视为汇总别名，不重复累加）', async () => {
     // 分项 5+2+1=8、成交费故意写 99（不等）→ 取 8：既不累加也不被兜底覆盖
-    expect(
-      await feeOf(feeRow({ comm: '5.00', stamp: '2.00', transfer: '1.00', chengjiao: '99.00' })),
-    ).toBe(8);
+    expect(await feeOf(feeRow({ comm: '5.00', stamp: '2.00', transfer: '1.00', chengjiao: '99.00' }))).toBe(
+      8,
+    );
   });
 });
 

@@ -41,7 +41,10 @@ const FIXED_EVENT_TRADE_TYPE: Readonly<Record<string, BusinessTradeType>> = {
   DIVIDEND_BONUS: 'bonus',
   DIVIDEND_CASH: 'dividend',
 };
-export const CONFIRMABLE_EVENTS: readonly string[] = [...TRADE_EVENTS, ...Object.keys(FIXED_EVENT_TRADE_TYPE)];
+export const CONFIRMABLE_EVENTS: readonly string[] = [
+  ...TRADE_EVENTS,
+  ...Object.keys(FIXED_EVENT_TRADE_TYPE),
+];
 
 /** 该事件是否进业务层 */
 export function shouldPromote(eventType: string): boolean {
@@ -53,14 +56,12 @@ export function fixedTradeTypeOf(eventType: string): BusinessTradeType | null {
   return FIXED_EVENT_TRADE_TYPE[eventType] ?? null;
 }
 
-
 /** 用户可修正的 trade_type 白名单（buttonApply = 成交族 4 种；其他 3 种不在补录范围） */
 export const CONFIRMABLE_TRADE_TYPES = ['buy', 'add', 'reduce', 'clear'] as const;
 export type ConfirmTradeType = (typeof CONFIRMABLE_TRADE_TYPES)[number];
 
 /** 补录写入业务层的全部类型（成交族 4 种 + 非成交族 3 种） */
 export type BusinessTradeType = ConfirmTradeType | 'dividend' | 'bonus' | 'transfer';
-
 
 export interface ConfirmItem {
   sourceId: number;

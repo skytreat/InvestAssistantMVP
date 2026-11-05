@@ -447,7 +447,15 @@ describe('T129 · 事件覆盖 TRANSFER_IN / DIVIDEND_BONUS / DIVIDEND_CASH', ()
     const db = store.db;
     const ids = seedFacts(db, [
       { id: 1, eventType: 'DIVIDEND_CASH', asset: 'sh600000', date: '2026-07-01', price: 0.13, qty: 200 },
-      { id: 2, eventType: 'DIVIDEND_CASH', asset: 'sh600000', date: '2026-07-02', price: 0, qty: 0, cashFlow: 9 },
+      {
+        id: 2,
+        eventType: 'DIVIDEND_CASH',
+        asset: 'sh600000',
+        date: '2026-07-02',
+        price: 0,
+        qty: 0,
+        cashFlow: 9,
+      },
     ]);
     queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
     const r = await confirmTrades(
@@ -472,7 +480,14 @@ describe('T129 · 事件覆盖 TRANSFER_IN / DIVIDEND_BONUS / DIVIDEND_CASH', ()
     const store = freshStore('offexchange');
     const db = store.db;
     const ids = seedFacts(db, [
-      { id: 1, eventType: 'EXCLUDED_OFFEXCHANGE', asset: 'sz160723', price: 1, qty: 69, matchStatus: 'MISSING' },
+      {
+        id: 1,
+        eventType: 'EXCLUDED_OFFEXCHANGE',
+        asset: 'sz160723',
+        price: 1,
+        qty: 69,
+        matchStatus: 'MISSING',
+      },
     ]);
     queryDuckDBMock.mockResolvedValue([{ symbol: 'sz160723' }]);
     const r = await confirmTrades(db, UID, 't129broker', [{ sourceId: ids.get(1)! }]);

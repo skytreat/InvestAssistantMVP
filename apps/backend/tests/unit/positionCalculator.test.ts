@@ -291,5 +291,4 @@ describe('positionCalculator — calcClosedTradePnLs（T38 胜率/盈亏比数�
     expect(closed[0].quantity).toBe(150);
     expect(closed[0].realized_pnl).toBeCloseTo(200, 6);
   });
-
 });
