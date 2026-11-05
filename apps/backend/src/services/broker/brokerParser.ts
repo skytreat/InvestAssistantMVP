@@ -268,8 +268,8 @@ export async function parseBrokerFile(input: BrokerFileInput): Promise<BrokerFil
 
   const mappingSuggestion = buildSuggestion(columns);
 
-  // T151①：券商名推断（仅元数据行；推断不出为 undefined）
-  const brokerNameHint = detectBrokerName(grid, headerRowIndex);
+  // T151①：券商名推断（优先元数据行；元数据为空时按文件名特征兜底；推断不出为 undefined）
+  const brokerNameHint = detectBrokerName(grid, headerRowIndex) ?? detectBrokerNameFromFilename(filename);
 
   if (sensitiveIdx.size > 0) {
     warnings.push({
@@ -358,6 +358,7 @@ const KNOWN_BROKER_NAMES: readonly string[] = [
   '东北证券',
   '财通证券',
   '华西证券',
+  '华宝证券',
 ];
 
 /**
@@ -393,6 +394,36 @@ export function detectBrokerName(grid: string[][], headerRowIndex: number): stri
     if (!/账号|帐号|用户|营业部|名称$/.test(cand)) return cand;
   }
   return undefined;
+}
+
+/**
+ * 从**文件名**推断券商名（T151① 补充）。
+ *
+ * 背景：部分券商导出把表头放在首行（`headerRowIndex = 0`），表头之前没有元数据行
+ * ⇒ `detectBrokerName` 无从推断（实测 `20261020_华宝成交.xls` 曾得到 undefined）。
+ * 文件名通常带券商简称，故以**通用规则**兜底，不做针对具体文件名的特判：
+ * 1. 去扩展名后按 KNOWN_BROKER_NAMES 命中（最长优先）；
+ * 2. 再按「去后缀短名」命中 —— 全名去掉 `证券|公司`（`华宝证券` → `华宝`），短名长度 ≥ 2 才参与，
+ *    命中后仍返回**全名**（`华宝证券`），最长优先；
+ * 3. 都不命中 → undefined。
+ */
+export function detectBrokerNameFromFilename(filename: string): string | undefined {
+  const base = filename.replace(/\.[^.]*$/, '');
+  if (!base) return undefined;
+  const names = [...KNOWN_BROKER_NAMES].sort((a, b) => b.length - a.length);
+
+  let best: string | undefined;
+  for (const name of names) {
+    if (base.includes(name) && (!best || name.length > best.length)) best = name;
+  }
+  if (best) return best;
+
+  for (const name of names) {
+    const short = name.replace(/证券|公司$/, '');
+    if (short.length < 2 || short === name) continue;
+    if (base.includes(short) && (!best || name.length > best.length)) best = name;
+  }
+  return best;
 }
 
 export type {

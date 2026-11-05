@@ -177,4 +177,41 @@ describe('T151① · 券商名推断（detectBrokerName）', () => {
     const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'h0.csv' });
     expect(r.brokerNameHint).toBeUndefined();
   });
+
+  it('元数据含「华宝证券」→ 兜底规则命中', async () => {
+    const body =
+      '华宝证券股份有限公司 成交明细\n成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'hb.csv' });
+    expect(r.ok).toBe(true);
+    expect(r.brokerNameHint).toBe('华宝证券');
+  });
+
+  /** owner 报障 2026-11-05：华宝成交单（表头首行，无元数据）曾推断不出（undefined），
+   *  前端按钮因此恒显示「未识别」。修复：KNOWN_BROKER_NAMES 补「华宝证券」+ 文件名特征兜底规则。 */
+  it('华宝成交单（表头首行）→ 按文件名特征命中「华宝证券」', async () => {
+    const r = await parseBrokerFile(fixtureFile('20261020_华宝成交.xls'));
+    expect(r.ok).toBe(true);
+    expect(r.fileKind).toBe('trade');
+    expect(r.headerRowIndex).toBe(0);
+    expect(r.brokerNameHint).toBe('华宝证券');
+    expect(r.rows.length).toBe(671);
+  });
+
+  it('文件名推断是通用规则（非单文件特判）：其他已知券商短名同样命中', async () => {
+    const body =
+      '成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({
+      buffer: Buffer.from(body, 'utf-8'),
+      filename: '20261020_中信成交.csv',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.brokerNameHint).toBe('中信证券');
+  });
+
+  it('文件名不含任何已知券商特征（表头首行）→ 仍推断不出', async () => {
+    const body =
+      '成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'h0.csv' });
+    expect(r.brokerNameHint).toBeUndefined();
+  });
 });
