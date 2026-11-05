@@ -382,6 +382,75 @@ describe('T122 · 映射模板（UNIQUE 幂等）', () => {
  * 规则：① symbol_dict code6 唯一命中 → 直接采用（权威）；② 字典歧义 → 保留裸码；
  *   ③ 兜底启发式按实测分布修正（92→bj / 90→sh；1x：10/11→sh，12/13/15/16/18→sz）。
  */
+/**
+ * 费用映射（owner 2026-11-05 决策）：
+ *   ① `费用合计` 列存在且非空 → 直接采用；
+ *   ② 否则按 佣金/规费/印花税/过户费/… 分项求和；
+ *   ③ 「成交费」只在其它分项全为 0 时兜底，避免与分项重复累加。
+ */
+describe('费用映射 fee_total（有费用 / 无费用 / 费用列为空 + 成交费去重）', () => {
+  const HDR_FEE =
+    '成交日期\t成交时间\t股东代码\t证券代码\t证券名称\t委托类别\t成交价格\t成交数量\t发生金额\t剩余金额\t佣金\t印花税\t过户费\t成交费\t成交编号\t委托编号';
+  const HDR_NO_FEE =
+    '成交日期\t成交时间\t股东代码\t证券代码\t证券名称\t委托类别\t成交价格\t成交数量\t发生金额\t剩余金额\t成交编号\t委托编号';
+
+  function feeRow(f: {
+    comm: string;
+    stamp: string;
+    transfer: string;
+    chengjiao: string;
+    header?: string;
+  }): BrokerFileInput {
+    const cells = [
+      '20260128',
+      '10:00:00',
+      'A12345',
+      '600000',
+      '测试股',
+      '买入',
+      '10.00',
+      '100',
+      '-1000.00',
+      '5000.00',
+    ];
+    if (f.header !== HDR_NO_FEE) cells.push(f.comm, f.stamp, f.transfer, f.chengjiao);
+    cells.push('T1', 'C1');
+    return { buffer: Buffer.from([f.header ?? HDR_FEE, cells.join('\t')].join('\n'), 'utf8'), filename: 'fee.csv' };
+  }
+
+  async function feeOf(f: BrokerFileInput): Promise<number | null> {
+    const parse = await parseBrokerFile(f);
+    expect(parse.ok).toBe(true);
+    return normalizeBrokerRow(parse, parse.rows[0]!).fee_total;
+  }
+
+  it('有费用：佣金 5 + 印花税 2 + 过户费 1 → 8', async () => {
+    expect(await feeOf(feeRow({ comm: '5.00', stamp: '2.00', transfer: '1.00', chengjiao: '0' }))).toBe(8);
+  });
+
+  it('无费用：各分项为空或 0 → 0', async () => {
+    expect(await feeOf(feeRow({ comm: '0', stamp: '', transfer: '', chengjiao: '' }))).toBe(0);
+  });
+
+  it('费用列为空（表头无费用列）→ null（保持「未提供费用」语义）', async () => {
+    expect(await feeOf(feeRow({ comm: '', stamp: '', transfer: '', chengjiao: '', header: HDR_NO_FEE }))).toBeNull();
+  });
+
+  it('成交费去重：成交费 == 其它分项和时不重复累加；仅成交费有值时作为兜底', async () => {
+    // 佣金 5 + 印花税 2 + 过户费 1 = 8，成交费列也写 8 → 只取 8，不是 16
+    expect(await feeOf(feeRow({ comm: '5.00', stamp: '2.00', transfer: '1.00', chengjiao: '8.00' }))).toBe(8);
+    // 其它分项全 0、仅成交费 3 → 兜底取 3
+    expect(await feeOf(feeRow({ comm: '0', stamp: '0', transfer: '0', chengjiao: '3.00' }))).toBe(3);
+  });
+});
+
+/**
+ * PR#60 review 修复：normalizeAssetCode 字典权威 + 启发式兜底修正。
+ * 背景：旧启发式按首位推断，920xxx（北交所）被错标成 sh（实测 raw_symbol_name：
+ *   d1=9 → bj92xxxx 354 只 / sh900xxx 41 只 B 股）；12/13 可转债被错标成 sh。
+ * 规则：① symbol_dict code6 唯一命中 → 直接采用（权威）；② 字典歧义 → 保留裸码；
+ *   ③ 兜底启发式按实测分布修正（92→bj / 90→sh；1x：10/11→sh，12/13/15/16/18→sz）。
+ */
 describe('PR#60 review · normalizeAssetCode 字典权威 + 兜底修正', () => {
   it('字典唯一命中 → 采用字典 symbol（北交所 920xxx 不再错标 sh）', () => {
     const dict = new Map<string, string | null>([['920001', 'bj920001']]);

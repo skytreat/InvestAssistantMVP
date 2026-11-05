@@ -74,6 +74,58 @@ export class UnknownAssetCodesError extends Error {
   }
 }
 
+/**
+ * 费用明细分项列（与 brokerParser 的 FEE_HEADERS 对齐，但**排除**「成交费」）。
+ *
+ * `费用合计` 列缺失时按这些分项求和；华宝成交单只有 佣金/印花税/过户费 三列有值。
+ */
+const FEE_DETAIL_HEADERS = new Set([
+  '佣金',
+  '规费',
+  '印花税',
+  '过户费',
+  '经手费',
+  '清算费',
+  '前台费用',
+  '交易规费',
+  '证管费',
+  '其他费用',
+  '其他费',
+]);
+
+/**
+ * 「成交费」= 可能是分项别名或冗余列（实测华宝 671 行全为 0）。
+ * 为避免与 佣金/印花税/过户费 重复累加，**仅当其它分项全为 0 时**才作为兜底采用。
+ */
+const FEE_FALLBACK_HEADER = '成交费';
+
+/**
+ * 费用合计兜底：按表头名把费用分项列求和（分项列当前不在 mappingSuggestion.byField 里）。
+ *
+ * @returns 无任何费用列 → null（保持「未提供费用」语义）；有费用列但全空/全 0 → 0
+ */
+function sumFeeDetails(parse: BrokerFileParseResult, cells: string[]): number | null {
+  let hasFeeColumn = false;
+  let detail = 0;
+  let fallback = 0;
+  for (const c of parse.columns) {
+    if (c.dropped) continue;
+    const header = c.header.trim();
+    const isFallback = header === FEE_FALLBACK_HEADER;
+    if (!isFallback && !FEE_DETAIL_HEADERS.has(header)) continue;
+    hasFeeColumn = true;
+    const raw = cells[c.index];
+    const n = raw === undefined || raw === '' ? null : Number(raw);
+    if (n === null || !Number.isFinite(n)) continue;
+    if (isFallback) fallback += n;
+    else detail += n;
+  }
+  if (!hasFeeColumn) return null;
+  const total = detail !== 0 ? detail : fallback;
+  // 金额按分单位四舍五入，避免浮点累加尾差进入行哈希
+  return Math.round(total * 100) / 100;
+}
+
 /** 归一化后的行（映射模板缺省时用默认列映射；模板化属 T122② 的 mapping_json 载体） */
 export function normalizeBrokerRow(
   parse: BrokerFileParseResult,
@@ -105,7 +157,7 @@ export function normalizeBrokerRow(
     cash_flow: num(col('cashFlow')),
     cash_balance_after: num(col('cashBalance')),
     balance_after: num(col('balance')),
-    fee_total: num(col('feeTotal')),
+    fee_total: num(col('feeTotal')) ?? sumFeeDetails(parse, row.cells),
     source_row_no: row.rowIndex,
     exclude_reason: excluded ? norm.exclude_reason : null,
     match_status: excluded ? 'EXCLUDED' : 'MISSING', // 匹配回填属 T124
