@@ -6,18 +6,16 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { fileURLToPath } from 'node:url';
-import {
-  computeOrphans,
-  isDictionaryUsable,
-  isOrphanAssetCode,
-} from '../delete-orphan-trade-records.mjs';
+import { computeOrphans, isDictionaryUsable, isOrphanAssetCode } from '../delete-orphan-trade-records.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../delete-orphan-trade-records.mjs', import.meta.url));
 
 function makeSqlite(dir, rows) {
   const dbPath = path.join(dir, 'business.db');
   const db = new Database(dbPath);
-  db.exec('CREATE TABLE user_trade_record (id INTEGER PRIMARY KEY, asset_code TEXT, is_deleted INTEGER NOT NULL DEFAULT 0)');
+  db.exec(
+    'CREATE TABLE user_trade_record (id INTEGER PRIMARY KEY, asset_code TEXT, is_deleted INTEGER NOT NULL DEFAULT 0)',
+  );
   const insert = db.prepare('INSERT INTO user_trade_record (id, asset_code, is_deleted) VALUES (?, ?, ?)');
   for (const r of rows) insert.run(r.id, r.asset_code, r.is_deleted ?? 0);
   db.close();
@@ -100,7 +98,9 @@ describe('集成（临时库）', () => {
     // 空集守卫是最后一道防线：--execute 也必须中止，绝不能把全部活交易判成孤儿
     for (const extra of [[], ['--execute']]) {
       expect(() =>
-        execFileSync(process.execPath, [SCRIPT, '--db', dbPath, '--env', envPath, ...extra], { stdio: 'pipe' }),
+        execFileSync(process.execPath, [SCRIPT, '--db', dbPath, '--env', envPath, ...extra], {
+          stdio: 'pipe',
+        }),
       ).toThrow();
     }
     expect(fs.readdirSync(dir).some((f) => f.startsWith('business.db.pre-orphan-'))).toBe(false);
