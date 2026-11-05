@@ -113,16 +113,17 @@ describe('T119 · calcPosition 上层映射（mapToCoreTrade）', () => {
     expect(pos.cashReceived).not.toBeCloseTo(50, 6);
   });
 
-  it('transfer 仍被忽略（转托管不改总持仓与成本）', () => {
+  it('transfer 按「转增」语义：股数 +n、总成本不变（均价稀释）', () => {
     const uid = 2004;
     const code = 'sh601318';
     seedUser(uid);
     seedTrade(uid, code, 'buy', '2025-03-01', '09:30:00', 100, 20, 0);
+    // Requirements §5.1：转增 = 同比例增加数量、均价不变（稀释）；成本基不变 ⇒ 2000/200 = 10
     seedTrade(uid, code, 'transfer', '2025-04-01', '00:00:00', 100, 0, 0);
 
     const pos = calcPosition(uid, code);
-    expect(pos.totalQuantity).toBe(100);
-    expect(pos.avgCost).toBeCloseTo(20, 6);
+    expect(pos.totalQuantity).toBe(200);
+    expect(pos.avgCost).toBeCloseTo(10, 6);
     expect(pos.cashReceived).toBe(0);
   });
 });

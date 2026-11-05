@@ -82,7 +82,7 @@ interface HandResult {
  *   - buy / add          → 增加持仓与成本
  *   - reduce / clear     → 卖出（均价不变），结算已实现盈亏
  *   - bonus（送转）      → 股数按送转比例增加，均价按比例稀释
- *   - dividend/transfer  → 不影响持仓与成本
+ *   - dividend           → 不影响持仓与成本；transfer = 转增（股数 +n、成本不变）
  */
 function handCalcSpec(trades: RawTrade[]): HandResult {
   let quantity = 0;
@@ -102,7 +102,7 @@ function handCalcSpec(trades: RawTrade[]): HandResult {
         quantity = 0;
         costBasis = 0;
       }
-    } else if (t.tradeType === 'bonus' && quantity > 0) {
+    } else if ((t.tradeType === 'bonus' || t.tradeType === 'transfer') && quantity > 0) {
       // 送转：股数增加（quantity 字段即送转股数），成本不变 → 均价稀释
       quantity += t.quantity;
     }
@@ -115,7 +115,7 @@ function handCalcSpec(trades: RawTrade[]): HandResult {
  *   - buy / add             → 增加持仓与成本
  *   - reduce / clear        → 按卖出处理
  *   - bonus                 → 送转：股数 +n、成本基不变（均价摊薄）
- *   - dividend / transfer   → 不参与移动加权（dividend 只进 cashReceived）
+ *   - dividend             → 不参与移动加权（只进 cashReceived）；transfer 与 bonus 同口径
  *
  * ✅ T119（V3.0）已消除 bonus 送转的偏差（§4-K 口径裁决落地，SDD_v3 §8.5）：
  *    送转现计入移动加权（股数 +n、均价摊薄），本函数与 handCalcSpec 已**无差异** ——
@@ -141,7 +141,7 @@ function handCalcCurrent(trades: RawTrade[]): HandResult {
         quantity = 0;
         costBasis = 0;
       }
-    } else if (t.tradeType === 'bonus' && quantity > 0) {
+    } else if ((t.tradeType === 'bonus' || t.tradeType === 'transfer') && quantity > 0) {
       // T119：送转 股数 +n、成本基不变（均价摊薄），与 handCalcSpec 一致
       quantity += t.quantity;
     }

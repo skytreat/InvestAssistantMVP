@@ -590,8 +590,8 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
       fee: 0,
       seed: true,
       reason: null,
-      // transfer（转托管）仍**不参与**移动加权（mapToCoreTrade 过滤，转托管不改总持仓/成本）⇒ 100
-      expectQty: 100,
+      // transfer = 转增（Requirements §5.1）：股数 +n、成本基不变 ⇒ 100 + 10 = 110
+      expectQty:  110,
     },
   ] as const;
 

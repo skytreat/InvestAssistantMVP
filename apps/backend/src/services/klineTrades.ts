@@ -5,7 +5,7 @@
  * - **只读** `user_trade_record`，按该用户该标的的**全历史活记录**回放持仓；
  * - 4 类买卖标记（open/add/reduce/close）由「交易发生前持仓」推导，
  *   **不改写**原始 `trade_type`（手工录入的用户选择 / T129 导入推导都不是展示层的事）；
- * - 分红 / 送股 / 转增参与持仓回放，但不输出标记；transfer 不改变持仓；
+ * - 分红 / 送股 / 转增参与持仓回放，但不输出标记；transfer = 转增（股数 +n）；
  * - 全部买卖记录（含窗口外）都参与回放，避免「窗口首日买入」被误判为建仓。
  *
  * ⚠️ 本模块 **不碰 DuckDB**：复权因子由路由从 K 线查询结果传入。
@@ -88,7 +88,7 @@ function compareTradeRows(a: ReplayTradeRow, b: ReplayTradeRow): number {
  * 回放口径与 `calcPosition` 一致：
  * - 买入类（buy/add）：持仓增加；
  * - 卖出类（reduce/clear）：按实际可卖数量扣减，超卖夹到 0（不产生负持仓）；
- * - bonus：送股增加数量；dividend：现金分红不改变数量；transfer：转托管不改变持仓。
+ * - bonus/transfer：送股 / 转增增加数量；dividend：现金分红不改变数量。
  *
  * 空仓卖出的异常记录**不丢点**：reduce → reduce，clear → close。
  */
@@ -134,12 +134,12 @@ export function deriveTradeMarkers(rows: ReplayTradeRow[]): KlineTradeMarker[] {
         break;
       }
       case 'bonus':
+      case 'transfer': // 转增 / 调帐转入：与 calcPosition 同口径（股数 +n）
         holding += quantity;
         break;
       case 'dividend':
-      case 'transfer':
       default:
-        // dividend 不改变股数；transfer 不改变持仓；未知类型忽略（与 mapToCoreTrade 一致）
+        // dividend 不改变股数；未知类型忽略（与 mapToCoreTrade 一致）
         break;
     }
   }
