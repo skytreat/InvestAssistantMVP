@@ -442,6 +442,13 @@ describe('费用映射 fee_total（有费用 / 无费用 / 费用列为空 + 成
     // 其它分项全 0、仅成交费 3 → 兜底取 3
     expect(await feeOf(feeRow({ comm: '0', stamp: '0', transfer: '0', chengjiao: '3.00' }))).toBe(3);
   });
+
+  it('成交费与分项同时非 0：只取分项（成交费视为汇总别名，不重复累加）', async () => {
+    // 分项 5+2+1=8、成交费故意写 99（不等）→ 取 8：既不累加也不被兜底覆盖
+    expect(
+      await feeOf(feeRow({ comm: '5.00', stamp: '2.00', transfer: '1.00', chengjiao: '99.00' })),
+    ).toBe(8);
+  });
 });
 
 /**

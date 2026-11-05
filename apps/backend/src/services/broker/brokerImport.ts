@@ -121,6 +121,10 @@ function sumFeeDetails(parse: BrokerFileParseResult, cells: string[]): number | 
     else detail += n;
   }
   if (!hasFeeColumn) return null;
+  // PR#80 review：detail 与 fallback 同时非 0 时**以 detail 为准**（不累加）——
+  // 「成交费」按华宝成交单口径是「佣金/印花税/过户费」的汇总别名，累加会重复计入。
+  // 实测本单 671 行「成交费」全为 0，故本单两种取法结果相同；仅在其它券商模板
+  // 若把「成交费」作为独立收费项时才需调整（届时改这一行即可）。
   const total = detail !== 0 ? detail : fallback;
   // 金额按分单位四舍五入，避免浮点累加尾差进入行哈希
   return Math.round(total * 100) / 100;
