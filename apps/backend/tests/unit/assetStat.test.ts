@@ -125,26 +125,32 @@ function mockPrices(prices: Record<string, number>): void {
   });
 }
 
+/**
+ * 重置状态：清空本文件临时库的全部业务行，并重新指向 TEST_DB。
+ *
+ * ⚠️ 必须**每个用例前**执行（T81 shuffle 守卫实测）：本文件只在 afterEach 清理时，
+ *    首个用例会继承「文件导入阶段其它测试文件写入同一临时库」的残留（实测 7 行用户），
+ *    「空用户表」前提失真 → batchGetDaily mock 未设实现时在 assetStat.ts:78 抛 TypeError。
+ */
+function resetState(): void {
+  cleanup(); // 置空单例并确保 env 指向本文件 TEST_DB
+  const db = ConfigStore.getInstance().db;
+  try {
+    db.exec('DELETE FROM user_trade_record');
+    db.exec('DELETE FROM user_asset_stat');
+    db.exec('DELETE FROM user_asset_rel');
+    db.exec('DELETE FROM user_account');
+  } catch {
+    /* 首次运行表可能尚未建好 */
+  }
+  vi.restoreAllMocks();
+  batchGetDailyMock.mockReset();
+  batchGetDailyMock.mockResolvedValue(new Map());
+}
+
 describe('assetStat — insertAssetStatSnapshots', () => {
-  afterEach(() => {
-    // 清空数据，避免跨测试泄漏（先子表后父表）
-    const cs = (ConfigStore as any)._instance;
-    if (cs) {
-      const db = cs.db;
-      try {
-        db.exec('DELETE FROM user_trade_record');
-        db.exec('DELETE FROM user_asset_stat');
-        db.exec('DELETE FROM user_asset_rel');
-        db.exec('DELETE FROM user_account');
-      } catch {
-        /* 首次运行表可能尚未建好 */
-      }
-    }
-    cleanup();
-    vi.restoreAllMocks();
-    batchGetDailyMock.mockReset();
-    batchGetDailyMock.mockResolvedValue(new Map());
-  });
+  beforeEach(resetState);
+  afterEach(resetState);
 
   it('空用户表 → inserted=0', async () => {
     const result = await insertAssetStatSnapshots(TRADE_DATE);
