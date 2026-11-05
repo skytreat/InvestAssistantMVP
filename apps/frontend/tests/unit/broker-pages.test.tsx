@@ -233,6 +233,43 @@ describe('T143 券商导入向导 /broker/import', () => {
     expect(screen.queryByRole('button', { name: /确认导入【未识别】/ })).not.toBeInTheDocument();
   });
 
+  /** 推断名存在时**优先显示推断名**（回退为手填标识只发生在「无推断」时）。 */
+  it('有券商推断名时，按钮标签优先显示推断名（不因手填标识而改变）', async () => {
+    postMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/upload')
+        return Promise.resolve(
+          mockResponse({
+            fileKind: 'trade',
+            encoding: 'utf-8',
+            headerRowIndex: 0,
+            columns: [],
+            mappingSuggestion: { byField: {} },
+            previewRows: [],
+            rowTotal: 671,
+            warnings: [],
+            brokerNameHint: '华宝证券',
+          }),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], '20261020_华宝成交.xls') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+
+    // 单文件 + 标识为空 ⇒ 自动填入推断名，按钮显示推断名
+    expect((screen.getByPlaceholderText(/必填/) as HTMLInputElement).value).toBe('华宝证券');
+    expect(screen.getByRole('button', { name: /确认导入【华宝证券】/ })).toBeInTheDocument();
+
+    // 手改成标识（如 'hb'）后，推断名仍优先显示
+    const codeInput = screen.getByPlaceholderText(/必填/) as HTMLInputElement;
+    await user.clear(codeInput);
+    await user.type(codeInput, 'hb');
+    expect(screen.getByRole('button', { name: /确认导入【华宝证券】/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /确认导入【hb】/ })).not.toBeInTheDocument();
+  });
+
   it('未知标的整批拒绝：显示 422 文案，不出现「导入完成」或半批次结果', async () => {
     postMock.mockImplementation((url: string) => {
       if (url === '/broker-import/upload')
