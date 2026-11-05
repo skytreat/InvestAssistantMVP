@@ -136,6 +136,12 @@ async function main() {
   const dbW = new Database(sqlitePath);
   dbW.pragma('busy_timeout = 5000');
   const backupPath = `${resolve(sqlitePath)}.pre-orphan-${Date.now()}`;
+  // 时间戳是毫秒级：若同名备份已存在（同毫秒重复触发 / 时钟回拨），拒绝覆盖既有备份
+  if (existsSync(backupPath)) {
+    console.error(`\n❌ 备份文件已存在，拒绝覆盖：${backupPath}`);
+    dbW.close();
+    process.exit(1);
+  }
   try {
     await dbW.backup(backupPath);
     const sizeMb = (statSync(backupPath).size / 1024 / 1024).toFixed(1);

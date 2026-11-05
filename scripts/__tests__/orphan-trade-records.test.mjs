@@ -90,14 +90,24 @@ describe('集成（临时库）', () => {
     ]);
   });
 
-  it('空字典 → 预览也中止，且不建备份', async () => {
+  it('空字典 → 预览与 --execute 都中止，且不改库、不建备份', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orphan-empty-'));
     const dbPath = makeSqlite(dir, [{ id: 1, asset_code: 'sh600000' }]);
     const duckPath = await makeDuck(dir, []);
     const envPath = path.join(dir, '.env.test');
     fs.writeFileSync(envPath, `DUCKDB_PATH=${duckPath}\n`);
 
-    expect(() => execFileSync(process.execPath, [SCRIPT, '--db', dbPath, '--env', envPath], { stdio: 'pipe' })).toThrow();
+    // 空集守卫是最后一道防线：--execute 也必须中止，绝不能把全部活交易判成孤儿
+    for (const extra of [[], ['--execute']]) {
+      expect(() =>
+        execFileSync(process.execPath, [SCRIPT, '--db', dbPath, '--env', envPath, ...extra], { stdio: 'pipe' }),
+      ).toThrow();
+    }
     expect(fs.readdirSync(dir).some((f) => f.startsWith('business.db.pre-orphan-'))).toBe(false);
+
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db.prepare('SELECT id, asset_code, is_deleted FROM user_trade_record ORDER BY id').all();
+    db.close();
+    expect(rows).toEqual([{ id: 1, asset_code: 'sh600000', is_deleted: 0 }]);
   });
 });
