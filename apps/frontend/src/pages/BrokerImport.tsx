@@ -559,6 +559,9 @@ export default function BrokerImport() {
               if (importable.length === 0) return null;
               const code = brokerCode.trim();
               const isDisabled = !code || busy || conflictingHints !== null;
+              // 无推断名（表头首行的成交流水，如华宝成交单）时回退为**实际落库的券商标识**：
+              // 此前恒显示「未识别」，用户手填「华宝」后按钮看起来仍未被识别（owner 报障 2026-11-05）
+              const displayName = key === '未识别' && code ? code : key;
               return (
                 <div key={key} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                   <button
@@ -566,7 +569,7 @@ export default function BrokerImport() {
                     onClick={() => void runConfirmGroup(code, importable)}
                     disabled={isDisabled}
                   >
-                    确认导入【{key}】（{importable.length} 个文件）
+                    确认导入【{displayName}】（{importable.length} 个文件）
                   </button>
                   <span style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
                     券商：{code || '（请先填写券商标识）'} · 这将写入事实层记录，可随时撤销批次

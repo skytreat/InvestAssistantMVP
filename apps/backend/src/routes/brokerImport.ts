@@ -91,6 +91,27 @@ function userIdOf(request: { user?: { sub?: number | string } }): number {
   return Number(request.user?.sub ?? 0);
 }
 
+/**
+ * 会话主体是否已从 `user_account` 消失。
+ *
+ * 背景（owner 报障 2026-11-05）：全局 onRequest 只验 JWT 签名/有效期，**不查库**
+ * （routes/index.ts）。账号被清空/重建后，旧 token 仍能通过鉴权，落库时撞
+ * `broker_import_batch.user_id → user_account(id)` 外键，客户端只看到 SQLite 原文
+ * 「FOREIGN KEY constraint failed」，无法判断该重新登录。
+ *
+ * 故在写库前把「会话指向已不存在的账号」拦成 401；不关外键、不吞异常。
+ */
+function sessionUserMissing(userId: number): boolean {
+  const row = ConfigStore.getInstance()
+    .db.prepare('SELECT 1 AS ok FROM user_account WHERE id = ?')
+    .get(userId) as { ok?: number } | undefined;
+  return !row;
+}
+
+/** 401：登录账号已不存在（提示重新登录，而非暴露外键错误） */
+const SESSION_USER_MISSING_BODY = () =>
+  fail(401, 'SESSION_USER_MISSING', '登录账号不存在（可能已被删除或重建），请重新登录后再导入。');
+
 export async function registerBrokerImportRoutes(app: FastifyInstance) {
   // 上传 → 探测 + 预览 + 映射建议（**不落库**，SDD §9.1）
   app.post('/api/broker-import/upload', async (request, reply) => {
@@ -155,6 +176,7 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
     if (req.user?.role !== 'admin')
       return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
+    if (sessionUserMissing(userId)) return reply.code(401).send(SESSION_USER_MISSING_BODY());
     const body = request.body as UploadBody;
     if (!body?.brokerCode?.trim()) {
       return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode（逻辑券商标识，用户自维护）'));
@@ -203,6 +225,7 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
     if (req.user?.role !== 'admin')
       return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
+    if (sessionUserMissing(userId)) return reply.code(401).send(SESSION_USER_MISSING_BODY());
     const body = request.body as { brokerCode?: string; files?: UploadBody[] };
     if (!body?.brokerCode?.trim()) {
       return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
@@ -285,6 +308,7 @@ export async function registerBrokerImportRoutes(app: FastifyInstance) {
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
     if (req.user?.role !== 'admin')
       return reply.code(403).send(fail(403, 'FORBIDDEN', '仅 admin 可导入（SDD §10.3）'));
+    if (sessionUserMissing(userId)) return reply.code(401).send(SESSION_USER_MISSING_BODY());
     const body = request.body as {
       brokerCode?: string;
       files?: UploadBody[];

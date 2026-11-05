@@ -214,6 +214,25 @@ describe('T143 券商导入向导 /broker/import', () => {
     await waitFor(() => expect(postMock.mock.calls.length).toBeGreaterThanOrEqual(1));
   });
 
+  /**
+   * owner 报障 2026-11-05：输入「华宝」后按钮仍显示「未识别」。
+   * 默认 upload mock 无 brokerNameHint（= 表头首行的成交流水，如华宝成交单）：
+   * 未填标识时按分组名显示「未识别」，填了标识后必须切换为该标识。
+   */
+  it('无券商推断时，填券商标识后按钮标签切换为该标识', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'hb-trade.xls') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+
+    expect(screen.getByRole('button', { name: /确认导入【未识别】/ })).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText(/必填/), '华宝');
+    expect(screen.getByRole('button', { name: /确认导入【华宝】/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /确认导入【未识别】/ })).not.toBeInTheDocument();
+  });
+
   it('未知标的整批拒绝：显示 422 文案，不出现「导入完成」或半批次结果', async () => {
     postMock.mockImplementation((url: string) => {
       if (url === '/broker-import/upload')

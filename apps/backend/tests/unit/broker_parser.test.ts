@@ -177,4 +177,23 @@ describe('T151① · 券商名推断（detectBrokerName）', () => {
     const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'h0.csv' });
     expect(r.brokerNameHint).toBeUndefined();
   });
+
+  it('元数据含「华宝证券」→ 兜底规则命中', async () => {
+    const body =
+      '华宝证券股份有限公司 成交明细\n成交日期\t证券代码\t证券名称\t交易类别\t成交价格\t成交数量\n20260101\t600519\t贵州茅台\t买入\t10\t100\n';
+    const r = await parseBrokerFile({ buffer: Buffer.from(body, 'utf-8'), filename: 'hb.csv' });
+    expect(r.ok).toBe(true);
+    expect(r.brokerNameHint).toBe('华宝证券');
+  });
+
+  /** owner 报障 2026-11-05：华宝成交单（表头首行，无元数据）→ 推断不出，
+   *  前端按钮此前因此恒显示「未识别」；修复后按钮回退展示手填的券商标识。 */
+  it('华宝成交单（表头首行）→ 推断不出，但可正常解析', async () => {
+    const r = await parseBrokerFile(fixtureFile('20261020_华宝成交.xls'));
+    expect(r.ok).toBe(true);
+    expect(r.fileKind).toBe('trade');
+    expect(r.headerRowIndex).toBe(0);
+    expect(r.brokerNameHint).toBeUndefined();
+    expect(r.rows.length).toBeGreaterThan(0);
+  });
 });

@@ -18,6 +18,7 @@ vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB: queryDuckDBMock }));
 
 import { createTestApp, cleanupIntegrationTest } from './_helpers.js';
 import type { TestAppBundle } from './_helpers.js';
+import { signToken } from '../../src/services/auth.js';
 import { parseBrokerFile } from '../../src/services/broker/brokerParser.js';
 import { normalizeBrokerRow } from '../../src/services/broker/brokerImport.js';
 
@@ -212,5 +213,55 @@ describe('broker-import confirm · 未知标的弹窗选择跳过', () => {
     expect(retry.statusCode).toBe(200);
     const retryBody = JSON.parse(retry.body);
     expect(retryBody.data.files).toHaveLength(2);
+  });
+
+  /**
+   * owner 报障 2026-11-05：确认导入返回 FOREIGN KEY constraint failed。
+   * 外键 = `broker_import_batch.user_id → user_account(id)`；会话账号存在时必须能写入。
+   */
+  it('落库批次的 user_id 满足 user_account 外键（账号存在 → 正常写入）', async () => {
+    const [codesA, codesB] = await Promise.all([codesOf(FILE_A), codesOf(FILE_B)]);
+    clearAll();
+    seedDict([...codesA, ...codesB]);
+    queryDuckDBMock.mockResolvedValue([...codesA, ...codesB].map((c) => ({ symbol: c })));
+
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/broker-import/confirm-batch',
+      headers: authHeaders(),
+      payload: { brokerCode: '华宝', files: [filePayload(FILE_B)] },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const row = bundle.db.db
+      .prepare(
+        `SELECT b.user_id, u.id AS owner_id
+           FROM broker_import_batch b
+           LEFT JOIN user_account u ON u.id = b.user_id
+          ORDER BY b.id DESC LIMIT 1`,
+      )
+      .get() as { user_id: number; owner_id: number | null };
+    expect(row.user_id).toBe(bundle.userId);
+    expect(row.owner_id).toBe(bundle.userId);
+  });
+
+  /**
+   * 会话 JWT 只验签不查库（routes/index.ts onRequest）：
+   * 账号被清空/重建后旧 token 仍可用，旧实现直接落库 → SQLite 原文外键错误。
+   * 修复后必须在写库前拦成 401，并给出「重新登录」的提示。
+   */
+  it('token 的账号已不存在 → 401 SESSION_USER_MISSING，而不是外键失败', async () => {
+    clearAll();
+    const ghostToken = signToken({ sub: 999999, username: 'ghost', role: 'admin' });
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/broker-import/confirm-batch',
+      headers: { authorization: `Bearer ${ghostToken}` },
+      payload: { brokerCode: '华宝', files: [filePayload(FILE_B)] },
+    });
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('SESSION_USER_MISSING');
+    expect(body.message).toContain('重新登录');
   });
 });
