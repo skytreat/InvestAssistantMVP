@@ -12,7 +12,9 @@
 
 - **双实体（ADR-018 D3）**：活跃实体是 **D 卡**（`docs/tasks/v3/D-*.md`），T-ID 只是历史计划号索引；`T` 号不再新增为「活跃卡」。
 - **生成物禁手改**：`docs/status.md`、`docs/backlog.md`、`docs/tasks/INDEX.md` 由 `npm run docs:gen` 生成；改完事实源跑 `npm run docs:lint`。
-- **`docs/audit/` 默认不加载**（ADR-018 D6 的 opencode 排除 + 本仓约定）：仅在下列情形才检索：① 用户显式点名；② 怀疑历史已裁决（D-ID 追认）；③ 本层事实冲突需取证；④ 要改某条硬约束的出处；⑤ 写/复核 Wave gate 或 benchmark。
+- **`docs/audit/` / `docs/archive/` 默认不加载**（ADR-018 D1；`opencode.jsonc` 已排除）。仅 5 类情形可读：① 修复历史 Bug（查成因 / 旧行为）；② 处理数据正确性问题（口径 / 复算 / 校验）；③ 检查 Gate / 验收证据；④ 调查架构历史决策；⑤ 任务明确引用了某份审计报告。
+- **非 ADR 列举的其他情形**：用户显式点名、怀疑历史已裁决（需 D-ID 追认）、本层事实冲突取证、改硬约束出处、复核 Wave gate 或 benchmark —— 可按需查阅，**不计入上述 5 类**。
+- **举证义务**：触发读取上述目录时，必须在任务卡或 commit message 写明触发原因，并在卡内 `audit_refs` 登记所引用的审计文件。
 - **按需查阅**：起停服务/清端口 → playbook §1；本地绿 CI 红 → §2/§3；行情库相关测试 → §4；SQLite DDL → §8；文档分层细则 → §7；找权威文档 → §6。
 
 ---

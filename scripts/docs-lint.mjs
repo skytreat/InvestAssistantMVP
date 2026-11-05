@@ -381,6 +381,14 @@ function lint(cards) {
           warn('stale-review', `${c.rel} 来源已晚于 last_reviewed_commit 变更：${p}`);
       }
     }
+
+    // D1 举证义务：活跃卡正文引用 docs/audit/** 时须在 audit_refs 登记（WARNING，不阻断）
+    if (ACTIVE.has(data.status)) {
+      const auditRefs = Array.isArray(data.audit_refs) ? data.audit_refs : [];
+      const auditLinks = [...c.body.matchAll(/\]\(([^)\s]*\/audit\/[^)\s]*)\)/g)];
+      if (auditRefs.length === 0 && auditLinks.length > 0)
+        warn('audit-refs', `${c.rel} 正文引用 docs/audit 但 audit_refs 为空（D1 举证义务）`);
+    }
   }
 
   const taskIds = knownTaskIds();
