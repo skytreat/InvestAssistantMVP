@@ -23,6 +23,10 @@
  *   --keep-log-days <n>  保留最近 n 天 system_log（默认 0 = 清零；n 需为非负整数）
  *   --db <path>          指定 SQLite 路径（默认 SQLITE_DB_PATH，再默认 data/business.db）
  *   --env <path>         指定环境变量文件（默认依次尝试 .env.local / apps/backend/.env.local）
+ *
+ * 注意：参数与值之间必须用空格分隔（`--db <path>` / `--env <path>`）；
+ *       写成等号形式 `--db=<path>` / `--env=<path>` 不会被识别，将静默回落到默认库 / 默认 env 查找。
+ *       `--env` 指定的文件不存在或不可读时会打印警告，仍按上述默认逻辑回落（不退出）。
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -66,7 +70,11 @@ function loadEnvFile(p) {
 }
 
 if (envArg) {
-  loadEnvFile(envArg);
+  if (!loadEnvFile(envArg)) {
+    console.warn(
+      `⚠️ --env 指定的环境变量文件不可用（不存在或不可读）：${resolve(envArg)}，将回落到默认 env 查找 / 默认库。`,
+    );
+  }
 } else {
   loadEnvFile('.env.local');
   loadEnvFile('apps/backend/.env.local');
