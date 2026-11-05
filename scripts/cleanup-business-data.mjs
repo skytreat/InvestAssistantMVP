@@ -124,7 +124,9 @@ const db = (() => {
   } catch (err) {
     console.error(`\n❌ 打开数据库失败（${err.code ?? 'UNKNOWN'}）：${err.message}`);
     if (!execute) {
-      console.error('   预览以读写方式打开（随后立即 query_only）：需要数据库目录可写，用于短暂创建 -shm/-wal；');
+      console.error(
+        '   预览以读写方式打开（随后立即 query_only）：需要数据库目录可写，用于短暂创建 -shm/-wal；',
+      );
       console.error('   若以只读身份运行或目录不可写，会以 SQLITE_CANTOPEN 中止。');
       console.error('   如需在只读挂载上预览，请先把库文件复制到可写目录，再用 --db <副本路径> 运行。');
     }
