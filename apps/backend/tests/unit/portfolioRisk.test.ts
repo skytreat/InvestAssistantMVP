@@ -1,8 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   computeMaxDrawdown,
   aggregateByExchange,
   aggregateByIndustry,
+  resolveIndustryBlockTypes,
+  resolveIndustryBlockLevel,
+  computeIndustryCoverage,
 } from '../../src/services/portfolioRisk.js';
 
 /**
@@ -154,5 +157,85 @@ describe('aggregateByIndustry 行业维度聚合', () => {
       { assetCode: 'sh510760', marketValue: 500, industry: null },
     ]);
     expect(r).toEqual([{ industry: '未分类', weight: 100 }]);
+  });
+});
+
+/**
+ * 2026-11-06 真实库（info 926 行 / member 90,988 行）实测后的口径：
+ * `block_type` 实际取值 tdx_research/concept/style/region，**没有 industry**；
+ * `tdx_research` 有 3 个层级，必须只取 level=1，否则占比放大 2.85 倍。
+ */
+describe('行业板块类型 / 层级解析', () => {
+  const ALL_TYPES = ['concept', 'region', 'style', 'tdx_research'];
+
+  afterEach(() => {
+    delete process.env.INDUSTRY_BLOCK_TYPES;
+    delete process.env.INDUSTRY_BLOCK_LEVEL;
+  });
+
+  it('默认识别 tdx_research（而不是名称含 industry）', () => {
+    expect(resolveIndustryBlockTypes(ALL_TYPES)).toEqual(['tdx_research']);
+  });
+
+  it('INDUSTRY_BLOCK_TYPES 覆盖生效', () => {
+    process.env.INDUSTRY_BLOCK_TYPES = 'style,region';
+    expect(resolveIndustryBlockTypes(ALL_TYPES)).toEqual(['style', 'region']);
+  });
+
+  it('覆盖值在库内不存在 → 返回空（由调用方降级，不猜）', () => {
+    process.env.INDUSTRY_BLOCK_TYPES = 'industry';
+    expect(resolveIndustryBlockTypes(ALL_TYPES)).toEqual([]);
+  });
+
+  it('老库没有 tdx_research 时回退到名称含「行业/industry」的类型', () => {
+    expect(resolveIndustryBlockTypes(['concept', 'industry'])).toEqual(['industry']);
+  });
+
+  it('层级默认 1，非法值回落默认', () => {
+    delete process.env.INDUSTRY_BLOCK_LEVEL;
+    expect(resolveIndustryBlockLevel()).toBe(1);
+    process.env.INDUSTRY_BLOCK_LEVEL = '2';
+    expect(resolveIndustryBlockLevel()).toBe(2);
+    process.env.INDUSTRY_BLOCK_LEVEL = '0';
+    expect(resolveIndustryBlockLevel()).toBe(1);
+    process.env.INDUSTRY_BLOCK_LEVEL = 'abc';
+    expect(resolveIndustryBlockLevel()).toBe(1);
+  });
+});
+
+describe('computeIndustryCoverage 行业归属覆盖率', () => {
+  const map = new Map([
+    ['sh600000', '银行'],
+    ['sz002049', '半导体'],
+  ]);
+
+  it('全部覆盖 → 100%', () => {
+    expect(computeIndustryCoverage([{ assetCode: 'sh600000' }, { assetCode: 'sz002049' }], map)).toEqual({
+      covered: 2,
+      total: 2,
+      rate: 100,
+    });
+  });
+
+  it('部分覆盖 → 只数口径', () => {
+    const r = computeIndustryCoverage(
+      [
+        { assetCode: 'sh600000' },
+        { assetCode: 'sh512400' },
+        { assetCode: 'sh510760' },
+        { assetCode: 'sh588000' },
+      ],
+      map,
+    );
+    expect(r).toEqual({ covered: 1, total: 4, rate: 25 });
+  });
+
+  it('ETF 为主的组合 → 0/12（覆盖率 0，不是数据错误）', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({ assetCode: `sh51${String(i).padStart(4, '0')}` }));
+    expect(computeIndustryCoverage(rows, map)).toEqual({ covered: 0, total: 12, rate: 0 });
+  });
+
+  it('无持仓 → 0/0，rate 为 0', () => {
+    expect(computeIndustryCoverage([], map)).toEqual({ covered: 0, total: 0, rate: 0 });
   });
 });

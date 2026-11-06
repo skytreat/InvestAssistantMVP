@@ -29,6 +29,12 @@ interface RiskCheck {
    */
   distributionBasis?: 'industry' | 'exchange';
   distributionNote?: string;
+  /**
+   * 行业归属覆盖率（按风险持仓只数）。
+   * ETF 为主的组合常见 `covered=0`：此时行业分布全部落进「未分类」，
+   * 属数据覆盖问题而非数据错误，故必须展示。
+   */
+  industryCoverage?: { covered: number; total: number; rate: number };
   maxDrawdownNote?: string;
 }
 
@@ -128,9 +134,18 @@ export default function RiskCheck() {
                 )}
               </tbody>
             </table>
+            {data.industryCoverage && (
+              <p style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted, margin: '8px 0 0' }}>
+                {`行业归属覆盖 ${data.industryCoverage.covered}/${data.industryCoverage.total} 只持仓（${data.industryCoverage.rate}%）`}
+                {data.distributionBasis === 'industry' && data.industryCoverage.covered === 0
+                  ? ' —— 当前持仓无行业归属（多为 ETF / 指数基金），「未分类」占 100% 属数据覆盖问题，不是数据错误'
+                  : ''}
+              </p>
+            )}
             <p style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted, margin: '8px 0 0' }}>
               {data.cashExcluded ? '集中度分母已排除现金类资产（SDD_v3 §2）。' : ''}
-              {data.distributionNote ?? '行业映射基于标的代码前缀，为近似口径，非精确板块归属。'}
+              {data.distributionNote ??
+                '行业分布基于通达信板块成分（block_level=1）；数据不可用时降级为交易所维度。'}
             </p>
           </div>
         </>

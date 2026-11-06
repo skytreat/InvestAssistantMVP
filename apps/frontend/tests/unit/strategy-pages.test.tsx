@@ -163,7 +163,7 @@ describe('T150 组合体检页（/portfolio/risk-check）', () => {
     expect(screen.getByText('行业分布（板块口径）')).toBeInTheDocument();
     expect(screen.getByText('行业/板块')).toBeInTheDocument();
     expect(screen.getByText(/分母已排除现金类资产/)).toBeInTheDocument();
-    expect(screen.getByText(/为近似口径/)).toBeInTheDocument();
+    expect(screen.getByText(/数据不可用时降级为交易所维度/)).toBeInTheDocument();
   });
 
   /**
@@ -197,5 +197,29 @@ describe('T150 组合体检页（/portfolio/risk-check）', () => {
     expect(screen.getByText('83.12%')).toBeInTheDocument();
     expect(screen.getByText(/当前按交易所维度展示/)).toBeInTheDocument();
     expect(screen.getByText(/全期峰值持仓成本/)).toBeInTheDocument();
+  });
+
+  /**
+   * 2026-11-06：ETF 为主的组合行业归属覆盖为 0，行业分布会全部落进「未分类」。
+   * 必须展示覆盖率，避免用户把「未分类 100%」当成数据错误。
+   */
+  it('行业口径下展示覆盖率：ETF 为主 → 0/12 并标注数据覆盖问题', async () => {
+    getMock.mockImplementationOnce(async () =>
+      mockResponse({
+        singleStockMaxWeight: 12.5,
+        top10Concentration: 55,
+        availableCashRatio: 20,
+        maxDrawdown: 15.32,
+        industryDistribution: [{ industry: '未分类', weight: 100 }],
+        cashExcluded: true,
+        distributionBasis: 'industry',
+        industryCoverage: { covered: 0, total: 12, rate: 0 },
+        distributionNote: '行业分布：按通达信板块成分聚合（block_type=tdx_research，block_level=1）。',
+      }),
+    );
+    renderWithRouter(<RiskCheck />);
+    expect(await screen.findByText('行业分布（板块口径）')).toBeInTheDocument();
+    expect(screen.getByText(/行业归属覆盖 0\/12 只持仓（0%）/)).toBeInTheDocument();
+    expect(screen.getByText(/「未分类」占 100% 属数据覆盖问题/)).toBeInTheDocument();
   });
 });

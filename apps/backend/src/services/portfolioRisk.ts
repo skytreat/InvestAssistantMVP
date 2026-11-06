@@ -22,6 +22,41 @@ import { queryDuckDB } from '../db/duckdb.js';
 /** 分布口径：行业维度（板块成分）或交易所维度（降级） */
 export type DistributionBasis = 'industry' | 'exchange';
 
+/**
+ * 行业板块的默认 `block_type`。
+ *
+ * 2026-11-06 实测（`raw_tdx_blocks_info` 926 行）取值只有：
+ * `tdx_research`(467) / `concept`(269) / `style`(158) / `region`(32)。
+ * 旧实现按「名称含行业 / industry」识别 → 一个都不命中，**永远走降级**；故对齐到 `tdx_research`。
+ * 可用环境变量 `INDUSTRY_BLOCK_TYPES` 覆盖（逗号分隔）。
+ */
+export const DEFAULT_INDUSTRY_BLOCK_TYPES = ['tdx_research'];
+
+/**
+ * 行业板块的默认层级：**只取一级板块**。
+ *
+ * 为什么必须是 1（2026-11-06 实测）：
+ * - `tdx_research` 有三层（L1=30 / L2=128 / L3=309），且每只股票在**各层级同时挂靠**
+ *   （全市场 5,581 只：813 只挂 2 个板块、4,768 只挂 3 个）；
+ * - 不加层级过滤时成员行 15,930，加 `block_level = 1` 后 5,581 —— **放大 2.85 倍**；
+ * - 实例：`sh601001` 同时挂「煤炭(sh881001, L1) / 煤炭开采(sh881002, L2) / 动力煤(sh881003, L3)」，
+ *   一笔持仓会被计 3 次，行业占比合计超过 100%；
+ * - `parent_code` 在 926 行里 **100% 为 NULL**，无法回溯父子链，只能用 L1 直接挂靠
+ *   （好消息：每只股票都有 L1 行，实测 L1 覆盖 5,581/5,581）。
+ * 可用环境变量 `INDUSTRY_BLOCK_LEVEL` 覆盖（正整数）。
+ */
+export const DEFAULT_INDUSTRY_BLOCK_LEVEL = 1;
+
+/** 行业归属覆盖率（按风险持仓**只数**计，不是市值） */
+export interface IndustryCoverage {
+  /** 有行业归属的持仓只数 */
+  covered: number;
+  /** 风险持仓总只数（含无行情的持仓） */
+  total: number;
+  /** 覆盖率（%），total=0 时为 0 */
+  rate: number;
+}
+
 export interface DistributionItem {
   /**
    * 分布项名称。
@@ -53,6 +88,12 @@ export interface RiskCheckResult {
   distributionBasis: DistributionBasis;
   /** 分布口径说明（含降级原因 / ETF 无行业归属提示） */
   distributionNote: string;
+  /**
+   * 行业归属覆盖率（按风险持仓只数）。
+   * 与 `distributionBasis` 无关**始终返回**：ETF 为主的组合常见 `covered=0`，
+   * 此时行业分布会全部落进「未分类」—— 这是数据覆盖问题，不是数据错误。
+   */
+  industryCoverage: IndustryCoverage;
   /** 最大回撤口径说明（含峰谷金额与分母） */
   maxDrawdownNote: string;
 }
@@ -204,18 +245,59 @@ type IndustryLoad =
     };
 
 /**
+ * 解析本次用于行业聚合的 `block_type` 集合。
+ *
+ * 优先级：`INDUSTRY_BLOCK_TYPES`（逗号分隔，且必须在库内存在）→ 默认 `tdx_research`
+ * → 兼容回退（类型名含「行业」/ industry，供没有 `tdx_research` 的老库使用）。
+ * 返回空数组表示「无法识别为行业」，由调用方降级并在 note 列出可用类型。
+ */
+export function resolveIndustryBlockTypes(allTypes: string[]): string[] {
+  const override = (process.env.INDUSTRY_BLOCK_TYPES ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (override.length) return override.filter((t) => allTypes.includes(t));
+
+  const preferred = DEFAULT_INDUSTRY_BLOCK_TYPES.filter((t) => allTypes.includes(t));
+  if (preferred.length) return preferred;
+
+  return allTypes.filter((t) => /行业|industry/i.test(t));
+}
+
+/** 解析行业板块层级（默认 1，环境变量 `INDUSTRY_BLOCK_LEVEL` 必须是正整数，否则回落默认值） */
+export function resolveIndustryBlockLevel(): number {
+  const raw = process.env.INDUSTRY_BLOCK_LEVEL?.trim();
+  if (!raw) return DEFAULT_INDUSTRY_BLOCK_LEVEL;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_INDUSTRY_BLOCK_LEVEL;
+}
+
+/** 行业归属覆盖率：按持仓只数计（`industryBySymbol` 里没有有效板块名的即视为未覆盖） */
+export function computeIndustryCoverage(
+  rows: Array<{ assetCode: string }>,
+  industryBySymbol: Map<string, string>,
+): IndustryCoverage {
+  const total = rows.length;
+  const covered = rows.filter((r) => {
+    const name = industryBySymbol.get(r.assetCode);
+    return typeof name === 'string' && name.trim().length > 0;
+  }).length;
+  return { covered, total, rate: total > 0 ? parseFloat(((covered / total) * 100).toFixed(2)) : 0 };
+}
+
+/**
  * 读取「通达信板块成分」→ 标的所属行业名。
  *
- * ⚠️ **不猜 `block_type` 取值**（本机副本该表 0 行，取值集合无法实测）：
- * 1. 先 `SELECT DISTINCT block_type`，若为空 ⇒ `empty`（数据不可用，降级）；
- *    类型存在但成员表查不到任何成分 ⇒ `no-member`（同样降级，不输出全「未分类」的假行业分布）；
- * 2. 有 `INDUSTRY_BLOCK_TYPES` 环境变量则按它指定（逗号分隔）；
- * 3. 否则只在类型名**含「行业」或 industry** 时认定（其余情况一律 `unrecognized` 降级，
- *    并在 note 里列出可用类型，不硬编码猜测值）。
+ * 2026-11-06 真实库实测（info 926 行 / member 90,988 行）后的口径：
+ * 1. 类型：默认 `tdx_research`（可用 `INDUSTRY_BLOCK_TYPES` 覆盖）；
+ * 2. 层级：**只取 `block_level = 1`**（可用 `INDUSTRY_BLOCK_LEVEL` 覆盖）——
+ *    不加层级过滤时同一标的在一/二/三级板块重复挂靠，行业占比会放大 2.85 倍（见常量注释）；
+ * 3. 降级只看数据，不看环境/路径：信息表无类型 ⇒ `empty`；成员表查不到成分 ⇒ `no-member`；
+ *    类型无法识别 ⇒ `unrecognized`。生产库有数据时自动切回行业口径，无需改代码。
  *
- * 一个标的同时属于多个行业板块时取按名称排序的第一个（不做权重拆分）。
+ * L1 下同一标的仍属多个行业板块时，按板块名称排序取第一个（不做权重拆分）。
  */
-async function loadIndustryMapping(symbols: string[]): Promise<IndustryLoad> {
+export async function loadIndustryMapping(symbols: string[]): Promise<IndustryLoad> {
   const empty: IndustryLoad = { ok: false, reason: 'empty', allTypes: [], types: [] };
   try {
     const typeRows = await queryDuckDB<{ block_type: string }>(
@@ -224,24 +306,20 @@ async function loadIndustryMapping(symbols: string[]): Promise<IndustryLoad> {
     const allTypes = typeRows.map((r) => String(r.block_type)).filter((t) => t.length > 0);
     if (allTypes.length === 0) return empty;
 
-    const override = (process.env.INDUSTRY_BLOCK_TYPES ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const types = override.length
-      ? override.filter((t) => allTypes.includes(t))
-      : allTypes.filter((t) => /行业|industry/i.test(t));
+    const types = resolveIndustryBlockTypes(allTypes);
 
     if (types.length === 0) return { ok: false, reason: 'unrecognized', allTypes, types: [] };
     if (symbols.length === 0) return { ok: true, types, map: new Map() };
 
+    const level = resolveIndustryBlockLevel();
     const memberRows = await queryDuckDB<{ stock_symbol: string; block_name: string }>(
       `SELECT DISTINCT m.stock_symbol AS stock_symbol, i.block_name AS block_name
          FROM raw_tdx_blocks_member m
          JOIN raw_tdx_blocks_info i ON i.block_code = m.block_code
         WHERE m.stock_symbol IN (${symbols.map(() => '?').join(',')})
-          AND i.block_type IN (${types.map(() => '?').join(',')})`,
-      [...symbols, ...types],
+          AND i.block_type IN (${types.map(() => '?').join(',')})
+          AND i.block_level = ?`,
+      [...symbols, ...types, level],
     );
 
     // 🔴 降级判定只看数据，不看环境/路径：信息表无类型 → empty；成员表无成分 → no-member。
@@ -350,6 +428,14 @@ export async function computeRiskCheck(userId: number): Promise<RiskCheckResult>
 
   // ── 分布：行业维度优先，不可用则降级交易所维度 ──
   const industryLoad = await loadIndustryMapping(symbols);
+  const coverage = computeIndustryCoverage(
+    heldRisk.map((p) => ({ assetCode: p.asset_code })),
+    industryLoad.ok ? industryLoad.map : new Map(),
+  );
+  const coverageText =
+    coverage.covered === 0
+      ? `行业归属覆盖 0/${coverage.total} 只持仓（0%）—— 当前持仓全部无行业归属（多为 ETF / 指数基金），「未分类」占 100% 属数据覆盖问题，不是数据错误。`
+      : `行业归属覆盖 ${coverage.covered}/${coverage.total} 只持仓（${coverage.rate}%）。`;
   let distribution: DistributionItem[];
   let basis: DistributionBasis;
   let note: string;
@@ -364,9 +450,9 @@ export async function computeRiskCheck(userId: number): Promise<RiskCheckResult>
       })),
     );
     note =
-      `行业分布：按通达信板块成分聚合（block_type=${industryLoad.types.join('/')}）。` +
-      '同一标的属多个行业板块时按板块名取首个，不做权重拆分。' +
-      '无行业归属的标的计入「未分类」（通达信行业板块成分基本只覆盖 A 股个股，ETF 多数无行业归属，组合以 ETF 为主时行业分布可能大面积为空）。';
+      `行业分布：按通达信板块成分聚合（block_type=${industryLoad.types.join('/')}，block_level=${resolveIndustryBlockLevel()}）。` +
+      coverageText +
+      '同一标的多板块时按板块名取首个，不做权重拆分；未覆盖持仓计入「未分类」（通达信行业板块基本只覆盖 A 股个股，ETF 多数无行业归属）。';
   } else {
     basis = 'exchange';
     distribution = aggregateByExchange(
@@ -382,7 +468,8 @@ export async function computeRiskCheck(userId: number): Promise<RiskCheckResult>
             : '行情库当前不可用或缺少板块表';
     note =
       `当前按交易所维度展示（sh=上交所 / sz=深交所 / bj=北交所）：${reason}。` +
-      '另注意：通达信行业板块成分基本只覆盖 A 股个股，ETF 多数无行业归属，行业维度下组合以 ETF 为主时可能大面积为空。';
+      `${coverageText}交易所口径不代表行业归属。` +
+      '另注意：通达信行业板块基本只覆盖 A 股个股，ETF 多数无行业归属。';
   }
 
   if (totalRiskMV <= 0 && distribution.length > 0) {
@@ -405,6 +492,7 @@ export async function computeRiskCheck(userId: number): Promise<RiskCheckResult>
     cashExcluded: true,
     distributionBasis: basis,
     distributionNote: note,
+    industryCoverage: coverage,
     maxDrawdownNote,
   };
 }
