@@ -76,7 +76,7 @@ vi.mock('../../src/services/pluginEngine.js', () => ({
     fired.push('signal');
     return {
       signals: [] as any[],
-      stats: { total: 0, success: 0, timeout: 0, error: 0, skip: 0 },
+      stats: { total: 0, success: 0, timeout: 0, error: 0, skip: 0, noData: 0 },
       results: [] as any[],
     };
   }),

@@ -33,10 +33,13 @@ import { type Position } from './positionDomain';
  * 代价是组件内多一次「先拿持仓、再按行情日拉其余端点」的**瀑布**（见下），
  * 但换来的是：块 ⑤ 的持仓部分**复用同一次** `/api/holding` 响应（**0 额外请求**）。
  *
- * ## 日期锚点（裁决 D-6）
+ * ## 日期锚点（裁决 D-6 + F 域 P0-1 修订）
  *
- * 「今天」= `/api/holding` 的 `summary.priceDate`（**最新行情交易日**），
- * `priceDate` 为 `null` 时回退到**本地自然日**。
+ * 「今天」= `/api/holding` 的 `summary.priceDate`（**最新行情交易日**）。
+ * `priceDate` 为 `null`（空仓 / 行情尚未更新）时，**不再回退到本地自然日**，
+ * 而是取后端 `/api/signal/stats` 的默认口径（最近有信号日 → 最近行情日 → 今天），
+ * 只有后端也拿不到时才用本地自然日兜底 —— 否则周末打开 Dashboard 会把「今日信号」
+ * 显示成自然日今天的 0 条，用户误以为「没信号」。
  * ⇒ 其余 4 个端点都在**持仓请求结算之后**才发（瀑布），因为它们都要用这个日期。
  * 卡头会显示这个日期，让用户知道「这是哪一天」。
  *
@@ -109,6 +112,11 @@ interface TodaySignalStats {
   up: number;
   down: number;
   hold: number;
+}
+
+/** `GET /api/signal/stats` 的响应（`trade_date` 是**顶层**字段：后端解析出的默认交易日）*/
+interface SignalStatsEnvelope extends ApiEnvelope<TodaySignalStats> {
+  trade_date?: string | null;
 }
 
 /** 一条策略信号（`GET /api/signal` 的行）*/
@@ -433,10 +441,33 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
     };
   }, []);
 
-  /* ── 日期锚点：prop > summary.priceDate > 本地自然日（裁决 D-6）── */
+  /* ── 日期锚点：prop > summary.priceDate > 后端默认交易日 > 本地自然日 ──
+     F 域 P0-1：priceDate 为空时先问后端「最近交易日」是什么，不再直接猜自然日今天。*/
   useEffect(() => {
     if (holdingStatus === 'loading') return;
-    setAnchorDate((cur) => cur ?? tradeDateProp ?? priceDate ?? localToday());
+    if (tradeDateProp) {
+      setAnchorDate(tradeDateProp);
+      return;
+    }
+    if (priceDate) {
+      setAnchorDate(priceDate);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = await fetchEnvelope<SignalStatsEnvelope>('/signal/stats');
+        if (cancelled) return;
+        const backendDate = typeof body?.trade_date === 'string' ? body.trade_date : null;
+        setAnchorDate(backendDate ?? localToday());
+      } catch {
+        if (cancelled) return;
+        setAnchorDate(localToday());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [holdingStatus, priceDate, tradeDateProp]);
 
   /* ── prop 变更时跟随（批次 5 接线不需要传本 prop）─────────── */

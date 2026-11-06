@@ -746,13 +746,16 @@ describe('pluginEngine 覆盖 — buildPluginContext 预取缓存', () => {
     expect(got.length).toBe(7);
   });
 
-  it('窗口覆盖不足 → 回落查库', async () => {
+  it('窗口覆盖不足 → 回落查库（走批量入口，保证 ETF 也能取到）', async () => {
     const md = await import('../../src/services/marketData.js');
-    const spy = vi.spyOn(md, 'getDailyRange').mockResolvedValue([]);
+    // F 域 P3-6：回落取数统一走 `batchGetDailyRange`（内部按品种分流），
+    // 不再直连只含 v_stock_qfq 的 `getDailyRange` —— 否则 ETF 会静默变成「无数据」。
+    const spy = vi.spyOn(md, 'batchGetDailyRange').mockResolvedValue(new Map());
     const bars = risingKlines(5);
     const ctx = buildPluginContext({ klines: new Map([['sh600000', bars]]), windowDays: 3 });
     const got = await ctx.getDailyKlines('sh600000', 10);
     expect(spy).toHaveBeenCalled();
+    expect(spy.mock.calls[0][0]).toEqual(['sh600000']);
     expect(got).toEqual([]);
   });
 

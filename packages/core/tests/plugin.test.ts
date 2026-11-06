@@ -540,8 +540,10 @@ describe('契约同步守卫 — 真实引擎 pluginEngine.ts 不得与本参考
     //   （两个空格）被规范成 `performance.now(); // ...`（一个空格）→ 本断言整条失败。
     //   断言的**语义**是「IO 结束后重置计时起点」，与空格数无关 → 只匹配语义。
     expect(engineSrc).toMatch(/computeStart = performance\.now\(\);\s*\/\/ 取数后重置计时起点/);
-    expect(engineSrc).toContain('getDailyKlines: (symbol, days) => withIo(');
-    expect(engineSrc).toContain('batchGetDailyKlines: (symbols, days) => withIo(');
+    // ⚠️ 同样用正则容忍换行：F 域 P1-2 起，取数回调需要在 IO 段内记 K 线根数，
+    //    Prettier 会把 `=> withIo(async () => {…})` 折成两行。语义仍是「两个取数入口都被 withIo 包裹」。
+    expect(engineSrc).toMatch(/getDailyKlines: \(symbol, days\) =>\s*withIo\(/);
+    expect(engineSrc).toMatch(/batchGetDailyKlines: \(symbols, days\) =>\s*withIo\(/);
   });
 
   it('真实引擎的 50ms 语义仍是「不含行情 IO」（日志文案 + 注释口径）', () => {

@@ -5,7 +5,9 @@
 
 import { calculateRSI, calculateMACD, type MACDResult } from '@invest/core';
 import { calculateSMA } from './indicators.js';
-import { getDailyRange, batchGetDailyRange } from './marketData.js';
+import { batchGetDailyRange } from './marketData.js';
+import { ConfigStore } from '../config/configStore.js';
+import { SIGNAL_USER_ID } from './signalService.js';
 import type { DailyKline } from '@invest/core';
 import { writeSystemLog } from './logger.js';
 import fs from 'node:fs';
@@ -351,6 +353,8 @@ export const builtinPlugins: Plugin[] = [
           {
             ...base,
             signalType: 'BUY' as const,
+            // F 域 P2-5：补 label（修复前落库恒为 BUY/SELL，违背 SDD §5.3「描述性文字」要求）
+            label: `RSI 超卖买入（${latestRSI.toFixed(2)} < ${oversold}）`,
             strength: Math.max(0, (oversold - latestRSI) / oversold),
             detail: `RSI(${period})=${latestRSI.toFixed(2)} < 超卖线 ${oversold}（超卖买入）`,
           },
@@ -362,6 +366,7 @@ export const builtinPlugins: Plugin[] = [
           {
             ...base,
             signalType: 'SELL' as const,
+            label: `RSI 超买卖出（${latestRSI.toFixed(2)} > ${overbought}）`,
             strength: Math.min(1, (latestRSI - overbought) / (100 - overbought)),
             detail: `RSI(${period})=${latestRSI.toFixed(2)} > 超买线 ${overbought}（超买卖出）`,
           },
@@ -429,6 +434,7 @@ export const builtinPlugins: Plugin[] = [
         signals.push({
           symbol,
           signalType: 'BUY',
+          label: 'MACD 金叉（DIF 上穿 DEA）',
           strength: Math.min(1, Math.abs(dif[n - 1] - dea[n - 1]) * 10),
           pluginId: 'macd_cross',
           timestamp: new Date().toISOString(),
@@ -441,6 +447,7 @@ export const builtinPlugins: Plugin[] = [
         signals.push({
           symbol,
           signalType: 'SELL',
+          label: 'MACD 死叉（DIF 下穿 DEA）',
           strength: Math.min(1, Math.abs(dif[n - 1] - dea[n - 1]) * 10),
           pluginId: 'macd_cross',
           timestamp: new Date().toISOString(),
@@ -1031,7 +1038,14 @@ export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContex
       }
       const end = new Date().toISOString().slice(0, 10);
       const start = windowStart(days);
-      return await getDailyRange(symbol, start, end);
+      /**
+       * 🔴 必须走**批量入口**（F 域缺陷修复）：
+       *   `getDailyRange(symbol, ...)` 只查 `v_stock_qfq` —— ETF 在该视图 **0 行**，
+       *   预取缓存未命中时会**静默变成「无数据」→ SKIP**（信号凭空消失）。
+       *   `batchGetDailyRange` 内部按品种分流（stock / etf），单标的也复用同一条 IN 查询。
+       */
+      const rows = await batchGetDailyRange([symbol], start, end);
+      return rows.get(symbol) ?? [];
     },
 
     async batchGetDailyKlines(symbols: string[], days: number): Promise<Map<string, DailyKline[]>> {
@@ -1061,6 +1075,18 @@ export interface PluginExecutionResult {
   durationMs: number;
   /** 被排除在 50ms 预算之外的行情 IO 累计耗时（毫秒），仅用于可观测性 */
   ioMs?: number;
+  /**
+   * 本次执行从 ctx 读到的**日线根数**（同一标的多次取数取最大值）。
+   * 0 = 完全没取到行情；>0 说明行情可用、SKIP 是「指标未触发」。
+   */
+  klines?: number;
+  /**
+   * SKIP 的两种成因（F 域缺陷修复）：
+   *   - `NO_DATA`   —— 取不到日线（行情缺失 / 标的不在该品种视图 / 数据不足到无法计算）
+   *   - `NO_SIGNAL` —— 有日线，但指标条件未触发
+   * 仅 `status === 'SKIP'` 时有值；SUCCESS / TIMEOUT / ERROR 为 undefined。
+   */
+  skipReason?: 'NO_DATA' | 'NO_SIGNAL';
   error?: string;
 }
 
@@ -1174,9 +1200,28 @@ export async function executePlugin(
     }
   };
 
+  /**
+   * 本次执行读到的日线根数（F 域缺陷修复 P1-2）
+   *
+   * 用于区分 SKIP 的两种成因：`klinesRead === 0` ⇒ 没有行情（NO_DATA）；
+   * `> 0` ⇒ 行情正常但指标未触发（NO_SIGNAL）。
+   * 日志 detail 同时带上 `klines=N`，让运维能从计数与明细两处看出差别。
+   */
+  let klinesRead = 0;
+
   const timedCtx: PluginContext = {
-    getDailyKlines: (symbol, days) => withIo(() => ctx.getDailyKlines(symbol, days)),
-    batchGetDailyKlines: (symbols, days) => withIo(() => ctx.batchGetDailyKlines(symbols, days)),
+    getDailyKlines: (symbol, days) =>
+      withIo(async () => {
+        const rows = await ctx.getDailyKlines(symbol, days);
+        klinesRead = Math.max(klinesRead, rows.length);
+        return rows;
+      }),
+    batchGetDailyKlines: (symbols, days) =>
+      withIo(async () => {
+        const map = await ctx.batchGetDailyKlines(symbols, days);
+        for (const rows of map.values()) klinesRead = Math.max(klinesRead, rows.length);
+        return map;
+      }),
     calculateRSI: ctx.calculateRSI,
     calculateMACD: ctx.calculateMACD,
     calculateSMA: ctx.calculateSMA,
@@ -1198,10 +1243,13 @@ export async function executePlugin(
         const durationMs = round3(performance.now() - computeStart);
 
         if (signals.length === 0) {
+          // 区分「没数据」与「没信号」：两者此前都只记一句「无信号」，计数上也分不开
+          const skipReason: 'NO_DATA' | 'NO_SIGNAL' = klinesRead > 0 ? 'NO_SIGNAL' : 'NO_DATA';
           writeSystemLog({
             logType: 'plugin_execute',
             level: 'SKIP',
-            message: `插件 ${plugin.id} 正常执行但无信号`,
+            message: `插件 ${plugin.id} 正常执行但无信号（${skipReason === 'NO_DATA' ? '无行情数据' : '指标未触发'}）`,
+            detail: `klines=${klinesRead} compute=${durationMs}ms io=${round3(ioMs)}ms`,
             checkItem: plugin.id,
           });
           settle({
@@ -1210,13 +1258,15 @@ export async function executePlugin(
             signals: [],
             durationMs,
             ioMs: round3(ioMs),
+            klines: klinesRead,
+            skipReason,
           });
         } else {
           writeSystemLog({
             logType: 'plugin_execute',
             level: 'SUCCESS',
             message: `插件 ${plugin.id} 返回 ${signals.length} 个信号`,
-            detail: `compute=${durationMs}ms io=${round3(ioMs)}ms`,
+            detail: `klines=${klinesRead} compute=${durationMs}ms io=${round3(ioMs)}ms`,
             checkItem: plugin.id,
           });
           settle({
@@ -1225,6 +1275,7 @@ export async function executePlugin(
             signals,
             durationMs,
             ioMs: round3(ioMs),
+            klines: klinesRead,
           });
         }
       }
@@ -1264,7 +1315,10 @@ export interface PluginBatchStats {
   success: number;
   timeout: number;
   error: number;
+  /** SKIP 总数 = noData + noSignal（保留既有字段语义，不拆两半） */
   skip: number;
+  /** SKIP 中「取不到行情」的次数（`skipReason === 'NO_DATA'`），其余为「指标未触发」 */
+  noData: number;
 }
 
 export interface PluginBatchResult {
@@ -1288,6 +1342,74 @@ export interface ExecuteAllPluginsOptions {
   prefetchDays?: number;
 }
 
+/** 用户级插件配置（`user_plugin_config` 的一行解析结果） */
+interface UserPluginConfig {
+  enabled: boolean;
+  params: Record<string, unknown>;
+}
+
+/**
+ * 读取用户的插件配置（F 域缺陷修复 P1-3）
+ *
+ * 🔴 修复前：`executeAllPlugins()` **既不读 `user_plugin_config.enabled`，也不读 `params_json`**
+ *   ⇒ 管理界面上「停用某个插件」「改某个插件的参数」**全都不生效**，
+ *   `admin.ts`（手动触发）与 `scheduler.ts`（每日收盘）两条调用链都是如此。
+ *
+ * 现在按 `SIGNAL_USER_ID` 读配置：
+ *   - `enabled = 0` 的插件**不参与执行**（也不计入 `stats.total`）；
+ *   - `params_json` 合并进每次 `executePlugin` 的 `userParams`（运行时 `symbol` 仍然覆盖它）。
+ *
+ * 降级策略（配置读不出来时**宁可多跑，不可少跑**）：
+ *   - 表不可读 / 查询异常 → 视为「全部启用 + 无参数」，并记 WARN（不静默丢插件）；
+ *   - 单行 `params_json` 是坏 JSON → 该插件按「无参数」执行，并记 WARN（不整批失败）。
+ */
+function loadUserPluginConfigs(userId: number): Map<string, UserPluginConfig> {
+  const configs = new Map<string, UserPluginConfig>();
+  try {
+    const db = ConfigStore.getInstance().db;
+    const rows = db
+      .prepare('SELECT plugin_id, enabled, params_json FROM user_plugin_config WHERE user_id = ?')
+      .all(userId) as Array<{ plugin_id: string; enabled: number; params_json: string | null }>;
+    for (const row of rows) {
+      let params: Record<string, unknown> = {};
+      const raw = row.params_json;
+      if (typeof raw === 'string' && raw.trim() !== '') {
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            params = parsed as Record<string, unknown>;
+          } else {
+            writeSystemLog({
+              logType: 'plugin_execute',
+              level: 'WARN',
+              message: `插件 ${row.plugin_id} 的 params_json 不是对象，已按无参数执行`,
+              detail: raw.slice(0, 200),
+              checkItem: row.plugin_id,
+            });
+          }
+        } catch (err) {
+          writeSystemLog({
+            logType: 'plugin_execute',
+            level: 'WARN',
+            message: `插件 ${row.plugin_id} 的 params_json 解析失败，已按无参数执行`,
+            detail: `${String(err)}；原始值=${raw.slice(0, 200)}`,
+            checkItem: row.plugin_id,
+          });
+        }
+      }
+      configs.set(row.plugin_id, { enabled: row.enabled !== 0, params });
+    }
+  } catch (err) {
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: '读取 user_plugin_config 失败，本次按「全部启用 + 无参数」执行',
+      detail: String(err),
+    });
+  }
+  return configs;
+}
+
 /**
  * 依次执行所有内置 monitor 类插件（MVP 暂不并发，避免同时打 DuckDB）。
  * 自定义插件将来从 PLUGIN_ALLOWED_PATH 加载后追加执行。
@@ -1297,10 +1419,19 @@ export interface ExecuteAllPluginsOptions {
  *   用户的自选/持仓一只都跑不到（违反 PRD M4）。
  *   现在支持传入**标的域**（自选 ∪ 持仓），并对整个标的域**批量预取**日线
  *   （SDD §5.3 P8「1 次 IN 查询 → N 插件共享」）。
+ *
+ * 🔴 F 域 P1-3：**用户插件配置在这里统一生效** —— `enabled=0` 的插件被过滤，
+ *   `params_json` 合并进每个插件的执行参数。`admin.ts` 与 `scheduler.ts`
+ *   两条调用链共用本函数，故无需各自再读一次配置。
  */
 export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}): Promise<PluginBatchResult> {
+  // 用户配置（enabled 过滤 + params 合并）
+  const userConfigs = loadUserPluginConfigs(SIGNAL_USER_ID);
   // 合并内置 + 磁盘加载（SDD §5.3 磁盘热加载）
-  const monitorPlugins = getAllPlugins().filter((p) => p.category === 'monitor');
+  // 只有**显式 enabled=0** 才停用；配置里没有记录的插件保持启用（默认行为不变）
+  const monitorPlugins = getAllPlugins()
+    .filter((p) => p.category === 'monitor')
+    .filter((p) => userConfigs.get(p.id)?.enabled !== false);
   const symbols = options.symbols;
 
   // ── 标的域模式：批量预取 + 逐标的执行 ──
@@ -1314,6 +1445,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
         timeout: 0,
         error: 0,
         skip: 0,
+        noData: 0,
       };
       writeSystemLog({
         logType: 'plugin_execute',
@@ -1336,14 +1468,19 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
       timeout: 0,
       error: 0,
       skip: 0,
+      noData: 0,
     };
     const allSignals: PluginSignal[] = [];
     const results: PluginExecutionResult[] = [];
 
     for (const plugin of monitorPlugins) {
       for (const symbol of symbols) {
-        // symbol 由运行时注入（覆盖用户参数里的同名字段）
-        const params = { ...(options.userParams ?? {}), symbol };
+        // 参数优先级：调用方入参 < 用户配置 < 运行时注入的 symbol
+        const params = {
+          ...(options.userParams ?? {}),
+          ...(userConfigs.get(plugin.id)?.params ?? {}),
+          symbol,
+        };
         const res = await executePlugin(plugin, params, ctx);
         results.push(res);
         if (res.status === 'SUCCESS') {
@@ -1355,6 +1492,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
           stats.error += 1;
         } else {
           stats.skip += 1;
+          if (res.skipReason === 'NO_DATA') stats.noData += 1;
         }
       }
     }
@@ -1362,8 +1500,8 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     writeSystemLog({
       logType: 'plugin_execute',
       level: 'INFO',
-      message: `批量执行完成（标的域 ${symbols.length} 只） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip}`,
-      detail: JSON.stringify({ ...stats, symbolCount: symbols.length }),
+      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData}`,
+      detail: JSON.stringify({ ...stats, symbolCount: symbols.length, pluginCount: monitorPlugins.length }),
     });
 
     return { signals: allSignals, stats, results };
@@ -1378,12 +1516,15 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     timeout: 0,
     error: 0,
     skip: 0,
+    noData: 0,
   };
   const allSignals: PluginSignal[] = [];
   const results: PluginExecutionResult[] = [];
 
   for (const plugin of monitorPlugins) {
-    const res = await executePlugin(plugin, options.userParams ?? {}, ctx);
+    // 参数优先级：调用方入参 < 用户配置（symbol 由插件自身的 paramSchema 默认值兜底）
+    const params = { ...(options.userParams ?? {}), ...(userConfigs.get(plugin.id)?.params ?? {}) };
+    const res = await executePlugin(plugin, params, ctx);
     results.push(res);
     if (res.status === 'SUCCESS') {
       stats.success += 1;
@@ -1394,13 +1535,14 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
       stats.error += 1;
     } else {
       stats.skip += 1;
+      if (res.skipReason === 'NO_DATA') stats.noData += 1;
     }
   }
 
   writeSystemLog({
     logType: 'plugin_execute',
     level: 'INFO',
-    message: `批量执行完成 total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip}`,
+    message: `批量执行完成 total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData}`,
     detail: JSON.stringify(stats),
   });
 

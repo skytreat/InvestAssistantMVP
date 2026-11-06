@@ -52,7 +52,21 @@ interface DatacheckResult {
 
 /** `POST /api/admin/run-signal` 的返回体里本组件用得到的部分 */
 interface SignalRunResult {
-  readonly stats?: { total?: number; success?: number; timeout?: number; error?: number };
+  readonly stats?: {
+    /**
+     * `total` = **插件 × 标的 的执行次数**（不是标的个数！）
+     * F 域 P2-4：修复前文案写成「处理 N 个标的」，与实际语义不符。
+     */
+    readonly total?: number;
+    /** `success` = **产出了信号的执行次数**（不是「成功的插件数/标的数」） */
+    readonly success?: number;
+    readonly timeout?: number;
+    readonly error?: number;
+    /** 执行完成但没产出信号的次数 = noData + 指标未触发 */
+    readonly skip?: number;
+    /** skip 中「取不到行情」的次数（其余为指标未触发） */
+    readonly noData?: number;
+  };
   readonly inserted?: number;
 }
 
@@ -217,14 +231,21 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
       const body = res.data as ApiEnvelope<SignalRunResult>;
       if (isOkEnvelope(body)) {
         const stats = body.data?.stats ?? {};
-        // UX-13：用户语言 + 原始字段折叠进「技术详情」，不再直接拼 `total=… success=…`
+        // F 域 P2-4：口径改回真实语义 —— total 是「插件 × 标的」的执行次数，
+        // success 是「产出信号」的执行次数，并补上 skip / noData（此前完全没展示）。
+        const skip = stats.skip ?? 0;
+        const noData = stats.noData ?? 0;
+        const noSignal = Math.max(0, skip - noData);
         setSignalNotice(
-          `信号生成完成：处理 ${stats.total ?? '-'} 个标的 · 成功 ${stats.success ?? '-'} · ` +
-            `超时 ${stats.timeout ?? '-'} · 失败 ${stats.error ?? '-'} · ` +
+          `信号生成完成：共执行 ${stats.total ?? '-'} 次（插件 × 标的）· ` +
+            `产出信号 ${stats.success ?? '-'} 次 · ` +
+            `无行情数据 ${stats.noData ?? '-'} 次 · 指标未触发 ${noSignal} 次 · ` +
+            `超时 ${stats.timeout ?? '-'} · 异常 ${stats.error ?? '-'} · ` +
             `新增信号 ${body.data?.inserted ?? '-'} 条`,
         );
         setSignalRaw(
-          `total=${stats.total ?? '-'} success=${stats.success ?? '-'} timeout=${stats.timeout ?? '-'} ` +
+          `total=${stats.total ?? '-'} success=${stats.success ?? '-'} skip=${stats.skip ?? '-'} ` +
+            `noData=${stats.noData ?? '-'} timeout=${stats.timeout ?? '-'} ` +
             `error=${stats.error ?? '-'} inserted=${body.data?.inserted ?? '-'}`,
         );
       } else {

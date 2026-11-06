@@ -48,7 +48,7 @@ import { mockResponse, renderWithRouter } from '../helpers';
  * | 断言 | 改动 | 依据 |
  * |---|---|---|
  * | 进页不发请求，靠点「查询」 | 改为**进页自动加载**（挂载即发 1 次）| T72 ①「进页自动加载（今日+全部策略+全部方向）」|
- * | 空态文案「请点击查询按钮加载数据」| **删除**，改为「今日暂无策略信号」| T72 ①「删『请点击查询』空态」|
+ * | 空态文案「请点击查询按钮加载数据」| **删除**，改为写明「最近有信号日 / 行情最新」（F 域 P0-1）| T72 ①「删『请点击查询』空态」|
  * | 请求参数 `{page_size, trade_date}` | 追加 **`page`**（分页，T72 ③）| 后端 `routes/signal.ts:32` 接受 `page`|
  * | Tab 顺序 4 站 | 扩到 7 站（新增起始/结束日期 + 标的代码）| T72 ⑤「加 asset_code 过滤」+ G5.5「start_date/end_date 筛选」|
  * | 表格列 = 后端返回的动态列 | 改为**固定列**（标的代码/策略/方向/强度/标签/交易日期）| T72 ②（方向 pill / 强度 / 标签 tag 需要固定列位）|
@@ -98,7 +98,14 @@ const DEFAULT_ROW: SignalFixture = {
  * 同形：源码读的是 `res.data.code` 与 `res.data.data`（T89b 起成功判定看 `code === 0`）。
  */
 function installApiMock(rows: SignalFixture[] = [DEFAULT_ROW]): void {
-  getMock.mockResolvedValue(mockResponse(rows));
+  // F 域 P0-1：后端随列表下发默认日期口径元信息（前端不再自己拼「今天」）
+  getMock.mockResolvedValue(
+    mockResponse(rows, {
+      trade_date: '2026-10-12',
+      trade_date_source: 'signal',
+      latest_quote_date: null,
+    }),
+  );
 }
 
 /**
@@ -188,9 +195,8 @@ describe('Signals · 键盘可达性与键盘操作', () => {
 
     await waitForLoaded();
 
-    // 默认交易日期 = 组件挂载时的今天（源码 todayStr()），此处直接取控件当前值，避免跨天抖动
-    const defaultDate = dateInput(container).value;
-    expect(defaultDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // F 域 P0-1：日期输入框初始为空 ⇒ 日期口径由后端解析（不再硬编码 todayStr()）
+    expect(dateInput(container).value).toBe('');
 
     // 用 Tab 把焦点移到「查询」按钮
     for (let i = 0; i < 7; i += 1) await user.tab();
@@ -201,7 +207,7 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     // 进页自动加载已发过一次 → 这里应是第 2 次
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
     expect(getMock.mock.calls[1]?.[0]).toBe('/signal');
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, trade_date: defaultDate });
+    expect(lastParams()).toEqual({ page: 1, page_size: 50 });
   });
 
   it('「查询」按钮可用空格键触发', async () => {
@@ -291,19 +297,18 @@ describe('Signals · 查询参数组装', () => {
     });
   });
 
-  it('未填的条件不进 params（默认只有 page / page_size 与 trade_date）', async () => {
+  it('未填的条件不进 params（默认只有 page / page_size，日期由后端解析）', async () => {
     const user = userEvent.setup();
-    const { container } = renderWithRouter(<Signals />);
+    renderWithRouter(<Signals />);
 
     await waitForLoaded();
-
-    const defaultDate = dateInput(container).value;
 
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
     const params = lastParams();
-    expect(params).toEqual({ page: 1, page_size: 50, trade_date: defaultDate });
+    expect(params).toEqual({ page: 1, page_size: 50 });
+    expect(params).not.toHaveProperty('trade_date');
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
     expect(params).not.toHaveProperty('asset_code');
@@ -311,11 +316,14 @@ describe('Signals · 查询参数组装', () => {
     expect(params).not.toHaveProperty('end_date');
   });
 
-  it('清空交易日期 → params 里不再出现 trade_date', async () => {
+  it('选填交易日期后再清空 → params 里不再出现 trade_date（回到后端默认口径）', async () => {
     const user = userEvent.setup();
     const { container } = renderWithRouter(<Signals />);
 
     await waitForLoaded();
+
+    fireEvent.change(dateInput(container), { target: { value: '2026-10-12' } });
+    expect(dateInput(container).value).toBe('2026-10-12');
 
     await user.clear(dateInput(container));
     expect(dateInput(container).value).toBe('');
@@ -338,7 +346,8 @@ describe('Signals · 空态', () => {
 
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
     expect(screen.queryByText('请点击查询按钮加载数据')).not.toBeInTheDocument();
-    expect(await screen.findByTestId('signals-empty')).toHaveTextContent('今日暂无策略信号');
+    // F 域 P0-1：空态不再断言「今天没信号」，改为写明后端解析出的「最近有信号日」
+    expect(await screen.findByTestId('signals-empty')).toHaveTextContent('最近有信号日 2026-10-12');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });
