@@ -27,6 +27,10 @@ export interface PortfolioReturn {
   risk: ReturnBreakdown & {
     realized: number;
     dividend: number;
+    /**
+     * 未平仓风险持仓成本内仍携带的买入手续费（明细披露，**不参与 pnl 计算**）。
+     * `total.fees − risk.fees` = 已随平仓结转进已实现 / 落在现金类持仓成本内的部分。
+     */
     fees: number;
     /**
      * 累计买入（buy + add 的成交金额 + 手续费，含已平仓部分）。
@@ -41,7 +45,12 @@ export interface PortfolioReturn {
     cumulativeBuy: number;
   };
   cash: ReturnBreakdown & { repoInterest: number; cashEtfChange: number };
-  total: ReturnBreakdown & { assets: number; invested: number; fees: number };
+  total: ReturnBreakdown & {
+    assets: number;
+    invested: number;
+    /** 全部交易费用合计（含已平仓）；`total.fees − risk.fees` 即已随平仓结转部分 */
+    fees: number;
+  };
   caliberNote: string;
 }
 
@@ -112,7 +121,19 @@ export async function computePortfolioReturn(userId: number, brokerCode?: string
   const riskRealized = closedRisk.reduce((s, c) => s + c.realized_pnl, 0);
 
   const riskPnl = riskMV + riskRealized + riskDividend - riskInvested;
-  const riskFees = 0; // 已含在 invested（costBasis 含 fee）
+  /**
+   * risk.fees（2026-11-06 J3 修复）—— **只披露、不二次扣减**。
+   *
+   * 口径：未平仓风险持仓的移动加权成本里**仍然携带的买入手续费**
+   * （`PositionResult.feeInCostBasis`，已随卖出按比例释放）。
+   * - 买入费用已嵌入 `totalCostBasis`，故 `riskPnl` 公式里**不再单独减一次**，
+   *   本字段仅用于把「费用落在哪里」讲清楚，不参与 pnl 计算。
+   * - 与 `total.fees`（全部交易费用）的关系：
+   *   `total.fees = risk.fees + 已随平仓结转/现金类持仓的成本内费用`。
+   *   例：total.fees=1757.33、risk.fees=5.16 ⇒ 1752.17 已随平仓结转进已实现（或落在现金类）。
+   * - 现金流类（逆回购）无手续费，恒为 0，故不单列。
+   */
+  const riskFees = riskPositions.reduce((s, p) => s + (p.feeInCostBasis ?? 0), 0);
 
   // 4. 现金：cash ETF MV/cost + repo interest
   let cashEtfCost = 0;
@@ -192,6 +213,8 @@ export async function computePortfolioReturn(userId: number, brokerCode?: string
     },
     caliberNote:
       '口径：风险资产按移动加权成本（含分红/送股）；现金类按市值变动 + 逆回购配对利息；费用含最低佣金。' +
+      '费用拆分：total.fees 为全部交易费用；risk.fees 只统计未平仓风险持仓成本内仍携带的买入手续费' +
+      '（买入费用已计入成本、卖出时按比例释放），因此 total.fees = risk.fees + 已随平仓结转进已实现的部分。' +
       '「当前持仓成本」= 未平仓部分的成本（收益率分母）；「累计买入」= 历史 buy/add 成交额合计（含已平仓，只增不减），两者不可混读。' +
       '与券商口径差异：券商按资金流水口径，本系统按持仓成本口径；逆回购利息按配对结果，未配对在途头寸不计入收益。',
   };

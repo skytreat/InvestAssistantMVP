@@ -67,6 +67,19 @@ export interface PositionResult {
    * 新增必填字段：纯函数恒返回，既有调用方读旧字段不受影响。
    */
   cashReceived: number;
+  /**
+   * 2026-11-06（J3 费用口径）：**未平仓成本中携带的手续费残值**。
+   *
+   * `totalCostBasis` 含买入手续费，而卖出时成本基按剩余数量等比缩小，
+   * 因此手续费也被「按比例释放」到已实现盈亏里 —— 平掉的部分其费用已随卖出结转。
+   * 本字段 = 尚未平仓部分仍留在成本基里的买入手续费，恒满足：
+   * `0 ≤ feeInCostBasis ≤ totalFee`，且 `totalQuantity === 0` 时为 `0`。
+   *
+   * 用途：三口径里 `risk.fees` 只能披露「还挂在风险资产上的费用」，
+   * 与 `total.fees`（全部交易费用）的差额 = 已随平仓结转的部分，二者可相加解释。
+   * 送股 / 分红不改变本字段（它们不涉及买入费用）。
+   */
+  feeInCostBasis: number;
   /** T84：是否检出超卖。strictOversell=false 时用于「显示但暴露」，不得静默吞掉 */
   hasOversell?: boolean;
   oversellDetail?: OversellDetail | null;
@@ -111,6 +124,7 @@ export function calculateMovingWeightedCost(trades: TradeRecord[], opts: CalcOpt
   let realizedPnL = 0;
   let totalFee = 0;
   let cashReceived = 0;
+  let feeInCostBasis = 0;
   let oversellDetail: OversellDetail | null = null;
 
   for (const trade of ordered) {
@@ -121,6 +135,7 @@ export function calculateMovingWeightedCost(trades: TradeRecord[], opts: CalcOpt
       const totalCost = trade.quantity * trade.price + fee;
       totalCostBasis += totalCost;
       totalQuantity += trade.quantity;
+      feeInCostBasis += fee;
     } else if (trade.direction === 'bonus') {
       // T119 送股：股数 +n，总成本不变，均价按 Q/(Q+n) 摊薄，不产生价差盈亏
       totalQuantity += trade.quantity;
@@ -148,14 +163,18 @@ export function calculateMovingWeightedCost(trades: TradeRecord[], opts: CalcOpt
         realizedPnL += revenue - sellQty * avgCost;
         totalQuantity = 0;
         totalCostBasis = 0;
+        feeInCostBasis = 0; // 全部平掉 → 挂在成本基里的买入费用一并结转
         continue;
       }
       if (totalQuantity <= 0) continue; // 卖出 0 股，no-op
       const avgCost = totalCostBasis / totalQuantity;
       const revenue = trade.quantity * trade.price - fee;
       realizedPnL += revenue - trade.quantity * avgCost;
+      // 买入费用随成本基同比例释放：平掉的比例 × 当前残值
+      const releasedFee = feeInCostBasis * (trade.quantity / totalQuantity);
       totalQuantity -= trade.quantity;
       totalCostBasis = totalQuantity * avgCost; // 卖出后成本基按剩余数量等比减少
+      feeInCostBasis = totalQuantity > 0 ? Math.max(0, feeInCostBasis - releasedFee) : 0;
     }
   }
 
@@ -166,6 +185,7 @@ export function calculateMovingWeightedCost(trades: TradeRecord[], opts: CalcOpt
     realizedPnL,
     totalFee,
     cashReceived,
+    feeInCostBasis,
     hasOversell: oversellDetail !== null,
     oversellDetail,
   };

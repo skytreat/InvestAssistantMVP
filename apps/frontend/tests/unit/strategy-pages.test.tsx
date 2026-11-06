@@ -154,14 +154,48 @@ describe('T150 策略有效性页（/strategy/effectiveness）', () => {
 });
 
 describe('T150 组合体检页（/portfolio/risk-check）', () => {
-  it('四指标卡片 + 行业分布（标注近似 + 排除现金分母）', async () => {
+  it('四指标卡片 + 行业分布（排除现金分母）', async () => {
     renderWithRouter(<RiskCheck />);
     expect(await screen.findByText('12.5%')).toBeInTheDocument();
     expect(screen.getByText('55%')).toBeInTheDocument();
     expect(screen.getByText('20%')).toBeInTheDocument();
     expect(screen.getByText('8.4%')).toBeInTheDocument();
-    expect(screen.getByText('行业/板块（代码前缀）')).toBeInTheDocument();
+    expect(screen.getByText('行业分布（板块口径）')).toBeInTheDocument();
+    expect(screen.getByText('行业/板块')).toBeInTheDocument();
     expect(screen.getByText(/分母已排除现金类资产/)).toBeInTheDocument();
     expect(screen.getByText(/为近似口径/)).toBeInTheDocument();
+  });
+
+  /**
+   * 2026-11-06（J3）：行业数据不可用时后端返回 distributionBasis='exchange'，
+   * 前端标题/表头/行名必须同步改成交易所口径（不能继续显示「行业」）。
+   */
+  it('行业数据不可用 → 降级为交易所分布，行名映射为交易所', async () => {
+    getMock.mockImplementationOnce(async () =>
+      mockResponse({
+        singleStockMaxWeight: 34.67,
+        top10Concentration: 97.07,
+        availableCashRatio: 0,
+        maxDrawdown: 15.32,
+        industryDistribution: [
+          { industry: 'sh', weight: 83.12 },
+          { industry: 'sz', weight: 16.88 },
+        ],
+        cashExcluded: true,
+        distributionBasis: 'exchange',
+        distributionNote:
+          '当前按交易所维度展示（sh=上交所 / sz=深交所 / bj=北交所）：本机行情副本板块成分为 0 行。',
+        maxDrawdownNote: '口径：累计盈亏自峰值回落 ÷ 全期峰值持仓成本。',
+      }),
+    );
+    renderWithRouter(<RiskCheck />);
+    expect(await screen.findByText('15.32%')).toBeInTheDocument();
+    expect(screen.getByText('交易所分布（行业数据不可用，降级）')).toBeInTheDocument();
+    expect(screen.getByText('交易所')).toBeInTheDocument();
+    expect(screen.getByText('上交所（sh）')).toBeInTheDocument();
+    expect(screen.getByText('深交所（sz）')).toBeInTheDocument();
+    expect(screen.getByText('83.12%')).toBeInTheDocument();
+    expect(screen.getByText(/当前按交易所维度展示/)).toBeInTheDocument();
+    expect(screen.getByText(/全期峰值持仓成本/)).toBeInTheDocument();
   });
 });
