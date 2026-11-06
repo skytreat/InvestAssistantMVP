@@ -56,28 +56,41 @@ interface SignalFixture {
   trade_date: string;
 }
 
-/** 今天的日期（与页面 `todayStr()` 同口径，避免跨天抖动）*/
-function todayStr(): string {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
+/** 后端默认日期口径元信息（F 域 P0-1）：最近有信号日 —— 前端不再自己拼「今天」 */
+const DEFAULT_META: Record<string, unknown> = {
+  trade_date: '2026-10-13',
+  trade_date_source: 'signal',
+  latest_quote_date: null,
+};
 
 /** 造一个分页响应 */
-function pagedResponse(rows: SignalFixture[], page: number, totalPages: number, total: number) {
+function pagedResponse(
+  rows: SignalFixture[],
+  page: number,
+  totalPages: number,
+  total: number,
+  meta: Record<string, unknown> = DEFAULT_META,
+) {
   return mockResponse(rows, {
     pagination: { page, pageSize: 50, total, totalPages },
+    ...meta,
   });
 }
 
 /** 安装 mock：按请求里的 `page` 返回对应页 */
-function installPagedMock(pages: { rows: SignalFixture[]; totalPages: number; total: number }[]): void {
+function installPagedMock(
+  pages: {
+    rows: SignalFixture[];
+    totalPages: number;
+    total: number;
+    meta?: Record<string, unknown>;
+  }[],
+): void {
   getMock.mockImplementation((_url: string, cfg?: ApiGetConfig) => {
     const requested = Number(cfg?.params?.page ?? 1);
     const idx = Math.min(Math.max(requested - 1, 0), pages.length - 1);
     const hit = pages[idx];
-    return Promise.resolve(pagedResponse(hit.rows, requested, hit.totalPages, hit.total));
+    return Promise.resolve(pagedResponse(hit.rows, requested, hit.totalPages, hit.total, hit.meta));
   });
 }
 
@@ -105,20 +118,26 @@ beforeEach(() => {
 });
 
 describe('T72 ① · 进页自动加载', () => {
-  it('挂载即发一次请求：今日 + 全部策略 + 全部方向', async () => {
+  it('挂载即发一次请求：不带 trade_date（跟随后端默认日期口径）', async () => {
     installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
     renderWithRouter(<Signals />);
 
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
     expect(getMock.mock.calls[0]?.[0]).toBe('/signal');
     const params = getMock.mock.calls[0]?.[1]?.params ?? {};
-    expect(params).toEqual({ page: 1, page_size: 50, trade_date: todayStr() });
+    // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
+    expect(params).toEqual({ page: 1, page_size: 50 });
+    expect(params).not.toHaveProperty('trade_date');
     // 「全部策略 / 全部方向」⇒ 不预设任何过滤条件
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
     expect(params).not.toHaveProperty('asset_code');
     expect(params).not.toHaveProperty('start_date');
     expect(params).not.toHaveProperty('end_date');
+    // 日期输入框保持为空（= 默认口径），并在旁边说明实际展示的是哪天
+    expect(await screen.findByTestId('signals-default-date-hint')).toHaveTextContent(
+      '最近有信号日 2026-10-13',
+    );
   });
 
   it('删掉「请点击查询按钮加载数据」空态', async () => {
@@ -127,8 +146,8 @@ describe('T72 ① · 进页自动加载', () => {
 
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
     expect(screen.queryByText('请点击查询按钮加载数据')).not.toBeInTheDocument();
-    // 换成有信息量的空态（今日视角）
-    expect(await screen.findByTestId('signals-empty')).toHaveTextContent('今日暂无策略信号');
+    // 换成有信息量的空态（写明后端解析出的「最近有信号日」）
+    expect(await screen.findByTestId('signals-empty')).toHaveTextContent('最近有信号日 2026-10-13');
   });
 
   it('接口报错时展示错误文案（不吞异常）', async () => {
@@ -347,15 +366,51 @@ describe('T79 ③ · 信号空态引导', () => {
     useUserStore.setState({ role: null, token: null, username: null });
   });
 
-  it('空态包含「今日暂无策略信号」+「收盘后 17:02 自动运行信号生成」', async () => {
+  it('空态写明「最近有信号日 YYYY-MM-DD」+「收盘后 17:02 自动运行信号生成」', async () => {
     installPagedMock([{ rows: [], totalPages: 0, total: 0 }]);
     renderWithRouter(<Signals />);
 
     const empty = await screen.findByTestId('signals-empty');
-    expect(empty).toHaveTextContent('今日暂无策略信号');
+    expect(empty).toHaveTextContent('最近有信号日 2026-10-13');
     expect(empty).toHaveTextContent('收盘后 17:02 自动运行信号生成');
     // 时刻必须是 17:02（17:03 是除权导入）
     expect(empty).not.toHaveTextContent('17:03');
+  });
+
+  it('无信号但行情可用 → 空态写明「行情最新 YYYY-MM-DD」（而不是让人以为没信号）', async () => {
+    installPagedMock([
+      {
+        rows: [],
+        totalPages: 0,
+        total: 0,
+        meta: {
+          trade_date: '2026-11-04',
+          trade_date_source: 'quote',
+          latest_quote_date: '2026-11-04',
+        },
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    const empty = await screen.findByTestId('signals-empty');
+    expect(empty).toHaveTextContent('行情最新 2026-11-04');
+    expect(empty).not.toHaveTextContent('今日暂无策略信号');
+    // 默认口径提示同样指向行情最新日
+    expect(screen.getByTestId('signals-default-date-hint')).toHaveTextContent('行情最新 2026-11-04');
+  });
+
+  it('行情库也不可用（source=today）→ 空态明确说明「行情库暂不可用」', async () => {
+    installPagedMock([
+      {
+        rows: [],
+        totalPages: 0,
+        total: 0,
+        meta: { trade_date: null, trade_date_source: 'today', latest_quote_date: null },
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-empty')).toHaveTextContent('行情库暂不可用');
   });
 
   it('管理员额外看到【立即运行信号】，点击跳转 Admin', async () => {

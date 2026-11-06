@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
 import { getTodaySignalStats } from '../services/todaySignals.js';
-import { getTradeDate } from '../services/signalService.js';
+import { resolveDefaultSignalTradeDate } from '../services/signalService.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
@@ -39,6 +39,31 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       const db = ConfigStore.getInstance().db;
       const where: string[] = ['user_id = ?', 'is_deleted = 0'];
       const params: Array<string | number> = [user.sub];
+
+      /**
+       * 🔴 **默认交易日口径（F 域 P0-1）**
+       *
+       * 修复前：前端硬编码 `trade_date=todayStr()` ⇒ 周末/节假日/行情未跑的日子进页**永远为空**，
+       *   用户误以为「没有信号」。`/api/signal/stats` 更是在缺省时直接落到自然日今天。
+       *
+       * 修复后：调用方**完全没传日期条件**（`trade_date` / `start_date` / `end_date` 都没有）时，
+       *   由 `resolveDefaultSignalTradeDate()` 解析口径（最近有信号日 → 最近行情日 → 今天），
+       *   并随响应下发 `trade_date` / `trade_date_source` / `latest_quote_date`，**前端不再自己猜今天**。
+       *
+       * ⚠️ 这里**故意不注入 `trade_date` 过滤**：本接口的既有契约是
+       *   「无筛选 = 最近 N 条（跨交易日窗口）」，与 K 线标记（`kline-signal-isolation`）
+       *   共享同一行集合口径。默认口径只体现在响应元信息与前端展示上，不改变取数窗口。
+       */
+      const hasDateFilter = Boolean(q.trade_date || q.start_date || q.end_date);
+      let effectiveTradeDate: string | null = q.trade_date ?? null;
+      let dateSource: 'explicit' | 'signal' | 'quote' | 'today' = 'explicit';
+      let latestQuoteDate: string | null = null;
+      if (!hasDateFilter) {
+        const resolved = await resolveDefaultSignalTradeDate(user.sub);
+        effectiveTradeDate = resolved.tradeDate;
+        dateSource = resolved.source;
+        latestQuoteDate = resolved.latestQuoteDate;
+      }
 
       if (q.asset_code) {
         where.push('asset_code = ?');
@@ -104,7 +129,13 @@ export async function registerSignalRoutes(app: FastifyInstance) {
         .all(...params, pageSize, (page - 1) * pageSize);
 
       reply.send(
-        ok(rows, { pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) } }),
+        ok(rows, {
+          pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) },
+          // F 域 P0-1：把「实际生效的交易日 + 来源 + 行情最新日」下发，前端不再自己猜今天
+          trade_date: effectiveTradeDate,
+          trade_date_source: dateSource,
+          latest_quote_date: latestQuoteDate,
+        }),
       );
     } catch (err) {
       reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
@@ -114,7 +145,9 @@ export async function registerSignalRoutes(app: FastifyInstance) {
   /**
    * GET /api/signal/stats —— **今日信号统计**（T67 Dashboard「今日动态概览卡 · 今日信号 ▲▼·」）
    *
-   * ?trade_date=2026-10-20   指定交易日（缺省 = 今天）
+   * ?trade_date=2026-10-20   指定交易日
+   *   缺省（F 域 P0-1 修复后）= **最近有信号日** → **最近行情日** → 东八区今天，
+   *   不再直接落到自然日今天（周末/节假日会误导成「今日 0 条」）。
    *
    * 响应：`{ total, up, down, hold }`（buy→up / sell→down / hold→hold）
    *
@@ -128,13 +161,28 @@ export async function registerSignalRoutes(app: FastifyInstance) {
     try {
       const user = (request as AuthedRequest).user;
       const q = request.query as Record<string, string | undefined>;
-      // 缺省 = 今天（东八区，与信号落库 `getTradeDate()` 同一口径）
-      const tradeDate = q.trade_date ?? getTradeDate();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
-        return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_date 格式应为 YYYY-MM-DD'));
+      let tradeDate: string;
+      let dateSource: 'explicit' | 'signal' | 'quote' | 'today' = 'explicit';
+      let latestQuoteDate: string | null = null;
+      if (q.trade_date) {
+        tradeDate = q.trade_date;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
+          return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_date 格式应为 YYYY-MM-DD'));
+        }
+      } else {
+        const resolved = await resolveDefaultSignalTradeDate(user.sub);
+        tradeDate = resolved.tradeDate;
+        dateSource = resolved.source;
+        latestQuoteDate = resolved.latestQuoteDate;
       }
       const stats = await getTodaySignalStats(user.sub, tradeDate);
-      return reply.send(ok(stats, { trade_date: tradeDate }));
+      return reply.send(
+        ok(stats, {
+          trade_date: tradeDate,
+          trade_date_source: dateSource,
+          latest_quote_date: latestQuoteDate,
+        }),
+      );
     } catch (err) {
       return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }

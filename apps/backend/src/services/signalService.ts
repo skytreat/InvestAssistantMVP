@@ -1,5 +1,6 @@
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from './logger.js';
+import { resolveLatestQuoteDate } from './marketData.js';
 import type { PluginSignal } from './pluginEngine.js';
 
 /**
@@ -204,4 +205,57 @@ export function getTradeDate(): string {
   const offset = 8 * 60; // UTC+8
   const local = new Date(now.getTime() + offset * 60 * 1000);
   return local.toISOString().slice(0, 10);
+}
+
+/**
+ * 「最近有信号日」= 该用户已落库信号里的 `MAX(trade_date)`（F 域 P0-1）
+ *
+ * 🔴 修复前：`GET /api/signal/stats` 未传 `trade_date` 时一律落到 `getTradeDate()`（**自然日今天**）
+ *   ⇒ 周末 / 节假日 / 行情还没跑的日子，前端打开就是「今日 0 条」，用户以为「没信号」，
+ *   实际是「今天本来就不该有信号」。
+ *
+ * @returns `YYYY-MM-DD`；该用户一条信号都没有时返回 null
+ */
+export function resolveLatestSignalDate(userId: number = SIGNAL_USER_ID): string | null {
+  const db = ConfigStore.getInstance().db;
+  const row = db
+    .prepare(
+      `SELECT MAX(trade_date) AS latest FROM user_strategy_signal
+       WHERE user_id = ? AND is_deleted = 0`,
+    )
+    .get(userId) as { latest: string | null } | undefined;
+  const latest = row?.latest;
+  return typeof latest === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(latest) ? latest : null;
+}
+
+/** 默认交易日的解析结果（附带来源，便于前端/接口自解释） */
+export interface DefaultSignalDate {
+  /** 实际使用的交易日 */
+  tradeDate: string;
+  /** signal=最近有信号日；quote=最近行情日；today=都没有时的兜底（东八区今天） */
+  source: 'signal' | 'quote' | 'today';
+  /** 最近行情日（行情库不可读时为 null；仅在无信号、需要兜底时才查） */
+  latestQuoteDate: string | null;
+}
+
+/**
+ * 信号接口的**默认交易日口径**（F 域 P0-1）
+ *
+ * 优先级：最近有信号日 → 最近行情日（`resolveLatestQuoteDate()`）→ 东八区今天。
+ *
+ * ⚠️ 只有「一条信号都没有」时才会去查行情库 —— 正常运行（每天 17:02 生成信号后）
+ * 只走一次 SQLite 聚合，不给 DuckDB 增加无谓的打开/关闭开销。
+ */
+export async function resolveDefaultSignalTradeDate(
+  userId: number = SIGNAL_USER_ID,
+): Promise<DefaultSignalDate> {
+  const latestSignalDate = resolveLatestSignalDate(userId);
+  if (latestSignalDate) {
+    return { tradeDate: latestSignalDate, source: 'signal', latestQuoteDate: null };
+  }
+  const latestQuoteDate = await resolveLatestQuoteDate();
+  if (latestQuoteDate) {
+    return { tradeDate: latestQuoteDate, source: 'quote', latestQuoteDate };
+  }
+  return { tradeDate: getTradeDate(), source: 'today', latestQuoteDate: null };
 }

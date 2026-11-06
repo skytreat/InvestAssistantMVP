@@ -98,28 +98,29 @@ const PLUGIN_CATEGORY_LABEL: Record<string, string> = {
   filter: '选股',
 };
 
-function todayStr(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 /** 取一行的标的代码（`asset_code` 优先，兼容旧别名 `symbol`）*/
 function assetCodeOf(row: SignalRow): string {
   const code = row.asset_code ?? row.symbol;
   return typeof code === 'string' && code !== '' ? code : '--';
 }
 
+/** 后端下发的默认日期口径来源（F 域 P0-1）*/
+type DateSource = 'explicit' | 'signal' | 'quote' | 'today';
+
 export default function Signals() {
   const navigate = useNavigate();
   /** T79 ③：管理员在空态可直达 Admin 手动触发信号生成 */
   const role = useUserStore((s) => s.role);
 
-  // ── 筛选条件 ────────────────────────────────────────────────
-  /** 交易日期（单日精确匹配）；默认今天 —— 与「进页自动加载（今日）」一致 */
-  const [tradeDate, setTradeDate] = useState<string>(todayStr());
+  // ── 筛选条件 ───────────────────────────────────────────────────
+  /**
+   * 交易日期（单日精确匹配）
+   *
+   * 🔴 F 域 P0-1：**初始为空 = 跟随后端默认口径**（最近有信号日 → 最近行情日 → 今天），
+   *    修复前硬编码 `todayStr()` ⇒ 周末/节假日/行情未跑的日子进页就是空页面，
+   *    用户误以为「没有信号」。
+   */
+  const [tradeDate, setTradeDate] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [assetCode, setAssetCode] = useState<string>('');
@@ -133,6 +134,14 @@ export default function Signals() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
+
+  // ── 后端默认日期口径（F 域 P0-1）────────────────────────────
+  /** 实际生效的交易日（用户没选日期时由后端解析，前端只展示，不自己猜今天）*/
+  const [resolvedDate, setResolvedDate] = useState<string | null>(null);
+  /** 默认日期来源：signal=最近有信号日 / quote=最近行情日 / today=兜底 */
+  const [resolvedSource, setResolvedSource] = useState<DateSource | null>(null);
+  /** 行情最新日（仅在后端走「最近行情日」兜底时下发，用于空态文案）*/
+  const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
 
   // ── V3.8 T149：信号生命周期操作（采纳/忽略/关联交易）────────────────
   const [actMsg, setActMsg] = useState<string | null>(null);
@@ -198,6 +207,16 @@ export default function Signals() {
         // T72 ③：后端已经返回分页元信息（旧实现把它整个丢了）
         setTotalPages(res.data.pagination?.totalPages ?? 1);
         setTotal(res.data.pagination?.total ?? 0);
+        // F 域 P0-1：日期口径与行情最新日都取后端值（显式筛选时不覆盖用户的输入）
+        const meta = res.data as unknown as {
+          trade_date?: string | null;
+          trade_date_source?: DateSource;
+          latest_quote_date?: string | null;
+        };
+        const source = meta.trade_date_source ?? 'explicit';
+        setResolvedSource(source);
+        setResolvedDate(source === 'explicit' ? null : (meta.trade_date ?? null));
+        setLatestQuoteDate(typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null);
       } else {
         setError(res.data.message ?? '请求失败');
       }
@@ -247,8 +266,26 @@ export default function Signals() {
     void fetchSignals(filterChanged ? 1 : page);
   };
 
-  /** 是否处于「默认视角」（今日 + 无区间）—— 决定空态文案 */
-  const isTodayView = tradeDate === todayStr() && !startDate && !endDate;
+  /**
+   * 是否处于「默认视角」（**所有筛选条件都没填**）—— 决定空态文案
+   *
+   * 🔴 F 域 P0-1：不再用「日期 == 今天」判断。默认视角 = 完全没筛选，
+   *   此时后端按「最近有信号日 → 最近行情日 → 今天」解析，空态必须写明
+   *   **行情最新日期**，否则用户会以为是「今天没信号」而不是「行情还没更新」。
+   */
+  const isDefaultView =
+    !tradeDate && !startDate && !endDate && !assetCode.trim() && !pluginId.trim() && !direction;
+
+  /** 空态主文案（F 域 P0-1：默认视角必须带上「行情最新 YYYY-MM-DD」） */
+  const emptyText = isDefaultView
+    ? resolvedSource === 'today'
+      ? '尚未生成任何策略信号（行情库暂不可用）'
+      : resolvedSource === 'quote'
+        ? `行情最新 ${latestQuoteDate ?? resolvedDate ?? '--'}，暂无策略信号`
+        : `最近有信号日 ${resolvedDate ?? '--'} 暂无符合条件的策略信号`
+    : resolvedDate
+      ? `交易日 ${resolvedDate} 暂无符合条件的策略信号`
+      : '暂无符合条件的策略信号';
 
   const filterLabelStyle: React.CSSProperties = {
     fontSize: TYPO.bodySize,
@@ -283,6 +320,20 @@ export default function Signals() {
           value={tradeDate}
           onChange={(e) => setTradeDate(e.target.value)}
         />
+        {!tradeDate && resolvedDate ? (
+          <span
+            data-testid="signals-default-date-hint"
+            style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize }}
+          >
+            未选日期时展示最近信号（
+            {resolvedSource === 'signal'
+              ? '最近有信号日'
+              : resolvedSource === 'quote'
+                ? '行情最新'
+                : '兜底交易日'}
+            {` ${latestQuoteDate ?? resolvedDate}`}）
+          </span>
+        ) : null}
 
         <label htmlFor="signals-start-date" style={filterLabelStyle}>
           起始日期
@@ -384,9 +435,7 @@ export default function Signals() {
                17:03 是除权导入 —— 写成 17:03 是**面向用户的错误文案**。
           */
           <div data-testid="signals-empty" style={{ padding: 20, textAlign: 'center' }}>
-            <div style={{ color: COLORS.neutral, fontSize: TYPO.bodySize }}>
-              {isTodayView ? '今日暂无策略信号' : '暂无策略信号'}
-            </div>
+            <div style={{ color: COLORS.neutral, fontSize: TYPO.bodySize }}>{emptyText}</div>
             <div style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize, marginTop: 4 }}>
               收盘后 17:02 自动运行信号生成
             </div>
