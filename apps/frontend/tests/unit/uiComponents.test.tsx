@@ -336,7 +336,9 @@ describe('T65 · 加载区替换为 Spinner', () => {
   });
 
   it('Admin 加载态渲染出 role="status"', async () => {
-    renderWithRouter(<Admin />);
+    // UX-09 后 Admin 只挂载当前分区（默认「数据校验」用 aria-busy 而不是 Spinner），
+    // 故这里深链到有 Spinner 的「系统日志」分区，验证加载态确实可被读屏感知。
+    renderWithRouter(<Admin />, { initialEntries: ['/admin?tab=logs'] });
 
     const statuses = await screen.findAllByRole('status');
     expect(statuses.length).toBeGreaterThanOrEqual(1);
