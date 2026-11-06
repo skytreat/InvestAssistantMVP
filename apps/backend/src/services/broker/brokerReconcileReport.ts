@@ -17,6 +17,17 @@ import { modelRepoCashFlow, type RepoModelResult } from './brokerCashModel.js';
 import { NON_TRADE_EVENTS } from './brokerConfirm.js';
 import type { BackfillResult } from './brokerReconcile.js';
 
+/**
+ * 只按归因口径统计、**不进 `user_trade_record`** 的事件类型。
+ *
+ * ⚠️ 这些行导入时会落在默认 `match_status = 'MISSING'`，但它们的「缺失」不代表漏录：
+ *   - `REPO`（国债逆回购）：利息由 {@link modelRepoCashFlow} 归因，INV-S3-5 明确不升业务层；
+ *   - `CASH_LIKE_ETF`（货币 ETF）：按归因口径单独统计。
+ *   `matchSummary.missing` 只统计成交族的「标的 × 日期」键，故这些行会造成
+ *   「明细全是 MISSING、摘要 missing = 0」的口径矛盾 —— 用 `nonReconciled` 单独计数消除歧义。
+ */
+export const ATTRIBUTION_ONLY_EVENTS = ['REPO', 'CASH_LIKE_ETF'] as const;
+
 export interface ReconcileReport {
   brokerCode: string;
   coveredRange: { from: string; to: string };
@@ -25,8 +36,11 @@ export interface ReconcileReport {
     factRows: number;
     matched: number;
     fuzzy: number;
+    /** 按「标的 × 日期」去重，且只统计成交族（不代表明细里的 MISSING 行数） */
     missing: number;
     extra: number;
+    /** 只按归因口径统计、不参与系统核对的行数（逆回购 / 货币 ETF，INV-S3-5） */
+    nonReconciled: number;
   };
   attribution: {
     repo: number;
@@ -133,6 +147,21 @@ export function buildReconcileReport(
   for (const row of statusCounts) sc[row.match_status] = row.n;
   const factRows = statusCounts.reduce((s, x) => s + x.n, 0);
 
+  // ①.6 只按归因口径统计的行数（逆回购 / 货币 ETF）：它们默认留在 MISSING，
+  //      但不进 `user_trade_record`，也**不**计入 `missing`（成交族键级去重）⇒ 单独给出。
+  const attrOnlyPh = ATTRIBUTION_ONLY_EVENTS.map(() => '?').join(',');
+  const nonReconciled = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) n FROM broker_trade_record
+            WHERE user_id = ? AND broker_code = ? AND is_deleted = 0
+              AND event_type IN (${attrOnlyPh})`,
+        )
+        .get(userId, brokerCode, ...ATTRIBUTION_ONLY_EVENTS) as { n: number }
+    ).n,
+  );
+
   // ② 归因统计（只读，按事件类型累加 cash_flow 绝对值）
   const catSum = (types: string[]): number => {
     const ph = types.map(() => '?').join(',');
@@ -209,6 +238,7 @@ export function buildReconcileReport(
       fuzzy: Number(sc.FUZZY ?? 0),
       missing,
       extra,
+      nonReconciled,
     },
     attribution: {
       repo: repoVal,
