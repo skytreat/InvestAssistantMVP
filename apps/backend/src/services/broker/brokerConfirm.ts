@@ -41,10 +41,9 @@ const FIXED_EVENT_TRADE_TYPE: Readonly<Record<string, BusinessTradeType>> = {
   DIVIDEND_BONUS: 'bonus',
   DIVIDEND_CASH: 'dividend',
 };
-export const CONFIRMABLE_EVENTS: readonly string[] = [
-  ...TRADE_EVENTS,
-  ...Object.keys(FIXED_EVENT_TRADE_TYPE),
-];
+/** 非成交族（转入 / 送股 / 现金分红）—— 对账页需单独成分类展示并允许补录 */
+export const NON_TRADE_EVENTS: readonly string[] = Object.keys(FIXED_EVENT_TRADE_TYPE);
+export const CONFIRMABLE_EVENTS: readonly string[] = [...TRADE_EVENTS, ...NON_TRADE_EVENTS];
 
 /** 该事件是否进业务层 */
 export function shouldPromote(eventType: string): boolean {

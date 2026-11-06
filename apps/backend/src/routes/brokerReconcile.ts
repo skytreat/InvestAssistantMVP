@@ -74,17 +74,18 @@ export async function registerBrokerReconcileRoutes(app: FastifyInstance) {
     const q = request.query as { brokerCode?: string; category?: string; page?: string; pageSize?: string };
     if (!q.brokerCode?.trim()) return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
     const category = (q.category ?? 'unmatched') as
-      'repo' | 'cashLikeEtf' | 'dividend' | 'offExchange' | 'unknown' | 'unmatched';
-    if (!['repo', 'cashLikeEtf', 'dividend', 'offExchange', 'unknown', 'unmatched'].includes(category)) {
-      return reply
-        .code(400)
-        .send(
-          fail(
-            400,
-            'INVALID_CATEGORY',
-            `category 须为 repo|cashLikeEtf|dividend|offExchange|unknown|unmatched`,
-          ),
-        );
+      'repo' | 'cashLikeEtf' | 'dividend' | 'offExchange' | 'unknown' | 'unmatched' | 'nonTrade';
+    const CATEGORIES = [
+      'repo',
+      'cashLikeEtf',
+      'dividend',
+      'offExchange',
+      'unknown',
+      'unmatched',
+      'nonTrade',
+    ] as const;
+    if (!(CATEGORIES as readonly string[]).includes(category)) {
+      return reply.code(400).send(fail(400, 'INVALID_CATEGORY', `category 须为 ${CATEGORIES.join('|')}`));
     }
     const page = Math.max(1, Number(q.page) || 1);
     const pageSize = Math.min(200, Math.max(1, Number(q.pageSize) || 50));
