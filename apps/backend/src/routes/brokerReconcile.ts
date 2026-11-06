@@ -11,6 +11,7 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { ok, fail } from '../lib/envelope.js';
+import { runAssetClassSyncIfNeeded } from '../services/assetClassSync.js';
 import { buildReconcileReport, attributionDrilldown } from '../services/broker/brokerReconcileReport.js';
 import {
   confirmTrades,
@@ -125,6 +126,9 @@ export async function registerBrokerReconcileRoutes(app: FastifyInstance) {
     const db = ConfigStore.getInstance().db;
     try {
       const result = await confirmTrades(db, userId, body.brokerCode.trim(), items);
+      // 调用点 ②（SDD_v3 §2.3「初判在导入时触发」）：补录后可能引入新标的。
+      // 不阻塞响应；默认 dry-run ⇒ 只记日志不写库，且表内已有记录时直接返回。
+      if (result.imported > 0) void runAssetClassSyncIfNeeded(db, request.log);
       return ok(result);
     } catch (err: any) {
       // UNIQUE 撞 B/C 锚 → 结构化 409；不外泄裸 SQLite 报错（AGENTS 错误处理约定）
