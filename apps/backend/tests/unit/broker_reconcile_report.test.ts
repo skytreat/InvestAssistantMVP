@@ -346,6 +346,13 @@ describe('matchSummary · 归因行（逆回购 / 货币 ETF）与 missing 的�
     db.prepare(
       `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
     ).run(UID, `user_${UID}`, 'x');
+    // matchVsSystem 会 JOIN broker_import_batch：测试顺序随机时批次可能尚未由其他用例创建，
+    // 故这里显式保证 import_batch_id=1 存在，否则成交族键会被 JOIN 过滤掉（CI 上实测 missing=0）。
+    db.prepare(
+      `INSERT OR IGNORE INTO broker_import_batch
+         (id, user_id, broker_code, file_kind, file_hash, parser_version, status)
+       VALUES (1, ?, ?, 'settlement', 'repo-only-batch', 'test', 'imported')`,
+    ).run(UID, BC);
     const ins = db.prepare(
       `INSERT INTO broker_trade_record
          (user_id, import_batch_id, broker_code, source_kind, event_type, asset_code, trade_date,
