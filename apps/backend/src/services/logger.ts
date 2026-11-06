@@ -33,10 +33,13 @@ export interface SystemLogEntry {
 
 /** 金额脱敏：末 4 位换 ****，只处理整数部分 ≥ 4 位的金额 */
 function maskAmount(text: string): string {
-  return text.replace(/\b(\d{4,})(\.\d+)?\b/g, (_match, intPart: string, _decPart: string | undefined) => {
-    const maskedInt = intPart.slice(0, -4) + '****';
-    return maskedInt;
-  });
+  // ⚠️ 日期不是金额：ISO 日期（YYYY-MM-DD）先匹配并原样保留，否则 4 位年份会被金额规则
+  //   打成 ****（2026-10-30 → ****-10-30），system_log.detail 里的除权日/命中日期失去审计价值。
+  return text.replace(
+    /(\d{4}-\d{2}-\d{2})|\b(\d{4,})(\.\d+)?\b/g,
+    (_match: string, date: string | undefined, intPart: string | undefined, _dec?: string) =>
+      date ?? `${intPart!.slice(0, -4)}****`,
+  );
 }
 
 /** 用户标识脱敏：username 保留前 2 位，后面 **** */

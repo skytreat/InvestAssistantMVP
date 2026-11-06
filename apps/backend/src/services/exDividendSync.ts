@@ -18,7 +18,7 @@ export interface ImportResult {
   symbol: string; // 空串（结果级别不针对单个 symbol，留空）
   eventsProcessed: number; // 实际处理了多少条除权事件
   holdingsSkipped: number; // 多少用户因为持仓=0 跳过
-  duplicatesSkipped: number; // 多少条因为 UNIQUE 约束跳过（幂等）
+  duplicatesSkipped: number; // 多少条因已有活记录（±3 天窗口）或 UNIQUE 约束跳过（幂等）
   importedDividend: number; // 实际 INSERT 的 dividend 条数
   importedBonus: number; // 实际 INSERT 的 bonus 条数
   errors: number; // 总错误数
@@ -48,7 +48,10 @@ export async function fetchDividendEvents(exDate: string): Promise<DividendEvent
  * 计算口径：
  *   增加类型：buy / add / bonus → +quantity
  *   减少类型：reduce / clear → -quantity
- *   dividend / transfer 不影响持仓（分红不增股，转股需要独立处理，这里按简化规则）
+ *   dividend 不影响持仓；transfer（转入）理论上应计入基数，但本 CASE 未纳入。
+ *   ⚠️ 已知限制（owner 2026-11-06 裁决「另案处理」，本轮不改逻辑）：实测真实库 4 条
+ *   transfer 的标的自 2026-01-01 起无 raw_gbbq category=1 除权事件 ⇒ 量化影响 0 股/0 元。
+ *   如需纳入基数，须另开任务并同步 PRD/SDD 口径，勿顺手修改此处。
  * trade_date < exDate 保证只用除权日前的交易记录
  *
  * T119 口径对齐（SDD_v3 §8.5）：本 SQL 的「bonus → +quantity」与 core
@@ -143,18 +146,51 @@ export async function importDividendEvents(exDate?: string): Promise<ImportResul
   VALUES (?, ?, 'bonus', ?, '00:00:00', ?, 0, 0, ?, 1, 0)`,
     );
 
-    // 防重复计账（owner 口径：手动优先）
+    // 防重复计账（owner 口径：手动优先，±3 天窗口）
     // 背景：手动补录行 broker_code 非空、自动行 broker_code 为空，而两条部分唯一索引
     //   A（broker_code IS NULL）与 C（broker_code IS NOT NULL）的 WHERE 互斥，
-    //   同一事件（同 user + 标的 + 类型 + 日期）可各落一行 ⇒ 股数/分红重复计账。
-    // 本条只做「插入前预检」：已有活记录（不论 broker_code）即跳过，绝不改动既有行。
-    // ⚠️ 判据是精确等值 trade_date；手动行日期取自券商事实表，可能与 raw_gbbq 除权日
-    //   相差 −1~+2 天（见 PR 汇报中的实测），该残余风险另案处理，不在此扩大窗口。
-    const existsStmt = db.prepare(
-      `SELECT 1 AS x FROM user_trade_record
-        WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND trade_date = ? AND is_deleted = 0
+    //   同一事件（同 user + 标的 + 类型）可各落一行 ⇒ 股数/分红重复计账。
+    // 本条只做「插入前预检」：窗口内已有活记录（不论 broker_code）即跳过，绝不改动既有行。
+    // 窗口取 ±3 天（含端点）：手动行 trade_date 取自券商事实表，实测与 raw_gbbq 除权日
+    //   偏移 −1~+2 天（如 sh512400 09-11 vs 09-09，sz002837 05-29 vs 06-01），
+    //   故以除权日为中心取 ±3 天覆盖全部实测偏移并留余量；精确同日是它的子集，统一走窗口。
+    const findExistingStmt = db.prepare(
+      `SELECT id, trade_date, broker_code FROM user_trade_record
+        WHERE user_id = ? AND asset_code = ? AND trade_type = ? AND is_deleted = 0
+          AND ABS(julianday(trade_date) - julianday(?)) <= 3
+        ORDER BY ABS(julianday(trade_date) - julianday(?)) ASC, trade_date DESC
         LIMIT 1`,
     );
+
+    // 命中明细进 system_log.detail，便于事后审计「除权日 / 命中人工行日期 / 偏移天数」
+    const dedupeHits: Array<{
+      assetCode: string;
+      tradeType: 'dividend' | 'bonus';
+      exDate: string;
+      matchedDate: string;
+      offsetDays: number;
+      brokerCode: string | null;
+    }> = [];
+    const findExisting = (
+      userId: number,
+      symbol: string,
+      type: 'dividend' | 'bonus',
+      exDate: string,
+    ): { id: number; trade_date: string; broker_code: string | null } | null => {
+      const hit = findExistingStmt.get(userId, symbol, type, exDate, exDate) as
+        { id: number; trade_date: string; broker_code: string | null } | undefined;
+      if (!hit) return null;
+      const offsetDays = Math.round((Date.parse(hit.trade_date) - Date.parse(exDate)) / 86400000);
+      dedupeHits.push({
+        assetCode: symbol,
+        tradeType: type,
+        exDate,
+        matchedDate: hit.trade_date,
+        offsetDays,
+        brokerCode: hit.broker_code,
+      });
+      return hit;
+    };
 
     const runImport = db.transaction((evtList: DividendEvent[]) => {
       for (const evt of evtList) {
@@ -193,9 +229,9 @@ export async function importDividendEvents(exDate?: string): Promise<ImportResul
             continue;
           }
 
-          // d. 分红（手动优先：已有活记录 → 跳过）
+          // d. 分红（手动优先：±3 天窗口内已有活记录 → 跳过）
           if (evt.cashPerShare > 0) {
-            if (existsStmt.get(userId, evt.symbol, 'dividend', evt.exDate)) {
+            if (findExisting(userId, evt.symbol, 'dividend', evt.exDate)) {
               result.duplicatesSkipped++;
             } else {
               const info = insertDividendStmt.run(
@@ -214,10 +250,10 @@ export async function importDividendEvents(exDate?: string): Promise<ImportResul
             }
           }
 
-          // e. 送转（手动优先：已有活记录 → 跳过）
+          // e. 送转（手动优先：±3 天窗口内已有活记录 → 跳过）
           if (evt.stockRatio > 0) {
             const bonusQty = holding * evt.stockRatio;
-            if (existsStmt.get(userId, evt.symbol, 'bonus', evt.exDate)) {
+            if (findExisting(userId, evt.symbol, 'bonus', evt.exDate)) {
               result.duplicatesSkipped++;
             } else {
               // 送转股数取整（A股送转都是整数），但保留小数让 CHECK 约束判断
@@ -244,7 +280,7 @@ export async function importDividendEvents(exDate?: string): Promise<ImportResul
     // 5. 写完成日志
     const hasErrors = result.errors > 0;
     const level = hasErrors ? 'WARN' : 'SUCCESS';
-    const detail = JSON.stringify(result);
+    const detail = JSON.stringify({ ...result, dedupeHits });
     // 跳过量进日志正文，便于事后核对「手动优先」是否生效（detail 里也有结构化数字）
     const dupMsg = result.duplicatesSkipped > 0 ? `，跳过 ${result.duplicatesSkipped} 条已存在` : '';
 

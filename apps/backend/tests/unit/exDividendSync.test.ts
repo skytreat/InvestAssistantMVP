@@ -119,11 +119,12 @@ describe('exDividendSync — importDividendEvents', () => {
 });
 
 /**
- * 防重复计账（owner 口径：手动优先）
+ * 防重复计账（owner 口径：手动优先，±3 天窗口）
  *
  * 背景：手动补录行 broker_code 非空、自动行 broker_code 为空；两条部分唯一索引
  * A（broker_code IS NULL）/ C（broker_code IS NOT NULL）的 WHERE 互斥 ⇒ 同一事件
- * 可各落一行。故在自动插入前按 (user, asset_code, trade_type, trade_date) 预检活记录。
+ * 可各落一行。故在自动插入前按 (user, asset_code, trade_type) + trade_date 落在
+ * 除权日 ±3 天内 预检活记录（实测偏移 −1~+2 天，窗口为精确同日的超集）。
  */
 describe('exDividendSync — 手动优先防重预检', () => {
   const uid = 201;
@@ -277,5 +278,51 @@ describe('exDividendSync — 手动优先防重预检', () => {
     expect(result.importedDividend).toBe(1);
     expect(countRows('dividend')).toBe(1); // 活行只有新插入的 1 条
     expect(countRows('dividend', true)).toBe(2); // 加上软删除的 1 条
+  });
+
+  it('日期偏移 −3 天（窗口端点）→ 视为同一事件，跳过，detail 记录命中明细', async () => {
+    seedHolding();
+    seedManual('dividend', { date: '2026-10-27' }); // 除权日 2026-10-30 的 −3 天
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1);
+    expect(countRows('dividend')).toBe(1);
+
+    const log = ConfigStore.getInstance()
+      .db.prepare(`SELECT detail FROM system_log WHERE log_type = 'dividend_import' ORDER BY id DESC LIMIT 1`)
+      .get() as { detail: string };
+    const hit = JSON.parse(log.detail).dedupeHits[0];
+    expect(hit.exDate).toBe('2026-10-30');
+    expect(hit.matchedDate).toBe('2026-10-27');
+    expect(hit.offsetDays).toBe(-3);
+    expect(hit.brokerCode).toBe('华宝证券');
+  });
+
+  it('日期偏移 +3 天（窗口端点）→ 视为同一事件，跳过', async () => {
+    seedHolding();
+    seedManual('dividend', { date: '2026-11-02' }); // 除权日 2026-10-30 的 +3 天
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1);
+    expect(countRows('dividend')).toBe(1);
+  });
+
+  it('日期偏移 ±4 天（窗口外）→ 不算同一事件，正常插入', async () => {
+    seedHolding();
+    seedManual('dividend', { date: '2026-10-26' }); // −4 天
+    seedManual('dividend', { date: '2026-11-03', time: '09:30:00' }); // +4 天
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(1);
+    expect(result.duplicatesSkipped).toBe(0);
+    expect(countRows('dividend')).toBe(3); // 两条既有 + 新插入 1 条
   });
 });
