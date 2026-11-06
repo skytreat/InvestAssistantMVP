@@ -666,6 +666,200 @@ describe('T151② 多文件 + 不同券商提示分批导入', () => {
   });
 });
 
+/**
+ * owner 报障 2026-11-06：导入页原先**每页各一个「全部导入」按钮**（逐券商/逐页点确认），
+ * 需要一个顶部全局勾选项，勾上后一次性导入这份文件的全部页。
+ *
+ * 后端契约（routes/brokerImport.ts）：confirm-batch 单次仅接受**一个** brokerCode + ≤5 文件，
+ * 未知标的返回 200 + pending_unknown_assets，必须由用户显式选择「跳过」（confirm-final）。
+ */
+describe('全局「全部导入（所有页）」勾选', () => {
+  const TWO_FILES = ['hb-trade.xls', 'hb-settle.xls'];
+
+  /** 同券商两文件（无 brokerNameHint，与华宝成交单一致）+ 可配置交付结果 */
+  function mockTwoFileUpload(
+    opts: {
+      confirmBatch?: unknown;
+      confirmFinal?: unknown;
+    } = {},
+  ) {
+    postMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/upload')
+        return Promise.resolve(
+          mockResponse({
+            fileKind: 'trade',
+            encoding: 'gb18030',
+            headerRowIndex: 0,
+            columns: [],
+            mappingSuggestion: { byField: {} },
+            previewRows: [],
+            rowTotal: 717,
+            warnings: [],
+          }),
+        );
+      if (url === '/broker-import/confirm-batch')
+        return Promise.resolve(
+          mockResponse(
+            opts.confirmBatch ?? {
+              files: TWO_FILES.map((filename, i) => ({
+                filename,
+                batchId: 20 + i,
+                rowTotal: 717,
+                rowInserted: 717,
+                rowDeduped: 0,
+                rowExcluded: 21,
+              })),
+              backfill: { updated: 0 },
+            },
+          ),
+        );
+      if (url === '/broker-import/confirm-final')
+        return Promise.resolve(
+          mockResponse(
+            opts.confirmFinal ?? {
+              files: [
+                {
+                  filename: 'hb-trade.xls',
+                  batchId: 30,
+                  rowTotal: 717,
+                  rowInserted: 715,
+                  rowDeduped: 0,
+                  rowExcluded: 23,
+                },
+              ],
+              skippedUnknownAssets: 2,
+            },
+          ),
+        );
+      return Promise.reject(new Error(`unexpected post ${url}`));
+    });
+  }
+
+  async function uploadTwo(user: ReturnType<typeof userEvent.setup>) {
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, TWO_FILES.map((n) => new File(['x'], n)) as never);
+    await waitFor(() => expect(screen.getAllByText('探测结果').length).toBe(2));
+  }
+
+  it('勾选后隐藏逐页确认按钮，一次提交全部文件；成功后恢复逐页模式', async () => {
+    mockTwoFileUpload();
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    await uploadTwo(user);
+    await user.type(screen.getByPlaceholderText(/必填/), '华宝');
+
+    // 勾选前：逐页按钮，无全局按钮
+    expect(screen.getByRole('button', { name: /确认导入【华宝】（2 个文件）/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('bulk-all-confirm')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('bulk-all-checkbox'));
+
+    // 勾选后：逐页按钮隐藏，只剩全局按钮
+    expect(screen.queryByRole('button', { name: /确认导入【华宝】（2 个文件）/ })).not.toBeInTheDocument();
+    const bulkBtn = screen.getByTestId('bulk-all-confirm');
+    expect(bulkBtn).toHaveTextContent('全部导入【华宝】（2 个文件，所有页）');
+
+    await user.click(bulkBtn);
+    await waitFor(() => expect(screen.getByText('导入完成')).toBeInTheDocument());
+
+    // 只发一次 confirm-batch，且 files 覆盖全部页
+    const batchCalls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-import/confirm-batch');
+    expect(batchCalls.length).toBe(1);
+    const body = batchCalls[0][1] as { brokerCode?: string; files?: Array<{ filename?: string }> };
+    expect(body.brokerCode).toBe('华宝');
+    expect(body.files?.map((f) => f.filename)).toEqual(TWO_FILES);
+
+    // 成功后自动收起开关 → 逐页按钮恢复（避免二次点击重复提交）
+    expect(screen.getByRole('button', { name: /确认导入【华宝】（2 个文件）/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('bulk-all-confirm')).not.toBeInTheDocument();
+  });
+
+  it('取消勾选恢复逐页模式（不提交任何请求）', async () => {
+    mockTwoFileUpload();
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    await uploadTwo(user);
+    await user.type(screen.getByPlaceholderText(/必填/), '华宝');
+
+    const checkbox = screen.getByTestId('bulk-all-checkbox') as HTMLInputElement;
+    await user.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    expect(screen.getByTestId('bulk-all-confirm')).toBeInTheDocument();
+
+    await user.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+    expect(screen.queryByTestId('bulk-all-confirm')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /确认导入【华宝】（2 个文件）/ })).toBeInTheDocument();
+    expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm-batch')).toBe(false);
+  });
+
+  it('多券商互斥：勾选后提示不可跨券商单批，全局按钮禁用', async () => {
+    postMock.mockImplementation((url: string, body?: unknown) => {
+      if (url === '/broker-import/upload') {
+        const fn = String((body as { filename?: string })?.filename ?? '');
+        return Promise.resolve(
+          mockResponse({
+            fileKind: 'trade',
+            headerRowIndex: 5,
+            columns: [],
+            mappingSuggestion: { byField: {} },
+            previewRows: [],
+            rowTotal: 10,
+            warnings: [],
+            brokerNameHint: fn.startsWith('gt') ? '国泰君安证券' : '华泰证券',
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected post ${url}`));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, [new File(['a'], 'gt-a.csv'), new File(['b'], 'ht-b.csv')] as never);
+    await waitFor(() => expect(screen.getAllByText('探测结果').length).toBe(2));
+    await user.type(screen.getByPlaceholderText(/必填/), '国泰君安证券');
+
+    await user.click(screen.getByTestId('bulk-all-checkbox'));
+    expect(screen.getByText(/所选文件属于不同券商/)).toBeInTheDocument();
+    expect(screen.getByTestId('bulk-all-confirm')).toBeDisabled();
+  });
+
+  it('全量导入遇到未知标的：仍弹显式确认，不自动跳过，也不自动写库', async () => {
+    mockTwoFileUpload({
+      confirmBatch: {
+        pending_unknown_assets: [
+          { filename: 'hb-trade.xls', assetCodes: ['sh589720'], assetNames: ['某某ETF'] },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    await uploadTwo(user);
+    await user.type(screen.getByPlaceholderText(/必填/), '华宝');
+
+    await user.click(screen.getByTestId('bulk-all-checkbox'));
+    await user.click(screen.getByTestId('bulk-all-confirm'));
+
+    // 未知标的卡片出现（含代码），且**没有**自动调用 confirm-final
+    await waitFor(() => expect(screen.getByTestId('pending-unknown-assets')).toBeInTheDocument());
+    expect(screen.getByTestId('pending-unknown-assets')).toHaveTextContent('sh589720');
+    expect(screen.queryByText('导入完成')).not.toBeInTheDocument();
+    expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm-final')).toBe(false);
+
+    // 只有用户显式点「跳过」才提交 confirm-final，并携带 skipUnknownAssetCodes
+    await user.click(screen.getByRole('button', { name: /跳过这些标的并导入/ }));
+    await waitFor(() => expect(screen.getByText('导入完成')).toBeInTheDocument());
+    const finalBody = postMock.mock.calls.find(
+      (c) => String(c[0]) === '/broker-import/confirm-final',
+    )?.[1] as {
+      brokerCode?: string;
+      skipUnknownAssetCodes?: string[];
+    };
+    expect(finalBody.brokerCode).toBe('华宝');
+    expect(finalBody.skipUnknownAssetCodes).toEqual(['sh589720']);
+  });
+});
+
 describe('T151③ 补录全选（当前页可补录行）', () => {
   it('表头「全选本页可补录」勾选 → 全部可补录行进补录队列', async () => {
     renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
