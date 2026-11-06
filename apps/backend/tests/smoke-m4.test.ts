@@ -659,7 +659,8 @@ describe('M4 · 权限边界收尾', () => {
     });
     expect(res.statusCode).toBe(400);
     // T89a：中文文案在 `message`（`error`/`code` 是错误码）
-    expect(JSON.parse(res.body).message).toContain('禁止降级');
+    // UX-08：文案改为引导「转移管理员」（原子转移，避免出现 0 个 admin）
+    expect(JSON.parse(res.body).message).toContain('不能直接降级当前登录账号');
   });
 
   it('全程无明文 token / 密码落 system_log（AGENTS.md 安全硬约束）', () => {
