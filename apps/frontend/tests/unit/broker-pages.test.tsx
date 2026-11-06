@@ -976,3 +976,132 @@ describe('T151③ 补录全选（当前页可补录行）', () => {
     });
   });
 });
+
+/**
+ * 非成交族（转入 / 送股 / 现金分红）回归：
+ * 旧实现里它们既不在 unmatched（只含成交族）也无独立分类 ⇒ 页面看不到、勾不到，每次导入都会漏补录。
+ * INV-S2-33 要求非成交事件**永远由人工确认**，不能静默自动写库，所以这里只做「可见 + 可勾选 + 提示入口」。
+ */
+describe('非成交族可见性与补录（转入 / 送股 / 分红）', () => {
+  const NONTRADE_ROWS = [
+    {
+      id: 201,
+      event_type: 'TRANSFER_IN',
+      raw_event_type: '调帐转入',
+      asset_code: 'sh600000',
+      trade_date: '2026-05-10',
+      trade_time: null,
+      quantity: 100,
+      amount: null,
+      cash_flow: 0,
+      match_status: 'MISSING',
+      exclude_reason: null,
+      source_file: 'nt.csv',
+    },
+    {
+      id: 202,
+      event_type: 'DIVIDEND_BONUS',
+      raw_event_type: '送股',
+      asset_code: 'sh600000',
+      trade_date: '2026-05-11',
+      trade_time: null,
+      quantity: 50,
+      amount: null,
+      cash_flow: 0,
+      match_status: 'MISSING',
+      exclude_reason: null,
+      source_file: 'nt.csv',
+    },
+    {
+      id: 203,
+      event_type: 'DIVIDEND_CASH',
+      raw_event_type: '现金红利',
+      asset_code: 'sh600000',
+      trade_date: '2026-05-12',
+      trade_time: null,
+      quantity: 0, // 现金分红无股数，只有现金流
+      amount: 12.5,
+      cash_flow: 12.5,
+      match_status: 'MISSING',
+      exclude_reason: null,
+      source_file: 'nt.csv',
+    },
+  ];
+
+  function mockWithPending(pendingNonTrade: number) {
+    getMock.mockImplementation((url: string, config?: { params?: { category?: string } }) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest')
+        return Promise.resolve(mockResponse({ ...REPORT, pendingNonTrade }));
+      if (url === '/broker-reconcile/diff') {
+        const rows = config?.params?.category === 'nonTrade' ? NONTRADE_ROWS : DIFF_ROWS;
+        return Promise.resolve(
+          mockResponse({ rows, total: rows.length }, { pagination: { total: rows.length } }),
+        );
+      }
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+  }
+
+  it('有未补录的非成交事件 → 顶部数量提示，点击直达 nonTrade 分类', async () => {
+    mockWithPending(3);
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    const pending = await screen.findByTestId('non-trade-pending');
+    expect(pending).toHaveTextContent('有 3 笔非成交事件');
+    expect(pending).toHaveTextContent('尚未补录到交易记录');
+
+    await user.click(screen.getByRole('button', { name: /去补录（3 笔）/ }));
+
+    // 切到 nonTrade 分类 + 中文说明（三类非成交事件不是未知成交）
+    await waitFor(() => expect(screen.getByTestId('non-trade-note')).toBeInTheDocument());
+    expect(screen.getByTestId('non-trade-note').textContent).toContain('现金分红');
+    expect(screen.getByText('现金红利')).toBeInTheDocument(); // 表格「事件」列展示 raw_event_type
+    // 分类选择器 = nonTrade（券商选择器在前）
+    expect((screen.getAllByRole('combobox')[1] as HTMLSelectElement).value).toBe('nonTrade');
+  });
+
+  it('quantity=0 的现金分红也可勾选（以现金流为门槛），且类型固定不可修正', async () => {
+    mockWithPending(3);
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await screen.findByTestId('non-trade-pending');
+    await user.click(screen.getByRole('button', { name: /去补录（3 笔）/ }));
+    await waitFor(() => expect(screen.getByText('现金红利')).toBeInTheDocument());
+
+    // checkbox 顺序：0=表头全选，1=TRANSFER_IN，2=DIVIDEND_BONUS，3=DIVIDEND_CASH
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes).toHaveLength(4);
+    expect(boxes[1]).toBeEnabled();
+    expect(boxes[3]).toBeEnabled();
+    await user.click(boxes[3]);
+
+    // 补录对话框：现金分红按 dividend 固定类型，不提供成交族下拉
+    expect(await screen.findByTestId('fixed-type-203')).toHaveTextContent('现金分红');
+    await user.click(screen.getByRole('button', { name: /全部补录/ }));
+    const confirmCall = postMock.mock.calls.find((c) => String(c[0]).includes('/broker-reconcile/confirm'));
+    expect(confirmCall?.[1].items).toEqual([{ sourceId: 203 }]);
+  });
+
+  it('无此类事件时不显示提示（负例）', async () => {
+    mockWithPending(0);
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await waitFor(() => expect(screen.getByText(/差额归因/)).toBeInTheDocument());
+    expect(screen.queryByTestId('non-trade-pending')).not.toBeInTheDocument();
+    expect(screen.queryByText(/未补录到交易记录/)).not.toBeInTheDocument();
+  });
+
+  it('导入完成卡片提示非成交事件需去对账页补录（不静默写库）', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'gt-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+    await user.type(screen.getByPlaceholderText(/必填/), 'gt');
+    await user.click(screen.getByRole('button', { name: /确认导入/ }));
+    await waitFor(() => expect(screen.getByText('导入完成')).toBeInTheDocument());
+    expect(screen.getByText(/若本批含/)).toBeInTheDocument();
+    expect(screen.getByText(/缺失未匹配（非成交族）/)).toBeInTheDocument();
+  });
+});
