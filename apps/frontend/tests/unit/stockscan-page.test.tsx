@@ -86,11 +86,11 @@ function makeResult(i: number): ResultFixture {
 const DEFAULT_RESULTS: ResultFixture[] = [makeResult(1), makeResult(2), makeResult(3)];
 
 /** 扫描响应体 */
-function scanResponse(results: ResultFixture[], totalCandidates = 5363) {
+function scanResponse(results: ResultFixture[], totalCandidates = 5363, totalMatched = results.length) {
   return mockResponse(
     {
       totalCandidates,
-      total: results.length,
+      totalMatched,
       results,
       tradeDate: '2026-10-12',
       filters: {
@@ -302,6 +302,24 @@ describe('F-S3 · 结果上限强制 ≤100（PRD §5.6）', () => {
     await user.click(screen.getByRole('button', { name: '开始选股' }));
     await waitFor(() => expect(postMock).toHaveBeenCalled());
     expect(lastScanPayload().max_results).toBe(100);
+  });
+
+  it('文案区分「候选池 / 命中 / 返回」：命中 801 只只展示前 3 只，并提示未展示数量', async () => {
+    postMock.mockImplementation((url: string) => {
+      if (url === '/stockscan') return Promise.resolve(scanResponse(DEFAULT_RESULTS, 5363, 801));
+      if (url === '/candidates/batch') return Promise.resolve(mockResponse({ added: 0, existed: 0 }));
+      return Promise.resolve(mockResponse([]));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<StockScan />);
+    await runScan(user);
+
+    expect(screen.getByText(/候选池 5363 只/)).toBeInTheDocument();
+    expect(screen.getByText(/命中 801 只/)).toBeInTheDocument();
+    expect(screen.getByText(/仅展示前 3 只（按评分降序，上限 100）/)).toBeInTheDocument();
+    expect(screen.getByText(/另有 798 只未展示/)).toBeInTheDocument();
+    // 旧字段名 `total` 不再参与展示，避免被误读为候选池或返回条数
+    expect(screen.queryByText(/返回 3/)).not.toBeInTheDocument();
   });
 });
 

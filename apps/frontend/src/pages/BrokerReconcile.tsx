@@ -19,7 +19,15 @@ interface Report {
   brokerCode: string;
   coveredRange: { from: string; to: string };
   coverageNote?: string;
-  matchSummary: { factRows: number; matched: number; fuzzy: number; missing: number; extra: number };
+  matchSummary: {
+    factRows: number;
+    matched: number;
+    fuzzy: number;
+    missing: number;
+    extra: number;
+    /** 只按归因口径统计、不参与系统核对的行数（逆回购 / 货币 ETF，INV-S3-5） */
+    nonReconciled?: number;
+  };
   attribution: {
     repo: number;
     cashLikeEtf: number;
@@ -80,6 +88,15 @@ interface DiffRow {
   exclude_reason?: string | null;
   source_file?: string | null;
 }
+
+/**
+ * 只按归因口径统计、**不参与系统核对**的事件类型（与后端 `ATTRIBUTION_ONLY_EVENTS` 一致）。
+ *
+ * ⚠️ 这些行导入时停在默认 `match_status = 'MISSING'`，但它们的「缺失」不代表漏录：
+ *   逆回购利息由后端 `modelRepoCashFlow` 归因、货币 ETF 单独统计（INV-S3-5），
+ *   都不会补录进 `user_trade_record`。故明细里显示「归因（不补录）」且不提供「已手工记录」。
+ */
+const ATTRIBUTION_ONLY_EVENT_TYPES = new Set(['REPO', 'CASH_LIKE_ETF']);
 
 const ATTR_LABELS: Record<string, string> = {
   residual: '残差（无法解释）',
@@ -426,6 +443,9 @@ export default function BrokerReconcile() {
    */
   const isNonTradeCandidate = (r: DiffRow): boolean =>
     r.match_status === 'MISSING' && ((r.quantity ?? 0) > 0 || (r.cash_flow ?? 0) > 0 || (r.amount ?? 0) > 0);
+
+  /** 只按归因口径统计的行（逆回购 / 货币 ETF）：不参与核对，也不可「已手工记录」 */
+  const isAttributionOnly = (r: DiffRow): boolean => ATTRIBUTION_ONLY_EVENT_TYPES.has(r.event_type);
 
   /** 翻页拉全「待补录的非成交族」清单（不受当前分页/分类影响） */
   const fetchPendingNonTrade = async (bc: string): Promise<{ items: ConfirmItem[]; fuzzyCount: number }> => {
@@ -814,6 +834,14 @@ export default function BrokerReconcile() {
               help="摘要「多余」按「标的 × 日期」去重计数；点击查看按当前券商反查的系统交易记录明细。"
               onClick={() => setExtraOpen((v) => !v)}
             />
+            {(report.matchSummary.nonReconciled ?? 0) > 0 && (
+              <SummaryCard
+                label="归因（不补录）"
+                value={report.matchSummary.nonReconciled ?? 0}
+                hint="口径：按事实行逐条"
+                help="逆回购 / 货币 ETF 只按归因口径统计，不补录进交易记录（INV-S3-5）。这些行不在「成交族」核对范围内，明细里可能显示 MISSING，但不会计入上面的「缺失（可补录）」。"
+              />
+            )}
           </div>
 
           {/* UX-06（Q1）：摘要与差异明细两种口径各加说明，不强行统一 */}
@@ -826,7 +854,8 @@ export default function BrokerReconcile() {
             }}
           >
             口径说明：摘要「缺失 / 多余」按「标的 × 日期」去重计数；下方明细表按事实行逐条计数，
-            同一标的同一天多笔会各计一行，因此两个数字可能不一致。
+            同一标的同一天多笔会各计一行，因此两个数字可能不一致。逆回购 / 货币 ETF
+            只按归因口径统计（不补录、也不计入「缺失」），明细状态显示「归因（不补录）」。
           </p>
 
           {/* UX-06：多余下钻（Q2：is_deleted=0 + 当前 broker_code） */}
@@ -1111,10 +1140,10 @@ export default function BrokerReconcile() {
                     </td>
                     <td style={tdStyle}>{r.quantity ?? '—'}</td>
                     <td style={tdStyle}>{r.amount ?? r.cash_flow ?? '—'}</td>
-                    <td style={tdStyle}>{r.match_status}</td>
+                    <td style={tdStyle}>{isAttributionOnly(r) ? '归因（不补录）' : r.match_status}</td>
                     <td style={tdStyle}>{r.exclude_reason ?? ''}</td>
                     <td style={tdStyle}>
-                      {r.match_status === 'MISSING' && (
+                      {!isAttributionOnly(r) && r.match_status === 'MISSING' && (
                         <button
                           style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
                           onClick={() => setMarkTarget(r)}

@@ -331,3 +331,56 @@ describe('nonTrade 分类 · 非成交族可见且可补录', () => {
     expect(drill.rows).toEqual([]);
   });
 });
+
+/**
+ * 口径纠偏：逆回购 / 货币 ETF 停在默认 MISSING，但**不是漏录**。
+ * 回归背景：验收时明细里 387 条 REPO 全显示 MISSING，而摘要 missing = 0，
+ * 两个口径看似矛盾。根因是 `match_status` 逐行状态 vs `missing` 成交族键级去重，
+ * 前者包含不补录的归因行、后者不包含 ⇒ 新增 `nonReconciled` 单独计数。
+ */
+describe('matchSummary · 归因行（逆回购 / 货币 ETF）与 missing 的口径分离', () => {
+  const UID = 7421;
+  const BC = 'REPO_ONLY';
+
+  beforeAll(() => {
+    db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    ).run(UID, `user_${UID}`, 'x');
+    // matchVsSystem 会 JOIN broker_import_batch：测试顺序随机时批次可能尚未由其他用例创建，
+    // 故这里显式保证 import_batch_id=1 存在，否则成交族键会被 JOIN 过滤掉（CI 上实测 missing=0）。
+    db.prepare(
+      `INSERT OR IGNORE INTO broker_import_batch
+         (id, user_id, broker_code, file_kind, file_hash, parser_version, status)
+       VALUES (1, ?, ?, 'settlement', 'repo-only-batch', 'test', 'imported')`,
+    ).run(UID, BC);
+    const ins = db.prepare(
+      `INSERT INTO broker_trade_record
+         (user_id, import_batch_id, broker_code, source_kind, event_type, asset_code, trade_date,
+          quantity, amount, cash_flow, raw_row_json, match_status, row_hash, source_file)
+       VALUES (?, 1, ?, 'broker', ?, ?, ?, ?, ?, ?, '{}', 'MISSING', ?, 'repo.csv')`,
+    );
+    // 逆回购：导入后停在默认 MISSING（利息走 repoModel 归因，不补录）
+    ins.run(UID, BC, 'REPO', 'sh204001', '2024-06-03', 0, 20000, 20000, 'repo-1');
+    ins.run(UID, BC, 'REPO', 'sz131810', '2024-06-04', 0, 10000, 10000, 'repo-2');
+    // 货币 ETF：同样只按归因口径统计
+    ins.run(UID, BC, 'CASH_LIKE_ETF', 'sh511880', '2024-06-05', 100, 10000, -10000, 'cash-etf-1');
+    // 成交族 MISSING：系统层没有对应记录 → 计入 missing（证明它与归因行分开统计）
+    ins.run(UID, BC, 'TRADE_BUY', 'sh600000', '2024-06-06', 100, 1000, -1000, 'trade-1');
+  });
+
+  it('nonReconciled 只统计逆回购/货币 ETF，missing 只统计成交族键', () => {
+    const r = buildReconcileReport(db, UID, BC);
+    expect(r.matchSummary.factRows).toBe(4);
+    expect(r.matchSummary.nonReconciled).toBe(3); // 2 REPO + 1 CASH_LIKE_ETF
+    expect(r.matchSummary.missing).toBe(1); // 仅成交族 TRADE_BUY（键级去重）
+    expect(r.matchSummary.matched).toBe(0);
+  });
+
+  it('repo / cashLikeEtf 下钻仍返回原始 MISSING（展示层负责改文案）', () => {
+    const repo = attributionDrilldown(db, UID, BC, 'repo', 1, 50);
+    expect(repo.total).toBe(2);
+    expect(repo.rows.every((x) => x.match_status === 'MISSING')).toBe(true);
+    const etf = attributionDrilldown(db, UID, BC, 'cashLikeEtf', 1, 50);
+    expect(etf.total).toBe(1);
+  });
+});

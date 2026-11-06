@@ -10,7 +10,8 @@ import Spinner from '../components/Spinner';
  *
  * ① 单票最大占比 / 前十大集中度 / 可用现金比例 / 组合最大回撤（四指标卡片）
  * ② 集中度分母**排除现金类**（cashExcluded=true 断言）
- * ③ 行业分布（板块口径，标注「近似」）
+ * ③ 分布：`distributionBasis='industry'` 为行业维度（通达信板块成分）；
+ *    `'exchange'` 为降级展示（行业数据不可用），标题/表头/行名同步改成交易所口径
  * ④ **只呈现不阻断**（无操作按钮，纯只读）
  */
 
@@ -21,6 +22,26 @@ interface RiskCheck {
   maxDrawdown: number;
   industryDistribution: Array<{ industry: string; weight: number }>;
   cashExcluded: boolean;
+  /**
+   * 分布口径（可选：旧响应没有该字段时按行业维度文案兜底）
+   * - `industry`：行业分布（通达信板块成分）
+   * - `exchange`：行业数据不可用时降级为交易所分布（`industry` 字段此时是 sh/sz/bj）
+   */
+  distributionBasis?: 'industry' | 'exchange';
+  distributionNote?: string;
+  maxDrawdownNote?: string;
+}
+
+/** 交易所前缀 → 展示名（降级口径下 `industry` 字段存的是交易所前缀） */
+const EXCHANGE_LABEL: Record<string, string> = {
+  sh: '上交所（sh）',
+  sz: '深交所（sz）',
+  bj: '北交所（bj）',
+  其他: '其他',
+};
+
+function exchangeLabel(code: string): string {
+  return EXCHANGE_LABEL[code] ?? code;
 }
 
 export default function RiskCheck() {
@@ -70,22 +91,31 @@ export default function RiskCheck() {
             <MetricCard label="可用现金比例" value={`${data.availableCashRatio}%`} />
             <MetricCard label="组合最大回撤" value={`${data.maxDrawdown}%`} warn={data.maxDrawdown > 20} />
           </div>
+          {data.maxDrawdownNote && (
+            <p style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted, margin: '0 0 12px' }}>
+              {data.maxDrawdownNote}
+            </p>
+          )}
 
           <div style={{ ...cardStyle, marginBottom: 16 }}>
             <h2 style={{ fontSize: TYPO.cardTitleSize, fontWeight: 600, margin: '0 0 8px' }}>
-              行业分布（板块口径，<strong>近似</strong>）
+              {data.distributionBasis === 'exchange'
+                ? '交易所分布（行业数据不可用，降级）'
+                : '行业分布（板块口径）'}
             </h2>
             <table style={tableStyle}>
               <thead>
                 <tr>
-                  <th style={thStyle}>行业/板块（代码前缀）</th>
+                  <th style={thStyle}>{data.distributionBasis === 'exchange' ? '交易所' : '行业/板块'}</th>
                   <th style={thStyle}>占比</th>
                 </tr>
               </thead>
               <tbody>
                 {data.industryDistribution.map((r) => (
                   <tr key={r.industry}>
-                    <td style={tdStyle}>{r.industry}</td>
+                    <td style={tdStyle}>
+                      {data.distributionBasis === 'exchange' ? exchangeLabel(r.industry) : r.industry}
+                    </td>
                     <td style={tdStyle}>{r.weight}%</td>
                   </tr>
                 ))}
@@ -100,7 +130,7 @@ export default function RiskCheck() {
             </table>
             <p style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted, margin: '8px 0 0' }}>
               {data.cashExcluded ? '集中度分母已排除现金类资产（SDD_v3 §2）。' : ''}
-              行业映射基于标的代码前缀，为近似口径，非精确板块归属。
+              {data.distributionNote ?? '行业映射基于标的代码前缀，为近似口径，非精确板块归属。'}
             </p>
           </div>
         </>

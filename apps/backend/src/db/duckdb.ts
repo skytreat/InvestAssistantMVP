@@ -441,7 +441,16 @@ export async function queryDuckDBColumnar(sql: string, params?: unknown[]): Prom
       const normalizeAt = (index: number): unknown[] => {
         const cached = normalizedCache.get(index);
         if (cached) return cached;
-        const normalized = normalizeColumn(rawColumns[index], dateCache, needsConversion[index]);
+        // 🔴 **0 行结果必须兜底**（2026-11-06 实测，PR #91 CI 触发）：
+        //   查询返回 0 行时，`reader.getColumns()[i]` 可能是 `undefined`
+        //   （列名仍出现在 `columnNames()` 里），于是 `normalizeColumn` 读
+        //   `values.length` 直接抛 `Cannot read properties of undefined`。
+        //   复现：`SELECT 1 AS ok WHERE FALSE`（无需任何真实表，CI 也能跑）。
+        //   影响：M1 的 `getBars`（M2/M3 引擎的唯一取数入口）一旦查到
+        //   「窗口内没有任何 bar」的标的（未上市 / 已退市 / 整段停牌）就会崩，
+        //   而这类标的正是停牌判定形态①要覆盖的输入。
+        //   ⇒ 空结果按空列处理，而不是把整条查询链路打断。
+        const normalized = normalizeColumn(rawColumns[index] ?? [], dateCache, needsConversion[index]);
         normalizedCache.set(index, normalized);
         return normalized;
       };

@@ -116,8 +116,15 @@ export interface AppliedScanFilters {
 export interface StockScanResponse {
   code: number;
   data: {
-    totalCandidates: number; // 候选池（DuckDB 初筛后）
-    total: number; // pass 插件条件的数量
+    /** DuckDB 初筛后的**候选池**只数（不是返回条数） */
+    totalCandidates: number;
+    /**
+     * **命中插件条件的总只数**（不是候选池大小，也不是返回条数）。
+     *
+     * ⚠️ 命名刻意不用 `total`：`results` 只返回按 score 降序的前 `max_results` 条（默认/上限 100），
+     * 故 `totalMatched > results.length` 是正常情况，接口**不支持翻页**。
+     */
+    totalMatched: number;
     results: StockScanResult[];
     tradeDate: string;
     filters?: AppliedScanFilters;
@@ -471,7 +478,7 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         return reply.send(
           ok({
             totalCandidates: 0,
-            total: 0,
+            totalMatched: 0,
             results: [],
             tradeDate,
             filters,
@@ -611,7 +618,7 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         ok(
           {
             totalCandidates: scannedCount,
-            total: passResults.length,
+            totalMatched: passResults.length,
             results: limited,
             tradeDate,
             filters,
