@@ -14,6 +14,7 @@
 import type Database from 'better-sqlite3';
 import { runFundCheck, type FundCheckResult } from './brokerFundCheck.js';
 import { modelRepoCashFlow, type RepoModelResult } from './brokerCashModel.js';
+import { NON_TRADE_EVENTS } from './brokerConfirm.js';
 import type { BackfillResult } from './brokerReconcile.js';
 
 export interface ReconcileReport {
@@ -40,6 +41,8 @@ export interface ReconcileReport {
     >;
   };
   fundCheck: FundCheckResult;
+  /** 待补录的非成交族事件数（转入 / 送股 / 现金分红，MISSING 或 FUZZY） */
+  pendingNonTrade: number;
   timeBackfill: BackfillResult;
   repoModel: RepoModelResult;
   returnSummary: { risk: number; cash: number; total: number; note: string };
@@ -103,6 +106,21 @@ export function buildReconcileReport(
 ): ReconcileReport {
   // ① 系统层粗匹配
   const { missing, extra } = matchVsSystem(db, userId, brokerCode);
+
+  // ①.5 待补录的非成交族（INV-S2-33：非成交事件永远依赖人工确认，必须给出可见入口）
+  const nonTradePh = NON_TRADE_EVENTS.map(() => '?').join(',');
+  const pendingNonTrade = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) n FROM broker_trade_record
+            WHERE user_id = ? AND broker_code = ? AND is_deleted = 0
+              AND match_status IN ('MISSING','FUZZY')
+              AND event_type IN (${nonTradePh})`,
+        )
+        .get(userId, brokerCode, ...NON_TRADE_EVENTS) as { n: number }
+    ).n,
+  );
 
   const statusCounts = db
     .prepare(
@@ -203,6 +221,7 @@ export function buildReconcileReport(
       order: ['residual', 'repo', 'cashLikeEtf', 'dividend', 'offExchange', 'uncoveredPeriod', 'caliberDiff'],
     },
     fundCheck,
+    pendingNonTrade,
     timeBackfill,
     repoModel,
     returnSummary: {
@@ -217,16 +236,21 @@ export function buildReconcileReport(
 
 /**
  * 归因下钻（§9.2 diff 端点）：按归因类别取事实层明细，支持分页。
- * 类别：repo / cashLikeEtf / dividend / offExchange / unknown / unmatched
+ * 类别：repo / cashLikeEtf / dividend / offExchange / unknown / unmatched / nonTrade
+ *
+ * `nonTrade` = 待补录的非成交族（转入 / 送股 / 现金分红）。它们**不属于成交族**，
+ * 不参与「缺失未匹配（成交族）」，但同样必须由用户显式确认后才能补录（INV-S2-33）。
+ * 现金分红可能 `quantity = 0`（只给发生金额），故前端可勾选条件不能只看股数。
  */
 export function attributionDrilldown(
   db: Database.Database,
   userId: number,
   brokerCode: string,
-  category: 'repo' | 'cashLikeEtf' | 'dividend' | 'offExchange' | 'unknown' | 'unmatched',
+  category: 'repo' | 'cashLikeEtf' | 'dividend' | 'offExchange' | 'unknown' | 'unmatched' | 'nonTrade',
   page = 1,
   pageSize = 50,
 ): { rows: Array<Record<string, unknown>>; total: number; page: number } {
+  const nonTradePh = NON_TRADE_EVENTS.map(() => '?').join(',');
   const cond: Record<string, string> = {
     repo: "b.event_type = 'REPO'",
     cashLikeEtf: "b.event_type = 'CASH_LIKE_ETF'",
@@ -235,13 +259,16 @@ export function attributionDrilldown(
     unknown: "b.event_type = 'UNKNOWN'",
     unmatched:
       "(b.match_status IN ('MISSING','FUZZY') AND b.event_type IN ('TRADE_BUY','TRADE_SELL','FUND_SUBSCRIBE','FUND_REDEEM'))",
+    nonTrade: `(b.match_status IN ('MISSING','FUZZY') AND b.event_type IN (${nonTradePh}))`,
   };
+  // nonTrade 的条件含占位符 ⇒ 参数表需按条件顺序拼接（其余分类无参）
+  const condParams = category === 'nonTrade' ? NON_TRADE_EVENTS : [];
   const totalRow = db
     .prepare(
       `SELECT COUNT(*) n FROM broker_trade_record b
         WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0 AND ${cond[category]}`,
     )
-    .get(userId, brokerCode) as { n: number };
+    .get(userId, brokerCode, ...condParams) as { n: number };
   const total = Number(totalRow.n);
   const rows = db
     .prepare(
@@ -253,6 +280,8 @@ export function attributionDrilldown(
         ORDER BY b.trade_date, b.id
         LIMIT ? OFFSET ?`,
     )
-    .all(userId, brokerCode, pageSize, (page - 1) * pageSize) as Array<Record<string, unknown>>;
+    .all(userId, brokerCode, ...condParams, pageSize, (page - 1) * pageSize) as Array<
+    Record<string, unknown>
+  >;
   return { rows, total, page };
 }

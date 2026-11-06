@@ -271,3 +271,63 @@ describe('T126 · gate G7：对账报告结构 + 归因逐项 + 无 "other" 兜�
     expect(repoDrill.rows[0].event_type).toBe('REPO');
   });
 });
+
+/**
+ * 非成交族（转入 / 送股 / 现金分红）必须进入可补录分类。
+ * 回归背景：旧实现 unmatched 只含 4 个成交族事件 ⇒ 三类非成交事件不落任何分类，
+ * 页面上看不到、勾不到，每次新导入都会漏补录（INV-S2-33：非成交事件永远依赖人工确认）。
+ */
+describe('nonTrade 分类 · 非成交族可见且可补录', () => {
+  const UID = 7411;
+  const BC = 'NONTRADE_BROKER';
+
+  beforeAll(() => {
+    db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    ).run(UID, `user_${UID}`, 'x');
+    const ins = db.prepare(
+      `INSERT INTO broker_trade_record
+         (user_id, import_batch_id, broker_code, source_kind, event_type, asset_code, trade_date,
+          quantity, amount, cash_flow, raw_row_json, match_status, row_hash, source_file)
+       VALUES (?, 1, ?, 'broker', ?, ?, ?, ?, ?, ?, '{}', ?, ?, 'non-trade.csv')`,
+    );
+    // 转入：100 股、无现金流
+    ins.run(UID, BC, 'TRANSFER_IN', 'sh600000', '2024-05-10', 100, null, 0, 'MISSING', 'nt-1');
+    // 送股：50 股、无现金流
+    ins.run(UID, BC, 'DIVIDEND_BONUS', 'sh600000', '2024-05-10', 50, null, 0, 'MISSING', 'nt-2');
+    // 现金分红：quantity=0，只有发生金额（不能拿股数当门槛）
+    ins.run(UID, BC, 'DIVIDEND_CASH', 'sh600000', '2024-05-10', 0, 12.5, 12.5, 'MISSING', 'nt-3');
+    // 已匹配的现金分红：不计入待补录
+    ins.run(UID, BC, 'DIVIDEND_CASH', 'sh600000', '2024-06-10', 0, 8, 8, 'MATCHED', 'nt-4');
+    // 成交族缺失：不应出现在 nonTrade
+    ins.run(UID, BC, 'TRADE_BUY', 'sh600000', '2024-06-11', 100, 1000, -1000, 'MISSING', 'nt-5');
+  });
+
+  it('pendingNonTrade 只统计 MISSING/FUZZY 的非成交族', () => {
+    const r = buildReconcileReport(db, UID, BC);
+    expect(r.pendingNonTrade).toBe(3);
+  });
+
+  it('nonTrade 下钻返回三类事件，quantity=0 的现金分红也在内', () => {
+    const r = attributionDrilldown(db, UID, BC, 'nonTrade', 1, 50);
+    expect(r.total).toBe(3);
+    const types = r.rows.map((x) => String(x.event_type)).sort();
+    expect(types).toEqual(['DIVIDEND_BONUS', 'DIVIDEND_CASH', 'TRANSFER_IN']);
+    const cash = r.rows.find((x) => x.event_type === 'DIVIDEND_CASH');
+    expect(cash, '现金分红行应可见').toBeTruthy();
+    expect(Number(cash!.quantity)).toBe(0);
+    expect(Number(cash!.cash_flow)).toBeGreaterThan(0);
+  });
+
+  it('负例：无此类事件时 pendingNonTrade=0 且 nonTrade 下钻为空', () => {
+    const EMPTY_UID = 7412;
+    db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    ).run(EMPTY_UID, `user_${EMPTY_UID}`, 'x');
+    const r = buildReconcileReport(db, EMPTY_UID, 'EMPTY_BROKER');
+    expect(r.pendingNonTrade).toBe(0);
+    const drill = attributionDrilldown(db, EMPTY_UID, 'EMPTY_BROKER', 'nonTrade', 1, 50);
+    expect(drill.total).toBe(0);
+    expect(drill.rows).toEqual([]);
+  });
+});

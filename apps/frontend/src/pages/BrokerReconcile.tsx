@@ -38,6 +38,8 @@ interface Report {
     mismatch: Array<{ id: number; category: string }>;
     scopeNote: string;
   };
+  /** 待补录的非成交族事件数（转入 / 送股 / 现金分红）；后端 buildReconcileReport 提供 */
+  pendingNonTrade?: number;
   timeBackfill: { matched: number; lowConfidence: number; unmatched: number };
   repoModel: {
     pairs: unknown[];
@@ -76,12 +78,30 @@ const ATTR_LABELS: Record<string, string> = {
   caliberDiff: '口径差异',
   unmatched: '缺失未匹配（成交族）',
   unknown: '未能识别',
+  nonTrade: '缺失未匹配（非成交族）',
 };
 /** 归因数值的单位：金额类按元，caliberDiff 是失配「条数」（UX-11） */
 const ATTR_UNITS: Record<string, string> = { caliberDiff: '条' };
-const CATEGORIES = ['unmatched', 'repo', 'cashLikeEtf', 'dividend', 'offExchange', 'unknown'] as const;
+const CATEGORIES = [
+  'unmatched',
+  'nonTrade',
+  'repo',
+  'cashLikeEtf',
+  'dividend',
+  'offExchange',
+  'unknown',
+] as const;
 const CONFIRM_TYPES = ['buy', 'add', 'reduce', 'clear'] as const;
 const CONFIRM_LABELS: Record<string, string> = { buy: '买入', add: '加仓', reduce: '减仓', clear: '清仓' };
+/**
+ * 非成交族事件 → 业务类型（与后端 brokerConfirm.FIXED_EVENT_TRADE_TYPE 对齐）。
+ * 这类行的类型由系统固定推导，用户不可修正（后端只接受成交族 4 种修正值）。
+ */
+const NON_TRADE_TYPE_LABELS: Record<string, string> = {
+  TRANSFER_IN: '转入/转增（transfer）',
+  DIVIDEND_BONUS: '送股（bonus）',
+  DIVIDEND_CASH: '现金分红（dividend）',
+};
 const MISMATCH_LABELS: Record<string, string> = {
   fee_conflict: '费用口径不符',
   dividend: '分红',
@@ -92,6 +112,8 @@ const MISMATCH_LABELS: Record<string, string> = {
 interface ConfirmItem {
   sourceId: number;
   tradeType?: string;
+  /** 事实事件类型：非成交族按系统固定类型补录，不提供「可修正」下拉 */
+  event_type: string;
   asset_code: string | null;
   trade_date?: string;
   trade_time?: string | null;
@@ -247,13 +269,14 @@ export default function BrokerReconcile() {
     }
   };
 
-  /** 勾选/取消补录候选（unmatched 类的成交族才可补录） */
+  /** 勾选/取消补录候选（成交族与「未补录的非成交族」均可补录） */
   const toggleSelect = (row: DiffRow, checked: boolean) => {
     setSelected((prev) => {
       const next = new Map(prev);
       if (checked)
         next.set(row.id, {
           sourceId: row.id,
+          event_type: row.event_type,
           asset_code: row.asset_code,
           trade_date: row.trade_date,
           trade_time: row.trade_time,
@@ -263,13 +286,27 @@ export default function BrokerReconcile() {
     });
   };
 
-  /** T151③：当前页可补录行（MISSING 且有标的与数量） */
-  const confirmable = category === 'unmatched';
-  const selectableRows = useMemo(
-    () =>
-      confirmable ? diffRows.filter((r) => r.match_status === 'MISSING' && r.quantity && r.asset_code) : [],
-    [diffRows, confirmable],
+  /** 当前分类是否允许勾选补录（成交族缺失 + 非成交族缺失） */
+  const confirmable = category === 'unmatched' || category === 'nonTrade';
+
+  /**
+   * 行是否可勾选：
+   * - 成交族：必须有股数与标的；
+   * - 非成交族：**有股数或有现金流**即可 —— 现金分红常无股数（quantity=0），只给发生金额。
+   */
+  const isSelectable = useCallback(
+    (r: DiffRow): boolean => {
+      if (r.match_status !== 'MISSING' || !r.asset_code) return false;
+      if (category === 'nonTrade') {
+        return (r.quantity ?? 0) > 0 || (r.cash_flow ?? 0) > 0 || (r.amount ?? 0) > 0;
+      }
+      return Boolean(r.quantity);
+    },
+    [category],
   );
+
+  /** T151③：当前页可补录行 */
+  const selectableRows = useMemo(() => diffRows.filter(isSelectable), [diffRows, isSelectable]);
   const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.id));
   const someSelected = !allSelected && selectableRows.some((r) => selected.has(r.id));
 
@@ -281,6 +318,7 @@ export default function BrokerReconcile() {
         if (checked)
           next.set(r.id, {
             sourceId: r.id,
+            event_type: r.event_type,
             asset_code: r.asset_code,
             trade_date: r.trade_date,
             trade_time: r.trade_time,
@@ -401,6 +439,35 @@ export default function BrokerReconcile() {
 
       {report && (
         <>
+          {/* 防复发提示：非成交事件（转入/送股/分红）永远依赖人工补录，必须给出可见入口 */}
+          {(report.pendingNonTrade ?? 0) > 0 && (
+            <div
+              data-testid="non-trade-pending"
+              role="status"
+              style={{
+                ...warningBar,
+                marginBottom: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+              }}
+            >
+              <span>
+                有 {report.pendingNonTrade} 笔非成交事件（转入 / 送股 / 现金分红）尚未补录到交易记录
+              </span>
+              <button
+                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                onClick={() => {
+                  setCategory('nonTrade');
+                  setPage(1);
+                }}
+              >
+                去补录（{report.pendingNonTrade} 笔）
+              </button>
+            </div>
+          )}
+
           {/* 摘要四宫格 */}
           <div
             style={{
@@ -536,6 +603,16 @@ export default function BrokerReconcile() {
                 ))}
               </select>
             </div>
+            {category === 'nonTrade' && (
+              <p
+                data-testid="non-trade-note"
+                style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, margin: '6px 0 8px' }}
+              >
+                <strong>转入（转增）/ 送股 / 现金分红</strong>
+                ，不是未知成交：勾选后按 transfer / bonus / dividend
+                补录；现金分红可能没有股数，按分红金额补录。
+              </p>
+            )}
             {diffError !== null && (
               <p style={{ ...errorStyle, display: 'flex', alignItems: 'center', gap: 8 }} role="alert">
                 差异明细加载失败：{diffError}
@@ -586,7 +663,7 @@ export default function BrokerReconcile() {
                           type="checkbox"
                           checked={selected.has(r.id)}
                           onChange={(e) => toggleSelect(r, e.target.checked)}
-                          disabled={!(r.quantity && r.asset_code)}
+                          disabled={!isSelectable(r)}
                         />
                       </td>
                     ) : confirmable ? (
@@ -670,7 +747,7 @@ export default function BrokerReconcile() {
                       <th style={thStyle}>事实行</th>
                       <th style={thStyle}>标的</th>
                       <th style={thStyle}>日期</th>
-                      <th style={thStyle}>推导类型（可修正）</th>
+                      <th style={thStyle}>推导类型</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -680,22 +757,29 @@ export default function BrokerReconcile() {
                         <td style={tdStyle}>{x.asset_code ?? '—'}</td>
                         <td style={tdStyle}>{x.trade_date ?? '—'}</td>
                         <td style={tdStyle}>
-                          <select
-                            value={x.tradeType ?? ''}
-                            onChange={(e) => {
-                              const next = new Map(selected);
-                              next.set(x.sourceId, { ...x, tradeType: e.target.value || undefined });
-                              setSelected(next);
-                            }}
-                            style={{ fontSize: TYPO.smallSize }}
-                          >
-                            <option value="">自动推导</option>
-                            {CONFIRM_TYPES.map((t) => (
-                              <option key={t} value={t}>
-                                {CONFIRM_LABELS[t] ?? t}
-                              </option>
-                            ))}
-                          </select>
+                          {NON_TRADE_TYPE_LABELS[x.event_type] ? (
+                            // 非成交族类型由系统固定推导（后端不接受成交族 4 种以外的修正值）
+                            <span data-testid={`fixed-type-${x.sourceId}`}>
+                              {NON_TRADE_TYPE_LABELS[x.event_type]}
+                            </span>
+                          ) : (
+                            <select
+                              value={x.tradeType ?? ''}
+                              onChange={(e) => {
+                                const next = new Map(selected);
+                                next.set(x.sourceId, { ...x, tradeType: e.target.value || undefined });
+                                setSelected(next);
+                              }}
+                              style={{ fontSize: TYPO.smallSize }}
+                            >
+                              <option value="">自动推导</option>
+                              {CONFIRM_TYPES.map((t) => (
+                                <option key={t} value={t}>
+                                  {CONFIRM_LABELS[t] ?? t}
+                                </option>
+                              ))}
+                            </select>
+                          )}
                         </td>
                       </tr>
                     ))}

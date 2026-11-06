@@ -743,6 +743,10 @@ export default function BrokerImport() {
               >
                 查看对账报告 →
               </button>
+              <p style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, margin: '8px 0 0' }}>
+                若本批含<strong>转入 / 送股 / 现金分红</strong>
+                ，它们不会自动写入业务层；请在对账页「缺失未匹配（非成交族）」中勾选补录（对账页顶部也会提示待补录数量）。
+              </p>
             </div>
           ))}
         </div>
