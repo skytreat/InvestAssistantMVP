@@ -43,7 +43,17 @@ const REPORT = {
     residual: 120,
     order: ['residual', 'repo', 'cashLikeEtf', 'dividend', 'offExchange', 'uncoveredPeriod', 'caliberDiff'],
   },
-  fundCheck: { applicable: 700, passed: 690, notApplicable: 110, byReason: { 现金分红: 110 } },
+  fundCheck: {
+    checked: 148,
+    hit: 145,
+    notApplicable: 3,
+    skippedEvents: 12,
+    mismatch: [
+      { id: 1, category: 'fee_conflict' },
+      { id: 2, category: 'unknown' },
+    ],
+    scopeNote: '仅交割单、买卖/申赎系事件参与校验',
+  },
   timeBackfill: { matched: 125, lowConfidence: 2, unmatched: 3 },
   repoModel: {
     pairs: [],
@@ -428,6 +438,18 @@ describe('T144 对账报告 /broker/reconcile', () => {
     // 差异明细行
     expect(screen.getByText('买入')).toBeInTheDocument();
     expect(screen.getByText('sh600000')).toBeInTheDocument();
+    // UX-05：资金校验按后端真实字段（checked/hit/notApplicable/skippedEvents/mismatch）
+    expect(screen.getByText(/校验范围 148 行/)).toBeInTheDocument();
+    expect(screen.getByText(/公式命中 145/)).toBeInTheDocument();
+    expect(screen.getByText(/失配 2/)).toBeInTheDocument();
+    expect(screen.getByText(/费用口径不符 1 · 分红 0 · 口径未知 1/)).toBeInTheDocument();
+    expect(screen.getByText(/仅交割单、买卖\/申赎系事件参与校验/)).toBeInTheDocument();
+    // UX-11：归因表带单位列（caliberDiff 是「条」，其余是「元」）
+    expect(screen.getByText('单位')).toBeInTheDocument();
+    expect(screen.getByText('条')).toBeInTheDocument();
+    expect(screen.getAllByText('元').length).toBeGreaterThan(0);
+    // UX-11：摘要补出疑似口径
+    expect(screen.getByText(/含疑似 10/)).toBeInTheDocument();
   });
 
   it('无对账数据（404 BROKER_NO_DATA）→ 展示后端文案与空状态，不残留旧报告', async () => {

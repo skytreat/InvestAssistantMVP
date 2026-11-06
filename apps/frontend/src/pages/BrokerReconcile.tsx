@@ -29,7 +29,15 @@ interface Report {
     residual: number;
     order: string[];
   };
-  fundCheck: { applicable: number; passed: number; notApplicable: number; byReason: Record<string, number> };
+  /** 与后端 FundCheckResult 同形（brokerFundCheck.ts），字段名不得再自造（UX-05） */
+  fundCheck: {
+    checked: number;
+    hit: number;
+    notApplicable: number;
+    skippedEvents: number;
+    mismatch: Array<{ id: number; category: string }>;
+    scopeNote: string;
+  };
   timeBackfill: { matched: number; lowConfidence: number; unmatched: number };
   repoModel: {
     pairs: unknown[];
@@ -66,9 +74,19 @@ const ATTR_LABELS: Record<string, string> = {
   offExchange: '场外/占位',
   uncoveredPeriod: '未覆盖区间',
   caliberDiff: '口径差异',
+  unmatched: '缺失未匹配（成交族）',
+  unknown: '未能识别',
 };
+/** 归因数值的单位：金额类按元，caliberDiff 是失配「条数」（UX-11） */
+const ATTR_UNITS: Record<string, string> = { caliberDiff: '条' };
 const CATEGORIES = ['unmatched', 'repo', 'cashLikeEtf', 'dividend', 'offExchange', 'unknown'] as const;
 const CONFIRM_TYPES = ['buy', 'add', 'reduce', 'clear'] as const;
+const CONFIRM_LABELS: Record<string, string> = { buy: '买入', add: '加仓', reduce: '减仓', clear: '清仓' };
+const MISMATCH_LABELS: Record<string, string> = {
+  fee_conflict: '费用口径不符',
+  dividend: '分红',
+  unknown: '口径未知',
+};
 
 /** 补录候选行（从差异明细勾选） */
 interface ConfirmItem {
@@ -370,7 +388,12 @@ export default function BrokerReconcile() {
             }}
           >
             <SummaryCard label="事实行" value={report.matchSummary.factRows} />
-            <SummaryCard label="已匹配" value={report.matchSummary.matched} tone="success" />
+            <SummaryCard
+              label="已匹配"
+              value={report.matchSummary.matched}
+              tone="success"
+              hint={`含疑似 ${report.matchSummary.fuzzy}`}
+            />
             <SummaryCard label="缺失（可补录）" value={report.matchSummary.missing} tone="warning" />
             <SummaryCard label="多余" value={report.matchSummary.extra} />
           </div>
@@ -379,6 +402,13 @@ export default function BrokerReconcile() {
           <div style={{ ...cardStyle, marginBottom: 16 }}>
             <h2 style={subtitleStyle}>差额归因</h2>
             <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>归因项</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>数值</th>
+                  <th style={thStyle}>单位</th>
+                </tr>
+              </thead>
               <tbody>
                 {attrRows.map((r) => (
                   <tr key={r.key} style={r.highlight ? { color: COLORS.danger, fontWeight: 600 } : undefined}>
@@ -387,6 +417,7 @@ export default function BrokerReconcile() {
                       {r.highlight ? ' ⚠' : ''}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right' }}>{r.value}</td>
+                    <td style={{ ...tdStyle, color: COLORS.textMuted }}>{ATTR_UNITS[r.key] ?? '元'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -405,8 +436,23 @@ export default function BrokerReconcile() {
             <div style={cardStyle}>
               <h3 style={subtitleStyle}>资金校验（行内自洽）</h3>
               <div style={{ fontSize: TYPO.smallSize }}>
-                适用 {report.fundCheck.applicable} · 通过 {report.fundCheck.passed} · 不适用{' '}
-                {report.fundCheck.notApplicable}
+                校验范围 {report.fundCheck.checked} 行 · 公式命中 {report.fundCheck.hit} · 不适用{' '}
+                {report.fundCheck.notApplicable} · 范围外 {report.fundCheck.skippedEvents} · 失配{' '}
+                {report.fundCheck.mismatch.length}
+              </div>
+              {report.fundCheck.mismatch.length > 0 && (
+                <div style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, marginTop: 4 }}>
+                  失配分类：
+                  {(['fee_conflict', 'dividend', 'unknown'] as const)
+                    .map(
+                      (c) =>
+                        `${MISMATCH_LABELS[c]} ${report.fundCheck.mismatch.filter((m) => m.category === c).length}`,
+                    )
+                    .join(' · ')}
+                </div>
+              )}
+              <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted, marginTop: 4 }}>
+                {report.fundCheck.scopeNote}
               </div>
             </div>
             <div style={cardStyle}>
@@ -419,17 +465,22 @@ export default function BrokerReconcile() {
             <div style={cardStyle}>
               <h3 style={subtitleStyle}>逆回购（§7.1）</h3>
               <div style={{ fontSize: TYPO.smallSize }}>
-                配对 {report.repoModel.pairs.length} 对 · 利息 {report.repoModel.totalInterest.toFixed(2)} 元
-                · 年化 {report.repoModel.impliedAnnualRate}%
+                配对 {report.repoModel.pairs.length} 对
                 <br />
-                在途 {report.repoModel.unpairedOpens} · 数据不全 {report.repoModel.unpairedCloses}
+                利息合计 {report.repoModel.totalInterest.toFixed(2)} 元
+                <br />
+                隐含年化 {report.repoModel.impliedAnnualRate}%
+                <br />
+                在途未平仓 {report.repoModel.unpairedOpens} 笔
+                <br />
+                数据不全 {report.repoModel.unpairedCloses} 笔
               </div>
             </div>
             <div style={cardStyle}>
-              <h3 style={subtitleStyle}>收益率（占位口径，完整见「收益」页）</h3>
+              <h3 style={subtitleStyle}>收益（占位口径，完整见「收益」页）</h3>
               <div style={{ fontSize: TYPO.smallSize }}>
-                风险 {report.returnSummary.risk} · 现金 {report.returnSummary.cash} · 总{' '}
-                {report.returnSummary.total}
+                风险类 {report.returnSummary.risk} 元 · 现金类 {report.returnSummary.cash} 元 · 合计{' '}
+                {report.returnSummary.total} 元
                 <div style={{ color: COLORS.textMuted, marginTop: 4 }}>{report.returnSummary.note}</div>
               </div>
             </div>
@@ -607,7 +658,7 @@ export default function BrokerReconcile() {
                             <option value="">自动推导</option>
                             {CONFIRM_TYPES.map((t) => (
                               <option key={t} value={t}>
-                                {t}
+                                {CONFIRM_LABELS[t] ?? t}
                               </option>
                             ))}
                           </select>
@@ -663,13 +714,24 @@ export default function BrokerReconcile() {
   );
 }
 
-function SummaryCard({ label, value, tone }: { label: string; value: number; tone?: 'success' | 'warning' }) {
+function SummaryCard({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: number;
+  tone?: 'success' | 'warning';
+  hint?: string;
+}) {
   const color =
     tone === 'success' ? COLORS.success : tone === 'warning' ? COLORS.warning : COLORS.textPrimary;
   return (
     <div style={{ ...cardStyle, textAlign: 'center' }}>
       <div style={{ fontSize: TYPO.h1Size, fontWeight: 700, color }}>{value}</div>
       <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>{label}</div>
+      {hint && <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>{hint}</div>}
     </div>
   );
 }
