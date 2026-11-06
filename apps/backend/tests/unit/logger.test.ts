@@ -219,6 +219,24 @@ describe('logger — writeSystemLog', () => {
       expect(row.message).toMatch(/50/); // 应该保留
     });
 
+    it('ISO 日期不被金额规则误伤：detail 中的除权日/命中日期原样保留', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'dividend_import',
+        level: 'SUCCESS',
+        message: '除权导入完成',
+        detail: JSON.stringify({ exDate: '2026-10-30', matchedDate: '2026-10-27', offsetDays: -3 }),
+      });
+      const row = db.prepare('SELECT detail FROM system_log ORDER BY id DESC LIMIT 1').get() as {
+        detail: string;
+      };
+      expect(row.detail).toContain('2026-10-30');
+      expect(row.detail).toContain('2026-10-27');
+      expect(row.detail).not.toMatch(/\*\*\*\*-10-30/);
+    });
+
     it('username 脱敏：保留前 2 位，后面 ****', () => {
       vi.restoreAllMocks();
       const db = ConfigStore.getInstance().db;

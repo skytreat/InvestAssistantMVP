@@ -21,6 +21,13 @@ import { ConfigStore } from '../../src/config/configStore.js';
 import { getHoldingBeforeDate, importDividendEvents } from '../../src/services/exDividendSync.js';
 
 function cleanup(): void {
+  // Windows 下未关闭的连接会锁住 db 文件，导致 unlink 静默失败、用例间数据串场
+  const inst = (ConfigStore as any)._instance;
+  try {
+    inst?.db?.close();
+  } catch {
+    /* ignore */
+  }
   // 重置 ConfigStore 单例
   (ConfigStore as any)._instance = null;
   for (const ext of ['', '-wal', '-shm']) {
@@ -108,5 +115,214 @@ describe('exDividendSync — importDividendEvents', () => {
     expect(result.importedBonus).toBe(0);
 
     mockMod.queryDuckDB.mockRestore();
+  });
+});
+
+/**
+ * 防重复计账（owner 口径：手动优先，±3 天窗口）
+ *
+ * 背景：手动补录行 broker_code 非空、自动行 broker_code 为空；两条部分唯一索引
+ * A（broker_code IS NULL）/ C（broker_code IS NOT NULL）的 WHERE 互斥 ⇒ 同一事件
+ * 可各落一行。故在自动插入前按 (user, asset_code, trade_type) + trade_date 落在
+ * 除权日 ±3 天内 预检活记录（实测偏移 −1~+2 天，窗口为精确同日的超集）。
+ */
+describe('exDividendSync — 手动优先防重预检', () => {
+  const uid = 201;
+  const asset = 'sh600001';
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    cleanup();
+  });
+
+  /** 建用户 + 除权日前的 200 股底仓（保证 holding > 0） */
+  function seedHolding(userId = uid, code = asset): void {
+    const db = ConfigStore.getInstance().db;
+    db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role) VALUES (?, ?, ?, 'user')`,
+    ).run(userId, `div_user_${userId}`, 'dummy');
+    db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, is_deleted)
+       VALUES (?, ?, 'buy', '2026-10-01', '09:30:00', 200, 10.0, 0, 'test', 0)`,
+    ).run(userId, code);
+  }
+
+  /** 插入一条人工补录行（broker_code 非空，模拟 confirm 产物；source 置 NULL 以避开事实表外键） */
+  function seedManual(
+    type: 'dividend' | 'bonus',
+    opts: { date?: string; time?: string; qty?: number; price?: number; deleted?: boolean } = {},
+  ): void {
+    const db = ConfigStore.getInstance().db;
+    db.prepare(
+      `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee,
+        trade_reason, is_auto_import, is_deleted, broker_code, broker_seq)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, '券商补录', 1, ?, '华宝证券', 0)`,
+    ).run(
+      uid,
+      asset,
+      type,
+      opts.date ?? '2026-10-30',
+      opts.time ?? '00:00:00',
+      opts.qty ?? 200,
+      opts.price ?? 0.5,
+      opts.deleted ? 1 : 0,
+    );
+  }
+
+  async function mockEvents(rows: Array<{ symbol: string; c1: number; c3: number }>): Promise<void> {
+    const mockMod = await import('../../src/db/duckdb.js');
+    vi.spyOn(mockMod, 'queryDuckDB').mockResolvedValue(rows);
+  }
+
+  const countRows = (type: 'dividend' | 'bonus', includeDeleted = false): number =>
+    (
+      ConfigStore.getInstance()
+        .db.prepare(
+          `SELECT COUNT(*) n FROM user_trade_record
+            WHERE user_id = ? AND asset_code = ? AND trade_type = ? ${includeDeleted ? '' : 'AND is_deleted = 0'}`,
+        )
+        .get(uid, asset, type) as { n: number }
+    ).n;
+
+  it('已有人工 dividend 行 → 自动跳过，不新增行', async () => {
+    seedHolding();
+    seedManual('dividend');
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]); // c1/10 = 0.5 元/股
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.eventsProcessed).toBe(1);
+    expect(result.importedDividend).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1);
+    expect(countRows('dividend')).toBe(1);
+
+    // 系统日志需体现「跳过」量
+    const log = ConfigStore.getInstance()
+      .db.prepare(
+        `SELECT message, detail FROM system_log WHERE log_type = 'dividend_import' ORDER BY id DESC LIMIT 1`,
+      )
+      .get() as { message: string; detail: string };
+    expect(log.message).toContain('跳过 1 条已存在');
+    expect(JSON.parse(log.detail).duplicatesSkipped).toBe(1);
+  });
+
+  it('无人工行 → 正常插入 dividend 与 bonus', async () => {
+    seedHolding();
+    await mockEvents([{ symbol: asset, c1: 5, c3: 2 }]); // 0.5 元/股 + 0.2 送转
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(1);
+    expect(result.importedBonus).toBe(1);
+    expect(result.duplicatesSkipped).toBe(0);
+    expect(countRows('dividend')).toBe(1);
+    expect(countRows('bonus')).toBe(1);
+  });
+
+  it('不同 trade_type 不互相干扰：已有 bonus → dividend 仍可插入', async () => {
+    seedHolding();
+    seedManual('bonus', { qty: 40, price: 0 });
+    await mockEvents([{ symbol: asset, c1: 5, c3: 2 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(1);
+    expect(result.importedBonus).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1); // 只有 bonus 被跳过
+    expect(countRows('dividend')).toBe(1);
+    expect(countRows('bonus')).toBe(1);
+  });
+
+  it('同日两笔合法记录不受影响：预检只拦插入，不合并/不改既有行', async () => {
+    seedHolding();
+    seedManual('dividend', { time: '09:30:00' });
+    seedManual('dividend', { time: '10:00:00' });
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1);
+    // 既有两笔保持原样（判据是「存在任一活记录即不新增」，从不 merge/delete）
+    expect(countRows('dividend')).toBe(2);
+    const times = ConfigStore.getInstance()
+      .db.prepare(
+        `SELECT trade_time FROM user_trade_record WHERE user_id = ? AND asset_code = ? AND trade_type = 'dividend' ORDER BY trade_time`,
+      )
+      .all(uid, asset) as Array<{ trade_time: string }>;
+    expect(times.map((t) => t.trade_time)).toEqual(['09:30:00', '10:00:00']);
+  });
+
+  it('幂等：同一天连跑两次不产生新行', async () => {
+    seedHolding();
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const first = await importDividendEvents('2026-10-30');
+    const second = await importDividendEvents('2026-10-30');
+
+    expect(first.importedDividend).toBe(1);
+    expect(second.importedDividend).toBe(0);
+    expect(second.duplicatesSkipped).toBe(1);
+    expect(countRows('dividend')).toBe(1);
+  });
+
+  it('已软删除的同键行不算「活记录」→ 自动仍插入', async () => {
+    seedHolding();
+    seedManual('dividend', { deleted: true });
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(1);
+    expect(countRows('dividend')).toBe(1); // 活行只有新插入的 1 条
+    expect(countRows('dividend', true)).toBe(2); // 加上软删除的 1 条
+  });
+
+  it('日期偏移 −3 天（窗口端点）→ 视为同一事件，跳过，detail 记录命中明细', async () => {
+    seedHolding();
+    seedManual('dividend', { date: '2026-10-27' }); // 除权日 2026-10-30 的 −3 天
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1);
+    expect(countRows('dividend')).toBe(1);
+
+    const log = ConfigStore.getInstance()
+      .db.prepare(`SELECT detail FROM system_log WHERE log_type = 'dividend_import' ORDER BY id DESC LIMIT 1`)
+      .get() as { detail: string };
+    const hit = JSON.parse(log.detail).dedupeHits[0];
+    expect(hit.exDate).toBe('2026-10-30');
+    expect(hit.matchedDate).toBe('2026-10-27');
+    expect(hit.offsetDays).toBe(-3);
+    expect(hit.brokerCode).toBe('华宝证券');
+  });
+
+  it('日期偏移 +3 天（窗口端点）→ 视为同一事件，跳过', async () => {
+    seedHolding();
+    seedManual('dividend', { date: '2026-11-02' }); // 除权日 2026-10-30 的 +3 天
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(0);
+    expect(result.duplicatesSkipped).toBe(1);
+    expect(countRows('dividend')).toBe(1);
+  });
+
+  it('日期偏移 ±4 天（窗口外）→ 不算同一事件，正常插入', async () => {
+    seedHolding();
+    seedManual('dividend', { date: '2026-10-26' }); // −4 天
+    seedManual('dividend', { date: '2026-11-03', time: '09:30:00' }); // +4 天
+    await mockEvents([{ symbol: asset, c1: 5, c3: 0 }]);
+
+    const result = await importDividendEvents('2026-10-30');
+
+    expect(result.importedDividend).toBe(1);
+    expect(result.duplicatesSkipped).toBe(0);
+    expect(countRows('dividend')).toBe(3); // 两条既有 + 新插入 1 条
   });
 });
