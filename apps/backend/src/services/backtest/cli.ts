@@ -1,31 +1,37 @@
 /**
- * M1 CLI —— `tsx` 入口：输出某个时点的「行情面板 + 时点名录」
+ * M1/M2 CLI —— `tsx` 入口
  *
- * 用法（在仓库根执行）：
- * ```bash
- * npx tsx apps/backend/src/services/backtest/cli.ts \
- *   --as-of 2026-10-12 --pool dynamic --out ./tmp/m1-universe
- * ```
+ * 子命令：
+ * 1) **时点名录**（M1，默认）：
+ *    ```bash
+ *    npx tsx apps/backend/src/services/backtest/cli.ts --as-of 2026-10-12 --pool dynamic --out ./tmp/m1-universe
+ *    ```
+ * 2) **回测**（M2）：
+ *    ```bash
+ *    npx tsx apps/backend/src/services/backtest/cli.ts run \
+ *      --strategy buy-and-hold --symbol sh510300 --start 2024-01-02 --end 2024-12-31 --cash 100000
+ *    ```
  *
- * 参数：
- *   --as-of <YYYY-MM-DD>  必填，目标时点（非交易日回退到前一个交易日）
- *   --pool fixed|dynamic|weak|all   默认 all
- *   --out <path>          输出路径：`.json` / `.md` 指定单格式；其它按「目录」写两份
- *   --divisor <n>         流动性阈值除数（默认 20000，对应 v5.2）
- *   --top-n <n>           动态池截断数量（默认 300）
- *   --panel-days <n>      面板回看的交易日数（默认 30）
- *   --no-missing-bar      关闭「缺 bar ⇒ 停牌」判定
- *   --no-zero-volume      关闭「volume=0 ⇒ 停牌」判定
- *
- * ⚠️ 只读：本 CLI 只打开 DuckDB（`access_mode: READ_ONLY`），不写任何数据库。
+ * ⚠️ 只读 DuckDB；回测结果写**独立库** `data/backtest.db`（可用 `--db` / `--no-db` 覆盖）。
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { queryDuckDB } from '../../db/duckdb.js';
 import { loadTradingCalendar } from './calendar.js';
 import { getBars, isSuspended, summarizePanel, type SymbolPanelSummary } from './marketPanel.js';
-import { DEFENSIVE_ETF } from './universe/fixedPool.js';
-import { resolveUniverseAt, type UniverseSnapshot, type PoolPick } from './universe/pointInTime.js';
+import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from './universe/fixedPool.js';
+import {
+  resolveUniverseAt,
+  type UniverseSnapshot,
+  type PoolPick,
+  WEAK_PERIOD_INDEXES,
+} from './universe/pointInTime.js';
 import type { SuspensionOptions } from './types.js';
+import { loadUniverseProvider, type UniverseResolver } from './universe/provider.js';
+import { runBacktest } from './engine.js';
+import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
+import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';
+import type { CorporateAction } from './account/portfolio.js';
 
 type PoolName = 'fixed' | 'dynamic' | 'weak' | 'all';
 
@@ -418,8 +424,254 @@ function writeOutput(out: CliOutput, target: string | null): string[] {
   return written;
 }
 
+/** ───────────────────────── M2：回测子命令 ───────────────────────── */
+
+interface RunArgs {
+  strategy: string;
+  symbol: string;
+  weight: number;
+  rebalance: boolean;
+  start: string;
+  end: string;
+  cash: number;
+  universeMode: 'fixed' | 'weak';
+  priceMode: 'open' | 'close';
+  benchmark: string;
+  dbPath: string | null;
+  divisor: number;
+  topN: number;
+  suspension: Required<SuspensionOptions>;
+}
+
+const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--no-missing-bar] [--no-zero-volume]`;
+
+function parseRunArgs(argv: readonly string[]): RunArgs {
+  const options: RunArgs = {
+    strategy: 'buy-and-hold',
+    symbol: 'sh510300',
+    weight: 1,
+    rebalance: false,
+    start: '',
+    end: '',
+    cash: 100_000,
+    universeMode: 'fixed',
+    priceMode: 'open',
+    benchmark: 'sh510300',
+    dbPath: resolveBacktestDbPath(),
+    divisor: 20000,
+    topN: 300,
+    suspension: { missingBar: true, zeroVolume: true },
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const readValue = (): string => {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith('--')) throw new Error(`${arg} 缺少取值\n${RUN_USAGE}`);
+      i++;
+      return v;
+    };
+    switch (arg) {
+      case '--strategy':
+        options.strategy = readValue();
+        break;
+      case '--symbol':
+        options.symbol = readValue();
+        break;
+      case '--weight':
+        options.weight = Number(readValue());
+        break;
+      case '--rebalance':
+        options.rebalance = true;
+        break;
+      case '--start':
+        options.start = readValue();
+        break;
+      case '--end':
+        options.end = readValue();
+        break;
+      case '--cash':
+        options.cash = Number(readValue());
+        break;
+      case '--universe': {
+        const v = readValue();
+        if (v !== 'fixed' && v !== 'weak') {
+          throw new Error(`M2 CLI 只支持 --universe fixed|weak（dynamic 的全市场面板装载留 M3；收到 ${v}）`);
+        }
+        options.universeMode = v;
+        break;
+      }
+      case '--price': {
+        const v = readValue();
+        if (v !== 'open' && v !== 'close') throw new Error(`--price 只接受 open|close（收到 ${v}）`);
+        options.priceMode = v;
+        break;
+      }
+      case '--benchmark':
+        options.benchmark = readValue();
+        break;
+      case '--db':
+        options.dbPath = readValue();
+        break;
+      case '--no-db':
+        options.dbPath = null;
+        break;
+      case '--divisor':
+        options.divisor = Number(readValue());
+        break;
+      case '--top-n':
+        options.topN = Number(readValue());
+        break;
+      case '--no-missing-bar':
+        options.suspension.missingBar = false;
+        break;
+      case '--no-zero-volume':
+        options.suspension.zeroVolume = false;
+        break;
+      case '--help':
+      case '-h':
+        throw new Error(RUN_USAGE);
+      default:
+        throw new Error(`未知参数 ${arg}\n${RUN_USAGE}`);
+    }
+  }
+
+  if (!options.start || !options.end) throw new Error(`缺少 --start / --end\n${RUN_USAGE}`);
+  for (const [name, value] of [
+    ['--start', options.start],
+    ['--end', options.end],
+  ] as const) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${name} 必须是 YYYY-MM-DD（收到 ${value}）`);
+  }
+  if (options.start > options.end)
+    throw new Error(`--start 不能晚于 --end（${options.start} > ${options.end}）`);
+  if (options.strategy !== 'buy-and-hold' && options.strategy !== 'ref-buy-and-hold') {
+    throw new Error(`M2 只内置参考策略 buy-and-hold（v5.2 移植是 M3）；收到 ${options.strategy}`);
+  }
+  if (!(options.cash > 0)) throw new Error(`--cash 必须 > 0（收到 ${options.cash}）`);
+  if (!Number.isFinite(options.weight) || options.weight < 0 || options.weight > 1) {
+    throw new Error(`--weight 必须在 [0,1]（收到 ${options.weight}）`);
+  }
+  return options;
+}
+
+/** 从 `raw_gbbq` 取除权事件（category=1），口径对齐 `exDividendSync`：c1/10 每股派现、c3/10 送转比例 */
+async function loadCorporateActions(
+  symbols: readonly string[],
+  start: string,
+  end: string,
+): Promise<CorporateAction[]> {
+  if (symbols.length === 0) return [];
+  const placeholders = symbols.map(() => '?').join(', ');
+  const rows = await queryDuckDB<{ date: string; symbol: string; c1: number | null; c3: number | null }>(
+    `SELECT date, symbol, c1, c3
+       FROM raw_gbbq
+      WHERE category = 1 AND symbol IN (${placeholders}) AND date BETWEEN ? AND ?
+      ORDER BY date`,
+    [...symbols, start, end],
+  );
+
+  const out: CorporateAction[] = [];
+  for (const r of rows) {
+    const cash = (r.c1 ?? 0) / 10;
+    if (cash > 0) out.push({ date: r.date, symbol: r.symbol, kind: 'dividend', cashPerShare: cash });
+    const ratio = (r.c3 ?? 0) / 10;
+    if (ratio > 0) out.push({ date: r.date, symbol: r.symbol, kind: 'bonus', bonusRatio: ratio });
+  }
+  return out;
+}
+
+async function runCommand(argv: readonly string[]): Promise<void> {
+  const startedAt = new Date().toISOString();
+  const args = parseRunArgs(argv);
+
+  // 装载区间：向前多取几根 bar，保证决策上下文/估值在起点前有价可依
+  const calendar = await loadTradingCalendar();
+  const warmup = Math.max(5, buyAndHoldStrategy.warmupDays + 1);
+  const loadStart = calendar.lastN(args.start, warmup)[0] ?? args.start;
+
+  const symbols = [
+    ...new Set([
+      ...FIXED_ETF_POOL,
+      ...GLOBAL_ETF_POOL,
+      DEFENSIVE_ETF,
+      args.symbol,
+      args.benchmark,
+      ...WEAK_PERIOD_INDEXES,
+    ]),
+  ];
+
+  const [signalBars, execBars, provider, corporateActions] = await Promise.all([
+    getBars(symbols, loadStart, args.end, { adjust: 'qfq' }),
+    getBars(symbols, loadStart, args.end, { adjust: 'bfq' }),
+    loadUniverseProvider(args.start, args.end, {
+      calendar,
+      divisor: args.divisor,
+      topN: args.topN,
+    }),
+    loadCorporateActions(symbols, loadStart, args.end),
+  ]);
+
+  const universe: UniverseResolver = (asOf) => provider.snapshotAt(asOf);
+  const indexBars = new Map(WEAK_PERIOD_INDEXES.map((code) => [code, signalBars.get(code) ?? []]));
+
+  const result = runBacktest(
+    {
+      calendar,
+      signalBars,
+      execBars,
+      benchmarkBars: execBars.get(args.benchmark) ?? [],
+      indexBars,
+      universe,
+      corporateActions,
+    },
+    {
+      strategy: buyAndHoldStrategy,
+      params: { symbol: args.symbol, weight: args.weight, rebalance: args.rebalance },
+      start: args.start,
+      end: args.end,
+      initialCash: args.cash,
+      universeMode: args.universeMode,
+      priceMode: args.priceMode,
+      suspension: args.suspension,
+    },
+  );
+
+  let runId: string | null = null;
+  if (args.dbPath) {
+    const store = new BacktestStore(args.dbPath);
+    try {
+      runId = store.writeRun(result, { startedAt, finishedAt: new Date().toISOString() });
+    } finally {
+      store.close();
+    }
+  }
+
+  const m = result.metrics;
+  const pct = (x: number): string => `${(x * 100).toFixed(2)}%`;
+  console.log(
+    `策略=${result.meta.strategyId}@${result.meta.strategyVersion} 区间 ${m.startDate} ~ ${m.endDate}（${m.tradingDays} 个交易日）`,
+  );
+  console.log(
+    `初始 ${args.cash.toFixed(2)} → 期末 ${m.finalEquity.toFixed(2)}（累计 ${pct(m.cumulativeReturn)} / 年化 ${pct(m.cagr)}）`,
+  );
+  console.log(
+    `最大回撤（比率）=${pct(m.maxDrawdownRatio)}（${m.peakDate ?? '—'} → ${m.troughDate ?? '—'}，金额 ${m.maxDrawdownAmount.toFixed(2)}）`,
+  );
+  console.log(
+    `成交 ${result.trades.length} 笔 / 跳过 ${result.skipped.length} 笔 / 平仓回合 ${m.closedRoundTrips} 笔（胜率 ${pct(m.winRate)}）`,
+  );
+  console.log(`换手（年化）=${m.turnoverAnnualized.toFixed(2)} / 平均风险暴露=${pct(m.averageExposure)}`);
+  if (runId) console.log(`已写入回测库：${args.dbPath}（run_id=${runId}）`);
+}
+
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv[0] === 'run') {
+    await runCommand(argv.slice(1));
+    return;
+  }
+  const args = parseArgs(argv);
   const out = await buildOutput(args);
   const written = writeOutput(out, args.out);
 
