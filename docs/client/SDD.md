@@ -1345,7 +1345,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | 行情 | `/api/quote/*` | 是（user/admin）| K 线、OHLCV、复权价 |
 | 策略 | `/api/strategy/*` | 是（user/admin）| 插件列表、参数配置 |
 | 信号 | `/api/signal/*` | 是（user/admin）| 信号列表、筛选 |
-| 选股 | `/api/stockscan/*` | 是（user/admin）| 条件选股 + 分页 |
+| 选股 | `/api/stockscan/*` | 是（user/admin）| 条件选股（**无分页**，返回按 score 降序前 N 条）|
 | 复盘 | `/api/review/*` | 是（user/admin）| 双口径收益、胜率盈亏比 |
 | 候选池 | `/api/candidate/*` | 是（user/admin）| 增删查 + 迁移 |
 | 管理员 | `/api/admin/*` | 是（仅 admin）| 手动触发、日志、备份 |
@@ -1441,7 +1441,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
 | `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
 | `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |
-| `/api/stockscan` | POST | 是 | 筛选插件执行；返回 ≤100 条；支持分页 |
+| `/api/stockscan` | POST | 是 | 筛选插件执行。返回 `{ totalCandidates, totalMatched, results, tradeDate, filters }`：`totalCandidates`=DuckDB 初筛候选池只数；`totalMatched`=**命中插件条件的总只数**（不是候选池、不是返回条数）；`results`=按 score 降序的**前 `max_results` 条（默认/上限 100）**。⚠️ **不支持分页**：`totalMatched > results.length` 时其余命中不可翻页获取 |
 | `/api/review/yield` | GET | 是 | 双口径收益统计；支持 date_range + granularity（monthly/quarterly/yearly）|
 | `/api/candidate` | GET | 是 | **候选池列表**（`asset_code` / `baseline_price` / `candidate_reason` / `tracked_days` / `created_at`；按 `user_id` 隔离）—— T67 今日动态概览卡「重点关注」的候选侧数据源 |
 | `/api/candidate` | POST | 是 | 手动加标的；基准价自动取当日收盘价 |

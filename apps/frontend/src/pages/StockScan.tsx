@@ -364,7 +364,7 @@ export default function StockScan() {
       if (isOkEnvelope(res.data) && res.data?.data) {
         setResults((res.data.data.results ?? []) as ScanResult[]);
         setTotalCandidates(res.data.data.totalCandidates ?? 0);
-        setTotalPass(res.data.data.total ?? 0);
+        setTotalPass(res.data.data.totalMatched ?? 0);
         setTradeDate(res.data.data.tradeDate ?? '');
         setAppliedFilters((res.data.data.filters ?? null) as AppliedFilters | null);
         setTimeMs(res.data.timeMs ?? 0);
@@ -723,7 +723,9 @@ export default function StockScan() {
           选股结果
           {totalCandidates > 0 && (
             <span style={{ color: COLORS.neutral, fontWeight: 400, marginLeft: 12 }}>
-              交易日 {tradeDate} · 候选池 {totalCandidates} · 命中 {totalPass} · 返回 {results.length}
+              交易日 {tradeDate} · 候选池 {totalCandidates} 只 · 命中 {totalPass} 只 · 仅展示前{' '}
+              {results.length} 只（按评分降序，上限 {MAX_RESULTS}）
+              {totalPass > results.length && `，另有 ${totalPass - results.length} 只未展示`}
             </span>
           )}
         </div>

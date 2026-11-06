@@ -284,7 +284,7 @@ describe('scan — 选股扫描路径', () => {
     // 候选池 5 只全部被扫描
     expect(body.data.totalCandidates).toBe(5);
     // 其中 3 只满足 MA5 > MA10 > MA20 且收盘站上 MA20
-    expect(body.data.total).toBe(3);
+    expect(body.data.totalMatched).toBe(3);
     expect(body.data.results.map((r: { symbol: string }) => r.symbol)).toEqual([
       'sh600001',
       'sh600002',
@@ -304,7 +304,7 @@ describe('scan — 选股扫描路径', () => {
     expect(body.data.results[0].signalType).toBe('BUY');
   });
 
-  it('max_results 截断：上限 1 → 只返回 score 最高的 1 条（total 仍是命中总数）', async () => {
+  it('max_results 截断：上限 1 → results 只返回 score 最高的 1 条，totalMatched 仍是命中总数 3', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/stockscan',
@@ -313,7 +313,9 @@ describe('scan — 选股扫描路径', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.data.total).toBe(3);
+    // totalMatched 表示「命中数」，与返回条数解耦；别名 total 已移除，避免被误读为候选池/返回数
+    expect(body.data.totalMatched).toBe(3);
+    expect(body.data.total).toBeUndefined();
     expect(body.data.results).toHaveLength(1);
     expect(body.data.results[0].symbol).toBe('sh600001');
   });
@@ -351,7 +353,7 @@ describe('scan — 选股扫描路径', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.data.totalCandidates).toBe(0);
-      expect(body.data.total).toBe(0);
+      expect(body.data.totalMatched).toBe(0);
       expect(body.data.results).toEqual([]);
     } finally {
       poolSymbols = [...FAKE_SYMBOLS];
