@@ -469,6 +469,80 @@ describe('T144 对账报告 /broker/reconcile', () => {
     expect(alert.textContent).toContain('该券商无已导入事实层记录');
     expect(screen.getByText(/请先在「券商文件导入」完成导入/)).toBeInTheDocument();
     expect(screen.queryByText(/差额归因/)).not.toBeInTheDocument();
+    // UX-01：空态自带「导入文件」入口（与工具栏按钮文案区分，避免同名按钮）
+    expect(screen.getByRole('button', { name: '去导入文件' })).toBeInTheDocument();
+  });
+
+  it('A 券商有报告 → 切到 B 券商无数据 → 旧报告不残留，空态可直达导入', async () => {
+    batchRows = [...batchRows, { ...BATCH_IMPORTED, id: 7, broker_code: 'hb', file_name: 'hb-trade.xls' }];
+    const user = userEvent.setup();
+    getMock.mockImplementation((url: string, config?: { params?: { brokerCode?: string } }) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest') {
+        if (config?.params?.brokerCode === 'hb')
+          return Promise.reject(
+            mockErrorResponse(404, 'BROKER_NO_DATA', '该券商无已导入事实层记录（请先完成导入）'),
+          );
+        return Promise.resolve(mockResponse(REPORT));
+      }
+      if (url === '/broker-reconcile/diff')
+        return Promise.resolve(
+          mockResponse({ rows: DIFF_ROWS }, { pagination: { total: DIFF_ROWS.length } }),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    renderWithRouter(<BrokerReconcile />, {
+      initialEntries: ['/broker/reconcile?brokerCode=gt'],
+    });
+
+    await waitFor(() => expect(screen.getByText(/差额归因/)).toBeInTheDocument());
+    expect(screen.getByText('事实行')).toBeInTheDocument();
+
+    // 从 gt 切到无数据的 hb
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'hb');
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('该券商无已导入事实层记录');
+    // 旧报告（摘要/归因/差异）必须全部消失
+    expect(screen.queryByText(/差额归因/)).not.toBeInTheDocument();
+    expect(screen.queryByText('事实行')).not.toBeInTheDocument();
+    expect(screen.queryByText(/差异明细/)).not.toBeInTheDocument();
+    expect(screen.getByText(/请先在「券商文件导入」完成导入/)).toBeInTheDocument();
+  });
+
+  it('券商下拉排除已撤销批次与未识别编码，标签带批次文件名（Q8）', async () => {
+    batchRows = [
+      ...batchRows,
+      { ...BATCH_IMPORTED, id: 6, broker_code: 'hb', file_name: 'hb-trade.xls', status: 'revoked' },
+      { ...BATCH_IMPORTED, id: 5, broker_code: '未识别', file_name: 'unknown.xls' },
+    ];
+    renderWithRouter(<BrokerReconcile />, {
+      initialEntries: ['/broker/reconcile?brokerCode=gt'],
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: 'gt（gt-trade.csv）' })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('option', { name: /hb-trade\.xls/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /未识别/ })).not.toBeInTheDocument();
+  });
+
+  it('差异查询失败 → 显式报错并可重试，不再静默显示「无」', async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest') return Promise.resolve(mockResponse(REPORT));
+      if (url === '/broker-reconcile/diff') return Promise.reject(new Error('Network Error'));
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    renderWithRouter(<BrokerReconcile />, {
+      initialEntries: ['/broker/reconcile?brokerCode=gt'],
+    });
+
+    await waitFor(() => expect(screen.getByText(/差额归因/)).toBeInTheDocument());
+    expect(await screen.findByText(/差异明细加载失败/)).toBeInTheDocument();
+    expect(screen.getByText('加载失败（可点上方重试）')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+    expect(screen.queryByRole('cell', { name: '无' })).not.toBeInTheDocument();
   });
 
   it('「重新对账」成功 → 显示「对账已刷新」提示（不再是红色错误样式）', async () => {
