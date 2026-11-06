@@ -129,19 +129,48 @@ describe('M2 引擎 · 决策时点（T-1 无前视）', () => {
     expect(() => runBacktest(data, baseRequest)).toThrow(BacktestInvariantError);
   });
 
-  it('策略设置 maxTurnoverRatio（M2 未实现）→ 显式报错，不静默忽略', () => {
-    const bad = defineStrategy({
-      id: 'test-turnover',
+  it('maxTurnoverRatio：买入按剩余额度等比缩放（Σ|Δ| ≤ ratio×equity）', () => {
+    const capped = defineStrategy({
+      id: 'test-turnover-scale',
       version: '0.0.1',
       name: '带换手上限',
       paramSchema: [],
       warmupDays: 0,
       priceMode: 'open',
-      decide: () => ({ targets: [], mode: 'replace', maxTurnoverRatio: 0.1 }),
+      decide: () => ({
+        targets: [{ symbol: 'sh510300', targetWeight: 1, reason: 'candidate-top' }],
+        mode: 'replace',
+        maxTurnoverRatio: 0.5,
+      }),
     });
-    expect(() => runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: bad })).toThrow(
-      /maxTurnoverRatio/,
-    );
+    const res = runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: capped });
+
+    // 权益 10 万、上限 0.5 → 首日最多买入 5 万（后续日按当日权益重新算上限）
+    expect(res.trades.length).toBeGreaterThan(0);
+    expect(res.trades[0].qty * res.trades[0].price).toBeLessThanOrEqual(50_000 + 1e-6);
+    expect(res.trades[0].qty * res.trades[0].price).toBeGreaterThan(49_000);
+    // 缩放后仍可成交，不记 turnover-capped
+    expect(res.skipped.some((s) => s.reason === 'turnover-capped')).toBe(false);
+  });
+
+  it('maxTurnoverRatio 把增仓裁到不足 1 元 → 记 turnover-capped（不静默丢弃）', () => {
+    const starved = defineStrategy({
+      id: 'test-turnover-starved',
+      version: '0.0.1',
+      name: '换手上限几乎为零',
+      paramSchema: [],
+      warmupDays: 0,
+      priceMode: 'open',
+      decide: () => ({
+        targets: [{ symbol: 'sh510300', targetWeight: 1, reason: 'candidate-top' }],
+        mode: 'replace',
+        maxTurnoverRatio: 1e-9,
+      }),
+    });
+    const res = runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: starved });
+
+    expect(res.trades).toHaveLength(0);
+    expect(res.skipped.some((s) => s.reason === 'turnover-capped')).toBe(true);
   });
 });
 

@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS bt_equity (
   risk_mv REAL NOT NULL,
   cash_mv REAL NOT NULL,
   benchmark_close REAL,
+  /** 1 = 当日无基准 bar，benchmark_close 是沿用上一有效收盘（不参与 alpha/beta 成对统计） */
+  benchmark_stale INTEGER NOT NULL DEFAULT 0,
   drawdown_ratio REAL NOT NULL,
   exposure REAL NOT NULL,
   PRIMARY KEY (run_id, date),
@@ -128,9 +130,29 @@ CREATE INDEX IF NOT EXISTS idx_bt_round_trip_run ON bt_round_trip(run_id);
 export interface WriteRunOptions {
   /** 默认 now（ISO） */
   startedAt?: string;
+  /** 默认 now（ISO） */
   finishedAt?: string;
   /** 指定 run_id（默认 UUID） */
   runId?: string;
+  /** M3 归因行（`bt_attribution`）；不传则只写前 5 张表 */
+  attribution?: readonly AttributionRow[];
+}
+
+/**
+ * 归因行（`bt_attribution` 的扁平形态）。
+ *
+ * 归因模块（`attribution/`）产出的报告在落库前拍平成这些行，避免 store 依赖归因内部类型。
+ */
+export interface AttributionRow {
+  /** `symbol` / `round_trip_id` / `exit_reason` / `month` / `year` / `branch_tag` / `bucket` */
+  bucketType: string;
+  bucketKey: string;
+  /** 该桶净额 PnL（元） */
+  pnl: number;
+  /** pnl / totalPnl（0~1；totalPnl 为 0 时记 0） */
+  contributionPct: number;
+  tradeCount: number;
+  detail?: Record<string, unknown>;
 }
 
 /** 回测库句柄 */
@@ -146,6 +168,15 @@ export class BacktestStore {
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA_SQL);
+    // 既有库（M2 建的）没有 benchmark_stale：只加列 → ALTER TABLE ADD COLUMN（AGENTS.md DDL 判据）
+    this.ensureColumn('bt_equity', 'benchmark_stale', 'INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /** 幂等加列（`CREATE TABLE IF NOT EXISTS` 对已存在的表不生效，故走 PRAGMA + ALTER） */
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (cols.some((c) => c.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   close(): void {
@@ -169,7 +200,7 @@ export class BacktestStore {
     );
     const insertEquity = this.db.prepare(
       `INSERT INTO bt_equity (run_id, date, equity, cash, risk_mv, cash_mv, benchmark_close,
-         drawdown_ratio, exposure) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         benchmark_stale, drawdown_ratio, exposure) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const insertTrade = this.db.prepare(
       `INSERT INTO bt_trade (run_id, seq, date, symbol, side, qty, price, fee, slippage_cost, reason)
@@ -181,6 +212,10 @@ export class BacktestStore {
     );
     const insertMetric = this.db.prepare(
       `INSERT INTO bt_metric (run_id, metric_key, value_num, value_json) VALUES (?, ?, ?, ?)`,
+    );
+    const insertAttribution = this.db.prepare(
+      `INSERT INTO bt_attribution (run_id, bucket_type, bucket_key, contribution_pct, pnl, trade_count,
+         detail_json) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const tx = this.db.transaction(() => {
@@ -215,6 +250,7 @@ export class BacktestStore {
           p.riskMv,
           p.cashMv,
           p.benchmarkClose,
+          p.benchmarkStale === true ? 1 : 0,
           p.drawdownRatio,
           p.exposure,
         );
@@ -247,6 +283,18 @@ export class BacktestStore {
           insertMetric.run(runId, key, null, JSON.stringify(value));
         }
       }
+
+      for (const row of options.attribution ?? []) {
+        insertAttribution.run(
+          runId,
+          row.bucketType,
+          row.bucketKey,
+          row.contributionPct,
+          row.pnl,
+          row.tradeCount,
+          row.detail ? JSON.stringify(row.detail) : null,
+        );
+      }
     });
 
     tx();
@@ -255,7 +303,7 @@ export class BacktestStore {
 
   /** 查询某个 run 的净值行数（单测/自检用） */
   countRows(
-    table: 'bt_run' | 'bt_equity' | 'bt_trade' | 'bt_round_trip' | 'bt_metric',
+    table: 'bt_run' | 'bt_equity' | 'bt_trade' | 'bt_round_trip' | 'bt_attribution' | 'bt_metric',
     runId?: string,
   ): number {
     const sql = runId

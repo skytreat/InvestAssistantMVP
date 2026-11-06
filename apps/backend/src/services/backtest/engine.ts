@@ -25,7 +25,7 @@ import {
   type SkippedOrder,
   type TradeRules,
 } from './execution/simulator.js';
-import { Portfolio, type CorporateAction, type RoundTrip } from './account/portfolio.js';
+import { Portfolio, type CorporateAction, type DividendRecord, type RoundTrip } from './account/portfolio.js';
 import {
   computeMetrics,
   computeDrawdownSeries,
@@ -43,7 +43,7 @@ import type {
   StrategyContext,
   UniverseView,
 } from './strategy/types.js';
-import type { TargetSet } from './strategy/types.js';
+import type { TargetPosition, TargetSet } from './strategy/types.js';
 
 /** 现金类桶（防御 ETF + 逆回购）—— 口径见 R3 §3.7 / `assetClass` 的 repo_code 规则 */
 const CASH_BUCKET_SYMBOLS: ReadonlySet<string> = new Set([DEFENSIVE_ETF, ...REPO_CODES]);
@@ -107,6 +107,8 @@ export interface BacktestResult {
   equity: EquityPoint[];
   trades: Fill[];
   roundTrips: RoundTrip[];
+  /** 现金分红流水（归因用；`RoundTrip.pnl` 不含分红，与 core 口径一致） */
+  dividends: DividendRecord[];
   metrics: BacktestMetrics;
   decisions: DecisionRecord[];
   skipped: SkippedOrder[];
@@ -147,6 +149,76 @@ function closeAtOrBefore(bars: readonly Bar[] | undefined, date: string): number
 
 function fieldOf(bar: Bar, field: SeriesField): number {
   return bar[field];
+}
+
+/**
+ * 换手上限（契约见 `TargetSet.maxTurnoverRatio`）。
+ *
+ * - **卖出强制**：`replace` 模式下必须清的持仓、以及 targets 里的减仓，先计入换手；
+ * - **买入等比缩放**：`Σ|Δ| > ratio × equity` 时，只按剩余额度等比缩放增仓部分；
+ * - 缩放到不足 1 元的标的记 `turnover-capped`，由调用方并入当日 `skipped`。
+ *
+ * 不做「卖出也缩放」：半仓清不掉会让 `replace` 语义失效（目标集无法达成），
+ * 且 v5.2 本身没有换手上限，这条路径只服务于后续策略。
+ */
+function capTurnover(args: {
+  date: string;
+  targets: TargetSet;
+  equity: number;
+  held: readonly string[];
+  currentValue: (symbol: string) => number;
+}): { targets: TargetSet; skipped: SkippedOrder[] } {
+  const ratio = args.targets.maxTurnoverRatio;
+  if (ratio === undefined) return { targets: args.targets, skipped: [] };
+  if (!(ratio >= 0)) {
+    throw new BacktestInvariantError(`maxTurnoverRatio 必须 >= 0（收到 ${String(ratio)}）`);
+  }
+
+  const bySymbol = new Map(args.targets.targets.map((t) => [t.symbol, t]));
+  const sideNotional = (t: TargetPosition): number =>
+    t.targetNotional ?? (t.targetWeight !== undefined ? t.targetWeight * args.equity : 0);
+
+  let sellNotional = 0;
+  if (args.targets.mode === 'replace') {
+    for (const symbol of args.held) {
+      if (!bySymbol.has(symbol)) sellNotional += args.currentValue(symbol);
+    }
+  }
+  let buyNotional = 0;
+  for (const t of args.targets.targets) {
+    const cur = args.currentValue(t.symbol);
+    const delta = sideNotional(t) - cur;
+    if (delta > 0) buyNotional += delta;
+    else sellNotional += -delta;
+  }
+
+  const cap = ratio * args.equity;
+  if (sellNotional + buyNotional <= cap + 1e-9 || buyNotional <= 0) {
+    return { targets: args.targets, skipped: [] };
+  }
+
+  const allowedBuy = Math.max(0, cap - sellNotional);
+  const scale = allowedBuy / buyNotional;
+  const skipped: SkippedOrder[] = [];
+  const next = args.targets.targets.map((t) => {
+    const cur = args.currentValue(t.symbol);
+    const delta = sideNotional(t) - cur;
+    if (delta <= 0) return t;
+    const scaled = delta * scale;
+    if (scaled < 1) {
+      skipped.push({
+        date: args.date,
+        symbol: t.symbol,
+        side: 'buy',
+        qty: 0,
+        reason: 'turnover-capped',
+        detail: `计划增仓 ${delta.toFixed(2)} 元，缩放后 ${scaled.toFixed(2)} 元`,
+      });
+      return { ...t, targetNotional: cur, targetWeight: undefined };
+    }
+    return { ...t, targetNotional: cur + scaled, targetWeight: undefined };
+  });
+  return { targets: { ...args.targets, targets: next }, skipped };
 }
 
 /** 构造某一时点的策略上下文（所有读取都截止到 asOf） */
@@ -336,9 +408,22 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       logs,
     });
 
-    const targets = strategy.decide(ctx);
-    if (targets?.maxTurnoverRatio !== undefined) {
-      throw new BacktestInvariantError('M2 引擎未实现 maxTurnoverRatio（策略不应设置该字段）');
+    let targets = strategy.decide(ctx);
+    const capSkipped: SkippedOrder[] = [];
+    if (targets) {
+      const capped = capTurnover({
+        date: execDate,
+        targets,
+        equity: ctx.equity,
+        held: portfolio.positions().map((p) => p.symbol),
+        currentValue: (symbol: string) => {
+          const pos = portfolio.position(symbol);
+          return pos.qty * (pricesAtAsOf.get(symbol) ?? 0);
+        },
+      });
+      targets = capped.targets;
+      capSkipped.push(...capped.skipped);
+      if (capSkipped.length > 0) ctx.tag('turnoverCapped', capSkipped.length);
     }
 
     // ── 2) 除权事件（T 日开盘前；按 T-1 收盘持仓生效） ──
@@ -367,11 +452,13 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
             : undefined;
         },
         suspensionOf: (symbol: string) => isSuspended(data.execBars.get(symbol), execDate, suspension),
+        exitReasons: targets?.exitReasons,
       };
 
       const result = executeTargets(execRequest);
       fills.push(...result.fills);
       daySkipped.push(...result.skipped);
+      daySkipped.push(...capSkipped);
 
       for (const fill of fills) {
         portfolio.applyFill(fill);
@@ -421,7 +508,10 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     const cash = portfolio.cash;
     const totalEquity = cash + riskMv + cashMv;
 
-    const benchmarkClose = closeAtOrBefore(data.benchmarkBars, execDate);
+    const benchIdx = lastIndexAtOrBefore(data.benchmarkBars, execDate);
+    const benchmarkClose = benchIdx >= 0 ? data.benchmarkBars[benchIdx].close : null;
+    // 当日无基准 bar（沿用上一有效收盘）→ 标记 stale，指标层据此整对剔除 alpha/beta
+    const benchmarkStale = benchIdx >= 0 && data.benchmarkBars[benchIdx].date !== execDate;
     equity.push({
       date: execDate,
       equity: totalEquity,
@@ -429,6 +519,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       riskMv,
       cashMv,
       benchmarkClose,
+      benchmarkStale,
       exposure: totalEquity > 0 ? riskMv / totalEquity : 0,
       // 回撤在全部点收集后统一算（仍写成 0，最终会被覆盖）
       drawdownRatio: 0,
@@ -469,6 +560,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     equity,
     trades,
     roundTrips: portfolio.roundTrips,
+    dividends: portfolio.dividends,
     metrics,
     decisions,
     skipped: skippedAll,
