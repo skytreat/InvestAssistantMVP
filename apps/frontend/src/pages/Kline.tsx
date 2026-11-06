@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { isOkEnvelope } from '../api/envelope';
+import { isOkEnvelope, type ApiEnvelopeBody } from '../api/envelope';
 import { extractErrorMessageOrErrorMessage } from '../api/errors';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { titleStyle } from '../theme/styles';
@@ -164,6 +164,8 @@ export default function Kline() {
   const [symbolInput, setSymbolInput] = useState(urlSymbol || DEFAULT_SYMBOL);
   const [symbol, setSymbol] = useState(urlSymbol || DEFAULT_SYMBOL);
   const [symbolSuggestions, setSymbolSuggestions] = useState<Array<{ symbol: string; name: string }>>([]);
+  /** 当前标的的**名称**（来自现有标的元数据接口 `GET /api/symbols/search`，不新增数据源）*/
+  const [symbolName, setSymbolName] = useState<string | null>(null);
   const [fq, setFq] = useState<'qfq' | 'hfq' | 'bfq'>('qfq');
   const [days, setDays] = useState(120);
   const [period, setPeriod] = useState<KlinePeriod>('day');
@@ -294,6 +296,41 @@ export default function Kline() {
   useEffect(() => {
     void load(symbol, fq, days);
   }, [load, symbol, fq, days]);
+
+  /**
+   * 标的名称（图表标题区展示 `sh600000 浦发银行`）
+   *
+   * 数据来自**现有的标的元数据接口** `GET /api/symbols/search?q=<symbol>`
+   * （页面搜索建议用的是同一个接口，不新造数据源 / 不新增后端字段）。
+   * 名称只是可选展示 ⇒ 请求失败或没有精确匹配时静默回退为「只显示代码」。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const target = symbol.trim().toLowerCase();
+    setSymbolName(null);
+    if (!target) return;
+
+    void (async () => {
+      try {
+        const res = await api.get<ApiEnvelopeBody>('/symbols/search', { params: { q: target } });
+        if (cancelled) return;
+        const rows =
+          isOkEnvelope(res.data) && Array.isArray(res.data.data)
+            ? (res.data.data as Array<{ symbol?: unknown; name?: unknown }>)
+            : [];
+        const exact = rows.find((row) => String(row.symbol ?? '').toLowerCase() === target);
+        const name = typeof exact?.name === 'string' && exact.name !== '' ? exact.name : null;
+        setSymbolName(name);
+      } catch {
+        // 名称是增强信息：失败不影响图表本身
+        if (!cancelled) setSymbolName(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol]);
 
   /**
    * 🔴 T71：指标 + 周期聚合的**派生值**
@@ -593,6 +630,26 @@ export default function Kline() {
             </div>
           )}
           <Suspense fallback={<Spinner label="加载图表..." />}>
+            {/* 图表标题区：代码 + 名称（名称来自现有标的元数据接口，取不到时只显示代码） */}
+            <div
+              data-testid="kline-symbol-title"
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: SPACING.gapTight,
+                marginBottom: 4,
+                fontSize: TYPO.bodySize,
+                color: COLORS.textPrimary,
+              }}
+            >
+              <span style={{ fontWeight: 600 }}>{symbol}</span>
+              {symbolName && (
+                <>
+                  {' '}
+                  <span style={{ color: COLORS.textSecondary }}>{symbolName}</span>
+                </>
+              )}
+            </div>
             <KlineChart
               symbol={symbol}
               period={period}

@@ -58,9 +58,46 @@ const inputStyle = {
   fontSize: TYPO.bodySize,
 } as const;
 
+/**
+ * 折叠状态在 **sessionStorage** 里记住
+ *
+ * 需求是「至少在同一次页面会话内保持」——
+ * 用 `sessionStorage` 可以同时覆盖「Radix 无关的页面内组件重挂载」与
+ * 「同一标签页内切走再回来」两种场景，且**不跨会话**污染下次打开。
+ *
+ * ⚠️ 隐私模式 / 存储被禁用时读写会抛异常 ⇒ 一律降级为「仅当前组件 state 生效」。
+ */
+const EXPANDED_STORAGE_KEY = 'invest.kline.paramPanel.expanded';
+
+function readExpanded(): boolean {
+  try {
+    return sessionStorage.getItem(EXPANDED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistExpanded(expanded: boolean): void {
+  try {
+    sessionStorage.setItem(EXPANDED_STORAGE_KEY, expanded ? '1' : '0');
+  } catch {
+    // 存储不可用：状态仍在本组件内生效
+  }
+}
+
 export default function KlineParamPanel({ params, unit, barCount, onChange, onReset }: KlineParamPanelProps) {
   /** 每个字段的提示文案（越界夹取 / 输入非法）*/
   const [messages, setMessages] = useState<Record<string, string>>({});
+  /** 面板是否展开（**默认折叠**；状态写入 sessionStorage，同一次页面会话内保持）*/
+  const [expanded, setExpanded] = useState<boolean>(readExpanded);
+
+  const toggleExpanded = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      persistExpanded(next);
+      return next;
+    });
+  };
 
   /** 按分组归拢字段 */
   const grouped = useMemo(() => {
@@ -127,94 +164,130 @@ export default function KlineParamPanel({ params, unit, barCount, onChange, onRe
           justifyContent: 'space-between',
           flexWrap: 'wrap',
           gap: SPACING.gapBase,
-          marginBottom: SPACING.gapBase,
+          marginBottom: expanded ? SPACING.gapBase : 0,
         }}
       >
-        <strong style={{ fontSize: TYPO.bodySize }}>指标参数</strong>
+        {/* 可点击的头部：展开 / 收起 + 状态指示（`aria-expanded` 供读屏识别） */}
         <button
           type="button"
-          onClick={handleReset}
-          data-testid="kline-param-reset"
+          onClick={toggleExpanded}
+          aria-expanded={expanded}
+          aria-controls="kline-param-body"
+          data-testid="kline-param-toggle"
           style={{
-            padding: '4px 12px',
-            fontSize: TYPO.smallSize,
-            color: COLORS.brand,
-            background: COLORS.cardBg,
-            border: `1px solid ${COLORS.borderMedium}`,
-            borderRadius: RADIUS.sm,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: SPACING.gapTight,
+            padding: 0,
+            border: 'none',
+            background: 'transparent',
+            color: COLORS.textPrimary,
+            fontSize: TYPO.bodySize,
+            fontWeight: 600,
             cursor: 'pointer',
           }}
         >
-          恢复默认
+          <span aria-hidden="true" style={{ color: COLORS.textSecondary }}>
+            {expanded ? '▾' : '▸'}
+          </span>
+          指标参数
+          <span style={{ fontSize: TYPO.captionSize, fontWeight: 400, color: COLORS.textTertiary }}>
+            {expanded ? '点击收起' : '点击展开'}
+          </span>
         </button>
-      </div>
-
-      {grouped.map((group) => (
-        <fieldset
-          key={group.key}
-          style={{
-            border: 'none',
-            padding: 0,
-            margin: `0 0 ${SPACING.gapBase} 0`,
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'flex-start',
-            gap: SPACING.gapRelaxed,
-          }}
-        >
-          <legend
+        {expanded && (
+          <button
+            type="button"
+            onClick={handleReset}
+            data-testid="kline-param-reset"
             style={{
+              padding: '4px 12px',
               fontSize: TYPO.smallSize,
-              color: COLORS.textSecondary,
-              padding: 0,
-              marginBottom: 4,
-              // fieldset 是 flex 容器 ⇒ legend 独占一行（否则会跟输入框挤在一起）
-              flexBasis: '100%',
+              color: COLORS.brand,
+              background: COLORS.cardBg,
+              border: `1px solid ${COLORS.borderMedium}`,
+              borderRadius: RADIUS.sm,
+              cursor: 'pointer',
             }}
           >
-            {group.label}
-          </legend>
-          {group.fields.map((field) => {
-            const id = paramFieldId(field.key);
-            const message = messages[field.key];
-            return (
-              <div key={field.key} style={{ display: 'flex', flexDirection: 'column' }}>
-                <label htmlFor={id} style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
-                  {field.label}（{unitText(field)}）：
-                </label>
-                <input
-                  id={id}
-                  data-testid={id}
-                  type="number"
-                  inputMode="numeric"
-                  min={field.range.min}
-                  max={field.range.max}
-                  step={field.range.step}
-                  value={field.get(params)}
-                  onChange={(e) => handleChange(field, e.target.value)}
-                  aria-invalid={message ? true : undefined}
-                  aria-describedby={message ? `${id}-hint` : undefined}
-                  style={inputStyle}
-                />
-                {message && (
-                  <span
-                    id={`${id}-hint`}
-                    data-testid={`${id}-hint`}
-                    role="status"
-                    aria-live="polite"
-                    style={{ fontSize: TYPO.captionSize, color: COLORS.textWarning, maxWidth: 200 }}
-                  >
-                    {message}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </fieldset>
-      ))}
+            恢复默认
+          </button>
+        )}
+      </div>
 
-      {/* 当前生效值一览 */}
-      <div data-testid="kline-param-summary" style={{ fontSize: TYPO.smallSize, color: COLORS.textTertiary }}>
+      {/* 折叠时**不渲染**字段（而不是 `hidden`）—— 否则读屏 / 自动化查询仍会命中不可见控件 */}
+      <div id="kline-param-body" data-testid="kline-param-body">
+        {expanded &&
+          grouped.map((group) => (
+            <fieldset
+              key={group.key}
+              style={{
+                border: 'none',
+                padding: 0,
+                margin: `0 0 ${SPACING.gapBase} 0`,
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'flex-start',
+                gap: SPACING.gapRelaxed,
+              }}
+            >
+              <legend
+                style={{
+                  fontSize: TYPO.smallSize,
+                  color: COLORS.textSecondary,
+                  padding: 0,
+                  marginBottom: 4,
+                  // fieldset 是 flex 容器 ⇒ legend 独占一行（否则会跟输入框挤在一起）
+                  flexBasis: '100%',
+                }}
+              >
+                {group.label}
+              </legend>
+              {group.fields.map((field) => {
+                const id = paramFieldId(field.key);
+                const message = messages[field.key];
+                return (
+                  <div key={field.key} style={{ display: 'flex', flexDirection: 'column' }}>
+                    <label htmlFor={id} style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+                      {field.label}（{unitText(field)}）：
+                    </label>
+                    <input
+                      id={id}
+                      data-testid={id}
+                      type="number"
+                      inputMode="numeric"
+                      min={field.range.min}
+                      max={field.range.max}
+                      step={field.range.step}
+                      value={field.get(params)}
+                      onChange={(e) => handleChange(field, e.target.value)}
+                      aria-invalid={message ? true : undefined}
+                      aria-describedby={message ? `${id}-hint` : undefined}
+                      style={inputStyle}
+                    />
+                    {message && (
+                      <span
+                        id={`${id}-hint`}
+                        data-testid={`${id}-hint`}
+                        role="status"
+                        aria-live="polite"
+                        style={{ fontSize: TYPO.captionSize, color: COLORS.textWarning, maxWidth: 200 }}
+                      >
+                        {message}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </fieldset>
+          ))}
+      </div>
+
+      {/* 当前生效值一览（折叠时也保留 —— 不解开面板也能看到当前口径） */}
+      <div
+        data-testid="kline-param-summary"
+        style={{ marginTop: 4, fontSize: TYPO.smallSize, color: COLORS.textTertiary }}
+      >
         当前生效：{formatParamsSummary(params)}
       </div>
     </section>

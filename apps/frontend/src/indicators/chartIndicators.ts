@@ -355,6 +355,12 @@ export const TRADE_INDICATOR: IndicatorTemplate<TradeMarkerIndicatorResult> = {
       (value) => yAxis.convertToPixel(value),
     );
     markers.forEach((marker) => drawTradeMarker(ctx, marker));
+
+    // 标记旁的中文单字（建 / 加 / 减 / 清）—— 右边界取**最后一根可见 K 线**，
+    // 越过它就会压到右侧价格轴 ⇒ 交给布局函数自动改到标记左侧。
+    const visible = chart.getVisibleRange();
+    const rightBoundary = xAxis.convertToPixel(visible.to) - 6;
+    computeTradeMarkerLabels(markers, { rightBoundary }).forEach((label) => drawTradeMarkerLabel(ctx, label));
     return false;
   },
 };
@@ -477,6 +483,155 @@ export function drawTradeMarker(ctx: CanvasRenderingContext2D, marker: TradeMark
     ctx.strokeStyle = marker.color;
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ *
+ * 交易标记旁的中文文字（owner 定稿：只用单字「建 / 加 / 减 / 清」）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 标记类型 → **单字**文字
+ *
+ * ⚠️ owner 明确要求**不带「仓」字**（即 `建/加/减/清`，不是 `建仓/加仓/…`）——
+ *    图上文字要短，才能贴在标记旁而不挤占蜡烛。
+ */
+export const TRADE_MARKER_LABELS: Record<TradeMarker['marker_type'], string> = {
+  open: '建',
+  add: '加',
+  reduce: '减',
+  close: '清',
+};
+
+/** 文字字号（px）*/
+export const TRADE_LABEL_FONT_SIZE = 11;
+/** 单字宽度估算（px）—— 布局避让用，无需真实 measureText */
+export const TRADE_LABEL_CHAR_WIDTH = 11;
+/** 文字底色块高度（px）*/
+export const TRADE_LABEL_HEIGHT = 13;
+/** 文字与标记边缘的间距（px）*/
+export const TRADE_LABEL_GAP = 3;
+
+/**
+ * 发生横向重叠时依次尝试的**纵向偏移**（px）—— 上下错行避让
+ *
+ * 第 0 项 -1 是「与标记圆心基本齐平」（视觉上贴在标记旁），
+ * 后面几项按 ±15px 逐层错开；仍全部冲突时退回第一项（宁可叠，也不丢信息）。
+ */
+export const TRADE_LABEL_LANE_OFFSETS: readonly number[] = [-1, -16, 16, -31, 31];
+
+/** 一条待绘制的标记文字 */
+export interface TradeMarkerLabel {
+  index: number;
+  text: string;
+  /** 文字锚点 x：`align === 'left'` 是左边界，`right` 是右边界 */
+  x: number;
+  /** 文字垂直中心 y */
+  y: number;
+  align: 'left' | 'right';
+  color: string;
+  /** 估算宽度（px）*/
+  width: number;
+}
+
+/**
+ * 标记对应的文字
+ *
+ * - 单笔：`建 / 加 / 减 / 清`
+ * - 同日多笔（聚合圆环）：**笔数**（例如 `3`）—— 此时没有单一方向字可用
+ */
+export function tradeMarkerLabelText(marker: TradeMarkerGeometry): string {
+  if (marker.shape === 'aggregated') return String(marker.trades.length);
+  const type = marker.trades[0]?.marker_type;
+  return type ? (TRADE_MARKER_LABELS[type] ?? '') : '';
+}
+
+/** 文字的包围盒（碰撞检测用）*/
+function labelRect(label: Pick<TradeMarkerLabel, 'x' | 'y' | 'align' | 'width'>): {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+} {
+  const left = label.align === 'left' ? label.x : label.x - label.width;
+  return {
+    left,
+    right: left + label.width,
+    top: label.y - TRADE_LABEL_HEIGHT / 2,
+    bottom: label.y + TRADE_LABEL_HEIGHT / 2,
+  };
+}
+
+function rectsOverlap(
+  a: { left: number; right: number; top: number; bottom: number },
+  b: { left: number; right: number; top: number; bottom: number },
+): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
+/**
+ * 计算标记文字的绘制位置（**纯函数**，便于单测）
+ *
+ * 规则：
+ * 1. 默认贴在标记**右侧**；若文字右边界会越过 `rightBoundary`（最后一根可见 K 线，
+ *    再往右就是价格轴）⇒ 改到标记**左侧**（`align: 'right'`）；
+ * 2. 与已放置的文字包围盒冲突 ⇒ 依次换用 `TRADE_LABEL_LANE_OFFSETS` 的上下错行；
+ * 3. 没有文字（例如脏数据里的未知 `marker_type`）直接跳过。
+ *
+ * ⚠️ 设计取舍：文字**常显**而不是 hover 才显示 ——
+ *    买点标记本身就是「复盘时一眼要看见」的信息，藏到 hover 等于没有；
+ *    用「小字号 + 半透明底色 + 上下错行」解决密集区的可读性。
+ */
+export function computeTradeMarkerLabels(
+  markers: readonly TradeMarkerGeometry[],
+  options: { rightBoundary?: number } = {},
+): TradeMarkerLabel[] {
+  const rightBoundary = Number.isFinite(options.rightBoundary)
+    ? (options.rightBoundary as number)
+    : Number.POSITIVE_INFINITY;
+  const labels: TradeMarkerLabel[] = [];
+
+  markers.forEach((marker) => {
+    const text = tradeMarkerLabelText(marker);
+    if (!text) return;
+
+    const width = text.length * TRADE_LABEL_CHAR_WIDTH;
+    const gap = marker.radius + TRADE_LABEL_GAP;
+    const useRight = marker.x + gap + width <= rightBoundary;
+    const align: 'left' | 'right' = useRight ? 'left' : 'right';
+    const x = useRight ? marker.x + gap : marker.x - gap;
+
+    let y = marker.y + TRADE_LABEL_LANE_OFFSETS[0];
+    for (const offset of TRADE_LABEL_LANE_OFFSETS) {
+      const candidate = { x, y: marker.y + offset, align, width };
+      if (!labels.some((placed) => rectsOverlap(labelRect(candidate), labelRect(placed)))) {
+        y = candidate.y;
+        break;
+      }
+    }
+
+    labels.push({ index: marker.index, text, x, y, align, color: marker.color, width });
+  });
+
+  return labels;
+}
+
+/** 在 canvas 上画一条标记文字（半透明底色 + 标记同色文字）*/
+export function drawTradeMarkerLabel(ctx: CanvasRenderingContext2D, label: TradeMarkerLabel): void {
+  const left = label.align === 'left' ? label.x : label.x - label.width;
+  const top = label.y - TRADE_LABEL_HEIGHT / 2;
+
+  ctx.save();
+  // 半透明底色：压住背后的蜡烛 / 网格线，避免文字与 K 线图形打架
+  ctx.globalAlpha = 0.82;
+  ctx.fillStyle = COLORS.chartBg;
+  ctx.fillRect(left - 1, top, label.width + 2, TRADE_LABEL_HEIGHT);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = label.color;
+  ctx.font = `${TRADE_LABEL_FONT_SIZE}px sans-serif`;
+  ctx.textAlign = label.align;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label.text, label.x, label.y);
   ctx.restore();
 }
 

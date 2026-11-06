@@ -25,7 +25,7 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter, mockResponse } from '../helpers';
 import { installFakeCanvas, restoreFakeCanvas } from '../helpers/fakeCanvas';
@@ -227,7 +227,8 @@ describe('T70 · K 线页数据链路', () => {
     expect(nav).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '仪表盘' })).toHaveAttribute('href', '/');
     expect(screen.getByRole('link', { name: 'K线图' })).toHaveAttribute('href', '/kline');
-    expect(screen.getByText('sh600519')).toHaveAttribute('aria-current', 'page');
+    // 面包屑里的当前标的是 `aria-current="page"`；标题区也有同字样的文本 ⇒ 限定在面包屑里查
+    expect(within(nav).getByText('sh600519')).toHaveAttribute('aria-current', 'page');
   });
 
   it('T70: 消费 `?symbol=` query（修复必修 bug ②：从标的详情 Modal 跳过来要落到目标标的）', async () => {
