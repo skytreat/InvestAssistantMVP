@@ -2,7 +2,8 @@ import React from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
-import { navLinkActiveStyle, navLinkStyle } from '../theme/styles';
+import { navGroupTitleStyle, navLinkActiveStyle, navLinkStyle } from '../theme/styles';
+import { groupNavItems } from '../components/SideNav';
 import type { NavItem } from '../components/SideNav';
 
 /**
@@ -57,24 +58,29 @@ const activeLinkStyle: React.CSSProperties = navLinkActiveStyle;
  *
  * ⚠️ **这一份是顶栏与左侧栏的唯一起点** —— 两侧渲染的是同一个数组，
  *    故 A4「侧栏与顶栏顺序一致」是结构上必然成立，而不是靠两处手工同步。
+ *
+ * ⚠️ UX-12（owner 决策 Q6）：**只加分组标题、不改顺序**。
+ *    `group` 仅标记**相邻连续区间**所属业务域，不做排序 / 重排；
+ *    渲染时由 `groupNavItems()` 切段 → 每段前插入一个 `<h3>` 标题。
+ *    管理员专属组（券商 / 组合与管理）在普通用户视角下若被过滤空，标题一并消失。
  */
 export const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: '仪表盘' },
-  { to: '/trade', label: '交易录入' },
-  { to: '/stockscan', label: '条件选股' },
-  { to: '/kline', label: 'K线图' },
-  { to: '/signals', label: '策略信号' },
-  { to: '/review', label: '交易复盘' },
-  { to: '/portfolio/return', label: '收益' },
-  { to: '/candidates', label: '候选池' },
+  { to: '/', label: '仪表盘', group: '投资' },
+  { to: '/trade', label: '交易录入', group: '投资' },
+  { to: '/stockscan', label: '条件选股', group: '研究' },
+  { to: '/kline', label: 'K线图', group: '研究' },
+  { to: '/signals', label: '策略信号', group: '研究' },
+  { to: '/review', label: '交易复盘', group: '交易与持仓' },
+  { to: '/portfolio/return', label: '收益', group: '交易与持仓' },
+  { to: '/candidates', label: '候选池', group: '交易与持仓' },
   // V3.8 T143/T144：券商对账域（PRD_v3 §3 导航「数据 → 券商对账」；仅 admin 可见，SDD_v3 §10.3）
-  { to: '/broker/reconcile', label: '券商对账', adminOnly: true },
-  { to: '/settings', label: '设置' },
+  { to: '/broker/reconcile', label: '券商对账', group: '券商', adminOnly: true },
+  { to: '/settings', label: '设置', group: '策略与设置' },
   // V3.8 策略域 / 组合域（PRD_v3 §4/§5）
-  { to: '/strategy/config', label: '策略配置' },
-  { to: '/strategy/effectiveness', label: '策略有效性' },
-  { to: '/portfolio/risk-check', label: '组合体检' },
-  { to: '/admin', label: '管理员', adminOnly: true },
+  { to: '/strategy/config', label: '策略配置', group: '策略与设置' },
+  { to: '/strategy/effectiveness', label: '策略有效性', group: '策略与设置' },
+  { to: '/portfolio/risk-check', label: '组合体检', group: '组合与管理' },
+  { to: '/admin', label: '管理员', group: '组合与管理', adminOnly: true },
 ];
 
 /**
@@ -147,7 +153,8 @@ export function Navbar({ showFlatNav = true }: NavbarProps) {
   const isAdmin = role === 'admin';
   const isMobile = useIsMobile();
   const [menuOpen, setMenuOpen] = React.useState(false);
-  const items = NAV_ITEMS.filter((i) => !i.adminOnly || isAdmin);
+  // UX-12：先按角色过滤再分组（空组不渲染标题），入口顺序保持 NAV_ITEMS 原序
+  const groups = groupNavItems(NAV_ITEMS.filter((i) => !i.adminOnly || isAdmin));
 
   /**
    * ESC 关闭折叠菜单（T76 ③）
@@ -211,20 +218,37 @@ export function Navbar({ showFlatNav = true }: NavbarProps) {
           ⚠️ `showFlatNav=false` 时不渲染 —— 桌面 ≥1024px 由左侧栏承担（避免同一批入口渲染两遍）。
         */}
         {!isMobile && showFlatNav && (
-          <nav aria-label="主导航" style={{ marginLeft: 24, display: 'flex', flexWrap: 'wrap' }}>
-            <ul style={navListStyle}>
-              {items.map((i) => (
-                <li key={i.to}>
-                  <NavLink
-                    to={i.to}
-                    end
-                    style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
-                  >
-                    {i.label}
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
+          <nav
+            aria-label="主导航"
+            style={{
+              marginLeft: 24,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: `${SPACING.gapTight} ${SPACING.gapRelaxed}`,
+            }}
+          >
+            {groups.map((group, groupIndex) => (
+              <div key={`${group.title || 'nav'}-${groupIndex}`}>
+                {/* UX-12：分组标题是语义化 <h3>，不是入口 */}
+                {group.title !== '' && <h3 style={navGroupTitleStyle}>{group.title}</h3>}
+                <ul style={navListStyle}>
+                  {group.items.map((i) => (
+                    <li key={i.to}>
+                      <NavLink
+                        to={i.to}
+                        end
+                        style={({ isActive }) => ({
+                          ...linkStyle,
+                          ...(isActive ? activeLinkStyle : {}),
+                        })}
+                      >
+                        {i.label}
+                      </NavLink>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </nav>
         )}
 
@@ -250,19 +274,28 @@ export function Navbar({ showFlatNav = true }: NavbarProps) {
       */}
       {isMobile && (
         <nav id="mobile-menu" aria-label="主导航" hidden={!menuOpen}>
-          <ul style={mobileMenuListStyle}>
-            {items.map((i) => (
-              <li key={i.to}>
-                <NavLink
-                  to={i.to}
-                  end
-                  style={({ isActive }) => ({ ...linkStyle, ...(isActive ? activeLinkStyle : {}) })}
-                >
-                  {i.label}
-                </NavLink>
-              </li>
-            ))}
-          </ul>
+          {groups.map((group, groupIndex) => (
+            <div key={`${group.title || 'nav'}-${groupIndex}`} data-testid="mobile-nav-group">
+              {/* UX-12：窄屏折叠菜单与桌面侧栏共用同一份分组（窄屏同样生效） */}
+              {group.title !== '' && <h3 style={navGroupTitleStyle}>{group.title}</h3>}
+              <ul style={mobileMenuListStyle}>
+                {group.items.map((i) => (
+                  <li key={i.to}>
+                    <NavLink
+                      to={i.to}
+                      end
+                      style={({ isActive }) => ({
+                        ...linkStyle,
+                        ...(isActive ? activeLinkStyle : {}),
+                      })}
+                    >
+                      {i.label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </nav>
       )}
 

@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../helpers';
 import App from '../../src/App';
 import SideNav from '../../src/components/SideNav';
@@ -175,5 +176,74 @@ describe('T76 ① · 桌面左侧导航栏（PRD §5.8 #7）', () => {
     renderWithRouter(<Navbar />);
 
     expect(screen.queryByRole('link', { name: '管理员' })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * UX-12 · 导航分组标题（owner 决策 Q6：「只加分组标题、不改顺序」）
+ *
+ * ⚠️ 原有用例 `navLabels()` 取的是 `getAllByRole('link')` —— 分组标题是 `<h3>`、
+ *    **不是 link**，故「链接顺序」断言天然不受影响（无需改写成「过滤标题」的新断言）。
+ *    这里额外断言：标题按业务域顺序出现、且不是可点击项。
+ */
+describe('UX-12 · 导航分组标题', () => {
+  const NAV_GROUPS = ['投资', '研究', '交易与持仓', '券商', '策略与设置', '组合与管理'];
+
+  /** 取导航内的分组标题（按 DOM 顺序）*/
+  function groupTitles(nav: HTMLElement): string[] {
+    return within(nav)
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent ?? '');
+  }
+
+  it('桌面侧栏：分组标题按业务域顺序出现，链接顺序保持不变', () => {
+    setViewportWidth(1440);
+    renderWithRouter(<App />, { initialEntries: ['/notfound'] });
+
+    const sideNav = screen.getByRole('navigation', { name: '主导航' });
+    expect(groupTitles(sideNav)).toEqual(NAV_GROUPS);
+    // 顺序不变：分组只是标题节点，链接序列仍是 UX_ORDER
+    expect(navLabels(sideNav)).toEqual(UX_ORDER);
+  });
+
+  it('分组标题是语义化 <h3>，不是可点击入口', () => {
+    renderWithRouter(<SideNav items={NAV_ITEMS} isAdmin={true} />);
+
+    const headings = screen.getAllByRole('heading', { level: 3 });
+    expect(headings).toHaveLength(NAV_GROUPS.length);
+    for (const h of headings) {
+      expect(h.tagName).toBe('H3');
+      // 标题内部没有链接；也不能用标题文案点到链接
+      expect(within(h).queryByRole('link')).toBeNull();
+    }
+    expect(screen.queryByRole('link', { name: '投资' })).not.toBeInTheDocument();
+    // href 不变（抽查分组两侧的入口）
+    expect(screen.getByRole('link', { name: '仪表盘' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: '组合体检' })).toHaveAttribute('href', '/portfolio/risk-check');
+  });
+
+  it('非管理员：全 adminOnly 的「券商」组不渲染标题（不留下空分组）', () => {
+    renderWithRouter(<SideNav items={NAV_ITEMS} isAdmin={false} />);
+
+    expect(groupTitles(screen.getByTestId('side-nav'))).toEqual([
+      '投资',
+      '研究',
+      '交易与持仓',
+      '策略与设置',
+      '组合与管理',
+    ]);
+  });
+
+  it('窄屏折叠菜单同样按业务域分组（标题与入口都在）', async () => {
+    useUserStore.setState({ token: 'tok-test', refreshToken: null, username: 'tester', role: 'user' });
+    setViewportWidth(375);
+    const user = userEvent.setup();
+    renderWithRouter(<Navbar />);
+
+    await user.click(screen.getByRole('button', { name: '打开导航菜单' }));
+    const menu = screen.getByRole('navigation', { name: '主导航' });
+
+    expect(groupTitles(menu)).toEqual(['投资', '研究', '交易与持仓', '策略与设置', '组合与管理']);
+    expect(navLabels(menu)).toEqual(UX_ORDER.filter((l) => l !== '券商对账' && l !== '管理员'));
   });
 });
