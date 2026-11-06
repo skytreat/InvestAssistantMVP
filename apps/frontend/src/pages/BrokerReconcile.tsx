@@ -101,7 +101,7 @@ export default function BrokerReconcile() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const brokerCode = params.get('brokerCode') ?? '';
-  const [brokerOptions, setBrokerOptions] = useState<string[]>([]);
+  const [brokerOptions, setBrokerOptions] = useState<Array<{ code: string; label: string }>>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +111,8 @@ export default function BrokerReconcile() {
   const [category, setCategory] = useState<string>('unmatched');
   const [diffRows, setDiffRows] = useState<DiffRow[]>([]);
   const [diffTotal, setDiffTotal] = useState(0);
+  /** 差异查询失败必须显式上报，不能静默显示成「无」（UX-01 同类信任缺陷） */
+  const [diffError, setDiffError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
   // ── 补录对话框（T145）──
@@ -124,20 +126,33 @@ export default function BrokerReconcile() {
     rows: Array<{ sourceId: number; status: string; tradeType: string | null; reason?: string }>;
   } | null>(null);
 
-  /** 券商下拉 = 「已导入过流水的券商」 */
+  /** 券商下拉 = 「已导入过流水的券商」，排除已撤销批次与未识别编码，标签带批次文件名（Q8） */
   useEffect(() => {
     api
       .get('/broker-import/batches')
       .then((res) => {
         if (isOkEnvelope(res.data)) {
-          const codes = Array.from(
-            new Set(
-              ((res.data.data as { batches?: Array<{ broker_code: string }> }).batches ?? []).map(
-                (b) => b.broker_code,
-              ),
-            ),
+          type BatchLite = {
+            broker_code?: string | null;
+            file_name?: string | null;
+            status?: string | null;
+            created_at?: string | null;
+          };
+          const batches = (res.data.data as { batches?: BatchLite[] }).batches ?? [];
+          const latestByCode = new Map<string, { label: string; createdAt: string }>();
+          for (const b of batches) {
+            const code = (b.broker_code ?? '').trim();
+            if (!code || code === '未识别' || b.status === 'revoked') continue;
+            const createdAt = b.created_at ?? '';
+            const prev = latestByCode.get(code);
+            const label = b.file_name ? `${code}（${b.file_name}）` : code;
+            if (!prev || createdAt > prev.createdAt) latestByCode.set(code, { label, createdAt });
+          }
+          setBrokerOptions(
+            [...latestByCode.entries()]
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([code, v]) => ({ code, label: v.label })),
           );
-          setBrokerOptions(codes);
         }
       })
       .catch(() => undefined);
@@ -168,6 +183,7 @@ export default function BrokerReconcile() {
 
   const loadDiff = useCallback(async (bc: string, cat: string, p: number) => {
     if (!bc) return;
+    setDiffError(null);
     try {
       const res = await api.get('/broker-reconcile/diff', {
         params: { brokerCode: bc, category: cat, page: p, pageSize: 50 },
@@ -178,10 +194,12 @@ export default function BrokerReconcile() {
       } else {
         setDiffRows([]);
         setDiffTotal(0);
+        setDiffError(String(res.data?.message ?? '后端返回失败'));
       }
-    } catch {
+    } catch (e) {
       setDiffRows([]);
       setDiffTotal(0);
+      setDiffError(extractErrorMessage(e, '差异明细加载失败'));
     }
   }, []);
 
@@ -192,6 +210,7 @@ export default function BrokerReconcile() {
     setNotice(null);
     setDiffRows([]);
     setDiffTotal(0);
+    setDiffError(null);
     setSelected(new Map());
   }, [brokerCode]);
 
@@ -339,9 +358,13 @@ export default function BrokerReconcile() {
               onChange={(e) => setParams({ brokerCode: e.target.value })}
             >
               <option value="">（选择）</option>
-              {brokerOptions.map((c) => (
-                <option key={c} value={c}>
-                  {c}
+              {/* 当前编码不在选项里（如 URL 里带了刚撤销的批次）时仍保留可见，避免选择框空白 */}
+              {brokerCode !== '' && !brokerOptions.some((o) => o.code === brokerCode) && (
+                <option value={brokerCode}>{brokerCode}（当前）</option>
+              )}
+              {brokerOptions.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.label}
                 </option>
               ))}
             </select>
@@ -513,6 +536,17 @@ export default function BrokerReconcile() {
                 ))}
               </select>
             </div>
+            {diffError !== null && (
+              <p style={{ ...errorStyle, display: 'flex', alignItems: 'center', gap: 8 }} role="alert">
+                差异明细加载失败：{diffError}
+                <button
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  onClick={() => void loadDiff(brokerCode, category, page)}
+                >
+                  重试
+                </button>
+              </p>
+            )}
             <table style={tableStyle}>
               <thead>
                 <tr>
@@ -593,7 +627,7 @@ export default function BrokerReconcile() {
                 {diffRows.length === 0 && (
                   <tr>
                     <td colSpan={10} style={{ ...tdStyle, color: COLORS.textMuted }}>
-                      无
+                      {diffError !== null ? '加载失败（可点上方重试）' : '无'}
                     </td>
                   </tr>
                 )}
@@ -708,6 +742,12 @@ export default function BrokerReconcile() {
           <p style={{ color: COLORS.textMuted }}>
             该券商暂无对账数据。请先在「券商文件导入」完成导入并确认落库（撤销的批次不计入）；导入成功后再点「重新对账」。
           </p>
+          <button
+            style={{ ...buttonStyle, background: COLORS.brand, color: '#fff', border: 'none' }}
+            onClick={() => navigate(`/broker/import?brokerCode=${encodeURIComponent(brokerCode)}`)}
+          >
+            去导入文件
+          </button>
         </div>
       )}
     </div>
