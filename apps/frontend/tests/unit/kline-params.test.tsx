@@ -132,6 +132,12 @@ beforeEach(() => {
   loaderSpy.mockReset();
   holder.chart = null;
   holder.inits = 0;
+  // 参数面板的展开状态记在 sessionStorage（默认折叠）⇒ 每个用例从「折叠」开始
+  try {
+    sessionStorage.clear();
+  } catch {
+    // 存储不可用时组件会退回组件内 state，同样可用
+  }
   getMock.mockImplementation(async (url: string) => {
     if (String(url).includes('/kline')) {
       return mockResponse({
@@ -174,6 +180,18 @@ async function renderKline(): Promise<void> {
   await waitFor(() => expect(holder.chart).not.toBeNull());
   // 等指标算完（库在微任务里重算）
   await waitFor(() => expect(indicatorResult('APP_MA').length).toBe(RAW_BARS.length));
+  // 参数面板**默认折叠**：本文件的用例都要改参数 ⇒ 先展开
+  await expandParamPanel();
+}
+
+/** 展开参数面板（已展开则跳过）*/
+async function expandParamPanel(): Promise<void> {
+  const toggle = screen.getByTestId('kline-param-toggle');
+  if (toggle.getAttribute('aria-expanded') === 'true') return;
+  await act(async () => {
+    fireEvent.click(toggle);
+  });
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'));
 }
 
 /** 改一个参数输入框（模拟用户改值）*/
@@ -704,6 +722,8 @@ describe('T71 · 页面层：参数 → 图表 props 的 bars', () => {
     const { default: Kline } = await import('../../src/pages/Kline');
     renderWithRouter(<Kline />, { initialEntries: ['/kline'] });
     await waitFor(() => expect(screen.getByTestId('kline-chart-stub')).toBeInTheDocument());
+    // 参数面板默认折叠 ⇒ 先展开再改参
+    await expandParamPanel();
 
     const stub = screen.getByTestId('kline-chart-stub');
     const beforeMa1 = Number(stub.getAttribute('data-ma1'));

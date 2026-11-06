@@ -217,6 +217,10 @@ export default function KlineChart({
   const [chartError, setChartError] = useState<string | null>(null);
   /** 图表是否已就绪 */
   const [ready, setReady] = useState(false);
+  /** 是否处于**浏览器全屏**（Fullscreen API；Esc 退出也会回到 false）*/
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  /** 全屏的根元素：包含图表 + hover 浮窗 + 交易明细面板 + 全屏按钮 */
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   /* ---------------- 初始化（只跑一次） ---------------- */
   useEffect(() => {
@@ -606,8 +610,53 @@ export default function KlineChart({
     setSelectedTradeBarIndex(null);
   }, []);
 
+  /* ---------------- 全屏（原生 Fullscreen API，不引入第三方库） ---------------- */
+
+  /** 进入 / 退出全屏；浏览器拒绝（非用户手势、iframe 策略）时保持原布局 */
+  const toggleFullscreen = useCallback(async () => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    try {
+      if (document.fullscreenElement === wrapper) {
+        await document.exitFullscreen();
+        return;
+      }
+      if (typeof wrapper.requestFullscreen !== 'function') return;
+      await wrapper.requestFullscreen();
+    } catch {
+      // 全屏不可用/被拒绝：不做任何事（按钮仍显示「全屏」）
+    }
+  }, []);
+
+  // 用 `fullscreenchange` 同步状态 —— **Esc 退出、浏览器自身退出**都会走到这里，
+  // 因此不能只靠按钮点击来翻转 `isFullscreen`。
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === wrapperRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  // 进出全屏后容器尺寸变了：显式 `resize()` 兜底
+  // （组件内已有 ResizeObserver，但全屏切换在部分浏览器里不触发它）
+  useEffect(() => {
+    if (!ready) return;
+    chartRef.current?.resize();
+  }, [isFullscreen, ready]);
+
   return (
-    <div style={{ position: 'relative', width: '100%' }}>
+    <div
+      ref={wrapperRef}
+      data-testid="kline-chart-wrapper"
+      style={{
+        position: 'relative',
+        width: '100%',
+        // 全屏元素默认铺满屏幕；显式给 `100%` 保证内部容器能拿到可用高度
+        height: isFullscreen ? '100%' : undefined,
+        background: isFullscreen ? COLORS.chartBg : undefined,
+      }}
+    >
       <div
         ref={containerRef}
         data-testid="kline-chart-container"
@@ -621,12 +670,14 @@ export default function KlineChart({
         aria-label="K 线图"
         style={{
           width: '100%',
-          height,
+          // 全屏时跟随 `wrapperRef`（:fullscreen ⇒ 100vh），退出后复原为 prop 高度
+          height: isFullscreen ? '100%' : height,
           background: COLORS.chartBg,
           border: `1px solid ${COLORS.chartBorder}`,
           borderRadius: 4,
           overflow: 'hidden',
           touchAction: 'none',
+          boxSizing: 'border-box',
         }}
       />
 
@@ -658,6 +709,31 @@ export default function KlineChart({
 
       {/* T152：点击交易圆点后的交易明细（移动端也通过点击打开）*/}
       <KlineTradePanel bar={selectedTradeBar} onClose={closeTradePanel} />
+
+      {/* 全屏切换（浏览器 Fullscreen API）：Esc 退出由 `fullscreenchange` 同步布局 */}
+      <button
+        type="button"
+        data-testid="kline-fullscreen-toggle"
+        aria-label={isFullscreen ? '退出全屏' : '全屏'}
+        aria-pressed={isFullscreen}
+        onClick={() => void toggleFullscreen()}
+        style={{
+          position: 'absolute',
+          top: 6,
+          // 让开右侧价格轴（约 60px 宽），避免按钮盖住刻度文字
+          right: 68,
+          zIndex: 10,
+          padding: '2px 8px',
+          fontSize: TYPO.captionSize,
+          color: COLORS.chartText,
+          background: 'rgba(0, 0, 0, 0.45)',
+          border: `1px solid ${COLORS.chartBorder}`,
+          borderRadius: 4,
+          cursor: 'pointer',
+        }}
+      >
+        {isFullscreen ? '退出全屏' : '全屏'}
+      </button>
     </div>
   );
 }

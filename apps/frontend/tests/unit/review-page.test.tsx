@@ -778,3 +778,34 @@ describe('收益曲线 · 历史快照补齐（user_asset_stat 为空时）', ()
     expect(screen.getByTestId('backfill-snapshots')).toBeInTheDocument();
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * 复盘总结输入框溢出（结构契约）
+ * ------------------------------------------------------------------ */
+
+describe('编辑复盘弹窗 · 输入框不越界', () => {
+  it('textarea 用 border-box + 纵向滚动；弹窗受视口约束；遮罩留安全边距', async () => {
+    installApiMock();
+    renderWithRouter(<Review />);
+
+    const buttons = await screen.findAllByRole('button', { name: '编辑复盘' });
+    await userEvent.click(buttons[0]);
+
+    const dialog = screen.getByRole('dialog');
+    const textarea = screen.getByLabelText('复盘总结') as HTMLTextAreaElement;
+
+    // ① 右边界溢出的根因：`width: 100%` 必须配 `border-box`，
+    //    否则 padding + border 会额外加在 100% 之外，撑破弹窗
+    expect(textarea.style.boxSizing).toBe('border-box');
+    expect(textarea.style.maxWidth).toBe('100%');
+    // ② 长文本在框内滚动，且不会被无限拉高
+    expect(textarea.style.overflowY).toBe('auto');
+    expect(textarea.style.maxHeight).toBe('40vh');
+    // ③ 下边界溢出的根因：弹窗要有视口高度上限 + 纵向滚动（而不是裁剪内容）
+    expect(dialog.style.maxHeight).toContain('100vh');
+    expect(dialog.style.overflowY).toBe('auto');
+    expect(dialog.style.boxSizing).toBe('border-box');
+    // ④ 遮罩留出安全边距，弹窗不会顶到视口边缘
+    expect((dialog.parentElement as HTMLElement).style.padding).toBe('16px');
+  });
+});

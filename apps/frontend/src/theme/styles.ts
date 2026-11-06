@@ -198,12 +198,23 @@ export const truncatedTextStyle: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-/** 输入框 */
+/**
+ * 输入框
+ *
+ * 🔴 `boxSizing: 'border-box'` 是**溢出修复的根因项**：
+ *     页面里大量控件写成 `{ ...inputStyle, width: '100%' }`，
+ *     而 `width: 100%` 的百分比基准是**父容器的内容宽**；默认 `content-box` 下
+ *     还要再加 padding + border ⇒ 实际外宽超出父容器，
+ *     表现为输入框越过弹窗右边界（复盘弹窗的 textarea 实测如此）。
+ *     `maxWidth: '100%'` 再兜一层，防止父级是 flex/grid 且宽度约束异常时撑破。
+ */
 export const inputStyle: CSSProperties = {
   padding: SPACING.inputPadding,
   border: `1px solid ${COLORS.borderMedium}`,
   borderRadius: RADIUS.sm,
   fontSize: TYPO.bodySize,
+  boxSizing: 'border-box',
+  maxWidth: '100%',
 };
 
 /** 主按钮 */

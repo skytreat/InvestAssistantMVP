@@ -24,7 +24,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import React from 'react';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithRouter, mockResponse } from '../helpers';
 import { calculateSMA } from '../../src/indicators/technical';
 import type { RawBar } from '../../src/indicators/chartBars';
@@ -210,6 +210,10 @@ beforeEach(() => {
     if (String(url).includes('/kline')) {
       return mockResponse(klinePayload('{"rsi":25.31,"period":14}'));
     }
+    // 图表标题区的**名称**复用现有标的元数据接口（不是补取信号）
+    if (String(url).includes('/symbols/search')) {
+      return mockResponse([]);
+    }
     // ⚠️ 其它任何请求都是**多余的**（本页只该发一次 K 线请求）⇒ 直接抛错让用例立刻炸
     throw new Error(`K 线页不应请求该接口: ${String(url)}`);
   });
@@ -224,6 +228,13 @@ async function renderKline(): Promise<void> {
   const { default: Kline } = await import('../../src/pages/Kline');
   renderWithRouter(<Kline />, { initialEntries: ['/kline'] });
   await waitFor(() => expect(chartState.chart).not.toBeNull());
+  // 参数面板默认折叠 ⇒ 需要改参的用例先展开
+  const toggle = screen.getByTestId('kline-param-toggle');
+  if (toggle.getAttribute('aria-expanded') !== 'true') {
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+  }
 }
 
 /** 触发十字光标（假图表把回调存在 `chartState.crosshair`）*/
@@ -238,15 +249,22 @@ function requestUrls(): string[] {
   return getMock.mock.calls.map((c) => String(c[0]));
 }
 
+/** 仅 **K 线数据**请求（标题区名称走的是元数据接口，不影响「单次请求」的判定）*/
+function klineCalls(): Array<[string, { params?: Record<string, unknown> }?]> {
+  return getMock.mock.calls
+    .filter((c) => String(c[0]).includes('/kline'))
+    .map((c) => c as [string, { params?: Record<string, unknown> }?]);
+}
+
 /* ------------------------------------------------------------------ *
  * ① 单次请求
  * ------------------------------------------------------------------ */
 
 describe('T73 · K 线页只发一次请求（不再补取 /api/signal）', () => {
-  it('T73: `api.get` **只被调用 1 次**（硬断言调用次数）', async () => {
+  it('T73: K 线数据请求**只发出 1 次**（硬断言调用次数）', async () => {
     await renderKline();
     await waitFor(() => expect(chartState.dataList.length).toBe(RAW_BARS.length));
-    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(klineCalls()).toHaveLength(1);
   });
 
   it('T73: 请求 URL 集合**恰好**是 K 线接口（**没有** `/api/signal?asset_code=` 补取）', async () => {
@@ -254,7 +272,7 @@ describe('T73 · K 线页只发一次请求（不再补取 /api/signal）', () =
     await waitFor(() => expect(chartState.dataList.length).toBe(RAW_BARS.length));
 
     const urls = requestUrls();
-    expect(urls).toEqual(['/quote/sh600000/kline']);
+    expect(urls.filter((u) => u.includes('/kline'))).toEqual(['/quote/sh600000/kline']);
     // 🔴 旧实现的补取请求（硬断言 URL 形态）
     expect(urls.some((u) => u.startsWith('/signal'))).toBe(false);
     expect(urls.some((u) => u.includes('asset_code'))).toBe(false);
@@ -265,7 +283,7 @@ describe('T73 · K 线页只发一次请求（不再补取 /api/signal）', () =
     await renderKline();
     await waitFor(() => expect(chartState.dataList.length).toBe(RAW_BARS.length));
 
-    const params = getMock.mock.calls.map((c) => (c[1]?.params ?? {}) as Record<string, unknown>);
+    const params = klineCalls().map((c) => (c[1]?.params ?? {}) as Record<string, unknown>);
     expect(params).toHaveLength(1);
     expect(params[0].days).toBe(120);
     expect(params[0].fq).toBe('qfq');
@@ -305,6 +323,8 @@ describe('T73 · 信号指标明细（metrics_json）随 K 线下发', () => {
       if (String(url).includes('/kline')) {
         return mockResponse(klinePayload(null));
       }
+      // 标题区名称走元数据接口（无名称时返回空列表）
+      if (String(url).includes('/symbols/search')) return mockResponse([]);
       throw new Error(`K 线页不应请求该接口: ${String(url)}`);
     });
 
@@ -330,6 +350,8 @@ describe('T73 · 信号指标明细（metrics_json）随 K 线下发', () => {
       if (String(url).includes('/kline')) {
         return mockResponse(klinePayload('{not-json'));
       }
+      // 标题区名称走元数据接口（无名称时返回空列表）
+      if (String(url).includes('/symbols/search')) return mockResponse([]);
       throw new Error(`K 线页不应请求该接口: ${String(url)}`);
     });
 
@@ -384,7 +406,7 @@ describe('T73 · hover 面板的数据来源（核对 T71 滞后问题）', () =
     await renderKline();
     await waitFor(() => expect(chartState.dataList.length).toBe(RAW_BARS.length));
 
-    const before = getMock.mock.calls.length;
+    const before = klineCalls().length;
     expect(before).toBe(1);
 
     await hover();
@@ -397,6 +419,6 @@ describe('T73 · hover 面板的数据来源（核对 T71 滞后问题）', () =
     });
 
     await waitFor(() => expect(screen.getByTestId('kline-hover-panel')).toHaveTextContent('MA25'));
-    expect(getMock.mock.calls.length).toBe(before);
+    expect(klineCalls().length).toBe(before);
   });
 });

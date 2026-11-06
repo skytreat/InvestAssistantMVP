@@ -931,6 +931,10 @@ export default function Review() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                // 🔴 弹窗四周留出安全边距：没有 padding 时，弹窗高度只要接近 100vh
+                //    就会被 flex 居中顶到视口外（上下被裁）——见下方 maxHeight。
+                padding: 16,
+                boxSizing: 'border-box',
                 zIndex: 200,
               }}
             >
@@ -940,7 +944,20 @@ export default function Review() {
                 aria-modal="true"
                 aria-labelledby={editDialogTitleId}
                 tabIndex={-1}
-                style={{ ...cardStyle, maxWidth: 480, width: '90%' }}
+                // 🔴 溢出根因（右 / 下越界）：
+                //   ① `width: '90%'` 在默认 `content-box` 下要再加左右 padding + 边框 ⇒ 外宽 > 父宽；
+                //   ② 无 `maxHeight`，内部 `resize: vertical` 的 textarea 一旦拉高，
+                //      整个弹窗就超出视口下边界且无处滚动。
+                //   修法是把尺寸约束放回容器（border-box + maxHeight + 纵向滚动），
+                //   而不是用 `overflow: hidden` 把溢出的内容裁掉。
+                style={{
+                  ...cardStyle,
+                  maxWidth: 480,
+                  width: '90%',
+                  maxHeight: 'calc(100vh - 32px)',
+                  overflowY: 'auto',
+                  boxSizing: 'border-box',
+                }}
               >
                 <div id={editDialogTitleId} style={cardTitleStyle}>
                   编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})
@@ -955,12 +972,18 @@ export default function Review() {
                     </label>
                     <textarea
                       id="review-edit-summary"
+                      // `inputStyle` 已含 `boxSizing: border-box` + `maxWidth: 100%`
+                      // ⇒ `width: 100%` 不会再越过弹窗右边界。
+                      // `resize: vertical` 保留（用户可拉高），但用 `maxHeight` + `overflowY`
+                      // 兜住：长文本在框内滚动，而不是把整个弹窗顶出视口。
                       style={{
                         ...inputStyle,
                         width: '100%',
                         marginTop: 4,
                         minHeight: 60,
+                        maxHeight: '40vh',
                         resize: 'vertical',
+                        overflowY: 'auto',
                       }}
                       value={editForm.review_summary}
                       onChange={(e) => setEditForm((f) => ({ ...f, review_summary: e.target.value }))}
