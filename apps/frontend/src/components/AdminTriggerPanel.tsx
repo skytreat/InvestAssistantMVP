@@ -47,7 +47,7 @@ interface RerunResult {
 
 /** `POST /api/admin/datacheck/trigger` 的返回体里本组件用得到的部分 */
 interface DatacheckResult {
-  readonly summaries?: unknown[];
+  readonly summaries?: Array<{ readonly checkId?: string; readonly result?: string }>;
 }
 
 /** `POST /api/admin/run-signal` 的返回体里本组件用得到的部分 */
@@ -133,6 +133,8 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
 
   const [signalBusy, setSignalBusy] = useState(false);
   const [signalNotice, setSignalNotice] = useState<string | null>(null);
+  /** 原始字段（`total=… success=…`）只作「技术详情」展示，不直接铺在提示条上（UX-13） */
+  const [signalRaw, setSignalRaw] = useState<string | null>(null);
   const [signalError, setSignalError] = useState<string | null>(null);
 
   /** 手动补跑行情更新 —— 二次确认通过后才真正发请求 */
@@ -181,8 +183,17 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
       const res = await api.post('/admin/datacheck/trigger');
       const body = res.data as ApiEnvelope<DatacheckResult>;
       if (isOkEnvelope(body)) {
-        const count = body.data?.summaries?.length ?? 0;
-        setDatacheckNotice(`校验完成：summaries 数量 = ${count}`);
+        const summaries = body.data?.summaries ?? [];
+        const counts = { PASS: 0, WARN: 0, ERROR: 0, SKIP: 0 };
+        for (const s of summaries) {
+          const k = s?.result;
+          if (k === 'PASS' || k === 'WARN' || k === 'ERROR' || k === 'SKIP') counts[k] += 1;
+        }
+        // UX-13：用户语言，不再暴露 `summaries` 这种字段名
+        setDatacheckNotice(
+          `校验完成：共 ${summaries.length} 项 · ${counts.PASS} 通过 · ${counts.WARN} 警告 · ` +
+            `${counts.ERROR} 异常 · ${counts.SKIP} 跳过`,
+        );
         onChecksRefreshed?.();
       } else {
         setDatacheckError(body?.message ?? '校验失败');
@@ -200,15 +211,21 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
     setSignalBusy(true);
     setSignalError(null);
     setSignalNotice(null);
+    setSignalRaw(null);
     try {
       const res = await api.post('/admin/run-signal');
       const body = res.data as ApiEnvelope<SignalRunResult>;
       if (isOkEnvelope(body)) {
         const stats = body.data?.stats ?? {};
+        // UX-13：用户语言 + 原始字段折叠进「技术详情」，不再直接拼 `total=… success=…`
         setSignalNotice(
-          `生成完成：total=${stats.total ?? '-'} success=${stats.success ?? '-'} ` +
-            `timeout=${stats.timeout ?? '-'} error=${stats.error ?? '-'} ` +
-            `inserted=${body.data?.inserted ?? '-'}`,
+          `信号生成完成：处理 ${stats.total ?? '-'} 个标的 · 成功 ${stats.success ?? '-'} · ` +
+            `超时 ${stats.timeout ?? '-'} · 失败 ${stats.error ?? '-'} · ` +
+            `新增信号 ${body.data?.inserted ?? '-'} 条`,
+        );
+        setSignalRaw(
+          `total=${stats.total ?? '-'} success=${stats.success ?? '-'} timeout=${stats.timeout ?? '-'} ` +
+            `error=${stats.error ?? '-'} inserted=${body.data?.inserted ?? '-'}`,
         );
       } else {
         setSignalError(body?.message ?? '信号生成失败');
@@ -316,6 +333,12 @@ export default function AdminTriggerPanel({ onChecksRefreshed }: AdminTriggerPan
             data-testid="signal-notice"
           >
             {signalNotice}
+            {signalRaw !== null && (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: 'pointer', fontSize: TYPO.captionSize }}>技术详情</summary>
+                <code style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>{signalRaw}</code>
+              </details>
+            )}
           </div>
         )}
         {signalError !== null && (
