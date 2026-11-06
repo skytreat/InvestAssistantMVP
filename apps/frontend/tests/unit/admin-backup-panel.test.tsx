@@ -133,10 +133,10 @@ describe('Admin 备份面板', () => {
     await user.click(screen.getByRole('button', { name: '立即备份' }));
 
     const notice = await screen.findByTestId('backup-notice');
-    expect(notice).toHaveTextContent('SQLite：成功');
-    expect(notice).toHaveTextContent('DuckDB：已跳过（配置关闭）');
-    expect(notice).not.toHaveTextContent('DuckDB：成功');
-    expect(notice).not.toHaveTextContent('DuckDB：失败');
+    expect(notice).toHaveTextContent('业务库 成功');
+    expect(notice).toHaveTextContent('行情库 已跳过（配置关闭）');
+    expect(notice).not.toHaveTextContent('行情库 成功');
+    expect(notice).not.toHaveTextContent('行情库 失败');
   });
 
   it('失败状态条提供重试按钮', async () => {

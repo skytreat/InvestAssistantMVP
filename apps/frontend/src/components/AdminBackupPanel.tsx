@@ -194,7 +194,8 @@ export default function AdminBackupPanel() {
         const duckdbOk = result.duckdb?.success === true;
         const duckdbLabel =
           result.duckdb?.skipped === true ? '已跳过（配置关闭）' : duckdbOk ? '成功' : '失败';
-        setBackupNotice(`备份完成（SQLite：${sqliteOk ? '成功' : '失败'} / DuckDB：${duckdbLabel}）`);
+        // UX-13：用户语言（业务库 / 行情库），不再直呼表名
+        setBackupNotice(`备份完成：业务库 ${sqliteOk ? '成功' : '失败'} · 行情库 ${duckdbLabel}`);
         await loadBackups();
       } else {
         setBackupError(body?.message ?? '备份失败');
