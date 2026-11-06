@@ -28,12 +28,16 @@ let universe: UniverseModule;
 let calendarModule: CalendarModule;
 let calendar: TradingCalendar;
 
+/**
+ * ⚠️ 本文件所有锚点都锚定在**具体历史日期 + 具体标的**上，只有真库能满足：
+ *   迷你库只有 104 只标的、时间区间更短 —— 2026-11-06 PR #91 CI 实测，用 `numeric` 守卫时
+ *   6 个用例红（`calendar.has('2026-09-07')` 为 false、窗口内 0 行触发列向量缺失）。
+ *   ⇒ 统一用 `scale` 守卫：CI 无真库时整组 skip（不假红，也不假绿）。
+ */
 const SCALE_READY = await marketDataUsableFor('scale');
-/** 数值型锚点（迷你库也是真库的逐位一致子集，可跑） */
-const NUMERIC_READY = await marketDataUsableFor('numeric');
 
 beforeAll(async () => {
-  if (!NUMERIC_READY) return;
+  if (!SCALE_READY) return;
   panel = await import('../../src/services/backtest/marketPanel.js');
   universe = await import('../../src/services/backtest/universe/pointInTime.js');
   calendarModule = await import('../../src/services/backtest/calendar.js');
@@ -106,7 +110,7 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
     return bars[i].preclose / bars[i - 1].close - 1;
   }
 
-  it.skipIf(!NUMERIC_READY)('sh510300 2024-01-18：qfq 连续、bfq 约 -2.1% 跳空', async () => {
+  it.skipIf(!SCALE_READY)('sh510300 2024-01-18：qfq 连续、bfq 约 -2.1% 跳空', async () => {
     const start = '2024-01-16';
     const end = '2024-01-22';
     const qfq = await fetchOne('sh510300', start, end, 'qfq');
@@ -121,26 +125,23 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
     expect(bfqGap(bfq, '2024-01-18')).toBeLessThan(-0.01);
   });
 
-  it.skipIf(!NUMERIC_READY)(
-    'sz159516 拆股：bfq 缺口落在 2026-03-30（非 03-31），qfq 两日均连续',
-    async () => {
-      const start = '2026-03-26';
-      const end = '2026-04-02';
-      const qfq = await fetchOne('sz159516', start, end, 'qfq');
-      const bfq = await fetchOne('sz159516', start, end, 'bfq');
+  it.skipIf(!SCALE_READY)('sz159516 拆股：bfq 缺口落在 2026-03-30（非 03-31），qfq 两日均连续', async () => {
+    const start = '2026-03-26';
+    const end = '2026-04-02';
+    const qfq = await fetchOne('sz159516', start, end, 'qfq');
+    const bfq = await fetchOne('sz159516', start, end, 'bfq');
 
-      // 实测：1:2 拆分生效日 = 2026-03-30（bfq preclose 0.83 vs 前一交易日 close 1.66）
-      // ⇒ 锚点里写的 2026-03-31 在该数据源上不是拆股日（当日 qfq/bfq 都连续）
-      expect(bfqGap(bfq, '2026-03-30')).toBeLessThan(-0.4);
-      for (const d of ['2026-03-30', '2026-03-31']) {
-        const i = qfq.findIndex((b) => b.date === d);
-        expect(i).toBeGreaterThan(0);
-        expect(qfq[i].preclose).toBeCloseTo(qfq[i - 1].close, 6);
-      }
-    },
-  );
+    // 实测：1:2 拆分生效日 = 2026-03-30（bfq preclose 0.83 vs 前一交易日 close 1.66）
+    // ⇒ 锚点里写的 2026-03-31 在该数据源上不是拆股日（当日 qfq/bfq 都连续）
+    expect(bfqGap(bfq, '2026-03-30')).toBeLessThan(-0.4);
+    for (const d of ['2026-03-30', '2026-03-31']) {
+      const i = qfq.findIndex((b) => b.date === d);
+      expect(i).toBeGreaterThan(0);
+      expect(qfq[i].preclose).toBeCloseTo(qfq[i - 1].close, 6);
+    }
+  });
 
-  it.skipIf(!NUMERIC_READY)('sh515880 2026-07-06：qfq 连续、bfq 约 -50% 跳空', async () => {
+  it.skipIf(!SCALE_READY)('sh515880 2026-07-06：qfq 连续、bfq 约 -50% 跳空', async () => {
     const start = '2026-07-02';
     const end = '2026-07-08';
     const qfq = await fetchOne('sh515880', start, end, 'qfq');
@@ -156,7 +157,7 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
 /* ─────────────────────────── 3. 停牌两形态 ─────────────────────────── */
 
 describe('M1 锚点 · 停牌两形态', () => {
-  it.skipIf(!NUMERIC_READY)('形态① 缺 bar：sz159972 在 2026-09-28 无 bar（当日是交易日）', async () => {
+  it.skipIf(!SCALE_READY)('形态① 缺 bar：sz159972 在 2026-09-28 无 bar（当日是交易日）', async () => {
     expect(calendar.has('2026-09-28')).toBe(true);
     const bars = seriesOf(await panel.getBars(['sz159972'], '2026-09-21', '2026-10-08'), 'sz159972');
     expect(bars.map((b) => b.date)).not.toContain('2026-09-28');
@@ -169,7 +170,7 @@ describe('M1 锚点 · 停牌两形态', () => {
     });
   });
 
-  it.skipIf(!NUMERIC_READY)('形态② volume=0：sh512390 在 2026-09-07 有 bar 但零成交', async () => {
+  it.skipIf(!SCALE_READY)('形态② volume=0：sh512390 在 2026-09-07 有 bar 但零成交', async () => {
     expect(calendar.has('2026-09-07')).toBe(true);
     const bars = seriesOf(await panel.getBars(['sh512390'], '2026-09-01', '2026-09-30'), 'sh512390');
 
@@ -186,7 +187,7 @@ describe('M1 锚点 · 停牌两形态', () => {
     });
   });
 
-  it.skipIf(!NUMERIC_READY)("zeroVolumeSeries='drop' 剔除停牌日并缩短窗口 ⇒ 不自造 0% 收益", async () => {
+  it.skipIf(!SCALE_READY)("zeroVolumeSeries='drop' 剔除停牌日并缩短窗口 ⇒ 不自造 0% 收益", async () => {
     const keepMap = await panel.getBars(['sh512390'], '2026-09-01', '2026-09-30');
     const dropMap = await panel.getBars(['sh512390'], '2026-09-01', '2026-09-30', {
       zeroVolumeSeries: 'drop',
