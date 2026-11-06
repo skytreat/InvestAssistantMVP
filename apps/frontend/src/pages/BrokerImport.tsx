@@ -138,6 +138,13 @@ export default function BrokerImport() {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   /** 待用户处理的未知标的（后端 200 + pending_unknown_assets） */
   const [pendingUnknown, setPendingUnknown] = useState<PendingUnknownState | null>(null);
+  /**
+   * 全局「全部导入」（owner 报障 2026-11-06）：勾选后本批文件一次性提交，
+   * 不再逐券商分组点确认。取消勾选即恢复逐页确认。
+   * 注意：后端 confirm-batch 单次只接受**一个** brokerCode + ≤5 文件，
+   * 故跨券商/超 5 文件时该开关不可用（不自行扩展接口）。
+   */
+  const [bulkAll, setBulkAll] = useState(false);
 
   // ── 导入批次（列表 + 撤销）──
   const [batches, setBatches] = useState<BatchRow[]>([]);
@@ -225,6 +232,38 @@ export default function BrokerImport() {
     return hints.size > 1 ? [...hints] : null;
   }, [files, detects]);
 
+  /** 已探测完成、可提交的文件（探测中/失败的不算，避免「全部导入」静默漏掉文件） */
+  const allImportable = useMemo(
+    () => files.filter((f) => detects[f.name] !== undefined && typeof detects[f.name] === 'object'),
+    [files, detects],
+  );
+  /** 尚未探测完成（排队/探测中）的文件数：全部导入必须等它们完成 */
+  const pendingDetectCount = files.length - allImportable.length;
+  /** 全局一次导入的券商名：单券商时用推断名，无推断则回退实际落库标识（与分组按钮同规则） */
+  const bulkDisplayName = useMemo(() => {
+    if (groups.length !== 1) return '';
+    const key = groups[0][0];
+    const code = brokerCode.trim();
+    return key === '未识别' && code ? code : key;
+  }, [groups, brokerCode]);
+
+  /**
+   * 全局「全部导入」不可用原因（按优先级返回第一个，供 UI 显式说明为何禁用）。
+   * 后端契约（routes/brokerImport.ts confirm-batch）：单次仅一个 brokerCode、≤5 文件；
+   * 未知标的会返回 200 + pending_unknown_assets，必须由用户显式选择跳过 → 不在此自动处理。
+   */
+  const bulkDisabledReason = useMemo(() => {
+    const code = brokerCode.trim();
+    if (!code) return '请先填写券商标识';
+    if (conflictingHints) return '所选文件属于不同券商，请取消勾选后逐券商确认（后端不支持跨券商单批）';
+    if (groups.length !== 1) return '所选文件未归入同一券商，请取消勾选后逐批确认';
+    if (allImportable.length === 0)
+      return pendingDetectCount > 0 ? '正在探测文件，请稍候' : '没有可导入的文件';
+    if (pendingDetectCount > 0) return `还有 ${pendingDetectCount} 个文件正在探测，请稍候`;
+    if (allImportable.length > 5) return '单次最多 5 个文件，请取消勾选后分批确认';
+    return null;
+  }, [brokerCode, conflictingHints, groups.length, allImportable.length, pendingDetectCount]);
+
   const removeFile = (target: File) => {
     setFiles((prev) => prev.filter((f) => f !== target));
     setDetects((prev) => {
@@ -283,6 +322,8 @@ export default function BrokerImport() {
           ...prev.filter((g) => g.key !== groupCode),
           { key: groupCode, results: out },
         ]);
+        // 成功后收起「全部导入」开关，恢复逐页模式（避免二次点击误重复提交）
+        setBulkAll(false);
         await loadBatches();
       } catch (err) {
         setConfirmError(extractErrorMessage(err, '导入失败'));
@@ -527,6 +568,52 @@ export default function BrokerImport() {
       {groups.length > 0 && (
         <div style={{ ...cardStyle, marginTop: 16 }}>
           <h2 style={subtitleStyle}>确认导入</h2>
+
+          {/* 全局「全部导入（所有页）」：勾选后一次性提交，替代逐券商逐个点确认 */}
+          <div style={{ ...bulkSwitchBox, marginBottom: 12 }}>
+            <label htmlFor="bulk-all-checkbox" style={bulkLabelStyle}>
+              <input
+                id="bulk-all-checkbox"
+                data-testid="bulk-all-checkbox"
+                type="checkbox"
+                checked={bulkAll}
+                disabled={busy}
+                onChange={(e) => setBulkAll(e.target.checked)}
+              />
+              <span>
+                <strong>全部导入（所有页，跳过逐页确认）</strong>
+              </span>
+            </label>
+            <div style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, marginTop: 4 }}>
+              勾选后本批文件一次性提交（同一券商，单次最多 5 个文件）；取消勾选即恢复逐页确认。
+              未知标的仍会单独列出并由你选择「跳过」或取消，不会自动丢弃。
+            </div>
+            {bulkAll && bulkDisabledReason !== null && (
+              <p style={{ ...errorStyle, marginTop: 6 }} role="alert">
+                {bulkDisabledReason}
+              </p>
+            )}
+          </div>
+
+          {bulkAll && (
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+              <button
+                data-testid="bulk-all-confirm"
+                style={{ ...buttonStyle, ...primaryButton }}
+                onClick={() => void runConfirmGroup(brokerCode.trim(), allImportable)}
+                disabled={busy || bulkDisabledReason !== null}
+              >
+                全部导入【{bulkDisplayName || '未识别'}】（{allImportable.length} 个文件，所有页）
+              </button>
+              <span
+                aria-live="polite"
+                style={{ fontSize: TYPO.smallSize, color: busy ? COLORS.warning : COLORS.textSecondary }}
+              >
+                {busy ? '导入中，请勿刷新页面…' : '将写入事实层记录，可随时撤销批次'}
+              </span>
+            </div>
+          )}
+
           {conflictingHints && (
             <div style={{ ...warningBox, marginBottom: 12, color: COLORS.danger }}>
               <strong>检测到多个券商的文件（{conflictingHints.join('、')}）。</strong>
@@ -554,29 +641,30 @@ export default function BrokerImport() {
             </div>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {groups.map(([key, groupFiles]) => {
-              const importable = groupFiles.filter((f) => detectOk(f));
-              if (importable.length === 0) return null;
-              const code = brokerCode.trim();
-              const isDisabled = !code || busy || conflictingHints !== null;
-              // 无推断名（表头首行的成交流水，如华宝成交单）时回退为**实际落库的券商标识**：
-              // 此前恒显示「未识别」，用户手填「华宝」后按钮看起来仍未被识别（owner 报障 2026-11-05）
-              const displayName = key === '未识别' && code ? code : key;
-              return (
-                <div key={key} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <button
-                    style={{ ...buttonStyle, ...primaryButton }}
-                    onClick={() => void runConfirmGroup(code, importable)}
-                    disabled={isDisabled}
-                  >
-                    确认导入【{displayName}】（{importable.length} 个文件）
-                  </button>
-                  <span style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
-                    券商：{code || '（请先填写券商标识）'} · 这将写入事实层记录，可随时撤销批次
-                  </span>
-                </div>
-              );
-            })}
+            {!bulkAll &&
+              groups.map(([key, groupFiles]) => {
+                const importable = groupFiles.filter((f) => detectOk(f));
+                if (importable.length === 0) return null;
+                const code = brokerCode.trim();
+                const isDisabled = !code || busy || conflictingHints !== null;
+                // 无推断名（表头首行的成交流水，如华宝成交单）时回退为**实际落库的券商标识**：
+                // 此前恒显示「未识别」，用户手填「华宝」后按钮看起来仍未被识别（owner 报障 2026-11-05）
+                const displayName = key === '未识别' && code ? code : key;
+                return (
+                  <div key={key} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <button
+                      style={{ ...buttonStyle, ...primaryButton }}
+                      onClick={() => void runConfirmGroup(code, importable)}
+                      disabled={isDisabled}
+                    >
+                      确认导入【{displayName}】（{importable.length} 个文件）
+                    </button>
+                    <span style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+                      券商：{code || '（请先填写券商标识）'} · 这将写入事实层记录，可随时撤销批次
+                    </span>
+                  </div>
+                );
+              })}
           </div>
           {confirmError && (
             <p style={{ ...errorStyle, marginTop: 12 }} role="alert">
@@ -772,6 +860,19 @@ const warningBox: React.CSSProperties = {
   border: `1px solid ${COLORS.borderPillWarning}`,
   borderRadius: 6,
   padding: '8px 12px',
+};
+const bulkSwitchBox: React.CSSProperties = {
+  background: COLORS.headerBg,
+  border: `1px solid ${COLORS.borderLight}`,
+  borderRadius: 6,
+  padding: '8px 12px',
+};
+const bulkLabelStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  alignItems: 'center',
+  fontSize: TYPO.smallSize,
+  cursor: 'pointer',
 };
 const tableStyle: React.CSSProperties = {
   width: '100%',
