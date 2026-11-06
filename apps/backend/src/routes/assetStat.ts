@@ -76,7 +76,9 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
   app.get('/api/asset-stat/monthly-cashflow', async (request, reply) => {
     const user = (request as any).user as { sub: number };
     const { months = 12 } = request.query as { months?: number };
-    const n = Math.min(Math.max(Number(months) || 12, 1), 36);
+    // query 值实际是字符串：非数回落 12，小数取整（Date 构造器只接受整数月份）
+    const raw = Number(months);
+    const n = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 36) : 12;
     return reply.send(ok(computeMonthlyCashFlow(user.sub, n)));
   });
 

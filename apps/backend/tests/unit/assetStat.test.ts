@@ -537,4 +537,14 @@ describe('assetStat — computeMonthlyCashFlow（月度现金流口径盈亏）'
 
     expect(computeMonthlyCashFlow(userId, 12)).toEqual([]);
   });
+
+  it('小数 / 非数月份被归一化（months=12.5 ⇒ 与 12 同窗口，不因 Date 截断差一个月）', () => {
+    const userId = seedUser('mcf_frac');
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(12)); // 第 13 个月（窗口外）
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(0));
+
+    expect(computeMonthlyCashFlow(userId, 12.5)).toEqual(computeMonthlyCashFlow(userId, 12));
+    expect(computeMonthlyCashFlow(userId, Number.NaN)).toEqual(computeMonthlyCashFlow(userId, 12));
+    expect(computeMonthlyCashFlow(userId, 12.5)).toHaveLength(1);
+  });
 });

@@ -133,8 +133,11 @@ export interface MonthlyCashFlowPoint {
  */
 export function computeMonthlyCashFlow(userId: number, months = 12): MonthlyCashFlowPoint[] {
   const db = ConfigStore.getInstance().db;
+  // 归一化：URL query 可能给小数（如 `months=12.5`）或非数；`Date` 构造器只接受整数月份，
+  // 小数会被 `ToInteger` 截断，导致截止月与预期差一个月 ⇒ 统一取整并夹在 [1,36]。
+  const n = Number.isFinite(months) ? Math.min(Math.max(Math.trunc(months), 1), 36) : 12;
   const now = new Date();
-  const startMonth = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
+  const startMonth = new Date(now.getFullYear(), now.getMonth() - (n - 1), 1);
   const startDate = `${startMonth.getFullYear()}-${String(startMonth.getMonth() + 1).padStart(2, '0')}-01`;
 
   const rows = db

@@ -470,15 +470,20 @@ function PnlBars({ slots }: { slots: CurveSlot[] }) {
             </rect>
           );
         })}
-        <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill={COLORS.neutral}>
-          {max.toFixed(0)}
-        </text>
+        {/* 刻度：max / min 恰为 0（全为 0 或全负/全正）时不重复渲染，避免与零轴标签叠字 */}
+        {max > 0 && (
+          <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill={COLORS.neutral}>
+            {max.toFixed(0)}
+          </text>
+        )}
         <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill={COLORS.neutral}>
           0
         </text>
-        <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill={COLORS.neutral}>
-          {min.toFixed(0)}
-        </text>
+        {min < 0 && (
+          <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill={COLORS.neutral}>
+            {min.toFixed(0)}
+          </text>
+        )}
         <text x={PAD.left} y={H - 6} fontSize={10} fill={COLORS.neutral}>
           {slots[0]?.label}
         </text>
