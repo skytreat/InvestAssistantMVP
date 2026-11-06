@@ -20,6 +20,13 @@ export interface EquityPoint {
   cashMv: number;
   /** 基准收盘（bfq，缺失日沿用上一有效值；区间内完全缺失为 null） */
   benchmarkClose: number | null;
+  /**
+   * 该日的基准收盘是「沿用上一有效值」（当日无基准 bar）。
+   *
+   * 这类日期不参与 alpha/beta 的成对日收益统计 —— 否则会把「沿用值 → 收益 0」
+   * 当成真实的零波动日，系统性压低 beta（M2 遗留的已知口径缺陷，M3 修复）。
+   */
+  benchmarkStale?: boolean;
   /** riskMv / equity（0~1） */
   exposure: number;
   /** 当日的回撤比率：(峰值 - equity) / 峰值（0~1，正数） */
@@ -230,14 +237,26 @@ export function computeMetrics(
     initialEquity > 0 && finalEquity > 0 ? Math.pow(finalEquity / initialEquity, 1 / years) - 1 : -1;
 
   const returns: number[] = [];
-  const benchReturns: number[] = [];
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1].equity;
     const cur = points[i].equity;
     if (prev > 0) returns.push(cur / prev - 1);
-    const pb = points[i - 1].benchmarkClose;
-    const cb = points[i].benchmarkClose;
-    if (pb !== null && cb !== null && pb > 0) benchReturns.push(cb / pb - 1);
+  }
+
+  // alpha / beta 用的成对日收益：基准 bar 缺失（沿用上一有效收盘）的日子整对剔除，
+  // 不参与统计（否则「沿用 → 收益 0」会被当成真实零波动日，压低 beta）。
+  const pairedStrategy: number[] = [];
+  const pairedBench: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].benchmarkStale === true) continue;
+    const prev = points[i - 1];
+    const cur = points[i];
+    if (prev.equity <= 0) continue;
+    const pb = prev.benchmarkClose;
+    const cb = cur.benchmarkClose;
+    if (pb === null || cb === null || pb <= 0) continue;
+    pairedStrategy.push(cur.equity / prev.equity - 1);
+    pairedBench.push(cb / pb - 1);
   }
 
   const annualizedVolatility = stdev(returns) * Math.sqrt(tradingDaysPerYear);
@@ -267,11 +286,11 @@ export function computeMetrics(
   // 相对基准的 alpha / beta（成对日收益；样本不足 2 或无基准 → null）
   let beta: number | null = null;
   let alphaAnnualized: number | null = null;
-  if (returns.length >= 2 && benchReturns.length === returns.length) {
-    const bm = mean(benchReturns);
-    const sm = mean(returns);
-    const cov = mean(returns.map((r, i) => (r - sm) * (benchReturns[i] - bm)));
-    const varB = mean(benchReturns.map((b) => (b - bm) ** 2));
+  if (pairedStrategy.length >= 2) {
+    const bm = mean(pairedBench);
+    const sm = mean(pairedStrategy);
+    const cov = mean(pairedStrategy.map((r, i) => (r - sm) * (pairedBench[i] - bm)));
+    const varB = mean(pairedBench.map((b) => (b - bm) ** 2));
     if (varB > 0) {
       beta = cov / varB;
       alphaAnnualized = (sm - beta * bm) * tradingDaysPerYear;

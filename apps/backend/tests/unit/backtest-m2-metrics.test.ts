@@ -21,7 +21,9 @@ import type { RoundTrip } from '../../src/services/backtest/account/portfolio.js
 function point(
   date: string,
   equity: number,
-  opts: Partial<Pick<EquityPoint, 'cash' | 'riskMv' | 'cashMv' | 'benchmarkClose' | 'exposure'>> = {},
+  opts: Partial<
+    Pick<EquityPoint, 'cash' | 'riskMv' | 'cashMv' | 'benchmarkClose' | 'exposure' | 'benchmarkStale'>
+  > = {},
 ): EquityPoint {
   return {
     date,
@@ -30,6 +32,7 @@ function point(
     riskMv: opts.riskMv ?? 0,
     cashMv: opts.cashMv ?? 0,
     benchmarkClose: opts.benchmarkClose ?? null,
+    benchmarkStale: opts.benchmarkStale,
     exposure: opts.exposure ?? 0,
     drawdownRatio: 0,
   };
@@ -185,6 +188,22 @@ describe('M2 指标 · alpha / beta', () => {
     const points = equity.map((e, i) => point(dates[i], e, { benchmarkClose: bench[i] }));
     const m = computeMetrics(points, [], { initialEquity: 100 });
 
+    expect(m.beta).toBeCloseTo(2, 8);
+    expect(m.alphaAnnualized).toBeCloseTo(0, 8);
+  });
+
+  it('基准缺失日（benchmarkStale）整对剔除，不把「沿用收盘」当成零波动日', () => {
+    // 非缺失日策略恒为基准 2 倍；第 4 个点基准沿用前值（stale），策略当日 +10%
+    const bench = [100, 101, 98.98, 98.98, 101.9494];
+    const equity = [100, 102, 97.92, 107.712, 114.17472];
+    const dates = ['2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08'];
+
+    const points = equity.map((e, i) =>
+      point(dates[i], e, { benchmarkClose: bench[i], benchmarkStale: i === 3 }),
+    );
+    const m = computeMetrics(points, [], { initialEquity: 100 });
+
+    // 若把 stale 日算进去，(strategy +10%, bench 0%) 会把 beta 拉离 2
     expect(m.beta).toBeCloseTo(2, 8);
     expect(m.alphaAnnualized).toBeCloseTo(0, 8);
   });

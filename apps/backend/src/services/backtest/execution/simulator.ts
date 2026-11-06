@@ -67,7 +67,9 @@ export type SkipReason =
   | 'round-lot-zero'
   | 'below-min-notional'
   | 'insufficient-cash'
-  | 'no-target-value';
+  | 'no-target-value'
+  /** 换手上限把增仓额度裁到不足一手（引擎在调用前完成缩放） */
+  | 'turnover-capped';
 
 /** 一笔成交（price 为**含滑点后的实际成交价**） */
 export interface Fill {
@@ -108,6 +110,11 @@ export interface ExecutionRequest {
   positionOf(symbol: string): PositionState;
   barOf(symbol: string): ExecutionBar | undefined;
   suspensionOf(symbol: string): SuspensionVerdict;
+  /**
+   * `replace` 模式清仓的逐标的退出原因（M3 归因用）。
+   * 缺省回退 `rebalance-replace`；减仓（未清仓）仍记 `rebalance-replace`。
+   */
+  exitReasons?: Readonly<Record<string, string>>;
 }
 
 export interface ExecutionResult {
@@ -221,7 +228,7 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
       if (targetBySymbol.has(symbol)) continue;
       const pos = req.positionOf(symbol);
       if (pos.qty <= 0) continue;
-      pushSell(symbol, pos.qty, 'rebalance-replace');
+      pushSell(symbol, pos.qty, req.exitReasons?.[symbol] ?? 'rebalance-replace');
     }
   }
 

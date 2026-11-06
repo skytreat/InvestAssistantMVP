@@ -39,14 +39,20 @@ export interface PositionView {
 export type EntryReason =
   'candidate-top' | 'holding-retained' | 'defensive-fallback' | 'rebalance' | 'manual';
 
-/** 清仓/减仓原因（M3 归因按此分组） */
+/**
+ * 清仓/减仓原因（M3 归因按此分组，枚举对齐 proposal §6.1）
+ *
+ * `end-of-backtest` 不由真实成交产生：归因层为期末未平仓持仓补的**伪回合**使用它，
+ * 目的是让「按退出原因」维度也能与 `total.pnl` 求和相等（§6.2 可加性断言）。
+ */
 export type ExitReason =
   | 'weak-period-exit'
   | 'drop-from-pool'
   | 'out-of-candidate'
   | 'stop-loss'
   | 'rebalance-replace'
-  | 'defensive-fallback';
+  | 'defensive-fallback'
+  | 'end-of-backtest';
 
 /** 单个目标仓位 */
 export interface TargetPosition {
@@ -65,12 +71,21 @@ export interface TargetSet {
   /** `replace`：不在 targets 里的持仓清仓；`incremental`：只按 targets 调整，其余保持 */
   mode: 'replace' | 'incremental';
   /**
-   * 换手上限（占权益比例）。
+   * 换手上限（占权益比例，M3 起生效）。
    *
-   * ⚠️ M2 引擎**未实现**该字段（当前没有策略使用它，v5.2 也没有换手上限）；
-   * 字段保留是为了 M3 移植时不改接口。设了但未生效会由引擎显式报错，避免「静默忽略」。
+   * 契约（引擎实现，见 `engine.ts` 的 `capTurnover`）：
+   * - **卖出强制**：`replace` 模式下不在 targets 里的持仓必须清掉，卖出额先计入换手；
+   * - **买入等比缩放**：`Σ|Δ| / equity > ratio` 时，只按剩余额度等比缩放**增仓部分**；
+   * - 被缩放到不足一手的标的记 `turnover-capped`（`SkippedOrder`），不静默丢弃。
    */
   maxTurnoverRatio?: number;
+  /**
+   * 逐标的清仓原因（symbol → ExitReason）。
+   *
+   * 引擎在 `replace` 模式清算「不在 targets 里」的持仓时，按此表给出退出原因；
+   * 缺省回退 `rebalance-replace`。M2 的策略不设置该字段，行为不变。
+   */
+  exitReasons?: Readonly<Record<string, ExitReason>>;
 }
 
 /** 策略看到的 bar（带 symbol） */
