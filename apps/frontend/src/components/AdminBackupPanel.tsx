@@ -8,6 +8,7 @@ import {
   buttonStyle,
   dangerButtonStyle,
   errorStyle,
+  inputStyle,
   successStyle,
   tableStyle,
   thStyle,
@@ -26,8 +27,8 @@ import ScrollableTable from './ScrollableTable';
  * |---|---|
  * | 手动备份按钮 | 「立即备份」→ `POST /api/admin/backup` |
  * | 备份列表（日期 + 体积）| `GET /api/admin/backups` → 文件名 / 修改时间 / 可读体积 |
- * | 恢复按钮 | 每行「恢复」→ `POST /api/admin/backup/:file/restore` |
- * | 恢复前二次确认 | 复用 `components/ConfirmDialog.tsx`（**不自造裸遮罩**）|
+ * | 恢复按钮 | UX-10：日常列表不再内联「恢复」；统一走下方「危险恢复区」→ `POST /api/admin/backup/:file/restore` |
+ * | 恢复前二次确认 | 危险区内**手输文件名**方可点击恢复，再复用 `ConfirmDialog` 二次确认（**不自造裸遮罩**）|
  *
  * ## 三条硬约束
  *
@@ -128,6 +129,15 @@ const subTitleStyle = {
  */
 const disabledButtonStyle = { ...buttonStyle, ...buttonDisabledStyle };
 
+/** 危险恢复区外框（UX-10）—— 虚线红框，与日常备份区视觉分离 */
+const dangerZoneStyle = {
+  marginTop: SPACING.gapRelaxed,
+  padding: SPACING.gapBase,
+  border: `1px dashed ${COLORS.danger}`,
+  borderRadius: RADIUS.md,
+  background: '#fef2f2',
+};
+
 /** 状态条底色 —— 浅底 + 边框，避免「彩色底 + 白字」的对比度不足 */
 const statusBarStyle = {
   marginTop: SPACING.gapBase,
@@ -156,6 +166,19 @@ export default function AdminBackupPanel() {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   /** 恢复失败时记住「是哪个文件失败的」—— 重试按钮要拿它重新发起恢复 */
   const [restoreFailedEntry, setRestoreFailedEntry] = useState<BackupEntry | null>(null);
+
+  // ── 危险恢复区（UX-10：恢复入口从日常备份表中拆出）──
+  /** 选中的待恢复文件名（空串 = 未选） */
+  const [restorePick, setRestorePick] = useState('');
+  /** 用户手输的文件名 —— 必须与选中文件名逐字一致才允许恢复 */
+  const [restoreConfirmText, setRestoreConfirmText] = useState('');
+
+  /** 只有 SQLite 备份可恢复（与后端白名单一致） */
+  const restorableEntries = entries.filter((e) => RESTORE_FILE_RE.test(e.name));
+  const pickedEntry = restorableEntries.find((e) => e.name === restorePick) ?? null;
+  /** <1MB 的备份多半是早期/测试库，恢复会丢大量数据 —— 需额外警示 */
+  const pickedIsSuspiciouslySmall = pickedEntry !== null && pickedEntry.size < 1024 * 1024;
+  const confirmNameMatches = pickedEntry !== null && restoreConfirmText.trim() === pickedEntry.name;
 
   const loadBackups = useCallback(async () => {
     setListLoading(true);
@@ -222,6 +245,8 @@ export default function AdminBackupPanel() {
       const body = res.data as ApiEnvelope<{ file?: string; safetyBackup?: string }>;
       if (isOkEnvelope(body)) {
         setRestoreNotice(`已从备份恢复：${entry.name}`);
+        setRestorePick('');
+        setRestoreConfirmText('');
         await loadBackups();
       } else {
         setRestoreError(body?.message ?? '恢复失败');
@@ -280,7 +305,7 @@ export default function AdminBackupPanel() {
         )}
       </div>
 
-      {/* 备份列表 */}
+      {/* 备份列表 —— UX-10：日常列表不再内联「恢复」按钮，恢复到下方独立危险区操作 */}
       <div style={{ ...subTitleStyle, marginTop: SPACING.gapRelaxed }}>备份列表</div>
       {listLoading && <div style={{ color: COLORS.neutral }}>读取备份列表中…</div>}
       {listError !== null && (
@@ -309,56 +334,124 @@ export default function AdminBackupPanel() {
                 <th scope="col" style={thStyle}>
                   体积
                 </th>
-                <th scope="col" style={thStyle}>
-                  操作
-                </th>
               </tr>
             </thead>
             <tbody>
               {entries.length === 0 ? (
                 <tr>
-                  <td style={thTdStyle} colSpan={4}>
+                  <td style={thTdStyle} colSpan={3}>
                     暂无备份文件
                   </td>
                 </tr>
               ) : (
-                entries.map((entry) => {
-                  const restorable = RESTORE_FILE_RE.test(entry.name);
-                  return (
-                    <tr key={entry.name} data-testid="backup-row">
-                      <td style={thTdStyle}>
-                        <span style={truncatedTextStyle} title={entry.name}>
-                          {entry.name}
-                        </span>
-                      </td>
-                      <td style={thTdStyle}>{formatBackupTime(entry.modified)}</td>
-                      <td style={thTdStyle}>{formatBackupSize(entry.size)}</td>
-                      <td style={thTdStyle}>
-                        {restorable ? (
-                          <button
-                            type="button"
-                            style={
-                              restoreBusy ? disabledButtonStyle : { ...buttonStyle, ...dangerButtonStyle }
-                            }
-                            onClick={() => setRestoreTarget(entry)}
-                            disabled={restoreBusy}
-                          >
-                            恢复
-                          </button>
-                        ) : (
-                          <span style={{ color: COLORS.neutral, fontSize: TYPO.captionSize }}>
-                            不可恢复（仅 SQLite 备份可恢复）
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
+                entries.map((entry) => (
+                  <tr key={entry.name} data-testid="backup-row">
+                    <td style={thTdStyle}>
+                      <span style={truncatedTextStyle} title={entry.name}>
+                        {entry.name}
+                      </span>
+                    </td>
+                    <td style={thTdStyle}>{formatBackupTime(entry.modified)}</td>
+                    <td style={thTdStyle}>{formatBackupSize(entry.size)}</td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
         </ScrollableTable>
       )}
+
+      {/* 危险恢复区（UX-10）—— 与日常备份视觉/结构分离，恢复需手输文件名确认 */}
+      <div style={dangerZoneStyle} data-testid="admin-restore-zone">
+        <div style={{ ...subTitleStyle, color: COLORS.danger, marginBottom: SPACING.gapTight }}>
+          危险恢复区
+        </div>
+        <div style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary }}>
+          恢复会用备份文件覆盖当前业务库，<strong>操作不可撤销</strong>。备份之后产生的交易与配置变更将丢失。
+          恢复前建议先点上方「立即备份」留一份当前数据。
+        </div>
+
+        <div style={{ marginTop: SPACING.gapBase, display: 'flex', flexWrap: 'wrap', gap: SPACING.gapBase }}>
+          <label htmlFor="restore-pick" style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+            选择备份
+          </label>
+          <select
+            id="restore-pick"
+            value={restorePick}
+            onChange={(e) => {
+              setRestorePick(e.target.value);
+              setRestoreConfirmText('');
+            }}
+            disabled={restoreBusy}
+            style={{ ...inputStyle, minWidth: 240 }}
+          >
+            <option value="">（选择要恢复的 SQLite 备份）</option>
+            {restorableEntries.map((entry) => (
+              <option key={entry.name} value={entry.name}>
+                {entry.name} · {formatBackupSize(entry.size)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {pickedEntry !== null && (
+          <div
+            style={{ marginTop: SPACING.gapBase, fontSize: TYPO.captionSize }}
+            data-testid="restore-pick-info"
+          >
+            <div>
+              备份日期：{formatBackupTime(pickedEntry.modified)} · 体积：{formatBackupSize(pickedEntry.size)}
+            </div>
+            {pickedIsSuspiciouslySmall && (
+              <div
+                style={{ color: COLORS.danger, marginTop: SPACING.gapTight }}
+                data-testid="restore-small-warning"
+              >
+                体积不足 1MB，可能是早期或测试备份，恢复会丢失大量数据，请务必确认后再操作。
+              </div>
+            )}
+          </div>
+        )}
+
+        {pickedEntry !== null && (
+          <div style={{ marginTop: SPACING.gapBase }}>
+            <label
+              htmlFor="restore-confirm-name"
+              style={{ display: 'block', fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+            >
+              请输入上方文件名以确认恢复
+            </label>
+            <input
+              id="restore-confirm-name"
+              type="text"
+              value={restoreConfirmText}
+              onChange={(e) => setRestoreConfirmText(e.target.value)}
+              placeholder={pickedEntry.name}
+              disabled={restoreBusy}
+              style={{ ...inputStyle, minWidth: 240 }}
+            />
+            <button
+              type="button"
+              style={
+                !confirmNameMatches || restoreBusy
+                  ? disabledButtonStyle
+                  : { ...buttonStyle, ...dangerButtonStyle, marginLeft: SPACING.gapBase }
+              }
+              disabled={!confirmNameMatches || restoreBusy}
+              onClick={() => {
+                if (pickedEntry) setRestoreTarget(pickedEntry);
+              }}
+            >
+              恢复此备份
+            </button>
+          </div>
+        )}
+        {restorableEntries.length === 0 && !listLoading && listError === null && (
+          <div style={{ marginTop: SPACING.gapBase, color: COLORS.neutral }} data-testid="restore-empty">
+            暂无可恢复的 SQLite 备份（行情库 parquet 备份不可恢复）。
+          </div>
+        )}
+      </div>
 
       {/* 恢复的内联反馈区 */}
       <div aria-live="polite" aria-busy={restoreBusy} data-testid="restore-status">
@@ -392,7 +485,18 @@ export default function AdminBackupPanel() {
         open={restoreTarget !== null}
         title="确认恢复备份"
         message={
-          restoreTarget ? `恢复「${restoreTarget.name}」会覆盖当前业务库，操作不可撤销。\n确认继续？` : ''
+          restoreTarget
+            ? [
+                `恢复「${restoreTarget.name}」会覆盖当前业务库，操作不可撤销。`,
+                `备份时间：${formatBackupTime(restoreTarget.modified)} · 体积：${formatBackupSize(restoreTarget.size)}`,
+                restoreTarget.size < 1024 * 1024
+                  ? '注意：该备份不足 1MB，可能是早期或测试备份，恢复会丢失大量数据。'
+                  : '',
+                '备份之后产生的交易与配置变更将丢失。确认继续？',
+              ]
+                .filter(Boolean)
+                .join('\n')
+            : ''
         }
         confirmText="确认恢复"
         cancelText="取消"

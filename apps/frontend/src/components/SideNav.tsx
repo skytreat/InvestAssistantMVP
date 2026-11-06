@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { SPACING } from '../theme/tokens';
-import { navLinkActiveStyle, navLinkStyle } from '../theme/styles';
+import { navGroupTitleStyle, navLinkActiveStyle, navLinkStyle } from '../theme/styles';
 
 /**
  * 桌面左侧导航栏（T76 ① · PRD §5.8 #7）
@@ -33,6 +33,37 @@ export interface NavItem {
   label: string;
   /** 仅管理员可见 */
   adminOnly?: boolean;
+  /**
+   * 业务域分组标题（UX-12）
+   *
+   * 相邻且 `group` 相同的入口归入同一组；**不改变入口顺序**。
+   * 未设置时归入一个无标题的分组。
+   */
+  group?: string;
+}
+
+/** 一个导航分组（`title` 为空表示无标题）*/
+export interface NavGroup {
+  title: string;
+  items: NavItem[];
+}
+
+/**
+ * 按 `group` 切分**连续区间**（UX-12）
+ *
+ * ⚠️ 只按相邻区间分组 —— 不排序、不重排、不跨区间合并，
+ *    保证「只加分组标题、不改顺序」（owner 决策 Q6）。
+ *    角色过滤后为空的组不会产生分组（调用方先过滤再分组）。
+ */
+export function groupNavItems(items: NavItem[]): NavGroup[] {
+  const groups: NavGroup[] = [];
+  for (const item of items) {
+    const title = item.group ?? '';
+    const last = groups[groups.length - 1];
+    if (last && last.title === title) last.items.push(item);
+    else groups.push({ title, items: [item] });
+  }
+  return groups;
 }
 
 export interface SideNavProps {
@@ -50,7 +81,8 @@ const sideNavLinkStyle: React.CSSProperties = {
 };
 
 export default function SideNav({ items, isAdmin }: SideNavProps) {
-  const visibleItems = items.filter((i) => !i.adminOnly || isAdmin);
+  // 先按角色过滤，再分组 —— 否则「券商 / 管理」这类全 adminOnly 的组会给普通用户留下空标题
+  const groups = groupNavItems(items.filter((i) => !i.adminOnly || isAdmin));
 
   return (
     <nav
@@ -64,34 +96,47 @@ export default function SideNav({ items, isAdmin }: SideNavProps) {
         position: 'sticky',
         top: 0,
         alignSelf: 'flex-start',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: SPACING.gapBase,
       }}
     >
-      <ul
-        style={{
-          listStyle: 'none',
-          margin: 0,
-          padding: 0,
-          display: 'flex',
-          // 竖排 —— A1 断言「垂直排列」
-          flexDirection: 'column',
-          gap: SPACING.gapTight,
-        }}
-      >
-        {visibleItems.map((item) => (
-          <li key={item.to}>
-            <NavLink
-              to={item.to}
-              end
-              style={({ isActive }) => ({
-                ...sideNavLinkStyle,
-                ...(isActive ? navLinkActiveStyle : {}),
-              })}
-            >
-              {item.label}
-            </NavLink>
-          </li>
-        ))}
-      </ul>
+      {groups.map((group, groupIndex) => (
+        <div key={`${group.title || 'nav'}-${groupIndex}`}>
+          {/* UX-12：分组标题是语义化 <h3>，不是入口（不可点击、不进 Tab 序列） */}
+          {group.title !== '' && (
+            <h3 style={{ ...navGroupTitleStyle, marginTop: groupIndex === 0 ? 0 : SPACING.gapBase }}>
+              {group.title}
+            </h3>
+          )}
+          <ul
+            style={{
+              listStyle: 'none',
+              margin: 0,
+              padding: 0,
+              display: 'flex',
+              // 竖排 —— A1 断言「垂直排列」
+              flexDirection: 'column',
+              gap: SPACING.gapTight,
+            }}
+          >
+            {group.items.map((item) => (
+              <li key={item.to}>
+                <NavLink
+                  to={item.to}
+                  end
+                  style={({ isActive }) => ({
+                    ...sideNavLinkStyle,
+                    ...(isActive ? navLinkActiveStyle : {}),
+                  })}
+                >
+                  {item.label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </nav>
   );
 }

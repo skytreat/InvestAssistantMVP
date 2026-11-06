@@ -454,6 +454,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       const strategyMatch = q.strategy_match as string | undefined;
       const isStopLoss = q.is_stop_loss as string | undefined;
       const hasReview = q.has_review as string | undefined;
+      const brokerCode = q.broker_code as string | undefined;
       const page = Math.max(1, Number(q.page) || 1);
       const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
       const offset = (page - 1) * limit;
@@ -488,6 +489,10 @@ export async function registerTradeRoutes(app: FastifyInstance) {
       if (isStopLoss !== undefined) {
         conditions.push('is_stop_loss = ?');
         params.push(Number(isStopLoss));
+      }
+      if (brokerCode) {
+        conditions.push('broker_code = ?');
+        params.push(brokerCode);
       }
       if (hasReview === 'true') {
         conditions.push(

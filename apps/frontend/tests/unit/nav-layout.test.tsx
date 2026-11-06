@@ -74,6 +74,12 @@ describe('T76 ③ · `<768px` 顶栏折叠为 hamburger 菜单', () => {
     expect(menu).toHaveAttribute('id', 'mobile-menu');
     // 菜单里是纵向的入口列表
     expect(menu.querySelector('ul')?.style.flexDirection).toBe('column');
+    // UX-12：窄屏菜单同样插入业务域分组标题（顺序不变，只是多了 <h3> 标签）
+    expect(
+      within(menu)
+        .getAllByRole('heading', { level: 3 })
+        .map((h) => h.textContent),
+    ).toEqual(['投资', '研究', '交易与持仓', '策略与设置', '组合与管理']);
 
     // ESC → 收起
     await user.keyboard('{Escape}');

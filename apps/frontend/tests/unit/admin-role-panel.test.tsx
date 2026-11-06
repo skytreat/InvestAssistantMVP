@@ -13,21 +13,16 @@ import { mockErrorResponse, mockResponse, renderWithRouter } from '../helpers';
  *
  * | 断言 | 用例 |
  * |---|---|
- * | A7 已有 admin 时升级按钮禁用 | 已有管理员时升级按钮禁用 |
- * | A8 自己那一行降级按钮禁用 + 文案 | 不能降级当前登录账号（按钮禁用）|
+ * | UX-08 已有 admin 时提供「转移管理员」入口（不再死锁）| 已有管理员时提供可用的「转移管理员」入口 |
+ * | A8 自己那一行降级按钮禁用 + 指向「转移管理员」的文案 | 不能降级当前登录账号（按钮禁用）|
  * | A9 二次确认后才 `PATCH`（body = `{role:'admin'}`）| 角色变更需二次确认后才发请求 |
+ * | UX-08 转移确认文案 + 成功后会话角色降为 user | 转移管理员：确认文案含「你将失去管理员权限」，成功后自己变为普通用户 |
  * | 后端 400 → 内联错误条 | 后端拒绝时显示后端原文案 |
  *
- * ⚠️ **为什么「升级」用例的假数据里没有 admin**
+ * ⚠️ **为什么「直接升级」用例的假数据里没有 admin**
  *
- * 后端 `routes/admin.ts` 的两条约束叠在一起：
- * - 「目标升 admin 时，检查是否已有**其他** admin」⇒ 操作者本人是 admin 时，
- *   给别人升 admin **必然** 400；
- * - 「禁止降级自己」⇒ 操作者也不能先把自己降下去。
- *
- * ⇒ 「库里已有 admin 时升级按钮禁用」不是前端保守，而是**后端的真实约束**。
- *   要让「升级」这条路径可达，假数据里必须**没有 admin 行**（此时才满足
- *   「除目标之外无 admin」），本用例据此构造。
+ * `role='admin'` 的语义是：库里已有 admin 时走**原子转移**（升目标 + 降自己）；
+ * 库里没有 admin 时才是普通「升级」。要单独验证后者，假数据必须**没有 admin 行**。
  */
 
 const { getMock, patchMock } = vi.hoisted(() => ({
@@ -75,21 +70,20 @@ describe('Admin 角色面板', () => {
     });
   });
 
-  it('已有管理员时升级按钮禁用', async () => {
+  it('已有管理员时提供可用的「转移管理员」入口（不再死锁）', async () => {
     renderWithRouter(<AdminRolePanel />);
 
     const rows = await screen.findAllByTestId('role-row');
     expect(rows).toHaveLength(2);
 
     const aliceRow = rows[1];
-    const promote = within(aliceRow).getByRole('button', { name: '升级为管理员' });
-    // A7：库中已有 admin ⇒ 升级按钮禁用
-    expect(promote).toBeDisabled();
-    // 文案与后端 400 文案口径一致
-    expect(within(aliceRow).getByTestId('role-hint')).toHaveTextContent('已有管理员，请先降级现任管理员');
+    // UX-08：库里已有 admin ⇒ 其他用户可以「转移管理员」，不再禁用
+    const transfer = within(aliceRow).getByRole('button', { name: /转移管理员给 alice/ });
+    expect(transfer).toBeEnabled();
+    expect(transfer).toHaveTextContent('转移管理员');
   });
 
-  it('不能降级当前登录账号（按钮禁用）', async () => {
+  it('不能降级当前登录账号（按钮禁用，文案指向「转移管理员」）', async () => {
     renderWithRouter(<AdminRolePanel />);
 
     const rows = await screen.findAllByTestId('role-row');
@@ -99,7 +93,31 @@ describe('Admin 角色面板', () => {
     const demote = within(selfRow).getByRole('button', { name: '降级为普通用户' });
     // A8：当前登录账号那一行的降级按钮禁用
     expect(demote).toBeDisabled();
-    expect(within(selfRow).getByTestId('role-hint')).toHaveTextContent('不能降级当前登录账号');
+    // UX-08：提示必须给出可执行的出口（旧文案「不能降级当前登录账号」是死锁的一半）
+    expect(within(selfRow).getByTestId('role-hint')).toHaveTextContent('转移管理员');
+  });
+
+  it('转移管理员：确认文案说明「你将失去管理员权限」，成功后自己变为普通用户', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<AdminRolePanel />);
+    const rows = await screen.findAllByTestId('role-row');
+
+    await user.click(within(rows[1]).getByRole('button', { name: /转移管理员给 alice/ }));
+
+    // 二次确认弹窗：明确告知当前账号会失去管理员权限
+    expect(screen.getByRole('dialog')).toHaveTextContent('你将失去管理员权限');
+    expect(patchMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '确认转移' }));
+
+    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+    expect(patchMock.mock.calls[0]?.[0]).toBe('/admin/role/2');
+    expect(patchMock.mock.calls[0]?.[1]).toEqual({ role: 'admin' });
+
+    const notice = await screen.findByTestId('role-notice');
+    expect(notice).toHaveTextContent('已将管理员转移给「alice」');
+    // 会话角色同步为 user（AdminGuard 据此立即收回管理员页）
+    expect(useUserStore.getState().role).toBe('user');
   });
 
   it('角色变更需二次确认后才发请求', async () => {
@@ -110,7 +128,7 @@ describe('Admin 角色面板', () => {
     renderWithRouter(<AdminRolePanel />);
     const rows = await screen.findAllByTestId('role-row');
 
-    const promote = within(rows[0]).getByRole('button', { name: '升级为管理员' });
+    const promote = within(rows[0]).getByRole('button', { name: /升级 alice 为管理员/ });
     expect(promote).toBeEnabled();
 
     await user.click(promote);
@@ -134,7 +152,7 @@ describe('Admin 角色面板', () => {
     renderWithRouter(<AdminRolePanel />);
     const rows = await screen.findAllByTestId('role-row');
 
-    await user.click(within(rows[0]).getByRole('button', { name: '升级为管理员' }));
+    await user.click(within(rows[0]).getByRole('button', { name: /升级 alice 为管理员/ }));
     await user.click(screen.getByRole('button', { name: '取消' }));
 
     expect(patchMock).not.toHaveBeenCalled();
@@ -145,17 +163,17 @@ describe('Admin 角色面板', () => {
     const user = userEvent.setup();
     getMock.mockResolvedValue(mockResponse(USERS_WITHOUT_ADMIN));
     patchMock.mockRejectedValueOnce(
-      mockErrorResponse(400, 'PARAM_INVALID', '已有管理员，请先降级现任管理员'),
+      mockErrorResponse(400, 'PARAM_INVALID', '该操作会使管理员数量不为 1，已整体回滚'),
     );
 
     renderWithRouter(<AdminRolePanel />);
     const rows = await screen.findAllByTestId('role-row');
 
-    await user.click(within(rows[0]).getByRole('button', { name: '升级为管理员' }));
+    await user.click(within(rows[0]).getByRole('button', { name: /升级 alice 为管理员/ }));
     await user.click(screen.getByRole('button', { name: '确认变更' }));
 
     const errorBar = await screen.findByTestId('role-error');
-    expect(errorBar).toHaveTextContent('已有管理员，请先降级现任管理员');
+    expect(errorBar).toHaveTextContent('该操作会使管理员数量不为 1，已整体回滚');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
@@ -166,7 +184,7 @@ describe('Admin 角色面板', () => {
     renderWithRouter(<AdminRolePanel />);
     const rows = await screen.findAllByTestId('role-row');
 
-    await user.click(within(rows[0]).getByRole('button', { name: '升级为管理员' }));
+    await user.click(within(rows[0]).getByRole('button', { name: /升级 alice 为管理员/ }));
     await user.click(screen.getByRole('button', { name: '确认变更' }));
 
     const notice = await screen.findByTestId('role-notice');

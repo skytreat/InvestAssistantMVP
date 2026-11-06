@@ -83,6 +83,7 @@ function installMocks(
     rows?: LogFixture[];
     fallback?: { exists: boolean; lines: string[] };
     total?: number;
+    totalPages?: number;
   } = {},
 ): void {
   const rows = options.rows ?? ROWS;
@@ -96,7 +97,7 @@ function installMocks(
           page: 1,
           pageSize: 20,
           total: options.total ?? rows.length,
-          totalPages: 1,
+          totalPages: options.totalPages ?? 1,
         },
       }),
     );
@@ -299,6 +300,80 @@ describe('Wave 7 卡 1 · Admin 日志面板', () => {
     const select = (await screen.findByLabelText('日志级别')) as HTMLSelectElement;
     const values = Array.from(select.options).map((o) => o.value);
     expect(values).toEqual(['', 'INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS']);
+  });
+
+  it('UX-14：每页条数可切换（切回第 1 页并带 page_size）', async () => {
+    const user = userEvent.setup();
+    installMocks({ total: 200, totalPages: 10 });
+    renderWithRouter(<AdminLogPanel />);
+    await screen.findByRole('table', { name: '系统日志' });
+
+    await user.selectOptions(screen.getByLabelText('每页'), '50');
+    await waitFor(() => expect(lastParams()?.page_size).toBe(50));
+    expect(lastParams()?.page).toBe(1);
+  });
+
+  it('UX-14：页码跳转可用，越界自动收敛到末页', async () => {
+    const user = userEvent.setup();
+    installMocks({ total: 200, totalPages: 10 });
+    renderWithRouter(<AdminLogPanel />);
+    await screen.findByRole('table', { name: '系统日志' });
+
+    const jump = screen.getByLabelText('跳至');
+    await user.type(jump, '3');
+    await user.click(screen.getByRole('button', { name: '跳转' }));
+    await waitFor(() => expect(lastParams()?.page).toBe(3));
+
+    await user.type(jump, '99');
+    await user.click(screen.getByRole('button', { name: '跳转' }));
+    await waitFor(() => expect(lastParams()?.page).toBe(10));
+  });
+
+  it('UX-14：WARN / ERROR 快捷 chip 一键筛选，再点取消', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<AdminLogPanel />);
+    await screen.findByRole('table', { name: '系统日志' });
+
+    const errorChip = screen.getByRole('button', { name: '仅错误' });
+    await user.click(errorChip);
+    expect(errorChip).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(lastParams()?.level).toBe('ERROR'));
+
+    await user.click(errorChip);
+    expect(errorChip).toHaveAttribute('aria-pressed', 'false');
+    await waitFor(() => expect(lastParams()?.level).toBeUndefined());
+  });
+
+  it('UX-14：桌面端行可展开详情，再收起', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<AdminLogPanel />);
+    await screen.findByRole('table', { name: '系统日志' });
+
+    const toggle = screen.getAllByRole('button', { name: '展开详情' })[0];
+    const detailId = toggle.getAttribute('aria-controls') as string;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById(detailId)).toBeNull();
+
+    await user.click(toggle);
+    expect(document.getElementById(detailId)).not.toBeNull();
+    expect(document.getElementById(detailId)?.textContent).toContain('SELECT * FROM v_stock_qfq');
+    expect(screen.getAllByRole('button', { name: '收起详情' })[0]).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(screen.getByRole('button', { name: '收起详情' }));
+    expect(document.getElementById(detailId)).toBeNull();
+  });
+
+  it('UX-14：降级日志入口位于分页之前（不用先翻到底）', async () => {
+    installMocks({ total: 200, totalPages: 10 });
+    renderWithRouter(<AdminLogPanel />);
+    await screen.findByRole('table', { name: '系统日志' });
+
+    const fallbackButton = screen.getByRole('button', { name: /降级日志/ });
+    const prevButton = screen.getByRole('button', { name: '上一页' });
+    // 分页容器在降级入口之后 ⇒ 降级入口在文档序上先于「上一页」
+    expect(
+      fallbackButton.compareDocumentPosition(prevButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('Admin 日志面板：无 critical 级 a11y 违规', async () => {

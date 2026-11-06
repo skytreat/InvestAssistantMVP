@@ -19,11 +19,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Admin from '../../src/pages/Admin';
-import { mockResponse } from '../helpers';
+import { mockResponse, renderWithRouter } from '../helpers';
 
 /* ------------------------------------------------------------------ *
  * api mock
@@ -104,51 +104,83 @@ beforeEach(() => {
  * 用例
  * ------------------------------------------------------------------ */
 
-describe('Admin 页：接线（卡 6）', () => {
-  it('Admin 页：渲染五个面板（日志/触发/备份/角色/校验卡片）且无 alert', async () => {
-    render(<Admin />);
+describe('Admin 页：分区（UX-09）', () => {
+  it('默认进入「数据校验」分区：渲染 12 张卡片，其他分区不挂载（不触发无关请求）', async () => {
+    renderWithRouter(<Admin />, { initialEntries: ['/admin'] });
 
-    // ① 校验仪表盘（组件自带卡片框与标题）
     await waitFor(() => expect(screen.getAllByTestId('datacheck-card')).toHaveLength(12));
-    expect(screen.getByText('数据校验结果（C1-C12）— 点击卡片查看详情')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '数据校验' })).toHaveAttribute('aria-selected', 'true');
 
-    // ② 手动触发面板（行情更新补跑 / 数据校验 / 信号生成）
-    //    ⚠️ 用 `selector: 'div'` 排除日志类型下拉里的 `<option>手动触发</option>`
+    // 旧单页里「一路平铺」的其它四块必须已经不在 DOM 中
+    expect(screen.queryByTestId('admin-log-panel')).toBeNull();
+    expect(screen.queryByRole('button', { name: '立即备份' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '立即补跑行情更新' })).toBeNull();
+    // 旧的内联块同样归零
+    expect(screen.queryByRole('button', { name: '执行备份' })).toBeNull();
+    expect(screen.queryByText('行情更新补跑（Requirements §5.1 管理员手动补跑）')).toBeNull();
+  });
+
+  it('`?tab=` 深链可直达分区；点分区按钮可切换且只挂载当前分区', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<Admin />, { initialEntries: ['/admin?tab=logs'] });
+
+    // 深链进「系统日志」
+    expect(screen.getByTestId('admin-log-panel')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '系统日志' })).toBeInTheDocument();
+    expect(screen.queryAllByTestId('datacheck-card')).toHaveLength(0);
+
+    // 切到「备份与恢复」
+    await user.click(screen.getByRole('tab', { name: '备份与恢复' }));
+    expect(screen.getByRole('button', { name: '立即备份' })).toBeInTheDocument();
+    expect(screen.getByText('危险恢复区')).toBeInTheDocument();
+    expect(screen.queryByTestId('admin-log-panel')).toBeNull();
+
+    // 切到「手动触发」
+    await user.click(screen.getByRole('tab', { name: '手动触发' }));
     expect(screen.getByText('手动触发', { selector: 'div' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '立即补跑行情更新' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '执行数据校验' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '执行信号生成' })).toBeInTheDocument();
 
-    // ③ 备份与恢复面板
-    expect(screen.getByText('备份与恢复')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '立即备份' })).toBeInTheDocument();
-
-    // ④ 角色管理面板
-    expect(screen.getByText('角色管理')).toBeInTheDocument();
+    // 切到「角色管理」
+    await user.click(screen.getByRole('tab', { name: '角色管理' }));
     expect(await screen.findByText('admin')).toBeInTheDocument();
 
-    // ⑤ 系统日志面板（组件自带卡片框与 `<h2>` 标题）
-    expect(screen.getByTestId('admin-log-panel')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '系统日志' })).toBeInTheDocument();
+    // 切回「数据校验」
+    await user.click(screen.getByRole('tab', { name: '数据校验' }));
+    await waitFor(() => expect(screen.getAllByTestId('datacheck-card')).toHaveLength(12));
 
-    // 🔴 **旧的内联块必须已经消失**（接线不是「新增」，是「替换」）
-    //    判据不是「没有日志表」（新组件也有表），而是**结构变了**：
-    //    - 旧的日志表**没有** `role="region"` 滚动容器 → 现在必须有；
-    //    - 旧的标题是 `<div>` → 现在是 `<h2>`（上面已断言）。
-    expect(screen.getByRole('region', { name: '系统日志表' })).toBeInTheDocument();
-    // 旧的「执行备份」按钮（阻塞式 alert 反馈的那个）已经没有了
-    expect(screen.queryByRole('button', { name: '执行备份' })).toBeNull();
-    // 旧的「行情更新补跑」卡片标题已并入「手动触发」面板
-    expect(screen.queryByText('行情更新补跑（Requirements §5.1 管理员手动补跑）')).toBeNull();
-
-    // 🔴 **alert() 归零** —— 旧实现有 2 处阻塞式弹窗
+    // 🔴 alert() 归零 —— 旧实现有 2 处阻塞式弹窗
     const alertSpy = vi.spyOn(window, 'alert');
     expect(alertSpy).not.toHaveBeenCalled();
     alertSpy.mockRestore();
   });
 
-  it('Admin 页：校验卡片渲染 12 张且每张带 checkId 与名称（G7.6 展示面）', async () => {
-    render(<Admin />);
+  it('非法 ?tab 值回落到「数据校验」', async () => {
+    renderWithRouter(<Admin />, { initialEntries: ['/admin?tab=nope'] });
+    await waitFor(() => expect(screen.getAllByTestId('datacheck-card')).toHaveLength(12));
+    expect(screen.getByRole('tab', { name: '数据校验' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('在「手动触发」分区执行校验后，切回「数据校验」能拿到最新结果', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<Admin />, { initialEntries: ['/admin?tab=trigger'] });
+
+    await user.click(await screen.findByRole('button', { name: '执行数据校验' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: '确认执行' }));
+    await waitFor(() => expect(postMock).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('tab', { name: '数据校验' }));
+    await waitFor(() => expect(screen.getAllByTestId('datacheck-card')).toHaveLength(12));
+    // 校验结果走真实接口（不是缓存/空态）
+    expect(getMock.mock.calls.some((c) => c[0] === '/admin/datacheck/result')).toBe(true);
+  });
+});
+
+describe('Admin 页：校验卡片展示面（G7.6）', () => {
+  it('校验卡片渲染 12 张且每张带 checkId 与名称', async () => {
+    renderWithRouter(<Admin />, { initialEntries: ['/admin'] });
     await waitFor(() => expect(screen.getAllByTestId('datacheck-card')).toHaveLength(12));
 
     const cards = screen.getAllByTestId('datacheck-card');
@@ -170,39 +202,20 @@ describe('Admin 页：接线（卡 6）', () => {
       expect(card.textContent).toContain('校验名称');
     }
   });
+});
 
-  it('Admin 页：手动触发校验成功后刷新校验卡片（接线的数据流）', async () => {
-    const user = userEvent.setup();
-    render(<Admin />);
-    await waitFor(() => expect(screen.getAllByTestId('datacheck-card')).toHaveLength(12));
-
-    const before = getMock.mock.calls.filter((c) => c[0] === '/admin/datacheck/result').length;
-
-    // 点「执行数据校验」→ 二次确认 → 确认
-    await user.click(screen.getByRole('button', { name: '执行数据校验' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: '确认执行' }));
-
-    await waitFor(() => {
-      const after = getMock.mock.calls.filter((c) => c[0] === '/admin/datacheck/result').length;
-      expect(after).toBeGreaterThan(before);
-    });
-  });
-
-  it('Admin 页：日志区在 <768px 走卡片分支、不渲染 table（G7.7 结构层）', async () => {
+describe('Admin 页：日志区结构（G7.7）', () => {
+  it('日志分区在 <768px 走卡片分支、不渲染 table', async () => {
     const originalWidth = window.innerWidth;
     // ⚠️ 只改 `innerWidth`、**不派发 resize**：组件在挂载时读一次 `window.innerWidth`
     //   决定分支（`useIsNarrowViewport` 的初值），派发事件反而会在 act 之外触发更新。
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true });
 
     try {
-      render(<Admin />);
+      renderWithRouter(<Admin />, { initialEntries: ['/admin?tab=logs'] });
       await waitFor(() => expect(screen.getByTestId('admin-log-cards')).toBeInTheDocument());
       // 窄视口：日志区**不渲染** `<table>`（读屏不该把同一份内容读两遍）
       expect(screen.queryByTestId('admin-log-panel')?.querySelector('table')).toBeNull();
-      // 备份列表 / 用户列表仍是表格（它们各自套了 `ScrollableTable` 滚动容器）
-      expect(screen.getByRole('table', { name: '备份列表' })).toBeInTheDocument();
-      expect(screen.getByRole('table', { name: '用户列表' })).toBeInTheDocument();
     } finally {
       Object.defineProperty(window, 'innerWidth', {
         value: originalWidth,
@@ -212,12 +225,12 @@ describe('Admin 页：接线（卡 6）', () => {
     }
   });
 
-  it('Admin 页：日志表在 ≥768px 渲染表格且套在滚动容器内', async () => {
+  it('日志分区在 ≥768px 渲染表格且套在滚动容器内', async () => {
     const originalWidth = window.innerWidth;
     Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true });
 
     try {
-      render(<Admin />);
+      renderWithRouter(<Admin />, { initialEntries: ['/admin?tab=logs'] });
       await waitFor(() => expect(screen.getByRole('table', { name: '系统日志' })).toBeInTheDocument());
       expect(screen.queryByTestId('admin-log-cards')).toBeNull();
 

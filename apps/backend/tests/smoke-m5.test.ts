@@ -670,25 +670,33 @@ beforeAll(async () => {
     .db.prepare(`SELECT * FROM system_log WHERE message LIKE '%备份恢复%' ORDER BY id DESC LIMIT 1`)
     .all() as Array<Record<string, unknown>>;
 
-  // ── 11. 角色管理 ──
+  // ── 11. 角色管理（UX-08：原子转移）──
   snap.users = await app.inject({ method: 'GET', url: '/api/admin/users', headers: adminHeaders() });
-  // 升级为 admin → 400（库里已有管理员）
-  snap.promoteBlocked = await app.inject({
+  // 转移管理员给另一个用户 → 200：同一事务内「升目标 + 降自己」
+  snap.transfer = await app.inject({
     method: 'PATCH',
     url: `/api/admin/role/${otherUserId}`,
     headers: adminHeaders(),
     payload: { role: 'admin' },
   });
-  // 降级自己 → 400（禁止降级当前登录账号）
+  snap.afterTransfer = db()
+    .db.prepare(`SELECT id, role FROM user_account WHERE id IN (?, ?)`)
+    .all(userId, otherUserId) as Array<{ id: number; role: string }>;
+  snap.adminCountAfterTransfer = (
+    db().db.prepare(`SELECT COUNT(*) AS cnt FROM user_account WHERE role = 'admin'`).get() as {
+      cnt: number;
+    }
+  ).cnt;
+  // 降级自己 → 400（不能用「降级自己」制造 0 个 admin，须走「转移管理员」）
   snap.demoteSelf = await app.inject({
     method: 'PATCH',
     url: `/api/admin/role/${userId}`,
     headers: adminHeaders(),
     payload: { role: 'user' },
   });
-  // 夹具：把另一个用户直接提成 admin（模拟「库里存在第二个管理员」的历史状态）
-  //   —— 后端的「升级」路径被「已有管理员」规则锁死，**降级**才是可达的角色变更路径。
-  db().db.prepare(`UPDATE user_account SET role = 'admin' WHERE id = ?`).run(otherUserId);
+  // 夹具：把原 admin 补回 admin（模拟历史遗留的「2 个管理员」状态），
+  //   让「降级另一个 admin」这条路径仍可验证 —— 且它不是最后一名 admin。
+  db().db.prepare(`UPDATE user_account SET role = 'admin' WHERE id = ?`).run(userId);
   snap.demote = await app.inject({
     method: 'PATCH',
     url: `/api/admin/role/${otherUserId}`,
@@ -1325,13 +1333,17 @@ describe('M5 · 第 11 步 角色管理', () => {
     expect(users.some((u) => u.username === OTHER_USER && u.role === 'user')).toBe(true);
   });
 
-  it('升级为 admin → 400（库里已有管理员，禁止出现第二个）', () => {
-    const res = snap.promoteBlocked as Inject;
-    expect(res.statusCode).toBe(400);
-    expect(typeof body(res).code).toBe('string');
+  it('转移管理员 → 200：目标成为唯一 admin，自己降为普通用户（admin 数恒为 1）', () => {
+    const res = snap.transfer as Inject;
+    expect(res.statusCode).toBe(200);
+    expect(body(res).code).toBe(0);
+    const roles = snap.afterTransfer as Array<{ id: number; role: string }>;
+    expect(roles.find((r) => r.id === otherUserId)!.role).toBe('admin');
+    expect(roles.find((r) => r.id === userId)!.role).toBe('user');
+    expect(snap.adminCountAfterTransfer).toBe(1);
   });
 
-  it('降级当前登录账号 → 400（禁止降级自己）', () => {
+  it('降级当前登录账号 → 400（禁止降级自己，引导改用「转移管理员」）', () => {
     const res = snap.demoteSelf as Inject;
     expect(res.statusCode).toBe(400);
     expect(typeof body(res).code).toBe('string');

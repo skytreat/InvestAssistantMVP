@@ -91,6 +91,21 @@ export const navLinkActiveStyle: CSSProperties = {
   fontWeight: 600,
 };
 
+/**
+ * 导航分组标题（UX-12 · 顶栏平铺 / 移动折叠菜单 / 桌面左侧栏共用）
+ *
+ * ⚠️ 只是**标签**，不是入口 —— 渲染成 `<h3>`（语义化标题），不可点击、不参与 `NavLink` 列表。
+ *    左内边距 12px 与 `navLinkStyle` 的水平 padding 对齐，避免标题比入口"缩进"。
+ */
+export const navGroupTitleStyle: CSSProperties = {
+  margin: `0 0 ${SPACING.gapTight}`,
+  paddingLeft: '12px',
+  fontSize: TYPO.captionSize,
+  fontWeight: '600',
+  letterSpacing: '0.05em',
+  color: COLORS.textMuted,
+};
+
 /** 卡片容器 */
 export const cardStyle: CSSProperties = {
   border: `1px solid ${COLORS.borderLight}`,

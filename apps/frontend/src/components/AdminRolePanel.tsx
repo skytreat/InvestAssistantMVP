@@ -26,7 +26,7 @@ import ScrollableTable from './ScrollableTable';
  * |---|---|
  * | 用户列表 | `GET /api/admin/users` → 用户名 / 角色 / 创建时间 |
  * | 升级 / 降级按钮 | `PATCH /api/admin/role/:userId`，body `{ role: 'admin' \| 'user' }` |
- * | admin 仅 1 人，可转移 | 已有管理员时禁用升级，并给出与后端一致的文案 |
+ * | admin 仅 1 人，可转移（UX-08）| 「升 admin」= **转移管理员**：后端同一事务内「升目标 + 降自己」 |
  * | 管理员双重鉴权 | 升级 / 降级都要走 `ConfirmDialog` 二次确认后才发请求 |
  *
  * ## 前端禁用 vs 后端 400 —— 谁才是权威
@@ -65,9 +65,13 @@ const ROLE_LABEL: Record<string, string> = {
   user: '普通用户',
 };
 
-/** 与后端 `routes/admin.ts` 口径一致的提示文案 */
-const HINT_ADMIN_EXISTS = '已有管理员，请先降级现任管理员';
-const HINT_CANNOT_DEMOTE_SELF = '不能降级当前登录账号';
+/**
+ * 与后端 `routes/admin.ts` 口径一致的提示文案（UX-08）
+ *
+ * ⚠️ 旧的「已有管理员，请先降级现任管理员」与「不能降级当前登录账号」互相指向对方，
+ *    形成没有出口的死锁 ⇒ 现在只保留「降自己」这一条，并把出口指向「转移管理员」。
+ */
+const HINT_CANNOT_DEMOTE_SELF = '不能直接降级自己；请用「转移管理员」把管理员交给其他用户';
 
 /** 面板内部的次级标题 */
 const subTitleStyle = {
@@ -112,10 +116,17 @@ export interface AdminRolePanelProps {
   readonly currentUsername?: string | null;
 }
 
-/** 待确认的角色变更 */
+/**
+ * 待确认的角色变更
+ *
+ * - `transfer` —— 把管理员转移给目标（同一事务内「升目标 + 降自己」）
+ * - `promote` —— 库里尚无管理员时的直接升级
+ * - `demote` —— 降级另一个管理员
+ */
 interface PendingRoleChange {
   readonly user: AdminUser;
   readonly nextRole: 'admin' | 'user';
+  readonly kind: 'transfer' | 'promote' | 'demote';
 }
 
 export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps) {
@@ -158,8 +169,8 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
   /**
    * 库里是否已经有管理员
    *
-   * ⚠️ 后端的判定是「除目标之外还有没有 admin」；对 `role='user'` 的目标行来说，
-   *    「存在任意 admin」就等价于「升级必然被拒」⇒ 前端据此禁用升级按钮。
+   * - 有 → 对非 admin 行的「升 admin」是**转移**（自己会失去管理员权限）
+   * - 无 → 是普通**升级**（只在库中没有任何 admin 的异常/初始状态下可达）
    */
   const hasAdmin = users.some((u) => u.role === 'admin');
 
@@ -174,15 +185,21 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
       const res = await api.patch(`/admin/role/${change.user.id}`, { role: change.nextRole });
       const body = res.data as ApiEnvelope<null>;
       if (isOkEnvelope(body)) {
-        const label = change.nextRole === 'admin' ? '管理员' : '普通用户';
-        setNotice(`已将「${change.user.username}」的角色改为${label}`);
+        if (change.kind === 'transfer') {
+          setNotice(`已将管理员转移给「${change.user.username}」，你已变为普通用户`);
+          // 转移成功 = 当前账号已失去管理员权限 ⇒ 同步会话角色，让 AdminGuard 立即生效
+          useUserStore.setState({ role: 'user' });
+        } else {
+          const label = change.nextRole === 'admin' ? '管理员' : '普通用户';
+          setNotice(`已将「${change.user.username}」的角色改为${label}`);
+        }
         await loadUsers();
       } else {
         setError(body?.message ?? '角色变更失败');
         setFailedChange(change);
       }
     } catch (err) {
-      // 后端 400 PARAM_INVALID（「禁止降级当前登录账号」/「已有管理员…」）在这里落成内联错误条
+      // 后端 400 PARAM_INVALID（如「不能直接降级自己…」「管理员数量不为 1，已整体回滚」）落成内联错误条
       setError(extractErrorMessage(err, '角色变更失败'));
       setFailedChange(change);
     } finally {
@@ -243,15 +260,11 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
                 users.map((u) => {
                   const isAdmin = u.role === 'admin';
                   const isSelf = self !== null && self !== undefined && u.username === self;
-                  // 降级自己 → 禁用（后端会 400「禁止降级当前登录账号」）
+                  // 降级自己 → 禁用（会制造「0 个 admin」，后端同样 400）
                   const demoteDisabled = isAdmin && isSelf;
-                  // 库里已有管理员 → 不能再直接升级（后端会 400「已有管理员…」）
-                  const promoteDisabled = !isAdmin && hasAdmin;
-                  const hint = demoteDisabled
-                    ? HINT_CANNOT_DEMOTE_SELF
-                    : promoteDisabled
-                      ? HINT_ADMIN_EXISTS
-                      : null;
+                  // 库里已有 admin + 目标不是 admin → 「转移管理员」（后端原子转移）
+                  const isTransfer = !isAdmin && hasAdmin;
+                  const hint = demoteDisabled ? HINT_CANNOT_DEMOTE_SELF : null;
                   return (
                     <tr key={u.id} data-testid="role-row">
                       <td style={thTdStyle}>{u.username}</td>
@@ -264,7 +277,7 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
                             style={
                               demoteDisabled ? disabledButtonStyle : { ...buttonStyle, ...dangerButtonStyle }
                             }
-                            onClick={() => setPending({ user: u, nextRole: 'user' })}
+                            onClick={() => setPending({ user: u, nextRole: 'user', kind: 'demote' })}
                             disabled={busy || demoteDisabled}
                           >
                             降级为普通用户
@@ -272,11 +285,22 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
                         ) : (
                           <button
                             type="button"
-                            style={promoteDisabled ? disabledButtonStyle : buttonStyle}
-                            onClick={() => setPending({ user: u, nextRole: 'admin' })}
-                            disabled={busy || promoteDisabled}
+                            style={buttonStyle}
+                            aria-label={
+                              isTransfer
+                                ? `转移管理员给 ${u.username}（你将失去管理员权限）`
+                                : `升级 ${u.username} 为管理员`
+                            }
+                            onClick={() =>
+                              setPending({
+                                user: u,
+                                nextRole: 'admin',
+                                kind: isTransfer ? 'transfer' : 'promote',
+                              })
+                            }
+                            disabled={busy}
                           >
-                            升级为管理员
+                            {isTransfer ? '转移管理员' : '升级为管理员'}
                           </button>
                         )}
                         {hint !== null && (
@@ -324,17 +348,19 @@ export default function AdminRolePanel({ currentUsername }: AdminRolePanelProps)
       {/* 角色变更二次确认 —— 复用既有 ConfirmDialog（自带 role=dialog + ESC 关闭） */}
       <ConfirmDialog
         open={pending !== null}
-        title="确认变更角色"
+        title={pending?.kind === 'transfer' ? '确认转移管理员' : '确认变更角色'}
         message={
           pending
-            ? `将「${pending.user.username}」的角色改为${
-                pending.nextRole === 'admin' ? '管理员' : '普通用户'
-              }，确认继续？`
+            ? pending.kind === 'transfer'
+              ? `将管理员角色转移给「${pending.user.username}」？\n确认后你将失去管理员权限，目标用户成为唯一管理员。`
+              : `将「${pending.user.username}」的角色改为${
+                  pending.nextRole === 'admin' ? '管理员' : '普通用户'
+                }，确认继续？`
             : ''
         }
-        confirmText="确认变更"
+        confirmText={pending?.kind === 'transfer' ? '确认转移' : '确认变更'}
         cancelText="取消"
-        danger={pending?.nextRole === 'user'}
+        danger={pending?.kind === 'transfer' || pending?.nextRole === 'user'}
         onConfirm={confirmRoleChange}
         onCancel={() => setPending(null)}
       />

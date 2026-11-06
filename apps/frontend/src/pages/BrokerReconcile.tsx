@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, successStyle, titleStyle } from './_shared';
 
@@ -50,6 +51,18 @@ interface Report {
   };
   returnSummary: { risk: number; cash: number; total: number; note: string };
   generatedAt: string;
+}
+
+/** 系统交易记录（GET /api/trade 的行，UX-06「多余」下钻用） */
+interface TradeRow {
+  id: number;
+  asset_code: string;
+  trade_type: string;
+  trade_date: string;
+  quantity?: number | null;
+  price?: number | null;
+  fee?: number | null;
+  broker_code?: string | null;
 }
 
 interface DiffRow {
@@ -107,6 +120,17 @@ const MISMATCH_LABELS: Record<string, string> = {
   dividend: '分红',
   unknown: '口径未知',
 };
+const TRADE_TYPE_LABELS: Record<string, string> = {
+  buy: '买入',
+  add: '加仓',
+  reduce: '减仓',
+  clear: '清仓',
+  dividend: '分红',
+  bonus: '送股',
+  transfer: '转入',
+};
+/** 「多余」下钻每页条数（系统交易记录） */
+const EXTRA_PAGE_SIZE = 20;
 
 /** 补录候选行（从差异明细勾选） */
 interface ConfirmItem {
@@ -170,6 +194,16 @@ export default function BrokerReconcile() {
   const [oneClickPlan, setOneClickPlan] = useState<{ items: ConfirmItem[]; fuzzyCount: number } | null>(null);
   const [oneClickBusy, setOneClickBusy] = useState(false);
   const [oneClickResult, setOneClickResult] = useState<OneClickResult | null>(null);
+
+  /** 标记「已手工记录」的二次确认（UX-02：不允许一键静默改状态） */
+  const [markTarget, setMarkTarget] = useState<DiffRow | null>(null);
+  /** 「多余」下钻（UX-06：系统有、事实层无） */
+  const [extraOpen, setExtraOpen] = useState(false);
+  const [extraRows, setExtraRows] = useState<TradeRow[]>([]);
+  const [extraLoading, setExtraLoading] = useState(false);
+  const [extraError, setExtraError] = useState<string | null>(null);
+  const [extraPage, setExtraPage] = useState(1);
+  const [extraTotal, setExtraTotal] = useState(0);
 
   /** 券商下拉 = 「已导入过流水的券商」，排除已撤销批次与未识别编码，标签带批次文件名（Q8） */
   useEffect(() => {
@@ -259,6 +293,10 @@ export default function BrokerReconcile() {
     setSelected(new Map());
     setOneClickPlan(null);
     setOneClickResult(null);
+    setExtraOpen(false);
+    setExtraRows([]);
+    setExtraError(null);
+    setExtraPage(1);
   }, [brokerCode]);
 
   useEffect(() => {
@@ -510,13 +548,27 @@ export default function BrokerReconcile() {
     }
   };
 
-  /** 标记「已手工记录」（不写业务层，仅事实层 match_status=MATCHED） */
-  const markManuallyRecorded = async (factId: number) => {
+  /**
+   * 标记「已手工记录」（不写业务层，仅事实层 match_status=MATCHED）
+   *
+   * UX-02：必须经确认弹窗后执行；成功后把该事实行从补录选中集合移除（否则同一行还能被再次补录，
+   * 产生重复交易记录），并刷新报告/差异给出可见成功提示（不再只在 console 留下痕迹）。
+   */
+  const markManuallyRecorded = async (target: DiffRow) => {
+    setError(null);
+    setNotice(null);
     try {
-      const res = await api.post(`/broker-reconcile/diff/${factId}/match`, {});
+      const res = await api.post(`/broker-reconcile/diff/${target.id}/match`, {});
       if (isOkEnvelope(res.data)) {
-        void loadReport(brokerCode);
-        void loadDiff(brokerCode, category, page);
+        setSelected((prev) => {
+          if (!prev.has(target.id)) return prev;
+          const next = new Map(prev);
+          next.delete(target.id);
+          return next;
+        });
+        setNotice(`已将事实行 #${target.id} 标记为已手工记录（不写入交易记录）`);
+        await loadReport(brokerCode);
+        await loadDiff(brokerCode, category, page);
       } else {
         setError(String(res.data?.message ?? '标记失败'));
       }
@@ -533,6 +585,35 @@ export default function BrokerReconcile() {
     }
     return [...counts.entries()];
   }, [oneClickPlan]);
+
+  /** 「多余」下钻：反查该系统交易记录（服务端过滤 is_deleted=0，并按 broker_code 精确过滤，Q2） */
+  const loadExtraRows = useCallback(async (bc: string, p: number) => {
+    setExtraLoading(true);
+    setExtraError(null);
+    try {
+      const res = await api.get('/trade', {
+        params: { broker_code: bc, page: p, limit: EXTRA_PAGE_SIZE },
+      });
+      if (!isOkEnvelope(res.data)) {
+        setExtraRows([]);
+        setExtraTotal(0);
+        setExtraError(String(res.data?.message ?? '加载多余明细失败'));
+        return;
+      }
+      setExtraRows((res.data.data as TradeRow[]) ?? []);
+      setExtraTotal((res.data as { pagination?: { total?: number } }).pagination?.total ?? 0);
+    } catch (e) {
+      setExtraRows([]);
+      setExtraTotal(0);
+      setExtraError(extractErrorMessage(e, '加载多余明细失败'));
+    } finally {
+      setExtraLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (extraOpen && brokerCode) void loadExtraRows(brokerCode, extraPage);
+  }, [extraOpen, brokerCode, extraPage, loadExtraRows]);
 
   const attrRows = useMemo(() => {
     if (!report) return [] as Array<{ key: string; label: string; value: number; highlight: boolean }>;
@@ -719,9 +800,117 @@ export default function BrokerReconcile() {
               tone="success"
               hint={`含疑似 ${report.matchSummary.fuzzy}`}
             />
-            <SummaryCard label="缺失（可补录）" value={report.matchSummary.missing} tone="warning" />
-            <SummaryCard label="多余" value={report.matchSummary.extra} />
+            <SummaryCard
+              label="缺失（可补录）"
+              value={report.matchSummary.missing}
+              tone="warning"
+              hint="口径：按标的×日期去重"
+              help="摘要「缺失」按「标的 × 日期」去重计数；下方差异明细按事实行逐条计数，二者口径不同。"
+            />
+            <SummaryCard
+              label="多余"
+              value={report.matchSummary.extra}
+              hint="口径：系统有、事实层无（去重）"
+              help="摘要「多余」按「标的 × 日期」去重计数；点击查看按当前券商反查的系统交易记录明细。"
+              onClick={() => setExtraOpen((v) => !v)}
+            />
           </div>
+
+          {/* UX-06（Q1）：摘要与差异明细两种口径各加说明，不强行统一 */}
+          <p
+            data-testid="summary-caliber"
+            style={{
+              margin: '0 0 16px',
+              fontSize: TYPO.captionSize,
+              color: COLORS.textMuted,
+            }}
+          >
+            口径说明：摘要「缺失 / 多余」按「标的 × 日期」去重计数；下方明细表按事实行逐条计数，
+            同一标的同一天多笔会各计一行，因此两个数字可能不一致。
+          </p>
+
+          {/* UX-06：多余下钻（Q2：is_deleted=0 + 当前 broker_code） */}
+          {extraOpen && (
+            <div style={{ ...cardStyle, marginBottom: 16 }} data-testid="extra-drilldown">
+              <h2 style={subtitleStyle}>多余明细</h2>
+              <p style={{ margin: '0 0 8px', fontSize: TYPO.captionSize, color: COLORS.textMuted }}>
+                口径：当前券商 broker_code = {brokerCode || '—'}
+                、未删除的系统交易记录（按券商反查）；摘要「多余」
+                按标的×日期去重计数，本表按交易记录逐条展示。
+              </p>
+              {extraError && <div style={warningBar}>加载失败：{extraError}</div>}
+              {extraLoading && (
+                <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>加载中…</div>
+              )}
+              {!extraLoading && !extraError && (
+                <>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={thStyle}>ID</th>
+                        <th style={thStyle}>标的</th>
+                        <th style={thStyle}>类型</th>
+                        <th style={thStyle}>日期</th>
+                        <th style={thStyle}>数量</th>
+                        <th style={thStyle}>价格</th>
+                        <th style={thStyle}>券商</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {extraRows.map((r) => (
+                        <tr key={r.id}>
+                          <td style={tdStyle}>{r.id}</td>
+                          <td style={tdStyle}>{r.asset_code}</td>
+                          <td style={tdStyle}>{TRADE_TYPE_LABELS[r.trade_type] ?? r.trade_type}</td>
+                          <td style={tdStyle}>{r.trade_date}</td>
+                          <td style={tdStyle}>{r.quantity ?? '—'}</td>
+                          <td style={tdStyle}>{r.price ?? '—'}</td>
+                          <td style={tdStyle}>{r.broker_code ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {extraTotal === 0 && (
+                    <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>
+                      没有该券商未删除的系统交易记录。
+                    </div>
+                  )}
+                  {extraTotal > EXTRA_PAGE_SIZE && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'flex-end',
+                        gap: 8,
+                        marginTop: 8,
+                      }}
+                    >
+                      <button
+                        style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                        disabled={extraPage <= 1}
+                        onClick={() => setExtraPage((p) => Math.max(1, p - 1))}
+                      >
+                        上一页
+                      </button>
+                      <span style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>
+                        {extraPage} / {Math.max(1, Math.ceil(extraTotal / EXTRA_PAGE_SIZE))}（共 {extraTotal}{' '}
+                        条）
+                      </span>
+                      <button
+                        style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                        disabled={extraPage >= Math.ceil(extraTotal / EXTRA_PAGE_SIZE)}
+                        onClick={() =>
+                          setExtraPage((p) => Math.min(Math.ceil(extraTotal / EXTRA_PAGE_SIZE), p + 1))
+                        }
+                      >
+                        下一页
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* 差额归因（残差置顶） */}
           <div style={{ ...cardStyle, marginBottom: 16 }}>
@@ -928,7 +1117,7 @@ export default function BrokerReconcile() {
                       {r.match_status === 'MISSING' && (
                         <button
                           style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                          onClick={() => void markManuallyRecorded(r.id)}
+                          onClick={() => setMarkTarget(r)}
                         >
                           已手工记录
                         </button>
@@ -1069,6 +1258,24 @@ export default function BrokerReconcile() {
           </button>
         </div>
       )}
+
+      {/* UX-02：标记「已手工记录」先确认，确认后再调接口 */}
+      <ConfirmDialog
+        open={markTarget !== null}
+        title="确认标记为已手工记录"
+        message={
+          markTarget
+            ? `将把事实行 #${markTarget.id}（${markTarget.asset_code ?? '—'} · ${markTarget.trade_date ?? '—'}）标记为「已手工记录」。\n该操作只更新事实层核对状态，不写入交易记录；标记后该行会从待补录中移除，成交族再次补录会被拒绝。\n确认继续？`
+            : ''
+        }
+        confirmText="确认标记"
+        onConfirm={() => {
+          const target = markTarget;
+          setMarkTarget(null);
+          if (target) void markManuallyRecorded(target);
+        }}
+        onCancel={() => setMarkTarget(null)}
+      />
     </div>
   );
 }
@@ -1078,19 +1285,43 @@ function SummaryCard({
   value,
   tone,
   hint,
+  help,
+  onClick,
 }: {
   label: string;
   value: number;
   tone?: 'success' | 'warning';
   hint?: string;
+  /** 口径说明（鼠标悬停 tooltip） */
+  help?: string;
+  /** 可点击时渲染为按钮（UX-06「多余」下钻） */
+  onClick?: () => void;
 }) {
   const color =
     tone === 'success' ? COLORS.success : tone === 'warning' ? COLORS.warning : COLORS.textPrimary;
-  return (
-    <div style={{ ...cardStyle, textAlign: 'center' }}>
+  const content = (
+    <>
       <div style={{ fontSize: TYPO.h1Size, fontWeight: 700, color }}>{value}</div>
       <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>{label}</div>
       {hint && <div style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>{hint}</div>}
+    </>
+  );
+  const sharedStyle: React.CSSProperties = { ...cardStyle, textAlign: 'center' };
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        title={help}
+        onClick={onClick}
+        style={{ ...sharedStyle, cursor: 'pointer', font: 'inherit', width: '100%' }}
+      >
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div title={help} style={sharedStyle}>
+      {content}
     </div>
   );
 }

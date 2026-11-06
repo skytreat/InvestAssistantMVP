@@ -26,6 +26,20 @@ import { defaultMessage } from '../lib/errorMessages.js';
 
 /** 降级日志回读的最大行数（契约：只回读尾部 N 行，不回传整个文件）*/
 const FALLBACK_TAIL_LINES = 200;
+
+/**
+ * 角色事务内的不变量被打破（「恰好 1 个 admin」不成立）
+ *
+ * ⚠️ 必须是**具名错误**：事务体抛它 → better-sqlite3 自动 ROLLBACK，
+ *    路由再把它翻译成 400，而不是当成 500 内部错误吞掉。
+ */
+class AdminCountInvariantError extends Error {
+  constructor() {
+    super('user_account 中管理员数量不为 1');
+    this.name = 'AdminCountInvariantError';
+  }
+}
+
 export async function registerAdminRoutes(app: FastifyInstance) {
   // 手动跑 C1-C12（需要 admin role）
   app.post('/api/admin/datacheck/trigger', async (request, reply) => {
@@ -170,39 +184,74 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     return reply.send(ok(rows));
   });
 
-  // T41: 升级/降级用户角色（admin 只能有1人，禁止降级自己）
+  // T41 / UX-08：角色变更 —— 「升 admin」走**原子转移**（同一事务内「升目标 + 降自己」）
+  //
+  // 🔴 为什么不能再拆成两次请求：
+  //   旧实现是「先拒绝升级（已有管理员），再拒绝降级自己」——两条规则叠成死锁，
+  //   且任何「先降后升 / 先升后降」的两次调用都会出现「0 个 admin」或「2 个 admin」窗口。
+  //   现在两条 UPDATE 包在 `db.transaction()` 里：任一步失败整体 ROLLBACK，
+  //   事务内再校验**恰好 1 个 admin**，违反即抛错回滚。
   app.patch('/api/admin/role/:userId', async (request, reply) => {
     const operator = (request as any).user;
     if (operator.role !== 'admin')
       return reply.code(403).send(fail(403, 'FORBIDDEN', defaultMessage('FORBIDDEN')));
     // T90：路由改名 `/api/admin/users/:id/role` → `/api/admin/role/:userId` ⇒ 参数名同步
     const targetId = Number((request.params as any).userId);
+    if (!Number.isInteger(targetId) || targetId <= 0)
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'userId 非法'));
     const { role } = request.body as { role: 'user' | 'admin' };
     if (!['user', 'admin'].includes(role))
       return reply.code(400).send(fail(400, 'PARAM_INVALID', 'role 非法'));
 
     const db = ConfigStore.getInstance().db;
+    const target = db.prepare(`SELECT id, username, role FROM user_account WHERE id = ?`).get(targetId) as
+      { id: number; username: string; role: string } | undefined;
+    if (!target) return reply.code(404).send(fail(404, 'NOT_FOUND', '用户不存在'));
 
-    // 禁止降级自己
-    if (targetId === operator.sub && role !== 'admin') {
-      return reply.code(400).send(fail(400, 'PARAM_INVALID', '禁止降级当前登录账号'));
+    // 降级自己 = 主动制造「0 个管理员」；转移语义下应走「把管理员交给别人」
+    if (role === 'user' && targetId === operator.sub) {
+      return reply
+        .code(400)
+        .send(fail(400, 'PARAM_INVALID', '不能直接降级当前登录账号，请使用「转移管理员」'));
     }
 
-    // 目标升 admin 时，检查是否已有其他 admin（admin 只能有1人）
-    if (role === 'admin') {
-      const existingAdmin = db
-        .prepare(`SELECT COUNT(*) AS cnt FROM user_account WHERE role = 'admin' AND id != ?`)
-        .get(targetId) as { cnt: number };
-      if (existingAdmin.cnt > 0) {
-        return reply.code(400).send(fail(400, 'PARAM_INVALID', '已有管理员，请先降级现任管理员'));
+    const adminCount = (): number =>
+      (db.prepare(`SELECT COUNT(*) AS cnt FROM user_account WHERE role = 'admin'`).get() as { cnt: number })
+        .cnt;
+
+    try {
+      // 一个事务内完成两步：中途失败整体回滚，不留「0 个 / 2 个 admin」的中间态
+      const transfer = db.transaction(() => {
+        if (role === 'admin') {
+          // ① 先把操作者自己降为普通用户（若其本就是 admin）
+          db.prepare(`UPDATE user_account SET role = 'user' WHERE id = ? AND role = 'admin'`).run(
+            operator.sub,
+          );
+          // ② 再把目标升为 admin
+          db.prepare(`UPDATE user_account SET role = 'admin' WHERE id = ?`).run(targetId);
+        } else {
+          db.prepare(`UPDATE user_account SET role = 'user' WHERE id = ?`).run(targetId);
+        }
+        // 事务内不变量：任何时刻恰好 1 个 admin；不满足 → 抛错 → 整体 ROLLBACK
+        if (adminCount() !== 1) throw new AdminCountInvariantError();
+      });
+      transfer();
+    } catch (err) {
+      if (err instanceof AdminCountInvariantError) {
+        return reply.code(400).send(fail(400, 'PARAM_INVALID', '该操作会使管理员数量不为 1，已整体回滚'));
       }
+      // ⚠️ 事务体里的意外错误：不向客户端暴露内部细节，但服务端必须留痕（不能吞）
+      console.error('[admin] 角色变更失败，已回滚:', err);
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', defaultMessage('INTERNAL_ERROR')));
     }
 
-    db.prepare(`UPDATE user_account SET role = ? WHERE id = ?`).run(role, targetId);
     writeSystemLog({
       logType: 'trigger_manual',
       level: 'INFO',
-      message: `${operator.username} 将用户 ${targetId} 角色改为 ${role}`,
+      message:
+        role === 'admin'
+          ? `${operator.username} 将管理员转移给 ${target.username}（自己降为普通用户）`
+          : `${operator.username} 将用户 ${target.username} 降级为普通用户`,
     });
     return reply.send(ok(null));
   });
