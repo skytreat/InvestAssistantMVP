@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
-import { backfillAssetStatSnapshots } from '../services/assetStat.js';
+import { backfillAssetStatSnapshots, computeMonthlyCashFlow } from '../services/assetStat.js';
 import { ok, fail } from '../lib/envelope.js';
 
 /**
@@ -65,6 +65,19 @@ export async function registerAssetStatRoutes(app: FastifyInstance) {
     }>;
 
     return reply.send(ok(rows));
+  });
+
+  /**
+   * 按月「现金流口径」盈亏（复盘页月度柱状图）
+   *
+   * 与 `/history`（每日快照、持有口径）**互补**：快照需要有行情才能写，
+   * 当月/行情库停更期间没有数据点；本接口只读 `user_trade_record`，当月也能出数。
+   */
+  app.get('/api/asset-stat/monthly-cashflow', async (request, reply) => {
+    const user = (request as any).user as { sub: number };
+    const { months = 12 } = request.query as { months?: number };
+    const n = Math.min(Math.max(Number(months) || 12, 1), 36);
+    return reply.send(ok(computeMonthlyCashFlow(user.sub, n)));
   });
 
   /**

@@ -102,6 +102,74 @@ export async function insertAssetStatSnapshots(tradeDate: string): Promise<{ ins
   return { inserted };
 }
 
+export interface MonthlyCashFlowPoint {
+  /** 自然月 YYYY-MM */
+  month: string;
+  /** 现金流口径当月盈亏 = 卖出回款 − 买入支出 + 现金分红（送股/拆分/调账不计现金流）*/
+  cashFlow: number;
+  /** 当月买入支出（正数）*/
+  buyOut: number;
+  /** 当月卖出回款（含手续费扣减）*/
+  sellIn: number;
+  /** 当月现金分红（正数）*/
+  dividend: number;
+}
+
+/**
+ * 按月汇总「现金流口径」盈亏（交易复盘页月度柱状图数据源）
+ *
+ * 为什么要单独算：`user_asset_stat` 是**每日快照**，靠月末最后一条做差分只能得到
+ * 持有口径的盈亏变化，且**必须每天有行情**才能写。行情库停止更新 / 当月尚无快照时
+ * 就没有数据点（11 月缺失即此类）。本函数只依赖 `user_trade_record`，不依赖行情，
+ * 故当月也能立即出数。
+ *
+ * 口径（与 owner 2026-11-06 的决策一致）：
+ * - 买入 / 加仓 → 现金流出 `quantity * price + fee`
+ * - 减仓 / 清仓 → 现金流入 `quantity * price - fee`
+ * - 现金分红 → 现金流入 `price * quantity`（分红行 quantity 存 1、price 存金额）
+ * - 送股 / 拆分 / 调账转入 → 0（不产生现金流）
+ *
+ * @param months 回溯的自然月数（含当月），默认 12
+ */
+export function computeMonthlyCashFlow(userId: number, months = 12): MonthlyCashFlowPoint[] {
+  const db = ConfigStore.getInstance().db;
+  const now = new Date();
+  const startMonth = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
+  const startDate = `${startMonth.getFullYear()}-${String(startMonth.getMonth() + 1).padStart(2, '0')}-01`;
+
+  const rows = db
+    .prepare(
+      `SELECT substr(trade_date, 1, 7) AS month,
+              COALESCE(SUM(CASE
+                WHEN trade_type IN ('reduce','clear') THEN quantity * price - fee
+                WHEN trade_type IN ('buy','add') THEN -(quantity * price + fee)
+                WHEN trade_type = 'dividend' THEN price * quantity
+                ELSE 0 END), 0) AS cashFlow,
+              COALESCE(SUM(CASE WHEN trade_type IN ('buy','add') THEN quantity * price + fee ELSE 0 END), 0) AS buyOut,
+              COALESCE(SUM(CASE WHEN trade_type IN ('reduce','clear') THEN quantity * price - fee ELSE 0 END), 0) AS sellIn,
+              COALESCE(SUM(CASE WHEN trade_type = 'dividend' THEN price * quantity ELSE 0 END), 0) AS dividend
+         FROM user_trade_record
+        WHERE user_id = ? AND is_deleted = 0 AND trade_date >= ?
+        GROUP BY month
+        ORDER BY month ASC`,
+    )
+    .all(userId, startDate) as Array<{
+    month: string;
+    cashFlow: number;
+    buyOut: number;
+    sellIn: number;
+    dividend: number;
+  }>;
+
+  return rows.map((r) => ({
+    month: r.month,
+    cashFlow: Number(r.cashFlow.toFixed(2)),
+    buyOut: Number(r.buyOut.toFixed(2)),
+    sellIn: Number(r.sellIn.toFixed(2)),
+    dividend: Number(r.dividend.toFixed(2)),
+  }));
+}
+
 export interface AssetStatBackfillResult {
   /** 实际补写的快照条数（已存在的日期跳过） */
   filled: number;

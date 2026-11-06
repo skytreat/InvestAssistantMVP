@@ -386,6 +386,8 @@ describe('T65 · 加载区替换为 Spinner', () => {
           return mockResponse([], { pagination: { totalPages: 1, total: 0 } });
         case '/asset-stat/history':
           return mockResponse([]);
+        case '/asset-stat/monthly-cashflow':
+          return mockResponse([]);
         default:
           throw new Error(`未预期的接口调用: ${url}`);
       }
@@ -423,6 +425,8 @@ describe('T65 · 加载区替换为 Spinner', () => {
         case '/review/trades':
           return mockResponse([], { pagination: { totalPages: 1, total: 0 } });
         case '/asset-stat/history':
+          return mockResponse([]);
+        case '/asset-stat/monthly-cashflow':
           return mockResponse([]);
         default:
           throw new Error(`未预期的接口调用: ${url}`);

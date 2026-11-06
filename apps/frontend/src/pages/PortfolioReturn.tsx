@@ -16,7 +16,16 @@ import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } fr
  */
 
 interface ReturnData {
-  risk: { pnl: number; cost: number; rate: number; realized: number; dividend: number; fees: number };
+  risk: {
+    pnl: number;
+    cost: number;
+    rate: number;
+    realized: number;
+    dividend: number;
+    fees: number;
+    /** 历史累计买入额（含已平仓），与「当前持仓成本」是两个口径 */
+    cumulativeBuy: number;
+  };
   cash: { pnl: number; cost: number; rate: number; repoInterest: number; cashEtfChange: number };
   total: { pnl: number; cost: number; rate: number; assets: number; invested: number; fees: number };
   caliberNote: string;
@@ -103,7 +112,7 @@ export default function PortfolioReturn() {
             </div>
             <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>总收益率（含费用）</div>
             <div style={{ fontSize: TYPO.smallSize, marginTop: 8 }}>
-              总资产 {data.total.assets} · 总投入 {data.total.invested} · 累计费用 {data.total.fees}
+              总资产 {data.total.assets} · 持仓成本合计 {data.total.invested} · 累计费用 {data.total.fees}
             </div>
           </div>
 
@@ -119,7 +128,8 @@ export default function PortfolioReturn() {
             <div style={cardStyle}>
               <h2 style={subtitleStyle}>风险资产</h2>
               <Row label="收益" value={data.risk.pnl} />
-              <Row label="投入（成本）" value={data.risk.cost} />
+              <Row label="当前持仓成本" value={data.risk.cost} />
+              <Row label="累计买入（含已平仓）" value={data.risk.cumulativeBuy} />
               <Row label="收益率" value={`${data.risk.rate}%`} />
               <Row label="已实现盈亏" value={data.risk.realized} />
               <Row label="现金分红" value={data.risk.dividend} />
