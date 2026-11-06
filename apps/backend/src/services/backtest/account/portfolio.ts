@@ -43,6 +43,14 @@ export interface RoundTrip {
   proceeds: number;
 }
 
+/** 一笔已派现（M3 归因要把分红记到持有它的回合，不能让它在 `total.pnl` 里消失） */
+export interface DividendRecord {
+  date: string;
+  symbol: string;
+  /** 现金分红总额（元） */
+  amount: number;
+}
+
 export interface PortfolioPosition {
   symbol: string;
   qty: number;
@@ -60,6 +68,8 @@ export class Portfolio {
   /** 当前持仓的建仓日（用于回合交易） */
   private readonly openDateBySymbol = new Map<string, string>();
   readonly roundTrips: RoundTrip[] = [];
+  /** 现金分红流水（M3 归因用；`RoundTrip.pnl` 不含分红，与 core 口径一致） */
+  readonly dividends: DividendRecord[] = [];
 
   constructor(initialCash: number) {
     if (!(initialCash > 0)) throw new Error(`Portfolio: 初始现金必须 > 0（收到 ${initialCash}）`);
@@ -162,7 +172,9 @@ export class Portfolio {
       if (a.kind === 'dividend') {
         const perShare = a.cashPerShare ?? 0;
         if (perShare <= 0) continue;
-        this.cashAmount += qty * perShare;
+        const amount = qty * perShare;
+        this.cashAmount += amount;
+        this.dividends.push({ date: a.date, symbol: a.symbol, amount });
         trades.push({ date: a.date, direction: 'dividend', quantity: qty, price: perShare });
       } else {
         const ratio = a.bonusRatio ?? 0;
