@@ -119,6 +119,30 @@ interface ConfirmItem {
   trade_time?: string | null;
 }
 
+/** POST /broker-reconcile/confirm 的返回体（单次批量，整体事务） */
+interface ConfirmBatchResult {
+  brokerCode: string;
+  imported: number;
+  already: number;
+  invalid: number;
+  rows: Array<{ sourceId: number; status: string; tradeType: string | null; reason?: string }>;
+}
+
+/** 一键补录（多批次）聚合结果：单个请求仍是整体事务，跨批可能部分成功 */
+interface OneClickResult {
+  imported: number;
+  already: number;
+  invalid: number;
+  failedBatches: number;
+  errors: string[];
+  rows: ConfirmBatchResult['rows'];
+}
+
+/** 单次 confirm 请求的条数上限（与后端一致，超过必须分批） */
+const CONFIRM_BATCH_LIMIT = 500;
+/** 拉取待补录清单时每页条数（与 /diff 的 pageSize 上限一致） */
+const PENDING_PAGE_SIZE = 200;
+
 export default function BrokerReconcile() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -140,13 +164,12 @@ export default function BrokerReconcile() {
   // ── 补录对话框（T145）──
   const [selected, setSelected] = useState<Map<number, ConfirmItem>>(new Map());
   const [confirmBusy, setConfirmBusy] = useState(false);
-  const [confirmResult, setConfirmResult] = useState<{
-    brokerCode: string;
-    imported: number;
-    already: number;
-    invalid: number;
-    rows: Array<{ sourceId: number; status: string; tradeType: string | null; reason?: string }>;
-  } | null>(null);
+  const [confirmResult, setConfirmResult] = useState<ConfirmBatchResult | null>(null);
+
+  // ── 一键全部补录（非成交族，仍为显式人工确认）──
+  const [oneClickPlan, setOneClickPlan] = useState<{ items: ConfirmItem[]; fuzzyCount: number } | null>(null);
+  const [oneClickBusy, setOneClickBusy] = useState(false);
+  const [oneClickResult, setOneClickResult] = useState<OneClickResult | null>(null);
 
   /** 券商下拉 = 「已导入过流水的券商」，排除已撤销批次与未识别编码，标签带批次文件名（Q8） */
   useEffect(() => {
@@ -234,6 +257,8 @@ export default function BrokerReconcile() {
     setDiffTotal(0);
     setDiffError(null);
     setSelected(new Map());
+    setOneClickPlan(null);
+    setOneClickResult(null);
   }, [brokerCode]);
 
   useEffect(() => {
@@ -356,6 +381,135 @@ export default function BrokerReconcile() {
     }
   };
 
+  /**
+   * 非成交族可补录判据（与行级 checkbox 的 nonTrade 分支一致，但不依赖当前分类）：
+   * 状态 MISSING 且「有股数或有现金流/金额」——现金分红常无股数。
+   * 缺标的（asset_code=null）的行也纳入，交由后端逐条返回不可补原因。
+   */
+  const isNonTradeCandidate = (r: DiffRow): boolean =>
+    r.match_status === 'MISSING' && ((r.quantity ?? 0) > 0 || (r.cash_flow ?? 0) > 0 || (r.amount ?? 0) > 0);
+
+  /** 翻页拉全「待补录的非成交族」清单（不受当前分页/分类影响） */
+  const fetchPendingNonTrade = async (bc: string): Promise<{ items: ConfirmItem[]; fuzzyCount: number }> => {
+    const items: ConfirmItem[] = [];
+    let fuzzyCount = 0;
+    let pageNo = 1;
+    let total = Number.POSITIVE_INFINITY;
+    // 上限兜底，避免后端 total 异常导致死循环
+    while (pageNo <= 100 && (pageNo - 1) * PENDING_PAGE_SIZE < total) {
+      const res = await api.get('/broker-reconcile/diff', {
+        params: { brokerCode: bc, category: 'nonTrade', page: pageNo, pageSize: PENDING_PAGE_SIZE },
+      });
+      if (!isOkEnvelope(res.data)) {
+        throw new Error(String(res.data?.message ?? '待补录清单加载失败'));
+      }
+      const rows = (res.data.data as { rows?: DiffRow[] }).rows ?? [];
+      total = (res.data as { pagination?: { total?: number } }).pagination?.total ?? rows.length;
+      for (const r of rows) {
+        if (r.match_status === 'FUZZY') {
+          fuzzyCount += 1;
+          continue; // 疑似匹配需逐条人工确认，不进一键队列
+        }
+        if (isNonTradeCandidate(r)) {
+          items.push({
+            sourceId: r.id,
+            event_type: r.event_type,
+            asset_code: r.asset_code,
+            trade_date: r.trade_date,
+            trade_time: r.trade_time,
+          });
+        }
+      }
+      if (rows.length === 0) break;
+      pageNo += 1;
+    }
+    return { items, fuzzyCount };
+  };
+
+  /** 点「一键全部补录」→ 先拉全清单，弹显式确认框（不直接写库） */
+  const openOneClick = async () => {
+    if (!brokerCode || oneClickBusy) return;
+    setOneClickBusy(true);
+    setOneClickResult(null);
+    setError(null);
+    try {
+      const plan = await fetchPendingNonTrade(brokerCode);
+      if (plan.items.length === 0) {
+        setOneClickPlan(null);
+        setNotice(
+          plan.fuzzyCount > 0
+            ? `没有可直接补录的非成交事件；${plan.fuzzyCount} 笔疑似匹配需逐条人工确认`
+            : '没有可直接补录的非成交事件',
+        );
+        return;
+      }
+      setOneClickPlan(plan);
+    } catch (e) {
+      setError(extractErrorMessage(e, '待补录清单加载失败'));
+    } finally {
+      setOneClickBusy(false);
+    }
+  };
+
+  /**
+   * 确认后按 CONFIRM_BATCH_LIMIT 分批提交（复用 /broker-reconcile/confirm）：
+   * - 每批一个整体事务（后端保证），跨批可能部分成功
+   * - 某批失败不回滚其他批，逐批记录原因并继续，最终汇总「成功 / 已存在 / 不可补 / 失败批次」
+   */
+  const runOneClick = async () => {
+    if (!oneClickPlan || oneClickBusy) return;
+    const items = oneClickPlan.items;
+    setOneClickBusy(true);
+    const agg: OneClickResult = {
+      imported: 0,
+      already: 0,
+      invalid: 0,
+      failedBatches: 0,
+      errors: [],
+      rows: [],
+    };
+    try {
+      for (let i = 0; i < items.length; i += CONFIRM_BATCH_LIMIT) {
+        const batch = items.slice(i, i + CONFIRM_BATCH_LIMIT);
+        const batchNo = Math.floor(i / CONFIRM_BATCH_LIMIT) + 1;
+        try {
+          const res = await api.post('/broker-reconcile/confirm', {
+            brokerCode,
+            items: batch.map((x) =>
+              x.tradeType ? { sourceId: x.sourceId, tradeType: x.tradeType } : { sourceId: x.sourceId },
+            ),
+          });
+          if (!isOkEnvelope(res.data)) {
+            agg.failedBatches += 1;
+            agg.errors.push(`第 ${batchNo} 批：${String(res.data?.message ?? '后端返回失败')}`);
+            continue;
+          }
+          const r = res.data.data as ConfirmBatchResult;
+          agg.imported += r.imported;
+          agg.already += r.already;
+          agg.invalid += r.invalid;
+          agg.rows.push(...r.rows);
+        } catch (e) {
+          agg.failedBatches += 1;
+          agg.errors.push(`第 ${batchNo} 批：${extractErrorMessage(e, '请求失败')}`);
+        }
+      }
+      setOneClickResult(agg);
+      setOneClickPlan(null);
+      setSelected(new Map());
+      setNotice(
+        agg.failedBatches > 0
+          ? `一键补录完成：成功 ${agg.imported} 条，${agg.failedBatches} 批失败（可重试，不会重复写入）`
+          : `一键补录完成：成功 ${agg.imported} 条`,
+      );
+      // 刷新报告与分类计数：待补录归零后按钮自然消失，避免重复点击
+      await loadReport(brokerCode);
+      void loadDiff(brokerCode, category, page);
+    } finally {
+      setOneClickBusy(false);
+    }
+  };
+
   /** 标记「已手工记录」（不写业务层，仅事实层 match_status=MATCHED） */
   const markManuallyRecorded = async (factId: number) => {
     try {
@@ -370,6 +524,15 @@ export default function BrokerReconcile() {
       setError(extractErrorMessage(e, '标记失败'));
     }
   };
+
+  /** 一键补录确认框的构成统计（按事件类型） */
+  const oneClickComposition = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const it of oneClickPlan?.items ?? []) {
+      counts.set(it.event_type, (counts.get(it.event_type) ?? 0) + 1);
+    }
+    return [...counts.entries()];
+  }, [oneClickPlan]);
 
   const attrRows = useMemo(() => {
     if (!report) return [] as Array<{ key: string; label: string; value: number; highlight: boolean }>;
@@ -456,15 +619,87 @@ export default function BrokerReconcile() {
               <span>
                 有 {report.pendingNonTrade} 笔非成交事件（转入 / 送股 / 现金分红）尚未补录到交易记录
               </span>
-              <button
-                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                onClick={() => {
-                  setCategory('nonTrade');
-                  setPage(1);
-                }}
-              >
-                去补录（{report.pendingNonTrade} 笔）
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button
+                  data-testid="one-click-backfill"
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  onClick={() => void openOneClick()}
+                  disabled={oneClickBusy}
+                >
+                  {oneClickBusy ? '统计中…' : `一键全部补录（${report.pendingNonTrade} 笔）`}
+                </button>
+                <button
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  onClick={() => {
+                    setCategory('nonTrade');
+                    setPage(1);
+                  }}
+                >
+                  去补录（{report.pendingNonTrade} 笔）
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 一键补录：显式确认框（列出条数与构成，确认后才发请求） */}
+          {oneClickPlan && (
+            <div
+              data-testid="one-click-dialog"
+              role="dialog"
+              aria-label="一键补录确认"
+              style={{ ...cardStyle, marginBottom: 16, border: `1px solid ${COLORS.brand}` }}
+            >
+              <h3 style={subtitleStyle}>一键补录：{oneClickPlan.items.length} 笔</h3>
+              <div style={{ fontSize: TYPO.smallSize }}>
+                构成：
+                {oneClickComposition
+                  .map(([type, n]) => `${NON_TRADE_TYPE_LABELS[type] ?? type} ${n} 笔`)
+                  .join(' · ')}
+              </div>
+              {oneClickPlan.fuzzyCount > 0 && (
+                <div style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, marginTop: 4 }}>
+                  另有 {oneClickPlan.fuzzyCount} 笔疑似匹配（FUZZY）未纳入一键补录，请逐条人工确认
+                </div>
+              )}
+              <p style={{ ...warningBar, margin: '8px 0' }}>
+                将写入你的交易记录（可撤销：业务层软删、事实层保留）。仍需你点「确认补录」才会发请求，不会静默写库。
+              </p>
+              <div style={{ display: 'flex', gap: 12 }}>
+                <button
+                  style={{ ...buttonStyle, background: COLORS.brand, color: '#fff', border: 'none' }}
+                  onClick={() => void runOneClick()}
+                  disabled={oneClickBusy}
+                >
+                  确认补录（{oneClickPlan.items.length} 笔）
+                </button>
+                <button style={buttonStyle} onClick={() => setOneClickPlan(null)} disabled={oneClickBusy}>
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 一键补录结果：部分失败必须逐条可见，不能只报「成功 N」 */}
+          {oneClickResult && (
+            <div data-testid="one-click-result" style={{ ...cardStyle, marginBottom: 16 }}>
+              <h3 style={subtitleStyle}>一键补录结果</h3>
+              <div style={{ fontSize: TYPO.smallSize }}>
+                成功 {oneClickResult.imported} · 已存在 {oneClickResult.already} · 不可补{' '}
+                {oneClickResult.invalid} · 失败批次 {oneClickResult.failedBatches}
+              </div>
+              {oneClickResult.errors.map((msg) => (
+                <div key={msg} style={{ color: COLORS.danger, fontSize: TYPO.captionSize }}>
+                  {msg}
+                </div>
+              ))}
+              {oneClickResult.rows
+                .filter((r) => r.status === 'invalid' || r.status === 'manual_sheet')
+                .slice(0, 10)
+                .map((r) => (
+                  <div key={r.sourceId} style={{ color: COLORS.danger, fontSize: TYPO.captionSize }}>
+                    #{r.sourceId}：{r.reason ?? r.status}
+                  </div>
+                ))}
             </div>
           )}
 

@@ -1079,7 +1079,8 @@ describe('非成交族可见性与补录（转入 / 送股 / 分红）', () => {
 
     // 补录对话框：现金分红按 dividend 固定类型，不提供成交族下拉
     expect(await screen.findByTestId('fixed-type-203')).toHaveTextContent('现金分红');
-    await user.click(screen.getByRole('button', { name: /全部补录/ }));
+    // 用行级对话框按钮的精确文案，避免与警示条上的「一键全部补录（3 笔）」同匹配
+    await user.click(screen.getByRole('button', { name: /^全部补录（1 笔）/ }));
     const confirmCall = postMock.mock.calls.find((c) => String(c[0]).includes('/broker-reconcile/confirm'));
     expect(confirmCall?.[1].items).toEqual([{ sourceId: 203 }]);
   });
@@ -1103,5 +1104,192 @@ describe('非成交族可见性与补录（转入 / 送股 / 分红）', () => {
     await waitFor(() => expect(screen.getByText('导入完成')).toBeInTheDocument());
     expect(screen.getByText(/若本批含/)).toBeInTheDocument();
     expect(screen.getByText(/缺失未匹配（非成交族）/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * 一键全部补录（owner 要求）：
+ * 把「当前所有待补录的非成交事件」一次提交，但仍是**显式人工确认**（点按钮 → 弹窗列条数与构成 → 确认才发请求）。
+ * 后端路径：复用 POST /broker-reconcile/confirm，按 500 条/批分批（每批整体事务，跨批可能部分成功）。
+ */
+describe('一键全部补录（非成交族）', () => {
+  const makeRow = (id: number, over: Record<string, unknown> = {}) => ({
+    id,
+    event_type: 'DIVIDEND_CASH',
+    raw_event_type: '现金红利',
+    asset_code: 'sh600000',
+    trade_date: '2026-05-12',
+    trade_time: null,
+    quantity: 0,
+    amount: 12.5,
+    cash_flow: 12.5,
+    match_status: 'MISSING',
+    exclude_reason: null,
+    source_file: 'nt.csv',
+    ...over,
+  });
+
+  /** /diff 按 page/pageSize 切片；/latest 的 pendingNonTrade 由参数决定 */
+  function mockPending(rows: Array<ReturnType<typeof makeRow>>, pendingNonTrade: number) {
+    getMock.mockImplementation((url: string, config?: { params?: Record<string, number | string> }) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest')
+        return Promise.resolve(mockResponse({ ...REPORT, pendingNonTrade }));
+      if (url === '/broker-reconcile/diff') {
+        if (config?.params?.category !== 'nonTrade')
+          return Promise.resolve(
+            mockResponse(
+              { rows: DIFF_ROWS, total: DIFF_ROWS.length },
+              {
+                pagination: { total: DIFF_ROWS.length },
+              },
+            ),
+          );
+        const p = Number(config?.params?.page ?? 1);
+        const size = Number(config?.params?.pageSize ?? 200);
+        return Promise.resolve(
+          mockResponse(
+            { rows: rows.slice((p - 1) * size, p * size), total: rows.length },
+            {
+              pagination: { total: rows.length },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+  }
+
+  it('点按钮 → 弹确认框（条数+构成）→ 确认后一次提交全部待补录行', async () => {
+    const rows = [
+      makeRow(201, { event_type: 'TRANSFER_IN', quantity: 100, amount: null, cash_flow: 0 }),
+      makeRow(202, { event_type: 'DIVIDEND_BONUS', quantity: 50, amount: null, cash_flow: 0 }),
+      makeRow(203),
+    ];
+    mockPending(rows, 3);
+    postMock.mockResolvedValue(
+      mockResponse({ brokerCode: 'gt', imported: 3, already: 0, invalid: 0, rows: [] }),
+    );
+
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await user.click(await screen.findByTestId('one-click-backfill'));
+    const dialog = await screen.findByTestId('one-click-dialog');
+    expect(dialog).toHaveTextContent('一键补录：3 笔');
+    expect(dialog).toHaveTextContent('转入/转增（transfer） 1 笔');
+    expect(dialog).toHaveTextContent('送股（bonus） 1 笔');
+    expect(dialog).toHaveTextContent('现金分红（dividend） 1 笔');
+
+    await user.click(screen.getByRole('button', { name: /确认补录（3 笔）/ }));
+
+    const confirmCalls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-reconcile/confirm');
+    expect(confirmCalls).toHaveLength(1);
+    expect((confirmCalls[0][1] as { items: unknown }).items).toEqual([
+      { sourceId: 201 },
+      { sourceId: 202 },
+      { sourceId: 203 },
+    ]);
+    expect(await screen.findByTestId('one-click-result')).toHaveTextContent('成功 3');
+  });
+
+  it('超过 500 条自动分批（501 → 2 次请求，500 + 1）', async () => {
+    const rows = Array.from({ length: 501 }, (_, i) => makeRow(1000 + i));
+    mockPending(rows, 501);
+    postMock.mockImplementation((url: string, body?: { items: unknown[] }) => {
+      if (url === '/broker-reconcile/confirm')
+        return Promise.resolve(
+          mockResponse({
+            brokerCode: 'gt',
+            imported: body?.items.length ?? 0,
+            already: 0,
+            invalid: 0,
+            rows: [],
+          }),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await user.click(await screen.findByTestId('one-click-backfill'));
+    await screen.findByTestId('one-click-dialog');
+    expect(screen.getByTestId('one-click-dialog')).toHaveTextContent('一键补录：501 笔');
+    await user.click(screen.getByRole('button', { name: /确认补录（501 笔）/ }));
+
+    await waitFor(() => {
+      const calls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-reconcile/confirm');
+      expect(calls).toHaveLength(2);
+      expect((calls[0][1] as { items: unknown[] }).items).toHaveLength(500);
+      expect((calls[1][1] as { items: unknown[] }).items).toHaveLength(1);
+    });
+  });
+
+  it('部分失败：第 2 批报错仍保留成功结果，并给出批次原因', async () => {
+    const rows = Array.from({ length: 501 }, (_, i) => makeRow(2000 + i));
+    mockPending(rows, 501);
+    let callNo = 0;
+    postMock.mockImplementation((url: string, body?: { items: unknown[] }) => {
+      if (url === '/broker-reconcile/confirm') {
+        callNo += 1;
+        if (callNo === 2)
+          return Promise.reject(mockErrorResponse(409, 'CONFIRM_CONFLICT', '事务冲突，已回滚'));
+        return Promise.resolve(
+          mockResponse({
+            brokerCode: 'gt',
+            imported: body?.items.length ?? 0,
+            already: 0,
+            invalid: 0,
+            rows: [],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await user.click(await screen.findByTestId('one-click-backfill'));
+    await screen.findByTestId('one-click-dialog');
+    await user.click(screen.getByRole('button', { name: /确认补录（501 笔）/ }));
+
+    const result = await screen.findByTestId('one-click-result');
+    expect(result).toHaveTextContent('成功 500');
+    expect(result).toHaveTextContent('失败批次 1');
+    expect(result).toHaveTextContent('第 2 批');
+  });
+
+  it('未知标的（asset_code=null）也提交，由后端逐条返回不可补原因并展示', async () => {
+    const rows = [
+      makeRow(301),
+      makeRow(302, { asset_code: null, quantity: 100, amount: null, cash_flow: 0 }),
+    ];
+    mockPending(rows, 2);
+    postMock.mockResolvedValue(
+      mockResponse({
+        brokerCode: 'gt',
+        imported: 1,
+        already: 0,
+        invalid: 1,
+        rows: [{ sourceId: 302, status: 'invalid', tradeType: null, reason: '缺少标的代码' }],
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await user.click(await screen.findByTestId('one-click-backfill'));
+    await screen.findByTestId('one-click-dialog');
+    await user.click(screen.getByRole('button', { name: /确认补录（2 笔）/ }));
+
+    const result = await screen.findByTestId('one-click-result');
+    expect(result).toHaveTextContent('不可补 1');
+    expect(result).toHaveTextContent('#302：缺少标的代码');
+  });
+
+  it('无待补录时（pendingNonTrade=0）不显示一键按钮', async () => {
+    mockPending([makeRow(401)], 0);
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await screen.findByText(/差额归因/);
+    expect(screen.queryByTestId('one-click-backfill')).not.toBeInTheDocument();
   });
 });
