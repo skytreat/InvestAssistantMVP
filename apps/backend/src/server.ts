@@ -9,6 +9,7 @@ import {
 } from './db/duckdb.js';
 import { registerRoutes } from './routes/index.js';
 import { registerCronJobs } from './services/scheduler.js';
+import { runAssetClassSyncIfNeeded } from './services/assetClassSync.js';
 
 /**
  * Fastify 后端入口
@@ -72,6 +73,10 @@ async function bootstrap() {
     app.log.error({ err }, 'Fastify 启动失败');
     process.exit(1);
   }
+
+  // 调用点 ①（SDD_v3 §2.3「分类表为空时按需触发」）：不阻塞启动。
+  // 默认 dry-run ⇒ 只记日志、**一行不写**；需落库时显式设 ASSET_CLASS_SYNC_MODE=execute。
+  void runAssetClassSyncIfNeeded(config.db, app.log);
 }
 
 // 优雅退出

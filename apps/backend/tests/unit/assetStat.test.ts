@@ -54,7 +54,7 @@ vi.mock('../../src/services/marketData.js', () => ({
 }));
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
-const { insertAssetStatSnapshots, backfillAssetStatSnapshots } =
+const { insertAssetStatSnapshots, backfillAssetStatSnapshots, computeMonthlyCashFlow } =
   await import('../../src/services/assetStat.js');
 
 function cleanup(): void {
@@ -474,5 +474,77 @@ describe('assetStat — backfillAssetStatSnapshots（历史快照回补）', () 
 
     await expect(backfillAssetStatSnapshots(userId, 365)).rejects.toThrow('行情库不可用');
     expect(readSnapshot(userId, isoDaysAgo(0))).toBeUndefined();
+  });
+});
+
+/**
+ * computeMonthlyCashFlow —— 月度「现金流口径」盈亏（2026-11 新增）
+ *
+ * 只读 `user_trade_record`，**不依赖行情**，因此行情库停更的当月也能出数。
+ */
+describe('assetStat — computeMonthlyCashFlow（月度现金流口径盈亏）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cleanup();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  /** 相对「今天」往前 N 个月的 1 号（本地日期，避免 toISOString 时区把月初挪到上个月）*/
+  function monthStart(offset: number): string {
+    const d = new Date();
+    const dt = new Date(d.getFullYear(), d.getMonth() - offset, 1);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-01`;
+  }
+
+  it('买入记流出、卖出记流入、分红记流入、送股/拆分计 0', () => {
+    const userId = seedUser('mcf_basic');
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 1, monthStart(1)); // -1001
+    seedTrade(userId, 'sz002436', 'reduce', 100, 12, 1, monthStart(1)); // +1199
+    seedTrade(userId, 'sz002436', 'dividend', 1, 50, 0, monthStart(0)); // +50
+    seedTrade(userId, 'sz002436', 'bonus', 20, 0, 0, monthStart(0)); // 0
+    seedTrade(userId, 'sz002436', 'transfer', 30, 0, 0, monthStart(0)); // 0
+
+    const rows = computeMonthlyCashFlow(userId, 12);
+    const prev = rows.find((r) => r.month === monthStart(1).slice(0, 7))!;
+    const cur = rows.find((r) => r.month === monthStart(0).slice(0, 7))!;
+    expect(rows).toHaveLength(2);
+    expect(prev.cashFlow).toBeCloseTo(1199 - 1001, 2);
+    expect(prev.sellIn).toBeCloseTo(1199, 2);
+    expect(prev.buyOut).toBeCloseTo(1001, 2);
+    expect(cur.cashFlow).toBeCloseTo(50, 2);
+    expect(cur.dividend).toBeCloseTo(50, 2);
+  });
+
+  it('窗口外的历史交易不计入（months=12 只回溯 12 个自然月）', () => {
+    const userId = seedUser('mcf_window');
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(24));
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(0));
+
+    const rows = computeMonthlyCashFlow(userId, 12);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cashFlow).toBeCloseTo(-1000, 2);
+  });
+
+  it('软删除的交易不计入', () => {
+    const userId = seedUser('mcf_deleted');
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(0));
+    ConfigStore.getInstance()
+      .db.prepare("UPDATE user_trade_record SET is_deleted = 1 WHERE user_id = ? AND asset_code = 'sz002436'")
+      .run(userId);
+
+    expect(computeMonthlyCashFlow(userId, 12)).toEqual([]);
+  });
+
+  it('小数 / 非数月份被归一化（months=12.5 ⇒ 与 12 同窗口，不因 Date 截断差一个月）', () => {
+    const userId = seedUser('mcf_frac');
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(12)); // 第 13 个月（窗口外）
+    seedTrade(userId, 'sz002436', 'buy', 100, 10, 0, monthStart(0));
+
+    expect(computeMonthlyCashFlow(userId, 12.5)).toEqual(computeMonthlyCashFlow(userId, 12));
+    expect(computeMonthlyCashFlow(userId, Number.NaN)).toEqual(computeMonthlyCashFlow(userId, 12));
+    expect(computeMonthlyCashFlow(userId, 12.5)).toHaveLength(1);
   });
 });

@@ -24,7 +24,22 @@ export interface ReturnBreakdown {
 }
 
 export interface PortfolioReturn {
-  risk: ReturnBreakdown & { realized: number; dividend: number; fees: number };
+  risk: ReturnBreakdown & {
+    realized: number;
+    dividend: number;
+    fees: number;
+    /**
+     * 累计买入（buy + add 的成交金额 + 手续费，含已平仓部分）。
+     *
+     * ⚠️ 与 `cost` 是**两个不同口径**，不可混用：
+     * - `cost` = 当前未平仓的移动加权成本（收益率的分母，语义不变）
+     * - `cumulativeBuy` = 历史累计买入额（只增不减，用于让用户看到「一共投进去多少钱」）
+     *
+     * 2026-11-06：页面把 `cost` 标签写成「累计投入」造成误读（如兴森累计买入 16.9 万而
+     * 页面显示的是剩余持仓成本），故新增本字段供另列一行。
+     */
+    cumulativeBuy: number;
+  };
   cash: ReturnBreakdown & { repoInterest: number; cashEtfChange: number };
   total: ReturnBreakdown & { assets: number; invested: number; fees: number };
   caliberNote: string;
@@ -75,6 +90,21 @@ export async function computePortfolioReturn(userId: number, brokerCode?: string
     .all(userId, ...brokerParams) as Array<{ asset_code: string; d: number }>;
   const divByAsset = new Map(divRows.map((r) => [r.asset_code, r.d]));
   for (const p of riskPositions) riskDividend += divByAsset.get(p.asset_code) ?? 0;
+
+  // 累计买入（buy + add 的成交额 + fee，**含已平仓标的**）—— 与「当前持仓成本」分列展示。
+  // ⚠️ 用 user_trade_record 独立聚合，不能从 positions 里推：已清仓标的的 totalCostBasis 为 0。
+  const buyRows = db
+    .prepare(
+      `SELECT asset_code, COALESCE(SUM(quantity * price + fee), 0) AS g
+         FROM user_trade_record
+        WHERE user_id = ? AND is_deleted = 0 AND trade_type IN ('buy','add') ${brokerFilter}
+        GROUP BY asset_code`,
+    )
+    .all(userId, ...brokerParams) as Array<{ asset_code: string; g: number }>;
+  let riskCumulativeBuy = 0;
+  for (const r of buyRows) {
+    if (getAssetClass(db, r.asset_code) === 'risk') riskCumulativeBuy += r.g;
+  }
 
   // realized pnl（风险标的）
   const closed = calcClosedTradePnLs(userId);
@@ -143,6 +173,7 @@ export async function computePortfolioReturn(userId: number, brokerCode?: string
       realized: round2(riskRealized),
       dividend: round2(riskDividend),
       fees: round2(riskFees),
+      cumulativeBuy: round2(riskCumulativeBuy),
     },
     cash: {
       pnl: round2(cashPnl),
@@ -161,6 +192,7 @@ export async function computePortfolioReturn(userId: number, brokerCode?: string
     },
     caliberNote:
       '口径：风险资产按移动加权成本（含分红/送股）；现金类按市值变动 + 逆回购配对利息；费用含最低佣金。' +
+      '「当前持仓成本」= 未平仓部分的成本（收益率分母）；「累计买入」= 历史 buy/add 成交额合计（含已平仓，只增不减），两者不可混读。' +
       '与券商口径差异：券商按资金流水口径，本系统按持仓成本口径；逆回购利息按配对结果，未配对在途头寸不计入收益。',
   };
 }

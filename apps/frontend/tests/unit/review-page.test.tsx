@@ -197,6 +197,8 @@ function installApiMock(overrides: ApiOverrides = {}): void {
         ]);
       case '/asset-stat/history':
         return mockResponse(history);
+      case '/asset-stat/monthly-cashflow':
+        return mockResponse([]);
       default:
         throw new Error(`未预期的接口调用: ${url}`);
     }

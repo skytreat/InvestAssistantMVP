@@ -171,6 +171,7 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/portfolio/risk-check' },
   { method: 'GET', url: '/api/asset-stat/latest' },
   { method: 'GET', url: '/api/asset-stat/history' },
+  { method: 'GET', url: '/api/asset-stat/monthly-cashflow', query: { months: 12 } },
   { method: 'POST', url: '/api/asset-stat/backfill', payload: { days: 1 }, timeout: 60_000 },
 
   // ── 行情 / 选股 ──

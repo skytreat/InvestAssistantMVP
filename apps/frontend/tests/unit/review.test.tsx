@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import Review, { bucketByPeriod } from '../../src/pages/Review';
+import Review, { bucketByPeriod, buildCurveSeries, periodKeyOf } from '../../src/pages/Review';
 import { mockResponse, renderWithRouter } from '../helpers';
 
 /**
@@ -29,7 +29,8 @@ import { mockResponse, renderWithRouter } from '../helpers';
  *   故本文件的分桶数据**一律取月中（10~20 日）**，避免用例随 CI 时区漂移。
  * - 落库请求是 **`api.patch`**（源码 242 行，`PATCH /trade/{id}`），**不是 put / post**；
  *   载荷里 `strategy_match` / `is_stop_loss` 是**数字** 1 / 0（源码 235 / 238 行），**不是字符串**。
- * - 挂载时并发请求 3 个接口：`GET /review/yield`、`GET /review/trades`、`GET /asset-stat/history`。
+ * - 挂载时并发请求 4 个接口：`GET /review/yield`、`GET /review/trades`、`GET /asset-stat/history`、
+ *   `GET /asset-stat/monthly-cashflow`（月度现金流柱，2026-11 新增）。
  */
 
 /** api.get 的第二个参数（axios config），本文件只关心 params */
@@ -136,6 +137,8 @@ interface ApiOverrides {
   trades?: TradeRowFixture[];
   stats?: ReviewStatsFixture;
   history?: HistoryPointFixture[];
+  /** 月度现金流（/asset-stat/monthly-cashflow），默认空 */
+  cashFlow?: Array<{ month: string; cashFlow: number; buyOut: number; sellIn: number; dividend: number }>;
 }
 
 /** 安装 api mock 的分派实现（每个用例自给自足，不依赖其它用例的副作用）*/
@@ -143,6 +146,7 @@ function installApiMock(overrides: ApiOverrides = {}): void {
   const trades = overrides.trades ?? [DEFAULT_TRADE];
   const stats = overrides.stats ?? DEFAULT_STATS;
   const history = overrides.history ?? [];
+  const cashFlow = overrides.cashFlow ?? [];
 
   getMock.mockImplementation(async (url: string) => {
     switch (url) {
@@ -152,6 +156,8 @@ function installApiMock(overrides: ApiOverrides = {}): void {
         return mockResponse(trades, { pagination: { totalPages: 1, total: trades.length } });
       case '/asset-stat/history':
         return mockResponse(history);
+      case '/asset-stat/monthly-cashflow':
+        return mockResponse(cashFlow);
       default:
         throw new Error(`未预期的接口调用: ${url}`);
     }
@@ -464,5 +470,77 @@ describe('Review · 编辑复盘 3 态弹窗', () => {
 
     await waitFor(() => expect(screen.queryByText(/^编辑复盘 — /)).not.toBeInTheDocument());
     expect(patchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 月度曲线：柱 = 当月盈亏（现金流口径），线 = 期末累计收益率（2026-11 口径修正）
+ *
+ * 关键点：快照必须有行情才能写，行情停更的当月**没有快照**；
+ * 现金流只依赖成交记录，故当月仍有柱。两条序列按同一周期槽对齐。
+ */
+describe('Review · 月度现金流柱 + 累计收益率线', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installApiMock();
+  });
+
+  it('periodKeyOf：同为自然月，月末日期不会被时区挪到上个月', () => {
+    expect(periodKeyOf('2026-10-31', 'monthly')).toBe(periodKeyOf('2026-10-01', 'monthly'));
+    expect(periodKeyOf('2026-11-01', 'monthly')).toBeGreaterThan(periodKeyOf('2026-10-31', 'monthly'));
+  });
+
+  it('buildCurveSeries：快照月有柱有线；无快照的当月只有柱（线为 null）', () => {
+    const slots = buildCurveSeries(
+      [hp('2026-09-15', 0.1), hp('2026-10-12', 0.2)],
+      [
+        { month: '2026-09', cashFlow: -1000, buyOut: 1000, sellIn: 0, dividend: 0 },
+        { month: '2026-10', cashFlow: 500, buyOut: 0, sellIn: 500, dividend: 0 },
+        { month: '2026-11', cashFlow: 380, buyOut: 0, sellIn: 0, dividend: 380 },
+      ],
+      'monthly',
+      'price',
+    );
+
+    expect(slots).toHaveLength(3);
+    expect(slots.map((s) => s.label)).toEqual(['2026-09', '2026-10', '2026-11']);
+    expect(slots[0].cashFlow).toBe(-1000);
+    expect(slots[1].cashFlow).toBe(500);
+    expect(slots[2].cashFlow).toBe(380);
+    expect(slots[2].yieldPct).toBeNull();
+    expect(slots[0].yieldPct).toBeCloseTo(10);
+  });
+
+  it('buildCurveSeries：季度周期把同季度的月度现金流累加，收益取季末快照', () => {
+    const slots = buildCurveSeries(
+      [hp('2026-09-15', 0.1)],
+      [
+        { month: '2026-07', cashFlow: 100, buyOut: 0, sellIn: 100, dividend: 0 },
+        { month: '2026-08', cashFlow: -200, buyOut: 200, sellIn: 0, dividend: 0 },
+        { month: '2026-09', cashFlow: 300, buyOut: 0, sellIn: 300, dividend: 0 },
+      ],
+      'quarterly',
+      'price',
+    );
+    expect(slots).toHaveLength(1);
+    expect(slots[0].label).toBe('2026 Q3');
+    expect(slots[0].cashFlow).toBe(200);
+  });
+
+  it('页面渲染出的柱数量与周期槽一致，且当月（无快照）仍有柱', async () => {
+    installApiMock({
+      history: [hp('2026-09-15', 0.1), hp('2026-10-12', 0.2)],
+      cashFlow: [
+        { month: '2026-10', cashFlow: 500, buyOut: 0, sellIn: 500, dividend: 0 },
+        { month: '2026-11', cashFlow: 380, buyOut: 0, sellIn: 0, dividend: 380 },
+      ],
+    });
+
+    renderWithRouter(<Review />);
+    await screen.findByRole('button', { name: '编辑复盘' });
+
+    await waitFor(() => expect(screen.getByTestId('pnl-bar-2')).toBeInTheDocument());
+    expect(screen.getByTestId('pnl-bar-0')).toBeInTheDocument();
+    expect(screen.getByTestId('pnl-bar-1')).toBeInTheDocument();
   });
 });

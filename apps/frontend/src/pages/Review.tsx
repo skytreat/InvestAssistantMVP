@@ -122,6 +122,74 @@ export function bucketByPeriod(rows: HistoryPoint[], period: CurvePeriod): Histo
   return [...bucket.values()].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
 }
 
+/** 月度「现金流口径」盈亏（/api/asset-stat/monthly-cashflow） */
+interface MonthlyCashFlowPoint {
+  month: string;
+  cashFlow: number;
+  buyOut: number;
+  sellIn: number;
+  dividend: number;
+}
+
+/** 曲线上的一个周期槽（柱=当月现金流盈亏，线=期末累计收益率） */
+export interface CurveSlot {
+  /** 周期序号（与 `bucketByPeriod` 的 key 同规则，用于排序）*/
+  key: number;
+  /** 轴标签（月度 YYYY-MM / 季度 YYYY-Qn / 年度 YYYY）*/
+  label: string;
+  /** 期末累计收益率（%）；当月尚无快照 → null（柱有值、线无点）*/
+  yieldPct: number | null;
+  /** 当月（或当季/当年）现金流口径盈亏 */
+  cashFlow: number;
+}
+
+/** 与 `bucketByPeriod` 同一分桶规则的周期序号（手工解析日期，避免时区把月末挪到上个月）*/
+export function periodKeyOf(dateStr: string, period: CurvePeriod): number {
+  const months = PERIOD_MONTHS[period];
+  const [y, m] = dateStr.split('-').map(Number);
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return 0;
+  return Math.floor((y * 12 + (m - 1)) / months);
+}
+
+/** 周期序号的展示标签 */
+export function periodLabelOf(key: number, period: CurvePeriod): string {
+  if (period === 'yearly') return String(key);
+  if (period === 'quarterly') return `${Math.floor(key / 4)} Q${(key % 4) + 1}`;
+  const y = Math.floor(key / 12);
+  return `${y}-${String((key % 12) + 1).padStart(2, '0')}`;
+}
+
+/**
+ * 合并「每日快照（期末累计收益率）」与「交易现金流（当月盈亏）」两条序列
+ *
+ * ⚠️ 合并而不是二选一：快照必须有行情才能写（11 月行情库停更 ⇒ 无快照），
+ * 而现金流只依赖成交记录 ⇒ 当月也能出数。缺快照的周期保留柱、线跳过该点。
+ */
+export function buildCurveSeries(
+  points: HistoryPoint[],
+  cashFlow: MonthlyCashFlowPoint[],
+  period: CurvePeriod,
+  caliber: Caliber,
+): CurveSlot[] {
+  const byKey = new Map<number, CurveSlot>();
+  for (const p of points) {
+    const key = periodKeyOf(p.trade_date, period);
+    byKey.set(key, {
+      key,
+      label: periodLabelOf(key, period),
+      yieldPct: (caliber === 'price' ? p.total_assets_price_yield : p.total_assets_actual_yield) * 100,
+      cashFlow: byKey.get(key)?.cashFlow ?? 0,
+    });
+  }
+  for (const c of cashFlow) {
+    const key = periodKeyOf(`${c.month}-01`, period);
+    const slot = byKey.get(key);
+    if (slot) slot.cashFlow += c.cashFlow;
+    else byKey.set(key, { key, label: periodLabelOf(key, period), yieldPct: null, cashFlow: c.cashFlow });
+  }
+  return [...byKey.values()].sort((a, b) => a.key - b.key);
+}
+
 /**
  * 纯 SVG 收益曲线（不引第三方图表库）
  *
@@ -185,10 +253,18 @@ function YieldCurve({
   points,
   caliber,
   onBackfilled,
+  slotOf,
+  slotCount,
 }: {
   points: HistoryPoint[];
   caliber: Caliber;
   onBackfilled?: () => void;
+  /**
+   * 与上方柱状图共用的 x 轴域：`slotCount` = 周期槽总数，`slotOf[i]` = 第 i 个有快照的点
+   * 对应的槽下标。柱比线多一个周期（当月无快照）时，线仍与柱对齐而不是自顾自铺满宽度。
+   */
+  slotOf?: number[];
+  slotCount?: number;
 }) {
   /** 当前悬浮的数据点下标（null = 未悬浮）*/
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -222,7 +298,11 @@ function YieldCurve({
   const chartW = W - PAD.left - PAD.right;
   const chartH = H - PAD.top - PAD.bottom;
 
-  const x = (i: number) => PAD.left + (points.length === 1 ? chartW / 2 : (i / (points.length - 1)) * chartW);
+  const n = slotCount && slotCount > 0 ? slotCount : points.length;
+  const x = (i: number) => {
+    const slot = slotOf ? (slotOf[i] ?? i) : i;
+    return PAD.left + (n === 1 ? chartW / 2 : (slot / (n - 1)) * chartW);
+  };
   const y = (v: number) => PAD.top + ((max - v) / range) * chartH;
 
   const path = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
@@ -332,6 +412,92 @@ function YieldCurve({
   );
 }
 
+/**
+ * 月度「现金流口径」盈亏柱状图
+ *
+ * 口径说明（与 owner 2026-11-06 决策一致）：当月现金流 = 卖出回款 − 买入支出 + 现金分红。
+ * 送股/拆分/调账转入不产生现金流 ⇒ 计 0。柱与线上方共用同一 x 轴域（`slots`），
+ * 保证「当月盈亏」和「累计收益率」在同一时间刻度上可对照。
+ */
+function PnlBars({ slots }: { slots: CurveSlot[] }) {
+  const W = 640;
+  const H = 96;
+  const PAD = { top: 10, right: 44, bottom: 20, left: 8 };
+  const chartW = W - PAD.left - PAD.right;
+  const chartH = H - PAD.top - PAD.bottom;
+
+  const max = Math.max(...slots.map((s) => s.cashFlow), 0);
+  const min = Math.min(...slots.map((s) => s.cashFlow), 0);
+  const range = max - min || 1;
+  const zeroY = PAD.top + ((max - 0) / range) * chartH;
+  const x = (i: number) => PAD.left + (slots.length === 1 ? chartW / 2 : (i / (slots.length - 1)) * chartW);
+  const barW = Math.min(30, Math.max(6, (chartW / Math.max(slots.length, 1)) * 0.5));
+
+  return (
+    <div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        role="img"
+        aria-label="当月盈亏柱状图（现金流口径）"
+        style={{ width: '100%', maxWidth: W, height: 'auto' }}
+      >
+        <rect x={0} y={0} width={W} height={H} fill={COLORS.headerBg} rx={4} />
+        <line
+          x1={PAD.left}
+          y1={zeroY}
+          x2={W - PAD.right}
+          y2={zeroY}
+          stroke={COLORS.textMuted}
+          strokeWidth={1}
+          strokeDasharray="4 4"
+        />
+        {slots.map((s, i) => {
+          const yv = PAD.top + ((max - s.cashFlow) / range) * chartH;
+          const top = Math.min(yv, zeroY);
+          const h = Math.max(1, Math.abs(zeroY - yv));
+          return (
+            <rect
+              key={`${s.key}-bar`}
+              data-testid={`pnl-bar-${i}`}
+              x={x(i) - barW / 2}
+              y={top}
+              width={barW}
+              height={h}
+              fill={s.cashFlow >= 0 ? COLORS.textSuccess : COLORS.danger}
+              fillOpacity={0.75}
+            >
+              <title>{`${s.label}：${s.cashFlow.toFixed(2)}`}</title>
+            </rect>
+          );
+        })}
+        {/* 刻度：max / min 恰为 0（全为 0 或全负/全正）时不重复渲染，避免与零轴标签叠字 */}
+        {max > 0 && (
+          <text x={W - PAD.right + 6} y={PAD.top + 10} fontSize={10} fill={COLORS.neutral}>
+            {max.toFixed(0)}
+          </text>
+        )}
+        <text x={W - PAD.right + 6} y={zeroY + 4} fontSize={10} fill={COLORS.neutral}>
+          0
+        </text>
+        {min < 0 && (
+          <text x={W - PAD.right + 6} y={H - PAD.bottom} fontSize={10} fill={COLORS.neutral}>
+            {min.toFixed(0)}
+          </text>
+        )}
+        <text x={PAD.left} y={H - 6} fontSize={10} fill={COLORS.neutral}>
+          {slots[0]?.label}
+        </text>
+        <text x={W - PAD.right} y={H - 6} fontSize={10} fill={COLORS.neutral} textAnchor="end">
+          {slots[slots.length - 1]?.label}
+        </text>
+      </svg>
+      <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted, marginBottom: 4 }}>
+        柱：当月盈亏（现金流口径 = 卖出回款 − 买入支出 + 现金分红）
+      </div>
+    </div>
+  );
+}
+
 export default function Review() {
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [stats, setStats] = useState<ReviewStats | null>(null);
@@ -398,6 +564,8 @@ export default function Review() {
   const [curvePeriod, setCurvePeriod] = useState<CurvePeriod>('monthly');
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  /** 月度现金流（/asset-stat/monthly-cashflow）—— 与快照互补，当月也能出数 */
+  const [cashFlow, setCashFlow] = useState<MonthlyCashFlowPoint[]>([]);
 
   const fetchStats = async () => {
     try {
@@ -411,8 +579,12 @@ export default function Review() {
   const fetchHistory = async () => {
     setHistoryLoading(true);
     try {
-      const res = await api.get('/asset-stat/history', { params: { days: 365 } });
-      if (isOkEnvelope(res.data)) setHistory(res.data.data ?? []);
+      const [h, cf] = await Promise.all([
+        api.get('/asset-stat/history', { params: { days: 365 } }),
+        api.get('/asset-stat/monthly-cashflow', { params: { months: 12 } }),
+      ]);
+      if (isOkEnvelope(h.data)) setHistory(h.data.data ?? []);
+      if (isOkEnvelope(cf.data)) setCashFlow(cf.data.data ?? []);
     } catch {
       /* ignore */
     } finally {
@@ -421,6 +593,23 @@ export default function Review() {
   };
 
   const curvePoints = useMemo(() => bucketByPeriod(history, curvePeriod), [history, curvePeriod]);
+  /**
+   * 柱（当月现金流盈亏）+ 线（期末累计收益率）共用的一组周期槽。
+   * 槽比线上的点多一个（当月无快照）时，线按 `slotOf` 对齐，不会自己铺满横轴。
+   */
+  const curveSlots = useMemo(
+    () => buildCurveSeries(curvePoints, cashFlow, curvePeriod, caliber),
+    [curvePoints, cashFlow, curvePeriod, caliber],
+  );
+  /** 有快照的点在 `curveSlots` 里的下标（顺序与 `curvePoints` 一致），用于柱/线对齐 */
+  const curveLineSlots = useMemo(
+    () =>
+      curveSlots
+        .map((s, i) => ({ s, i }))
+        .filter(({ s }) => s.yieldPct !== null)
+        .map(({ i }) => i),
+    [curveSlots],
+  );
 
   const fetchTrades = async (p: number) => {
     // 页码与请求**同步**更新（乐观分页）：翻页后「第 X / Y 页」立即反映目标页
@@ -572,6 +761,11 @@ export default function Review() {
           {CALIBER_LABEL[caliber]}
         </span>
       </div>
+      <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted, marginTop: -12, marginBottom: 16 }}>
+        口径说明：价格口径只按「成本 vs 收盘价」算价差，<b>不含</b>分红/送转；实际口径 = 价格口径 +
+        截至当日的累计除权福利（现金分红、送股、转增）。<b>两口径数值不同是设计如此</b>，
+        差额即分红送转（本次补录后为 387.40 元现金分红 + 60 股送股），不是 bug。
+      </div>
 
       {/* V3.8 T150：逐笔流水 / 交易对 双 tab（INV-S6-6：交易对视图与逐笔流水并存，不替代） */}
       <div style={{ display: 'flex', gap: SPACING.gapBase, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -636,7 +830,23 @@ export default function Review() {
             {historyLoading ? (
               <Spinner size={16} />
             ) : (
-              <YieldCurve points={curvePoints} caliber={caliber} onBackfilled={() => void fetchHistory()} />
+              <div>
+                {/* 柱：当月盈亏（现金流口径，含无快照的当月）；线：期末累计收益率 */}
+                {curveSlots.length > 0 && <PnlBars slots={curveSlots} />}
+                <YieldCurve
+                  points={curvePoints}
+                  caliber={caliber}
+                  onBackfilled={() => void fetchHistory()}
+                  slotCount={curveSlots.length}
+                  slotOf={curveLineSlots}
+                />
+                {curveSlots.some((s) => s.yieldPct === null) && (
+                  <div style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted, marginTop: 4 }}>
+                    当月暂无每日快照（行情库最后交易日之后无收盘价），累计收益率线止于上一有快照周期；
+                    当月盈亏柱直接由成交现金流计算，无需行情。
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

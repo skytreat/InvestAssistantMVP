@@ -257,7 +257,9 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
       st.costBasis += row.quantity * row.price + row.fee;
       st.qty += row.quantity;
     } else if (row.trade_type === 'bonus' || row.trade_type === 'transfer') {
-      // T119：送股 / 转增 → 股数 +n、成本基不变（均价摊薄），与 core bonus 分支同口径
+      // T119：送股 / 转增 / 份额拆分 / 调账转入 → 股数 +n、成本基不变（均价摊薄），与 core bonus 分支同口径
+      // ⚠️ 2026-11-06 实测：业务层 4 条 transfer 全部是「份额拆分 / 股份调账」（见
+      // brokerConfirm.businessValues 注释），按收盘价计成本会重复计价，故此处不改。
       st.qty += row.quantity;
     } else {
       if (st.qty <= 0) continue; // 空仓卖出跳过（脏数据，POS 校验理论上已拦）
