@@ -175,6 +175,9 @@ describe('T57 — resolveRegisterRole 越权矩阵（纯函数）', () => {
     if (r.ok) return;
     expect(r.status).toBe(403);
     expect(r.error).toBe('ADMIN_ALREADY_EXISTS');
+    // 文案里的接口指引必须是真实路由（`/api/admin/role/:userId`），不能指向已改名的旧路由
+    expect(r.message).toContain('PATCH /api/admin/role/:userId');
+    expect(r.message).not.toContain('/api/admin/users/:id/role');
   });
 
   it('admin 请求 user → 强制 user', () => {

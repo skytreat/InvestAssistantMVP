@@ -14,7 +14,7 @@ import { ok, fail } from '../lib/envelope.js';
  *   POST /api/auth/refresh  → refresh token（30d）换新的 access + **轮换后的** refresh
  *   POST /api/auth/seed     → 创建用户。⚠️ 公开路由，admin 角色仅"系统第一个用户"
  *                            可获得（库中已有用户时请求 admin → 403 ADMIN_ALREADY_EXISTS），
- *                            后续管理员变动走 PATCH /api/admin/users/:id/role
+ *                            后续管理员变动走 PATCH /api/admin/role/:userId（body {"role":"admin"}）
  *
  * ⚠️ **当前 routes/index.ts 的 PUBLIC_ROUTES 白名单里没有 register / refresh**，
  *    全局 onRequest 钩子会对它们要 Bearer token（无 token → 401 NO_TOKEN）。
@@ -128,7 +128,7 @@ function issueSession(db: ConfigStore['db'], user: { id: number; username: strin
  *   - 匿名 + 库里 0 用户   → admin（唯一 bootstrap 路径）
  *   - 匿名 + 库里已有用户 → 403（bootstrap 已关闭）
  *   - 普通用户调用        → 403（无论请求什么角色）
- *   - admin 调用 + 请求 admin → 403（管理员转让走 PATCH /api/admin/users/:id/role，注册入口不造 admin）
+ *   - admin 调用 + 请求 admin → 403（管理员转让走 PATCH /api/admin/role/:userId，注册入口不造 admin）
  *   - admin 调用 + 请求 user  → 强制 user
  */
 export function resolveRegisterRole(input: {
@@ -157,7 +157,8 @@ export function resolveRegisterRole(input: {
       ok: false,
       status: 403,
       error: 'ADMIN_ALREADY_EXISTS',
-      message: '注册入口不允许创建 admin。已有 admin 请用 PATCH /api/admin/users/:id/role 转让。',
+      message:
+        '注册入口不允许创建 admin。已有 admin 请用 PATCH /api/admin/role/:userId（body {"role":"admin"}）转让。',
     };
   }
 
@@ -370,7 +371,7 @@ export async function registerAuthRoutes(app: FastifyInstance) {
               fail(
                 403,
                 'ADMIN_ALREADY_EXISTS',
-                `系统已有 ${userCount} 个用户，不允许再创建 admin。已有 admin 请用 PATCH /api/admin/users/:id/role 转让。`,
+                `系统已有 ${userCount} 个用户，不允许再创建 admin。已有 admin 请用 PATCH /api/admin/role/:userId（body {"role":"admin"}）转让。`,
               ),
             );
         }
