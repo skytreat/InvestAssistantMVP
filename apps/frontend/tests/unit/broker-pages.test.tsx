@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import BrokerImport from '../../src/pages/BrokerImport';
@@ -243,8 +243,8 @@ describe('T143 券商导入向导 /broker/import', () => {
     expect(screen.queryByRole('button', { name: /确认导入【未识别】/ })).not.toBeInTheDocument();
   });
 
-  /** 推断名存在时**优先显示推断名**（回退为手填标识只发生在「无推断」时）。 */
-  it('有券商推断名时，按钮标签优先显示推断名（不因手填标识而改变）', async () => {
+  /** UX-04：按钮文案统一用**实际券商编码**（落库值），不再让推断名盖过用户填写的标识。 */
+  it('UX-04：手填标识后按钮文案使用实际券商编码（不写死）', async () => {
     postMock.mockImplementation((url: string) => {
       if (url === '/broker-import/upload')
         return Promise.resolve(
@@ -272,12 +272,49 @@ describe('T143 券商导入向导 /broker/import', () => {
     expect((screen.getByPlaceholderText(/必填/) as HTMLInputElement).value).toBe('华宝证券');
     expect(screen.getByRole('button', { name: /确认导入【华宝证券】/ })).toBeInTheDocument();
 
-    // 手改成标识（如 'hb'）后，推断名仍优先显示
+    // 手改成实际编码（如 'hb'）后，按钮必须显示实际编码
     const codeInput = screen.getByPlaceholderText(/必填/) as HTMLInputElement;
     await user.clear(codeInput);
     await user.type(codeInput, 'hb');
-    expect(screen.getByRole('button', { name: /确认导入【华宝证券】/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /确认导入【hb】/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /确认导入【hb】/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /确认导入【华宝证券】/ })).not.toBeInTheDocument();
+  });
+
+  it('UX-04：URL brokerCode 预填券商下拉；界面「事实层」无星号字面量', async () => {
+    postMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/upload')
+        return Promise.resolve(
+          mockResponse({
+            fileKind: 'trade',
+            encoding: 'utf-8',
+            headerRowIndex: 0,
+            columns: [],
+            mappingSuggestion: { byField: {} },
+            previewRows: [],
+            rowTotal: 10,
+            warnings: [],
+            brokerNameHint: '华宝证券',
+          }),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, {
+      initialEntries: ['/broker/import?brokerCode=hb'],
+    });
+
+    expect((screen.getByPlaceholderText(/必填/) as HTMLInputElement).value).toBe('hb');
+    expect(screen.getByText(/已从对账页预填，可修改/)).toBeInTheDocument();
+
+    // 已有标识 → 推断名不覆盖；按钮用实际编码
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'hb-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /确认导入【hb】/ })).toBeInTheDocument();
+
+    // UX-04：星号字面量已移除，保留正常中文文案
+    expect(screen.queryByText(/\*\*事实层\*\*/)).not.toBeInTheDocument();
+    expect(screen.getByText(/导入只落事实层，不会自动写入交易记录/)).toBeInTheDocument();
   });
 
   it('未知标的整批拒绝：显示 422 文案，不出现「导入完成」或半批次结果', async () => {
@@ -418,6 +455,55 @@ describe('T143 券商导入向导 /broker/import', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(postMock.mock.calls.some((c) => String(c[0]).includes('/revoke'))).toBe(false);
+  });
+
+  it('UX-15：批次表状态/券商筛选 + 分页（前端过滤，不改后端接口）', async () => {
+    batchRows = Array.from({ length: 25 }, (_, i) => ({
+      ...BATCH_IMPORTED,
+      id: i + 1,
+      broker_code: i % 2 === 0 ? 'gt' : 'hb',
+      status: i % 5 === 0 ? 'revoked' : 'imported',
+      file_name: `f${i + 1}.csv`,
+    }));
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+
+    await waitFor(() => expect(screen.getByText('f1.csv')).toBeInTheDocument());
+    // 默认 20 条/页
+    expect(screen.getAllByRole('row')).toHaveLength(21);
+    await user.click(screen.getByRole('button', { name: '下一页' }));
+    expect(screen.getAllByRole('row')).toHaveLength(6); // 剩余 5 条 + 表头
+
+    // 状态筛选：只保留已导入（i%5===0 的 5 条已撤销被排除）
+    await user.selectOptions(screen.getByLabelText('按状态筛选批次'), 'imported');
+    expect(screen.getAllByRole('row')).toHaveLength(21);
+    expect(screen.queryByText('f1.csv')).not.toBeInTheDocument();
+
+    // 券商筛选：hb → 只剩 hb 的已导入批次
+    await user.selectOptions(screen.getByLabelText('按券商筛选批次'), 'hb');
+    expect(screen.getAllByRole('row')).toHaveLength(11);
+    expect(screen.getByText('f2.csv')).toBeInTheDocument();
+    expect(screen.queryByText('f3.csv')).not.toBeInTheDocument();
+
+    // 空结果给出明确文案（没有 pending 批次）
+    await user.selectOptions(screen.getByLabelText('按状态筛选批次'), 'pending');
+    await user.selectOptions(screen.getByLabelText('按券商筛选批次'), 'hb');
+    expect(screen.getByText('当前筛选条件下没有批次')).toBeInTheDocument();
+  });
+
+  it('UX-15：本次刚导入的批次行高亮标记', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'gt-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+    await user.type(screen.getByPlaceholderText(/必填/), 'gt');
+    await user.click(screen.getByRole('button', { name: /确认导入/ }));
+
+    await waitFor(() => expect(screen.getByText('导入完成')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('batch-highlight-9')).toBeInTheDocument());
+    expect(screen.getByText('本次导入')).toBeInTheDocument();
   });
 });
 
@@ -584,16 +670,109 @@ describe('T144 对账报告 /broker/reconcile', () => {
     expect(confirmCall?.[1].items).toEqual([{ sourceId: 101, tradeType: 'reduce' }]);
   });
 
-  it('「已手工记录」标记：MISSING 行 → POST /diff/:id/match（业务层不动）', async () => {
+  it('「已手工记录」标记：MISSING 行 → 先确认再 POST /diff/:id/match（业务层不动）', async () => {
     const user = userEvent.setup();
     renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
 
     await waitFor(() => expect(screen.getByText(/差异明细/)).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: '已手工记录' }));
 
+    // UX-02：先弹确认，取消不发请求
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-reconcile/diff/101/match')).toBe(false);
+
+    // 再次点击并确认后才调接口
+    await user.click(screen.getByRole('button', { name: '已手工记录' }));
+    await user.click(screen.getByRole('button', { name: '确认标记' }));
     await waitFor(() =>
       expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-reconcile/diff/101/match')).toBe(true),
     );
+  });
+
+  it('UX-02：标记成功后从待补录选中集合移除，并显示可见成功提示', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await waitFor(() => expect(screen.getByText(/差异明细/)).toBeInTheDocument());
+    // 勾选缺失行 → 待补录面板出现
+    await user.click(screen.getAllByRole('checkbox')[0]);
+    await waitFor(() => expect(screen.getByText(/全部补录（1 笔）/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: '已手工记录' }));
+    await user.click(screen.getByRole('button', { name: '确认标记' }));
+
+    await waitFor(() => expect(screen.getByText(/已将事实行 #101 标记为已手工记录/)).toBeInTheDocument());
+    // 已从选中集合移除（面板消失），避免同一事实行被再次补录
+    expect(screen.queryByText(/全部补录（1 笔）/)).not.toBeInTheDocument();
+  });
+
+  it('UX-06：摘要两种口径有说明，「多余」下钻按当前券商过滤并分页', async () => {
+    const trades = [
+      ...Array.from({ length: 25 }, (_, i) => ({
+        id: i + 1,
+        asset_code: `sh${600000 + i}`,
+        trade_type: 'buy',
+        trade_date: '2026-09-01',
+        quantity: 100,
+        price: 10,
+        broker_code: 'gt',
+      })),
+      ...Array.from({ length: 3 }, (_, i) => ({
+        id: 26 + i,
+        asset_code: `sz${1 + i}`,
+        trade_type: 'sell',
+        trade_date: '2026-09-02',
+        quantity: 200,
+        price: 20,
+        broker_code: 'hb',
+      })),
+    ];
+    getMock.mockImplementation((url: string, config?: { params?: Record<string, unknown> }) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest') return Promise.resolve(mockResponse(REPORT));
+      if (url === '/broker-reconcile/diff')
+        return Promise.resolve(
+          mockResponse({ rows: DIFF_ROWS, total: DIFF_ROWS.length }, { pagination: { total: 2 } }),
+        );
+      if (url === '/trade') {
+        // 后端按 broker_code 精确过滤（is_deleted=0 由 SQL 保证），前端只透传参数
+        const bc = config?.params?.broker_code;
+        const page = Number(config?.params?.page ?? 1);
+        const limit = Number(config?.params?.limit ?? 50);
+        const filtered = trades.filter((t) => t.broker_code === bc);
+        return Promise.resolve(
+          mockResponse(filtered.slice((page - 1) * limit, page * limit), {
+            pagination: { total: filtered.length, totalPages: Math.ceil(filtered.length / limit) },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected get ${url}`));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await waitFor(() => expect(screen.getByText(/差额归因/)).toBeInTheDocument());
+    expect(screen.getByTestId('summary-caliber').textContent).toContain('去重计数');
+    expect(screen.getByText(/摘要「缺失 \/ 多余」按「标的 × 日期」去重计数/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /多余/ }));
+    const panel = await screen.findByTestId('extra-drilldown');
+    expect(panel.textContent).toContain('broker_code = gt');
+    // 过滤条件走服务端（broker_code 透传），不在前端拉全量再筛
+    expect(
+      getMock.mock.calls.some(
+        (c) => (c[1] as { params?: Record<string, unknown> })?.params?.broker_code === 'gt',
+      ),
+    ).toBe(true);
+    // 只显示 gt 的 25 条；hb 的 3 条被过滤掉
+    expect(panel.textContent).toContain('sh600000');
+    expect(panel.textContent).not.toContain('sz1');
+
+    // 25 条 > 20/页 → 分页可用，第二页显示剩余的 gt 记录
+    expect(panel.textContent).not.toContain('sh600024');
+    await user.click(within(panel).getByRole('button', { name: '下一页' }));
+    expect(panel.textContent).toContain('sh600024');
   });
 });
 

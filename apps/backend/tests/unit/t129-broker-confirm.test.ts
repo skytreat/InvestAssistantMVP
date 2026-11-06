@@ -496,3 +496,64 @@ describe('T129 · 事件覆盖 TRANSFER_IN / DIVIDEND_BONUS / DIVIDEND_CASH', ()
     expect(r.rows[0].reason).toContain('不进业务层');
   });
 });
+
+/**
+ * UX-02 / Q7（批次 5）· 「已匹配拒绝补录」的边界
+ *
+ * 判据：成交族（TRADE_* / FUND_*）被「标记为已手工记录」且 `matched_trade_record_id IS NULL`
+ * → already（不插入、结果行必须可见）；非成交族不受此拦截。
+ * 反例必须保住：补录后撤销（软删业务行）→ 仍可重新补录（G3 回溯幂等）。
+ */
+describe('UX-02 / Q7 · 标记已手工记录后拒绝重复补录', () => {
+  it('成交族：标记后 confirm 返回 already（结果行可见），且不插入新记录', async () => {
+    const store = freshStore('ux02-trade');
+    const db = store.db;
+    const ids = seedFacts(db, [{ id: 1, eventType: 'TRADE_BUY', asset: 'sh600000', balance: 100 }]);
+    const factId = ids.get(1)!;
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+
+    expect(markAsManuallyRecorded(db, UID, factId, null).ok).toBe(true);
+    const r = await confirmTrades(db, UID, 't129broker', [{ sourceId: factId }]);
+
+    expect(r.imported).toBe(0);
+    expect(r.already).toBe(1);
+    // 结果行必须回填（不能静默跳过），否则前端「成功 N」会漏报
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]).toMatchObject({ sourceId: factId, status: 'already' });
+    expect(r.rows[0].reason).toContain('已手工记录');
+    expect(
+      (db.prepare('SELECT COUNT(*) c FROM user_trade_record WHERE is_deleted = 0').get() as { c: number }).c,
+    ).toBe(0);
+  });
+
+  it('非成交族（transfer）：标记后仍可补录（Q7 例外）', async () => {
+    const store = freshStore('ux02-nontrade');
+    const db = store.db;
+    const ids = seedFacts(db, [{ id: 1, eventType: 'TRANSFER_IN', asset: 'sh515880', price: 0, qty: 41000 }]);
+    const factId = ids.get(1)!;
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh515880' }]);
+
+    expect(markAsManuallyRecorded(db, UID, factId, null).ok).toBe(true);
+    const r = await confirmTrades(db, UID, 't129broker', [{ sourceId: factId }]);
+
+    expect(r.imported).toBe(1);
+    expect(r.already).toBe(0);
+    expect(r.rows[0].tradeType).toBe('transfer');
+  });
+
+  it('成交族：补录后撤销（软删业务行）仍可重新补录（不被「已匹配」误拦）', async () => {
+    const store = freshStore('ux02-revoked');
+    const db = store.db;
+    const ids = seedFacts(db, [{ id: 1, eventType: 'TRADE_BUY', asset: 'sh600000', balance: 100 }]);
+    const factId = ids.get(1)!;
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh600000' }]);
+
+    const first = await confirmTrades(db, UID, 't129broker', [{ sourceId: factId }]);
+    expect(first.imported).toBe(1);
+    db.prepare('UPDATE user_trade_record SET is_deleted = 1 WHERE id = ?').run(first.rows[0].tradeRecordId!);
+
+    const second = await confirmTrades(db, UID, 't129broker', [{ sourceId: factId }]);
+    expect(second.imported).toBe(1);
+    expect(second.already).toBe(0);
+  });
+});

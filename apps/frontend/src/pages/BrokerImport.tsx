@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
@@ -86,6 +86,8 @@ const FILE_KIND_LABELS: Record<string, string> = {
   settlement: '交割单',
   trade: '成交流水',
 };
+/** UX-15：批次表每页条数 */
+const BATCH_PAGE_SIZE = 20;
 
 /** 字段中文名（与后端 SEMANTIC_ALIASES 保持可读性） */
 const FIELD_LABELS: Record<string, string> = {
@@ -120,9 +122,14 @@ function fileToBase64(file: File): Promise<string> {
 
 export default function BrokerImport() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [brokerCode, setBrokerCode] = useState('');
+  /** UX-04：从对账页带参跳转（`?brokerCode=xxx`）时预填券商下拉，无值保持默认 */
+  const urlBrokerCode = (searchParams.get('brokerCode') ?? '').trim();
+  const [brokerCode, setBrokerCode] = useState(urlBrokerCode);
+  /** 预填来自 URL 时给一句提示；用户手动修改后不再提示 */
+  const [brokerFromUrl, setBrokerFromUrl] = useState(urlBrokerCode !== '');
   /** T151①：券商标识是否由文件推断自动填入（可改；改动后标记为手动） */
   const [brokerAutoFilled, setBrokerAutoFilled] = useState(false);
   /** T151②：多文件 */
@@ -153,6 +160,11 @@ export default function BrokerImport() {
   const [batchesNotice, setBatchesNotice] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<BatchRow | null>(null);
   const [revokeBusy, setRevokeBusy] = useState(false);
+  /** UX-15：批次表状态/券商筛选、分页、本次导入高亮 */
+  const [batchStatusFilter, setBatchStatusFilter] = useState('all');
+  const [batchBrokerFilter, setBatchBrokerFilter] = useState('all');
+  const [batchPage, setBatchPage] = useState(1);
+  const [highlightBatchIds, setHighlightBatchIds] = useState<number[]>([]);
 
   const loadBatches = useCallback(async () => {
     setBatchesLoading(true);
@@ -175,6 +187,33 @@ export default function BrokerImport() {
   useEffect(() => {
     void loadBatches();
   }, [loadBatches]);
+
+  /** 批次表的券商下拉：取自已有批次的实际 broker_code */
+  const batchBrokerOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of batches) {
+      const code = (b.broker_code ?? '').trim();
+      if (code) set.add(code);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [batches]);
+
+  /** UX-15：状态 + 券商筛选（前端过滤，不改后端接口） */
+  const filteredBatches = useMemo(
+    () =>
+      batches.filter(
+        (b) =>
+          (batchStatusFilter === 'all' || b.status === batchStatusFilter) &&
+          (batchBrokerFilter === 'all' || (b.broker_code ?? '').trim() === batchBrokerFilter),
+      ),
+    [batches, batchStatusFilter, batchBrokerFilter],
+  );
+  const batchPageCount = Math.max(1, Math.ceil(filteredBatches.length / BATCH_PAGE_SIZE));
+  const currentBatchPage = Math.min(batchPage, batchPageCount);
+  const pagedBatches = filteredBatches.slice(
+    (currentBatchPage - 1) * BATCH_PAGE_SIZE,
+    currentBatchPage * BATCH_PAGE_SIZE,
+  );
 
   /** 探测（不落库）：每个文件各探一次；T151① 单文件 + 标识框为空 + 有推断 → 自动填入
    *  （多文件不自动填——不同券商需分组提示分批，避免首个文件的 hint 污染分组） */
@@ -239,12 +278,12 @@ export default function BrokerImport() {
   );
   /** 尚未探测完成（排队/探测中）的文件数：全部导入必须等它们完成 */
   const pendingDetectCount = files.length - allImportable.length;
-  /** 全局一次导入的券商名：单券商时用推断名，无推断则回退实际落库标识（与分组按钮同规则） */
+  /** 全局一次导入的券商名：UX-04 统一用**实际券商编码**（落库值），无编码才回退分组名 */
   const bulkDisplayName = useMemo(() => {
     if (groups.length !== 1) return '';
     const key = groups[0][0];
     const code = brokerCode.trim();
-    return key === '未识别' && code ? code : key;
+    return code || key;
   }, [groups, brokerCode]);
 
   /**
@@ -263,6 +302,16 @@ export default function BrokerImport() {
     if (allImportable.length > 5) return '单次最多 5 个文件，请取消勾选后分批确认';
     return null;
   }, [brokerCode, conflictingHints, groups.length, allImportable.length, pendingDetectCount]);
+
+  /** UX-15：记录本次刚导入的批次 id（用于表格行高亮），并回到完整列表让新批次可见 */
+  const markImportedBatches = useCallback((results: Array<{ filename: string; result: ConfirmResult }>) => {
+    const ids = results.map((r) => r.result.batchId).filter((id): id is number => typeof id === 'number');
+    if (ids.length === 0) return;
+    setHighlightBatchIds((prev) => [...new Set([...prev, ...ids])]);
+    setBatchStatusFilter('all');
+    setBatchBrokerFilter('all');
+    setBatchPage(1);
+  }, []);
 
   const removeFile = (target: File) => {
     setFiles((prev) => prev.filter((f) => f !== target));
@@ -322,6 +371,7 @@ export default function BrokerImport() {
           ...prev.filter((g) => g.key !== groupCode),
           { key: groupCode, results: out },
         ]);
+        markImportedBatches(out);
         // 成功后收起「全部导入」开关，恢复逐页模式（避免二次点击误重复提交）
         setBulkAll(false);
         await loadBatches();
@@ -331,7 +381,7 @@ export default function BrokerImport() {
         setBusy(false);
       }
     },
-    [loadBatches],
+    [loadBatches, markImportedBatches],
   );
 
   /** 用户确认跳过未知标的后重新提交（POST /confirm-final，携带 skipUnknownAssetCodes） */
@@ -362,6 +412,7 @@ export default function BrokerImport() {
         ...prev.filter((g) => g.key !== pending.brokerCode),
         { key: pending.brokerCode, results: out },
       ]);
+      markImportedBatches(out);
       setPendingUnknown(null);
       await loadBatches();
     } catch (err) {
@@ -369,7 +420,7 @@ export default function BrokerImport() {
     } finally {
       setBusy(false);
     }
-  }, [pendingUnknown, loadBatches]);
+  }, [pendingUnknown, loadBatches, markImportedBatches]);
 
   /** 撤销批次（二次确认后调用；后端软删事实层，原始证据保留） */
   const doRevoke = useCallback(
@@ -407,7 +458,7 @@ export default function BrokerImport() {
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>券商文件导入</h1>
       <p style={{ color: COLORS.textSecondary, margin: '0 0 16px' }}>
-        上传券商交割单 / 成交流水（xlsx / xls / csv / txt，≤10MB）。导入只落**事实层**，不会自动写入交易记录；
+        上传券商交割单 / 成交流水（xlsx / xls / csv / txt，≤10MB）。导入只落事实层，不会自动写入交易记录；
         补录在「对账报告」页显式确认。
       </p>
 
@@ -424,10 +475,16 @@ export default function BrokerImport() {
               onChange={(e) => {
                 setBrokerCode(e.target.value);
                 setBrokerAutoFilled(false);
+                setBrokerFromUrl(false);
               }}
               placeholder="必填（选文件后可自动推断）"
               aria-required="true"
             />
+            {brokerFromUrl && (
+              <span style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, marginLeft: 8 }}>
+                已从对账页预填，可修改
+              </span>
+            )}
             {brokerAutoFilled && (
               <span style={{ fontSize: TYPO.captionSize, color: COLORS.textSuccess, marginLeft: 8 }}>
                 已按文件内容自动推断，可修改
@@ -647,9 +704,9 @@ export default function BrokerImport() {
                 if (importable.length === 0) return null;
                 const code = brokerCode.trim();
                 const isDisabled = !code || busy || conflictingHints !== null;
-                // 无推断名（表头首行的成交流水，如华宝成交单）时回退为**实际落库的券商标识**：
-                // 此前恒显示「未识别」，用户手填「华宝」后按钮看起来仍未被识别（owner 报障 2026-11-05）
-                const displayName = key === '未识别' && code ? code : key;
+                // UX-04：按钮文案用**实际券商编码**（真正落库的值），无编码才回退分组名/未识别；
+                // 多券商分批时仍用分组名，否则多个按钮会显示同一个编码而无法区分
+                const displayName = groups.length === 1 ? code || key : key;
                 return (
                   <div key={key} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                     <button
@@ -774,51 +831,148 @@ export default function BrokerImport() {
         ) : batches.length === 0 ? (
           <p style={{ color: COLORS.textSecondary }}>暂无导入批次</p>
         ) : (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>批次</th>
-                <th style={thStyle}>券商</th>
-                <th style={thStyle}>文件</th>
-                <th style={thStyle}>类型</th>
-                <th style={thStyle}>行数（总/写入/排除）</th>
-                <th style={thStyle}>状态</th>
-                <th style={thStyle}>导入时间</th>
-                <th style={thStyle}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {batches.map((b) => {
-                const revoked = b.status === 'revoked';
-                return (
-                  <tr key={b.id}>
-                    <td style={tdStyle}>{b.id}</td>
-                    <td style={tdStyle}>{b.broker_code ?? '—'}</td>
-                    <td style={tdStyle}>{b.file_name ?? '—'}</td>
-                    <td style={tdStyle}>{FILE_KIND_LABELS[b.file_kind] ?? b.file_kind ?? '—'}</td>
-                    <td style={tdStyle}>
-                      {b.row_total ?? 0} / {b.row_inserted ?? 0} / {b.row_excluded ?? 0}
-                    </td>
-                    <td style={tdStyle}>{BATCH_STATUS_LABELS[b.status] ?? b.status ?? '—'}</td>
-                    <td style={tdStyle}>{b.created_at ?? '—'}</td>
-                    <td style={tdStyle}>
-                      {!revoked && (
-                        <button
-                          type="button"
-                          aria-label={`撤销批次 #${b.id}`}
-                          style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                          onClick={() => setRevokeTarget(b)}
-                          disabled={revokeBusy}
-                        >
-                          撤销
-                        </button>
-                      )}
-                    </td>
+          <>
+            {/* UX-15：状态 / 券商筛选（前端过滤，不改后端接口） */}
+            <div style={{ display: 'flex', gap: SPACING.gapBase, flexWrap: 'wrap', marginBottom: 8 }}>
+              <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+                状态{' '}
+                <select
+                  aria-label="按状态筛选批次"
+                  value={batchStatusFilter}
+                  onChange={(e) => {
+                    setBatchStatusFilter(e.target.value);
+                    setBatchPage(1);
+                  }}
+                  style={{ ...inputStyle, marginLeft: 4 }}
+                >
+                  <option value="all">全部状态</option>
+                  {Object.entries(BATCH_STATUS_LABELS).map(([status, label]) => (
+                    <option key={status} value={status}>
+                      {label}（{status}）
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+                券商{' '}
+                <select
+                  aria-label="按券商筛选批次"
+                  value={batchBrokerFilter}
+                  onChange={(e) => {
+                    setBatchBrokerFilter(e.target.value);
+                    setBatchPage(1);
+                  }}
+                  style={{ ...inputStyle, marginLeft: 4 }}
+                >
+                  <option value="all">全部券商</option>
+                  {batchBrokerOptions.map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted, alignSelf: 'center' }}>
+                共 {filteredBatches.length} 条
+              </span>
+            </div>
+            {filteredBatches.length === 0 ? (
+              <p style={{ color: COLORS.textSecondary }}>当前筛选条件下没有批次</p>
+            ) : (
+              <table style={tableStyle}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>批次</th>
+                    <th style={thStyle}>券商</th>
+                    <th style={thStyle}>文件</th>
+                    <th style={thStyle}>类型</th>
+                    <th style={thStyle}>行数（总/写入/排除）</th>
+                    <th style={thStyle}>状态</th>
+                    <th style={thStyle}>导入时间</th>
+                    <th style={thStyle}>操作</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {pagedBatches.map((b) => {
+                    const revoked = b.status === 'revoked';
+                    const highlighted = highlightBatchIds.includes(b.id);
+                    return (
+                      <tr
+                        key={b.id}
+                        style={highlighted ? { background: COLORS.bgPillSuccess } : undefined}
+                        data-testid={highlighted ? `batch-highlight-${b.id}` : undefined}
+                      >
+                        <td style={tdStyle}>
+                          {b.id}
+                          {highlighted && (
+                            <span
+                              style={{
+                                marginLeft: 6,
+                                fontSize: TYPO.captionSize,
+                                color: COLORS.textSuccess,
+                              }}
+                            >
+                              本次导入
+                            </span>
+                          )}
+                        </td>
+                        <td style={tdStyle}>{b.broker_code ?? '—'}</td>
+                        <td style={tdStyle}>{b.file_name ?? '—'}</td>
+                        <td style={tdStyle}>{FILE_KIND_LABELS[b.file_kind] ?? b.file_kind ?? '—'}</td>
+                        <td style={tdStyle}>
+                          {b.row_total ?? 0} / {b.row_inserted ?? 0} / {b.row_excluded ?? 0}
+                        </td>
+                        <td style={tdStyle}>{BATCH_STATUS_LABELS[b.status] ?? b.status ?? '—'}</td>
+                        <td style={tdStyle}>{b.created_at ?? '—'}</td>
+                        <td style={tdStyle}>
+                          {!revoked && (
+                            <button
+                              type="button"
+                              aria-label={`撤销批次 #${b.id}`}
+                              style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                              onClick={() => setRevokeTarget(b)}
+                              disabled={revokeBusy}
+                            >
+                              撤销
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            {batchPageCount > 1 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  gap: 8,
+                  marginTop: 8,
+                }}
+              >
+                <button
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  disabled={currentBatchPage <= 1}
+                  onClick={() => setBatchPage((p) => Math.max(1, p - 1))}
+                >
+                  上一页
+                </button>
+                <span style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>
+                  {currentBatchPage} / {batchPageCount}
+                </span>
+                <button
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  disabled={currentBatchPage >= batchPageCount}
+                  onClick={() => setBatchPage((p) => Math.min(batchPageCount, p + 1))}
+                >
+                  下一页
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

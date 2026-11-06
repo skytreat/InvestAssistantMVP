@@ -99,6 +99,8 @@ interface FactRow {
   source_kind: string;
   source_row_no: number | null;
   content_seq: number | null;
+  /** 手工标记时的关联记录；补录写入后指向被写入的那条（撤销后仍保留该 id） */
+  matched_trade_record_id?: number | null;
 }
 
 /** 日期 → 'YYYY-MM-DD'（兼容 YYYYMMDD / YYYY-MM-DD；事实层原始格式两券商并存，见 D-21） */
@@ -213,7 +215,8 @@ function loadFactRows(db: Database.Database, userId: number, brokerCode: string)
   return db
     .prepare(
       `SELECT id, event_type, asset_code, trade_date, trade_time, price, quantity, amount, cash_flow,
-              balance_after, fee_total, match_status, source_kind, source_row_no, content_seq
+              balance_after, fee_total, match_status, source_kind, source_row_no, content_seq,
+              matched_trade_record_id
          FROM broker_trade_record
         WHERE user_id = ? AND broker_code = ? AND is_deleted = 0
           AND event_type IN (${placeholders})
@@ -311,6 +314,28 @@ export async function confirmTrades(
     .all(userId, ...targetIds) as Array<{ sid: number }>;
   const alreadyIds = new Set(liveAnchors.map((x) => Number(x.sid)));
 
+  /**
+   * UX-02 / Q7：成交族（TRADE_*、FUND_*）被「标记为已手工记录」且未关联任何记录
+   * （`matched_trade_record_id IS NULL`，即 `/diff/:id/match` 的默认结果）→ 视为 already，
+   * 拒绝再次补录，否则同一事实行会对应两条活记录。
+   *
+   * 注意不能用「MATCHED 即拦截」：补录写入后事实行也是 MATCHED；若其业务记录被软删
+   * （撤销），用户必须还能重新补录（G3 回溯幂等）。撤销时 matched_trade_record_id
+   * 仍指向那条已删记录，故与本条判据天然区分。
+   * 非成交族（transfer / bonus / dividend）不参与该拦截（Q7）。
+   */
+  const markedManualTradeIds = new Set<number>();
+  for (const [id, fact] of byId) {
+    if (
+      !alreadyIds.has(id) &&
+      fact.match_status === 'MATCHED' &&
+      TRADE_EVENTS.has(fact.event_type) &&
+      (fact.matched_trade_record_id ?? null) === null
+    ) {
+      markedManualTradeIds.add(id);
+    }
+  }
+
   // 分组回放（INV-S3-3）：按 asset 分桶
   const overrides = new Map<number, ConfirmTradeType>();
   for (const it of items) {
@@ -381,7 +406,7 @@ export async function confirmTrades(
 
   const pending: Array<{ fact: FactRow; type: BusinessTradeType }> = [];
   for (const fact of byId.values()) {
-    if (alreadyIds.has(fact.id)) continue;
+    if (alreadyIds.has(fact.id) || markedManualTradeIds.has(fact.id)) continue;
     const reason = inabilityReason(fact);
     if (reason) {
       result.invalid++;
@@ -467,6 +492,18 @@ export async function confirmTrades(
       status: 'already',
       tradeType: overrides.get(id) ?? null,
       reason: '该事实行已有活记录（可回溯 source_broker_record_id）',
+    });
+  }
+  // UX-02/Q7：成交族已「标记为已手工记录」→ 同样回填 already 结果行（不静默跳过）
+  const reportedIds = new Set(rows.map((r) => r.sourceId));
+  for (const id of markedManualTradeIds) {
+    if (alreadyIds.has(id) || reportedIds.has(id)) continue;
+    result.already++;
+    rows.push({
+      sourceId: id,
+      status: 'already',
+      tradeType: overrides.get(id) ?? null,
+      reason: '该事实行已被标记为「已手工记录」，成交族不再重复补录',
     });
   }
   result.rows.sort((a, b) => a.sourceId - b.sourceId);
