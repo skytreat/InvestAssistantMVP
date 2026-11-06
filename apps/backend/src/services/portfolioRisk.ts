@@ -196,13 +196,19 @@ function aggregate<T extends { assetCode: string; marketValue: number }>(
 
 type IndustryLoad =
   | { ok: true; types: string[]; map: Map<string, string> }
-  | { ok: false; reason: 'empty' | 'unrecognized' | 'error'; allTypes: string[]; types: string[] };
+  | {
+      ok: false;
+      reason: 'empty' | 'no-member' | 'unrecognized' | 'error';
+      allTypes: string[];
+      types: string[];
+    };
 
 /**
  * 读取「通达信板块成分」→ 标的所属行业名。
  *
  * ⚠️ **不猜 `block_type` 取值**（本机副本该表 0 行，取值集合无法实测）：
  * 1. 先 `SELECT DISTINCT block_type`，若为空 ⇒ `empty`（数据不可用，降级）；
+ *    类型存在但成员表查不到任何成分 ⇒ `no-member`（同样降级，不输出全「未分类」的假行业分布）；
  * 2. 有 `INDUSTRY_BLOCK_TYPES` 环境变量则按它指定（逗号分隔）；
  * 3. 否则只在类型名**含「行业」或 industry** 时认定（其余情况一律 `unrecognized` 降级，
  *    并在 note 里列出可用类型，不硬编码猜测值）。
@@ -237,6 +243,10 @@ async function loadIndustryMapping(symbols: string[]): Promise<IndustryLoad> {
           AND i.block_type IN (${types.map(() => '?').join(',')})`,
       [...symbols, ...types],
     );
+
+    // 🔴 降级判定只看数据，不看环境/路径：信息表无类型 → empty；成员表无成分 → no-member。
+    //    生产库一旦回填板块成分，这两个分支自然不再命中，自动切回行业口径，无需改代码。
+    if (memberRows.length === 0) return { ok: false, reason: 'no-member', allTypes, types };
 
     const map = new Map<string, string>();
     for (const r of memberRows) {
@@ -364,10 +374,12 @@ export async function computeRiskCheck(userId: number): Promise<RiskCheckResult>
     );
     const reason =
       industryLoad.reason === 'empty'
-        ? '本机行情副本的板块成分表为空（raw_tdx_blocks_info / raw_tdx_blocks_member 0 行，属副本陈旧）；生产库已回填板块成分（raw_tdx_blocks_member 89928 行）后会自动切换为行业维度'
-        : industryLoad.reason === 'unrecognized'
-          ? `板块类型（${industryLoad.allTypes.join('/')}）无法判定哪一类是行业（可通过 INDUSTRY_BLOCK_TYPES 指定）`
-          : '行情库当前不可用或缺少板块表';
+        ? '本机行情副本的板块成分表为空（raw_tdx_blocks_info 无任何 block_type 记录）；据 wave-11 审计记录（docs/audit/wave-11-audit.md），生产库在 Wave 9 回填后 raw_tdx_blocks_member 约 89,928 行，该数字本机未核实。行情库出现板块成分后会自动切换为行业维度，无需改代码'
+        : industryLoad.reason === 'no-member'
+          ? `已识别板块类型（${industryLoad.types.join('/')}），但当前持仓标的在 raw_tdx_blocks_member 中无匹配成分（可能成分表尚未回填，或标的代码格式与成员表不一致）`
+          : industryLoad.reason === 'unrecognized'
+            ? `板块类型（${industryLoad.allTypes.join('/')}）无法判定哪一类是行业（可通过 INDUSTRY_BLOCK_TYPES 指定）`
+            : '行情库当前不可用或缺少板块表';
     note =
       `当前按交易所维度展示（sh=上交所 / sz=深交所 / bj=北交所）：${reason}。` +
       '另注意：通达信行业板块成分基本只覆盖 A 股个股，ETF 多数无行业归属，行业维度下组合以 ETF 为主时可能大面积为空。';
