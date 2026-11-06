@@ -538,6 +538,49 @@ describe('T144 对账报告 /broker/reconcile', () => {
     expect(screen.getByText(/含疑似 10/)).toBeInTheDocument();
   });
 
+  it('口径纠偏：归因卡片展示 nonReconciled；逆回购行显示「归因（不补录）」且无「已手工记录」', async () => {
+    const REPO_ROW = {
+      id: 201,
+      event_type: 'REPO',
+      raw_event_type: '逆回购',
+      asset_code: 'sh204001',
+      trade_date: '2026-09-05',
+      trade_time: null,
+      price: null,
+      quantity: 0,
+      amount: 20000,
+      cash_flow: 20000,
+      match_status: 'MISSING',
+      exclude_reason: null,
+      source_file: 'repo.csv',
+    };
+    getMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest')
+        return Promise.resolve(
+          mockResponse({
+            ...REPORT,
+            matchSummary: { ...REPORT.matchSummary, nonReconciled: 387 },
+          }),
+        );
+      if (url === '/broker-reconcile/diff')
+        return Promise.resolve(mockResponse({ rows: [REPO_ROW] }, { pagination: { total: 1 } }));
+      return Promise.reject(new Error(`unexpected get ${url}`));
+    });
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await waitFor(() => expect(screen.getAllByText('归因（不补录）').length).toBeGreaterThanOrEqual(2));
+    // 卡片标签 + 明细状态各出现一次
+    expect(screen.getByText('387')).toBeInTheDocument();
+
+    // 切到「逆回购」分类：行状态不应再显示原始 MISSING，也不该出现「已手工记录」
+    await user.selectOptions(screen.getAllByRole('combobox')[1], 'repo');
+    await waitFor(() => expect(screen.getByText('sh204001')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: '已手工记录' })).not.toBeInTheDocument();
+    expect(screen.queryByText('MISSING')).not.toBeInTheDocument();
+  });
+
   it('无对账数据（404 BROKER_NO_DATA）→ 展示后端文案与空状态，不残留旧报告', async () => {
     getMock.mockImplementation((url: string) => {
       if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));

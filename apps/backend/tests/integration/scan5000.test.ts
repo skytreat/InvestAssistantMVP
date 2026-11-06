@@ -164,13 +164,13 @@ describe('F7 / PE2 — 全市场条件选股 ≤ 3s（SDD §12.5）', () => {
 
       const data = body.data as {
         totalCandidates: number;
-        total: number;
+        totalMatched: number;
         results: Array<Record<string, unknown>>;
         tradeDate: string;
       };
 
       console.log(
-        `[F7] scan_5000_target：候选池 ${data?.totalCandidates} 只 / 命中 ${data?.total} 只 / ` +
+        `[F7] scan_5000_target：候选池 ${data?.totalCandidates} 只 / 命中 ${data?.totalMatched} 只 / ` +
           `返回 ${data?.results?.length} 条 / 交易日 ${data?.tradeDate} / ` +
           `客户端耗时 ${elapsedMs.toFixed(0)}ms / 服务端耗时 ${String(body.timeMs)}ms`,
       );
@@ -189,7 +189,7 @@ describe('F7 / PE2 — 全市场条件选股 ≤ 3s（SDD §12.5）', () => {
       // 结果非空（不脆弱：不断言具体命中数量 —— 随行情库与插件参数变化）
       expect(Array.isArray(data.results)).toBe(true);
       expect(data.results.length).toBeGreaterThan(0);
-      expect(data.total).toBeGreaterThan(0);
+      expect(data.totalMatched).toBeGreaterThan(0);
 
       // 每条结果的必要字段（以实现为准，见 routes/stockscan.ts 的 StockScanResult）
       for (const item of data.results) {

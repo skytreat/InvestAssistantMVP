@@ -248,6 +248,9 @@ describe('Auth · /api/auth/seed 越权防护', () => {
     const body = JSON.parse(res.body);
     expect(body.code).toBe('ADMIN_ALREADY_EXISTS');
     expect(body.error).toBe('ADMIN_ALREADY_EXISTS');
+    // 指引必须指向真实路由（旧文案写的 /api/admin/users/:id/role 已在 T90 改名）
+    expect(body.message).toContain('PATCH /api/admin/role/:userId');
+    expect(body.message).not.toContain('/api/admin/users/:id/role');
     expect('success' in body).toBe(false);
   });
 
