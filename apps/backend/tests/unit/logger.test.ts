@@ -191,19 +191,76 @@ describe('logger — writeSystemLog', () => {
   // S6 日志脱敏（SDD §6）
   // ---------------------------------------------------------
   describe('logger — S6 脱敏', () => {
-    it('金额 ≥ 10000 → 末 4 位换 ****', () => {
+    it('金额 ≥ 10000（带金额语义）→ 末 4 位换 ****；qty 计数保持明文', () => {
       vi.restoreAllMocks();
       const db = ConfigStore.getInstance().db;
       db.prepare('DELETE FROM system_log').run();
       writeSystemLog({
         logType: 'trade',
         level: 'SUCCESS',
-        message: '买入 sh600000 qty=12345678 price=9999.99',
+        message: '买入 sh600000 qty=12345678 price=9999.99 amount=9876543',
       });
       const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
-      expect(row.message).not.toMatch(/12345678/);
+      // UX-07：带金额语义的仍遮
       expect(row.message).not.toMatch(/9999\.99/);
-      expect(row.message).toMatch(/****/);
+      expect(row.message).not.toMatch(/9876543/);
+      expect(row.message).toMatch(/price=\*\*\*\*/);
+      expect(row.message).toMatch(/amount=987\*\*\*\*/);
+      // UX-07：qty 是条数/数量，不是金额 ⇒ 明文保留
+      expect(row.message).toMatch(/qty=12345678/);
+      expect(row.message).toMatch(/sh600000/);
+    });
+
+    it('UX-07：校验计数 / 阈值 / 数据日期一律明文（审计证据不能被遮）', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'datacheck',
+        level: 'SUCCESS',
+        message: 'C6 覆盖 5561/5561 threshold=1000 dataDate=2026-10-20',
+        detail: '门限 1000，实际 5561，日期 2026-10-20',
+      });
+      const row = db.prepare('SELECT message, detail FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      // 计数与阈值
+      expect(row.message).toMatch(/5561/);
+      expect(row.message).toMatch(/threshold=1000/);
+      // 日期不能被当成金额（旧实现会把 2026 遮成 ****）
+      expect(row.message).toMatch(/2026-10-20/);
+      expect(row.detail).toMatch(/2026-10-20/);
+      // 全程不应出现 ****
+      expect(row.message).not.toMatch(/\*\*\*\*/);
+      expect(row.detail).not.toMatch(/\*\*\*\*/);
+    });
+
+    it('UX-07：金额关键词与货币符号（¥/￥）仍然遮蔽', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'trade',
+        level: 'SUCCESS',
+        message: '总资产 ¥1234567.89，持仓成本 123456 元，盈亏 9876543',
+      });
+      const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      expect(row.message).not.toMatch(/1234567\.89/);
+      expect(row.message).not.toMatch(/123456/);
+      expect(row.message).not.toMatch(/9876543/);
+      expect(row.message).toMatch(/¥123\*\*\*\*/); // 7 位 → 保留前 3 位
+    });
+
+    it('UX-07：token / password 值整体脱敏', () => {
+      vi.restoreAllMocks();
+      const db = ConfigStore.getInstance().db;
+      db.prepare('DELETE FROM system_log').run();
+      writeSystemLog({
+        logType: 'startup',
+        level: 'INFO',
+        message: 'tushare token=abcdef1234567890 ok',
+      });
+      const row = db.prepare('SELECT message FROM system_log ORDER BY id DESC LIMIT 1').get() as any;
+      expect(row.message).not.toMatch(/abcdef1234567890/);
+      expect(row.message).toMatch(/token=\*\*\*\*/);
     });
 
     it('金额 < 1000 → 不脱敏', () => {

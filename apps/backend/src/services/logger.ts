@@ -31,14 +31,104 @@ export interface SystemLogEntry {
 // SDD §6 S6 日志脱敏 —— 在 writeSystemLog 内部统一做，三层降级自动脱敏
 // =====================================================================
 
-/** 金额脱敏：末 4 位换 ****，只处理整数部分 ≥ 4 位的金额 */
+/**
+ * 金额脱敏（UX-07 收窄）：**只遮带金额语义的 ≥4 位数字**，末 4 位换 ****
+ *
+ * ## 为什么收窄
+ *
+ * 旧实现把所有 ≥4 位数字一律遮掉 —— 连数据日期（`2026-10-20`）、
+ * 校验计数（`stock=5561`）、阈值（`threshold=1000`）都变成 `****`，
+ * 导致审计时无法判断「校验是否真的跑了 / 数据是哪天的」，把可用性换成了假安全。
+ *
+ * 现在只遮两类：
+ * 1. **带金额关键词的数字**：`金额/成本/市值/盈亏/收益/价格/成交额/手续费/…`
+ *    或英文 `amount/price/cost/pnl/profit/balance/fee/…` 之后（可带 `:` `=`）；
+ * 2. **带货币符号的数字**：`¥1234` / `￥1234.56`（即使前面没有关键词）。
+ *
+ * 以下一律**明文**保留：校验计数、阈值、日期、条数、ID、qty、
+ * 无金额语义的普通数字 —— 它们是审计证据，不是敏感数据。
+ */
+const AMOUNT_KEYWORDS = [
+  // 中文
+  '金额',
+  '成本',
+  '市值',
+  '盈亏',
+  '收益',
+  '价格',
+  '单价',
+  '成交额',
+  '手续费',
+  '佣金',
+  '现金',
+  '余额',
+  '净值',
+  '资产',
+  '持仓金额',
+  '买入',
+  '卖出',
+  '收入',
+  '支出',
+  '亏损',
+  '盈利',
+  '冻结',
+  '可用',
+  '合计',
+  '总计',
+  // 英文
+  'amount',
+  'price',
+  'cost',
+  'market_value',
+  'marketvalue',
+  'pnl',
+  'profit',
+  'balance',
+  'fee',
+  'commission',
+  'turnover',
+].join('|');
+
+/**
+ * 单趟匹配，两个分支：
+ * ① 关键词分支：`价格 price=9999.99` / `金额 ¥123456`
+ * ② 货币符号分支：`¥1234` / `￥1234.56`（无关键词也算金额）
+ *
+ * `(?![-\/]\d)` 用于排除 `2026-10-20` 这类日期：日期后面紧跟 `-10`，不当作金额。
+ */
+const AMOUNT_OR_CURRENCY_RE = new RegExp(
+  `((?:${AMOUNT_KEYWORDS})\\s*[:：=]?\\s*(?:¥|￥)?\\s*)(\\d{4,})(\\.\\d+)?(?![\\-\\/]\\d)` +
+    `|(¥|￥)\\s*(\\d{4,})(\\.\\d+)?(?![\\-\\/]\\d)`,
+  'gi',
+);
+
+function maskIntPart(intPart: string): string {
+  return `${intPart.slice(0, -4)}****`;
+}
+
 function maskAmount(text: string): string {
-  // ⚠️ 日期不是金额：ISO 日期（YYYY-MM-DD）先匹配并原样保留，否则 4 位年份会被金额规则
-  //   打成 ****（2026-10-30 → ****-10-30），system_log.detail 里的除权日/命中日期失去审计价值。
+  // ⚠️ 日期不是金额（承 #92）：`2026-10-30` 这类 ISO 日期**不参与金额匹配** ——
+  //    本实现只对「带金额关键词 / 货币符号」的数字生效，且正则末尾 `(?![-\/]\d)`
+  //    显式排除「数字后紧跟 -MM」，故年份不会被遮成 ****。
   return text.replace(
-    /(\d{4}-\d{2}-\d{2})|\b(\d{4,})(\.\d+)?\b/g,
-    (_match: string, date: string | undefined, intPart: string | undefined, _dec?: string) =>
-      date ?? `${intPart!.slice(0, -4)}****`,
+    AMOUNT_OR_CURRENCY_RE,
+    (
+      match,
+      keywordPrefix: string | undefined,
+      keywordInt: string | undefined,
+      _kd: string | undefined,
+      _sym: string | undefined,
+      currencyInt: string | undefined,
+    ) => {
+      if (keywordPrefix !== undefined && keywordInt !== undefined) {
+        return `${keywordPrefix}${maskIntPart(keywordInt)}`;
+      }
+      // 货币符号分支：保留符号与前导空白，只替换数字本身
+      if (currencyInt !== undefined) {
+        return match.replace(currencyInt, maskIntPart(currencyInt));
+      }
+      return match;
+    },
   );
 }
 
@@ -48,6 +138,14 @@ function maskUserId(text: string): string {
     if (name.length <= 2) return m;
     return `${prefix}${name.slice(0, 2)}****`;
   });
+}
+
+/** 凭证脱敏（UX-07）：token / access_token / secret / password 的值整体换 **** */
+function maskCredential(text: string): string {
+  return text.replace(
+    /((?:access_token|token|secret|password)\s*[:=]\s*)([A-Za-z0-9._\-+/=]{4,})/gi,
+    (_match, prefix: string) => `${prefix}****`,
+  );
 }
 
 /**
@@ -86,8 +184,8 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   // SDD §6 S6 脱敏 —— 三层降级统一使用 safeMessage/safeDetail
   // ⚠️ 脱敏**必须在这里做**（唯一入口）：缓冲里的行与立即落库的行用的是同一份 safeMessage/safeDetail，
   //   否则「缓冲路径」会绕过脱敏，把 username / 金额明文写进 system_log。
-  const safeMessage = maskAmount(maskUserId(message ?? ''));
-  const safeDetail = detail ? maskAmount(maskUserId(detail)) : undefined;
+  const safeMessage = maskCredential(maskAmount(maskUserId(message ?? '')));
+  const safeDetail = detail ? maskCredential(maskAmount(maskUserId(detail))) : undefined;
 
   // Level 校验
   const ALLOWED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
