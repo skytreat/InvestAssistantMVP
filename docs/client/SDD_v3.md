@@ -681,6 +681,7 @@ transfer         -> 忽略（转托管不改变总持仓）
     notApplicable: number; byReason: Record<string, number>; failedSamples: ...
   };
   timeBackfill: { matched: number; lowConfidence: number; unmatched: number };
+  pendingNonTrade: number;             // 待补录的非成交族（transfer/bonus/dividend）笔数
   returnSummary: { risk: number; cash: number; total: number };   // §7.3 三口径
 }
 ```
@@ -692,6 +693,8 @@ transfer         -> 忽略（转托管不改变总持仓）
 - `attribution` 中除 `caliberDiffCount` 外均为**元**；`caliberDiff` 是金额，`caliberDiffCount` 是条数，二者不得互相替代。
 - `matchSummary.missing/extra` 是**交易记录笔数**；`missingGroups/extraGroups` 是去重后的**标的×日期组数**，仅 tooltip/辅助。
 - `GET /diff` 在现有 `unmatched/repo/cashLikeEtf/dividend/offExchange/unknown` 类别基础上增加 **`extra`**（系统有、事实层无），并与摘要卡同口径分页。
+- **`nonTrade`**（缺失未匹配·非成交族）单独成类：`TRANSFER_IN / DIVIDEND_BONUS / DIVIDEND_CASH` 且 `match_status IN ('MISSING','FUZZY')`。它们**不属于成交族**，不得并入 `unmatched`；必须可见、可勾选补录（`INV-S2-33`）。
+- 非成交族可勾选条件**不是股数**：`quantity > 0 || cash_flow > 0 || amount > 0` —— `DIVIDEND_CASH` 常为 `quantity = 0`。
 
 ### 9.3 补录
 
@@ -717,7 +720,7 @@ transfer         -> 忽略（转托管不改变总持仓）
 | 事项 | 落地口径 |
 |---|---|
 | **match_status 语义** | 补录确认后事实行置 `MATCHED`（五态无 IMPORTED）；「标记已手工记录」同样置 `MATCHED` + `matched_trade_record_id`（可选关联） |
-| **可修正白名单** | `buy / add / reduce / clear` 四态（分红/送股**不可**经补录端点进入，仍走除权链路 §8） |
+| **可修正白名单** | `buy / add / reduce / clear` 四态仅适用于**成交族**；非成交族（`TRANSFER_IN`/`DIVIDEND_BONUS`/`DIVIDEND_CASH`）由系统固定推导为 `transfer` / `bonus` / `dividend`，用户不可修正 |
 | **推导顺序** | ① 用户修正 > ② 有 `balance_after` 单行判定（卖&余0=clear / 卖&余>0=reduce / 买&余=量=buy / 买&余>量=add；余<量=异常保守 buy）> ③ 无余额按 (user, broker, asset) 分桶、`date→time→fact id` 时序回放。前端默认不传 `tradeType`，仅用户修正时覆盖 |
 | **回放起点** | 事实层该标的在该券商的首行（期前持仓不并入回放；覆盖区间之外的口径由用户修正兜底，见 D-37） |
 | **明细落库** | `is_auto_import=1`、`trade_reason='券商补录'`、`fee=fee_total`、`broker_seq=content_seq`；时间无法解析 → `NULL`（不变假时间） |
