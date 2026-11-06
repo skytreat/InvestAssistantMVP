@@ -8,18 +8,23 @@ import { mockErrorResponse, mockResponse, renderWithRouter } from '../helpers';
 /**
  * Wave 7 · T75 ② · 管理员「备份与恢复」面板用例（关闭 F-A2）
  *
- * 覆盖任务卡「卡 2」的验收断言：
+ * UX-10 起恢复入口**从日常备份表拆到独立「危险恢复区」**：
+ * 桌上那份「点一下就能覆盖业务库」的按钮没了，改成
+ * 选文件 → 手输文件名确认 → `ConfirmDialog` 二次确认。
  *
  * | 断言 | 用例 |
  * |---|---|
  * | A1 列表行数 / 日期 / 体积 | 列表显示日期与体积 |
+ * | UX-10 日常列表无恢复入口 | 备份列表行内不再渲染「恢复」按钮 |
+ * | UX-10 必须手输文件名 | 文件名不匹配时「恢复此备份」禁用 |
+ * | UX-10 <1MB 备份警示 | 小体积备份显示风险提示 |
  * | A2 点恢复**不发请求** | 恢复前必须二次确认且请求体带 confirm:true |
  * | A3 确认后 body = `{ confirm: true }` | 同上 |
  * | A4 取消不发请求 | 取消确认不发恢复请求 |
  * | A5 400 CONFIRM_REQUIRED → 内联错误条 | 恢复被后端拒绝时显示内联错误条 |
  * | A6 失败状态条带重试（调用次数 = 2）| 失败状态条提供重试按钮 |
  * | A11 ConfirmDialog 带 `role="dialog"` | 恢复前必须二次确认且请求体带 confirm:true |
- * | 无原生 `alert` 残留 | 全程无阻塞式 alert（DOM 中无 dialog 弹窗）|
+ * | 无原生 `alert` 残留 | 全程无阻塞式 alert |
  *
  * ⚠️ **本文件不 import `pages/Admin.tsx`** —— 面板是 props 驱动、页面无关的独立组件
  *    （Wave 7 的「组件并行、接线串行」拆法要求）。
@@ -57,6 +62,17 @@ const BACKUPS = [
   },
 ];
 
+/**
+ * 在「危险恢复区」选中备份 → 手输文件名 → 打开二次确认
+ *
+ * UX-10 之后恢复入口只剩这一条路径，多个用例共用。
+ */
+async function armRestore(user: ReturnType<typeof userEvent.setup>, fileName: string): Promise<void> {
+  await user.selectOptions(screen.getByLabelText('选择备份'), fileName);
+  await user.type(screen.getByLabelText('请输入上方文件名以确认恢复'), fileName);
+  await user.click(screen.getByRole('button', { name: '恢复此备份' }));
+}
+
 describe('Admin 备份面板', () => {
   beforeEach(() => {
     getMock.mockReset();
@@ -84,15 +100,67 @@ describe('Admin 备份面板', () => {
     expect(rows[0]).toHaveTextContent(/\d{4}-\d{2}-\d{2}/);
   });
 
+  it('UX-10：日常备份列表不再内联「恢复」，恢复入口只在危险恢复区', async () => {
+    renderWithRouter(<AdminBackupPanel />);
+
+    const rows = await screen.findAllByTestId('backup-row');
+    for (const row of rows) {
+      expect(within(row).queryByRole('button', { name: '恢复' })).toBeNull();
+    }
+
+    expect(screen.getByTestId('admin-restore-zone')).toBeInTheDocument();
+    expect(screen.getByText('危险恢复区')).toBeInTheDocument();
+    expect(screen.getByLabelText('选择备份')).toBeInTheDocument();
+    // 未选中文件时还没有「恢复此备份」按钮（必须先选）
+    expect(screen.queryByRole('button', { name: '恢复此备份' })).toBeNull();
+  });
+
+  it('UX-10：文件名不匹配时「恢复此备份」禁用（不会误触覆盖业务库）', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<AdminBackupPanel />);
+    await screen.findAllByTestId('backup-row');
+
+    await user.selectOptions(screen.getByLabelText('选择备份'), 'business.db.2026-10-20');
+
+    // 未输入 → 禁用
+    expect(screen.getByRole('button', { name: '恢复此备份' })).toBeDisabled();
+
+    // 输入错误名字 → 仍禁用
+    await user.type(screen.getByLabelText('请输入上方文件名以确认恢复'), 'business.db.2026-10-19');
+    expect(screen.getByRole('button', { name: '恢复此备份' })).toBeDisabled();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it('UX-10：<1MB 的备份显示体积异常警示', async () => {
+    getMock.mockResolvedValue(
+      mockResponse([
+        {
+          name: 'business.db.2026-10-01',
+          size: 200 * 1024,
+          modified: '2026-10-01T03:04:05.000Z',
+        },
+      ]),
+    );
+    const user = userEvent.setup();
+    renderWithRouter(<AdminBackupPanel />);
+    await screen.findAllByTestId('backup-row');
+
+    await user.selectOptions(screen.getByLabelText('选择备份'), 'business.db.2026-10-01');
+    expect(screen.getByTestId('restore-small-warning')).toHaveTextContent('不足 1MB');
+    expect(screen.getByTestId('restore-pick-info')).toHaveTextContent('200.0 KB');
+  });
+
   it('恢复前必须二次确认且请求体带 confirm:true', async () => {
     const user = userEvent.setup();
     renderWithRouter(<AdminBackupPanel />);
 
-    const rows = await screen.findAllByTestId('backup-row');
-    await user.click(within(rows[0]).getByRole('button', { name: '恢复' }));
+    await screen.findAllByTestId('backup-row');
+    await armRestore(user, 'business.db.2026-10-20');
 
     // A11：复用的是既有 ConfirmDialog（带 role=dialog），不是自造的裸遮罩
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toHaveTextContent('备份时间');
+    expect(screen.getByRole('dialog')).toHaveTextContent('12.0 MB');
 
     // A2：确认之前**不得**发出恢复请求
     expect(postMock).not.toHaveBeenCalled();
@@ -109,8 +177,8 @@ describe('Admin 备份面板', () => {
     const user = userEvent.setup();
     renderWithRouter(<AdminBackupPanel />);
 
-    const rows = await screen.findAllByTestId('backup-row');
-    await user.click(within(rows[0]).getByRole('button', { name: '恢复' }));
+    await screen.findAllByTestId('backup-row');
+    await armRestore(user, 'business.db.2026-10-20');
     await user.click(screen.getByRole('button', { name: '取消' }));
 
     // A4：取消后既不发请求，也不留弹窗
@@ -173,9 +241,8 @@ describe('Admin 备份面板', () => {
     await screen.findByTestId('backup-notice');
 
     // 恢复
-    // ⚠️ 备份成功后会刷新列表（DOM 被替换）⇒ 必须**重新**取行，不能用旧的节点引用
-    const rows = await screen.findAllByTestId('backup-row');
-    await user.click(within(rows[0]).getByRole('button', { name: '恢复' }));
+    // ⚠️ 备份成功后会刷新列表（DOM 被替换）⇒ 危险区选择框同样重新挂载，重新选一次即可
+    await armRestore(user, 'business.db.2026-10-20');
     await user.click(screen.getByRole('button', { name: '确认恢复' }));
     await screen.findByTestId('restore-notice');
 
@@ -194,8 +261,8 @@ describe('Admin 备份面板', () => {
     );
 
     renderWithRouter(<AdminBackupPanel />);
-    const rows = await screen.findAllByTestId('backup-row');
-    await user.click(within(rows[0]).getByRole('button', { name: '恢复' }));
+    await screen.findAllByTestId('backup-row');
+    await armRestore(user, 'business.db.2026-10-20');
     await user.click(screen.getByRole('button', { name: '确认恢复' }));
 
     // A5：错误落成内联错误条
@@ -210,8 +277,8 @@ describe('Admin 备份面板', () => {
     postMock.mockRejectedValueOnce(mockErrorResponse(400, 'RESTORE_FAILED', '备份文件不存在'));
 
     renderWithRouter(<AdminBackupPanel />);
-    const rows = await screen.findAllByTestId('backup-row');
-    await user.click(within(rows[0]).getByRole('button', { name: '恢复' }));
+    await screen.findAllByTestId('backup-row');
+    await armRestore(user, 'business.db.2026-10-20');
     await user.click(screen.getByRole('button', { name: '确认恢复' }));
 
     const errorBar = await screen.findByTestId('restore-error');
@@ -223,7 +290,7 @@ describe('Admin 备份面板', () => {
     expect(postMock).toHaveBeenCalledTimes(1);
   });
 
-  it('不可恢复的文件（parquet / 安全备份）不渲染「恢复」按钮', async () => {
+  it('UX-10：不可恢复的文件（parquet / 安全备份）不出现在恢复下拉', async () => {
     getMock.mockResolvedValue(
       mockResponse([
         ...BACKUPS,
@@ -238,10 +305,10 @@ describe('Admin 备份面板', () => {
 
     const rows = await screen.findAllByTestId('backup-row');
     expect(rows).toHaveLength(3);
-    // 只有符合后端白名单的 sqlite 备份才有恢复按钮
-    expect(within(rows[0]).getByRole('button', { name: '恢复' })).toBeInTheDocument();
-    expect(within(rows[1]).queryByRole('button', { name: '恢复' })).not.toBeInTheDocument();
-    expect(within(rows[2]).queryByRole('button', { name: '恢复' })).not.toBeInTheDocument();
-    expect(within(rows[1]).getByText(/不可恢复/)).toBeInTheDocument();
+
+    // 恢复下拉里只有符合后端白名单的 sqlite 备份
+    const select = screen.getByLabelText('选择备份') as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.value);
+    expect(options).toEqual(['', 'business.db.2026-10-20']);
   });
 });

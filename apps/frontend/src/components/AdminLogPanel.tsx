@@ -173,11 +173,17 @@ function useIsNarrowViewport(): boolean {
   return narrow;
 }
 
-export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
+/** 每页条数可选值（后端 `page_size` 上限 200） */
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+
+export default function AdminLogPanel({ pageSize: initialPageSize = 20 }: AdminLogPanelProps) {
   const isNarrow = useIsNarrowViewport();
 
   const [filters, setFilters] = useState<LogFilters>(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(initialPageSize);
+  /** 页码跳转输入框（受控，未提交前不改变 `page`） */
+  const [jumpTo, setJumpTo] = useState('');
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -235,6 +241,14 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
   const toggleDetail = useCallback((key: string) => {
     setExpandedDetails((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
+
+  /** 页码跳转 —— 越界自动收敛到 1..totalPages，输入非法时不动 */
+  const goToPage = useCallback(() => {
+    const n = parseInt(jumpTo, 10);
+    if (!Number.isFinite(n)) return;
+    setPage(Math.min(totalPages, Math.max(1, n)));
+    setJumpTo('');
+  }, [jumpTo, totalPages]);
 
   /** 展开降级日志区（首次展开时才去拉取，避免每次进页面都多一个请求） */
   const toggleFallback = useCallback(async () => {
@@ -359,6 +373,36 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
             ))}
           </select>
         </div>
+
+        {/* UX-14：WARN / ERROR 快捷筛选 chip（与 level 下拉互斥，再点一次取消） */}
+        <div style={filterFieldStyle}>
+          <span style={{ color: COLORS.textSecondary, fontSize: TYPO.smallSize }}>快捷筛选</span>
+          <div style={{ display: 'flex', gap: SPACING.gapTight }}>
+            {(['WARN', 'ERROR'] as const).map((lv) => {
+              const active = filters.level === lv;
+              return (
+                <button
+                  key={lv}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => updateFilter({ level: active ? '' : lv })}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: TYPO.captionSize,
+                    cursor: 'pointer',
+                    borderRadius: RADIUS.sm,
+                    border: `1px solid ${active ? LEVEL_COLOR[lv] : COLORS.borderLight}`,
+                    background: active ? COLORS.headerBg : 'transparent',
+                    color: active ? LEVEL_COLOR[lv] : COLORS.textSecondary,
+                    fontWeight: active ? 600 : 400,
+                  }}
+                >
+                  {lv === 'WARN' ? '仅警告' : '仅错误'}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {loading && <Spinner />}
@@ -465,62 +509,127 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
             <thead>
               <tr>
                 {LOG_COLUMNS.map((col) => (
-                  <th key={col.key} scope="col" style={thStyle}>
+                  <th
+                    key={col.key}
+                    scope="col"
+                    style={{
+                      ...thStyle,
+                      // UX-14：类型/校验项列给最小宽度，避免中文逐字竖排
+                      ...(col.key === 'log_type' ? { minWidth: 96 } : null),
+                      ...(col.key === 'check_item' ? { minWidth: 72 } : null),
+                    }}
+                  >
                     {col.label}
                   </th>
                 ))}
+                {/* UX-14：桌面端行详情展开（与窄屏卡片同能力） */}
+                <th scope="col" style={{ ...thStyle, minWidth: 88 }}>
+                  操作
+                </th>
               </tr>
             </thead>
             <tbody>
               {logs.length === 0 ? (
                 <tr>
-                  <td style={thTdStyle} colSpan={LOG_COLUMNS.length}>
+                  <td style={thTdStyle} colSpan={LOG_COLUMNS.length + 1}>
                     暂无日志
                   </td>
                 </tr>
               ) : (
                 logs.map((row, i) => {
+                  const key = String(row.id ?? i);
+                  const detail = textOf(row, 'detail');
+                  const expanded = expandedDetails[key] === true;
                   return (
-                    <tr key={String(row.id ?? i)}>
-                      {LOG_COLUMNS.map((col) => {
-                        const raw = textOf(row, col.key);
-                        if (col.key === 'log_type') {
+                    <React.Fragment key={key}>
+                      <tr>
+                        {LOG_COLUMNS.map((col) => {
+                          const raw = textOf(row, col.key);
+                          if (col.key === 'log_type') {
+                            return (
+                              <td key={col.key} style={thTdStyle}>
+                                {LOG_TYPE_LABEL[raw] ?? raw}
+                              </td>
+                            );
+                          }
+                          if (col.key === 'level') {
+                            return (
+                              <td
+                                key={col.key}
+                                style={{
+                                  ...thTdStyle,
+                                  color: LEVEL_COLOR[raw] ?? COLORS.textSecondary,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {raw}
+                              </td>
+                            );
+                          }
+                          if (col.key === 'message' || col.key === 'detail') {
+                            return (
+                              <td key={col.key} style={thTdStyle}>
+                                <span style={truncatedTextStyle} title={raw}>
+                                  {raw}
+                                </span>
+                              </td>
+                            );
+                          }
                           return (
                             <td key={col.key} style={thTdStyle}>
-                              {LOG_TYPE_LABEL[raw] ?? raw}
-                            </td>
-                          );
-                        }
-                        if (col.key === 'level') {
-                          return (
-                            <td
-                              key={col.key}
-                              style={{
-                                ...thTdStyle,
-                                color: LEVEL_COLOR[raw] ?? COLORS.textSecondary,
-                                fontWeight: 600,
-                              }}
-                            >
                               {raw}
                             </td>
                           );
-                        }
-                        if (col.key === 'message' || col.key === 'detail') {
-                          return (
-                            <td key={col.key} style={thTdStyle}>
-                              <span style={truncatedTextStyle} title={raw}>
-                                {raw}
-                              </span>
-                            </td>
-                          );
-                        }
-                        return (
-                          <td key={col.key} style={thTdStyle}>
-                            {raw}
+                        })}
+                        <td style={thTdStyle}>
+                          {detail ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleDetail(key)}
+                              aria-expanded={expanded}
+                              aria-controls={`admin-log-row-detail-${key}`}
+                              style={{
+                                padding: '2px 8px',
+                                fontSize: TYPO.captionSize,
+                                background: 'transparent',
+                                color: COLORS.brand,
+                                border: `1px solid ${COLORS.brand}`,
+                                borderRadius: RADIUS.sm,
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {expanded ? '收起详情' : '展开详情'}
+                            </button>
+                          ) : (
+                            <span style={{ color: COLORS.textSecondary, fontSize: TYPO.captionSize }}>
+                              无详情
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                      {expanded && detail ? (
+                        <tr>
+                          <td style={thTdStyle} colSpan={LOG_COLUMNS.length + 1}>
+                            <pre
+                              id={`admin-log-row-detail-${key}`}
+                              style={{
+                                margin: 0,
+                                padding: SPACING.gapBase,
+                                background: COLORS.headerBg,
+                                border: `1px solid ${COLORS.borderLight}`,
+                                borderRadius: RADIUS.sm,
+                                fontSize: TYPO.captionSize,
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-all',
+                              }}
+                            >
+                              {detail}
+                            </pre>
                           </td>
-                        );
-                      })}
-                    </tr>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
                   );
                 })
               )}
@@ -529,38 +638,8 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
         </ScrollableTable>
       )}
 
-      {/* 分页 */}
-      <div
-        style={{
-          marginTop: SPACING.gapBase,
-          display: 'flex',
-          alignItems: 'center',
-          gap: SPACING.gapBase,
-          flexWrap: 'wrap',
-        }}
-      >
-        <button
-          type="button"
-          style={buttonStyle}
-          disabled={page <= 1}
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
-        >
-          上一页
-        </button>
-        <span aria-live="polite" style={{ fontSize: TYPO.bodySize }}>
-          第 {page} / {totalPages} 页，共 {total} 条
-        </span>
-        <button
-          type="button"
-          style={buttonStyle}
-          disabled={page >= totalPages}
-          onClick={() => setPage((p) => p + 1)}
-        >
-          下一页
-        </button>
-      </div>
-
-      {/* 系统日志降级记录（SQLite 不可用时的兜底文件） */}
+      {/* 系统日志降级记录（SQLite 不可用时的兜底文件）
+          UX-14：入口从 631 页分页之后上移到分页之前，避免滚到底才能看到 */}
       <div style={{ marginTop: SPACING.gapRelaxed }}>
         <button
           type="button"
@@ -629,6 +708,78 @@ export default function AdminLogPanel({ pageSize = 20 }: AdminLogPanelProps) {
               )}
           </div>
         )}
+      </div>
+
+      {/* 分页：上下页 / 页码跳转 / 每页条数 */}
+      <div
+        style={{
+          marginTop: SPACING.gapBase,
+          display: 'flex',
+          alignItems: 'center',
+          gap: SPACING.gapBase,
+          flexWrap: 'wrap',
+        }}
+      >
+        <button
+          type="button"
+          style={buttonStyle}
+          disabled={page <= 1}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+        >
+          上一页
+        </button>
+        <span aria-live="polite" style={{ fontSize: TYPO.bodySize }}>
+          第 {page} / {totalPages} 页，共 {total} 条
+        </span>
+        <button
+          type="button"
+          style={buttonStyle}
+          disabled={page >= totalPages}
+          onClick={() => setPage((p) => p + 1)}
+        >
+          下一页
+        </button>
+
+        <label
+          htmlFor="admin-log-page-size"
+          style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}
+        >
+          每页
+        </label>
+        <select
+          id="admin-log-page-size"
+          value={pageSize}
+          onChange={(e) => {
+            setPageSize(Number(e.target.value));
+            setPage(1);
+          }}
+          style={filterControlStyle}
+        >
+          {PAGE_SIZE_OPTIONS.map((n) => (
+            <option key={n} value={n}>
+              {n} 条
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor="admin-log-jump" style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
+          跳至
+        </label>
+        <input
+          id="admin-log-jump"
+          type="number"
+          min={1}
+          max={totalPages}
+          value={jumpTo}
+          onChange={(e) => setJumpTo(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') goToPage();
+          }}
+          style={{ ...inputStyle, width: 72 }}
+        />
+        <button type="button" style={buttonStyle} onClick={goToPage} disabled={jumpTo.trim() === ''}>
+          跳转
+        </button>
       </div>
     </section>
   );
