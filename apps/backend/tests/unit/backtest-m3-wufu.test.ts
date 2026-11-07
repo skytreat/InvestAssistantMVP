@@ -615,6 +615,20 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     expect(ts.exitReasons?.['sh512880']).toBe('stop-loss');
   });
 
+  it('⑤ 空仓期防御标的吃满可用现金：holdingsNum>1 时目标权重仍是 100%', () => {
+    // 场景复用止损用例（唯一候选被止损剔除 → 空仓期）
+    const ctx = makeCtx({
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: [...UP_26.slice(0, 25), 11.19] },
+      volumes: { sh512880: FLAT_VOLUME },
+      indexCloses: risingIndex(),
+      positions: [positionOf('sh512880', 12)],
+    });
+    const ts = decideWith(ctx, { holdingsNum: 3 });
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(ts.targets[0].targetWeight).toBeCloseTo(1, 12);
+  });
+
   it('drop-from-pool：上一日在池、今日不在池', () => {
     const strategy = createWufuRotationStrategy();
     strategy.init?.({ params: {} });

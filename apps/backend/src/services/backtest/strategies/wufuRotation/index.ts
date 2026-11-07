@@ -337,10 +337,11 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
     defensivePaused: ctx.isPaused(p.defensiveEtf),
   });
 
+  // 正常目标按 1/holdingsNum 等权；**空仓期防御标的吃满可用现金**（v5.2 L1044-L1052）
   const targetWeight = 1 / p.holdingsNum;
   let targets: TargetPosition[];
   if (selection.defensive) {
-    targets = [{ symbol: p.defensiveEtf, targetWeight, reason: 'defensive-fallback' }];
+    targets = [{ symbol: p.defensiveEtf, targetWeight: 1, reason: 'defensive-fallback' }];
   } else {
     targets = selection.picks.map((m) => ({
       symbol: m.symbol,
