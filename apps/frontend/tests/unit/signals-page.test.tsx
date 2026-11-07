@@ -77,7 +77,12 @@ function pagedResponse(
   });
 }
 
-/** 安装 mock：按请求里的 `page` 返回对应页 */
+/**
+ * 安装 mock：按请求里的 `page` 返回对应页
+ *
+ * ⚠️ 页面还会取一次只读接口 `/market/latest-date`（用于「当前展示日 vs 行情最新日」
+ *    旁注），这里返回固定的行情最新日，保证旁注文案可断言。
+ */
 function installPagedMock(
   pages: {
     rows: SignalFixture[];
@@ -86,7 +91,10 @@ function installPagedMock(
     meta?: Record<string, unknown>;
   }[],
 ): void {
-  getMock.mockImplementation((_url: string, cfg?: ApiGetConfig) => {
+  getMock.mockImplementation((url: string, cfg?: ApiGetConfig) => {
+    if (url === '/market/latest-date') {
+      return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+    }
     const requested = Number(cfg?.params?.page ?? 1);
     const idx = Math.min(Math.max(requested - 1, 0), pages.length - 1);
     const hit = pages[idx];
@@ -94,9 +102,14 @@ function installPagedMock(
   });
 }
 
-/** 取最后一次请求的查询参数 */
+/** 只看 `/signal` 的请求（`/market/latest-date` 不算在信号查询次数里）*/
+function signalCalls(): [string, ApiGetConfig?][] {
+  return getMock.mock.calls.filter(([url]) => url === '/signal');
+}
+
+/** 取最后一次信号查询的查询参数 */
 function lastParams(): Record<string, unknown> {
-  const calls = getMock.mock.calls;
+  const calls = signalCalls();
   const last = calls[calls.length - 1];
   return last?.[1]?.params ?? {};
 }
@@ -122,9 +135,9 @@ describe('T72 ① · 进页自动加载', () => {
     installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
     renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
-    expect(getMock.mock.calls[0]?.[0]).toBe('/signal');
-    const params = getMock.mock.calls[0]?.[1]?.params ?? {};
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
+    expect(signalCalls()[0]?.[0]).toBe('/signal');
+    const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
     expect(params).toEqual({ page: 1, page_size: 50 });
     expect(params).not.toHaveProperty('trade_date');
@@ -138,13 +151,19 @@ describe('T72 ① · 进页自动加载', () => {
     expect(await screen.findByTestId('signals-default-date-hint')).toHaveTextContent(
       '最近有信号日 2026-10-13',
     );
+    // 列表态旁注：当前展示日 + 行情最新日（用户要能看出「展示的不是今天」）
+    const note = await screen.findByTestId('signals-display-date-note');
+    expect(note).toHaveTextContent('当前展示日 2026-10-13（最近有信号日）');
+    expect(note).toHaveTextContent('行情最新 2026-11-06');
+    // 非当前展示日（2026-10-12）的行 → 有灰显说明
+    expect(screen.getByTestId('signals-gray-legend')).toHaveTextContent('非当前展示日 2026-10-13');
   });
 
   it('删掉「请点击查询按钮加载数据」空态', async () => {
     installPagedMock([{ rows: [], totalPages: 0, total: 0 }]);
     renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
     expect(screen.queryByText('请点击查询按钮加载数据')).not.toBeInTheDocument();
     // 换成有信息量的空态（写明后端解析出的「最近有信号日」）
     expect(await screen.findByTestId('signals-empty')).toHaveTextContent('最近有信号日 2026-10-13');
@@ -266,12 +285,12 @@ describe('T72 ③ · 分页', () => {
     ]);
     renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
     expect(screen.getByText(/第 1 \/ 2 页，共 2 条/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '下一页' }));
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(lastParams().page).toBe(2);
     expect(await screen.findByText(/第 2 \/ 2 页，共 2 条/)).toBeInTheDocument();
   });
@@ -284,7 +303,7 @@ describe('T72 ③ · 分页', () => {
     ]);
     renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
     await user.click(screen.getByRole('button', { name: '下一页' }));
     await screen.findByText(/第 2 \/ 2 页/);
 
@@ -296,7 +315,7 @@ describe('T72 ③ · 分页', () => {
     installPagedMock([{ rows: [BUY_ROW], totalPages: 2, total: 2 }]);
     renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
     expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled();
   });
 });
@@ -307,7 +326,7 @@ describe('G5.5 · asset_code / start_date / end_date 筛选 + 升序', () => {
     installPagedMock([{ rows: [], totalPages: 0, total: 0 }]);
     const { container } = renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
 
     const assetInput = screen.getByLabelText('标的代码');
     await user.type(assetInput, 'sh600000');
@@ -318,7 +337,7 @@ describe('G5.5 · asset_code / start_date / end_date 筛选 + 升序', () => {
     fireChange(dateInputs[2], '2026-10-15');
 
     // 防抖 300ms 后自动重查（无需点按钮）
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2), { timeout: 2000 });
+    await waitFor(() => expect(signalCalls()).toHaveLength(2), { timeout: 2000 });
 
     const params = lastParams();
     expect(params.asset_code).toBe('sh600000');

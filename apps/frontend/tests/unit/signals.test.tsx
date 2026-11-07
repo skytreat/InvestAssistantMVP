@@ -99,13 +99,23 @@ const DEFAULT_ROW: SignalFixture = {
  */
 function installApiMock(rows: SignalFixture[] = [DEFAULT_ROW]): void {
   // F 域 P0-1：后端随列表下发默认日期口径元信息（前端不再自己拼「今天」）
-  getMock.mockResolvedValue(
-    mockResponse(rows, {
-      trade_date: '2026-10-12',
-      trade_date_source: 'signal',
-      latest_quote_date: null,
-    }),
+  // ⚠️ 页面还会取一次只读接口 `/market/latest-date`（列表态「当前展示日 vs 行情最新日」旁注）
+  getMock.mockImplementation((url: string) =>
+    Promise.resolve(
+      url === '/market/latest-date'
+        ? mockResponse({ date: '2026-11-06' })
+        : mockResponse(rows, {
+            trade_date: '2026-10-12',
+            trade_date_source: 'signal',
+            latest_quote_date: null,
+          }),
+    ),
   );
+}
+
+/** 只看 `/signal` 的请求（`/market/latest-date` 不算在信号查询次数里）*/
+function signalCalls(): Array<[string, ApiGetConfig?]> {
+  return getMock.mock.calls.filter(([url]) => url === '/signal');
 }
 
 /**
@@ -130,9 +140,9 @@ function dateInputs(container: HTMLElement): HTMLInputElement[] {
   return [...container.querySelectorAll<HTMLInputElement>('input[type="date"]')];
 }
 
-/** 取最后一次请求的查询参数 */
+/** 取最后一次信号查询的查询参数 */
 function lastParams(): Record<string, unknown> {
-  const calls = getMock.mock.calls;
+  const calls = signalCalls();
   const last = calls[calls.length - 1];
   return last?.[1]?.params ?? {};
 }
@@ -205,8 +215,8 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     await user.keyboard('{Enter}');
 
     // 进页自动加载已发过一次 → 这里应是第 2 次
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
-    expect(getMock.mock.calls[1]?.[0]).toBe('/signal');
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
+    expect(signalCalls()[1]?.[0]).toBe('/signal');
     expect(lastParams()).toEqual({ page: 1, page_size: 50 });
   });
 
@@ -222,8 +232,8 @@ describe('Signals · 键盘可达性与键盘操作', () => {
 
     await user.keyboard(' ');
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
-    expect(getMock.mock.calls[1]?.[0]).toBe('/signal');
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
+    expect(signalCalls()[1]?.[0]).toBe('/signal');
   });
 
   it('「方向」下拉可被键盘聚焦，改变选中项后值为 buy 并进入查询参数', async () => {
@@ -305,7 +315,7 @@ describe('Signals · 查询参数组装', () => {
 
     await user.click(screen.getByRole('button', { name: '查询' }));
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
     const params = lastParams();
     expect(params).toEqual({ page: 1, page_size: 50 });
     expect(params).not.toHaveProperty('trade_date');
@@ -330,7 +340,7 @@ describe('Signals · 查询参数组装', () => {
 
     await user.click(screen.getByRole('button', { name: '查询' }));
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(lastParams()).toEqual({ page: 1, page_size: 50 });
   });
 });
@@ -344,7 +354,7 @@ describe('Signals · 空态', () => {
     installApiMock([]);
     renderWithRouter(<Signals />);
 
-    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
     expect(screen.queryByText('请点击查询按钮加载数据')).not.toBeInTheDocument();
     // F 域 P0-1：空态不再断言「今天没信号」，改为写明后端解析出的「最近有信号日」
     expect(await screen.findByTestId('signals-empty')).toHaveTextContent('最近有信号日 2026-10-12');
