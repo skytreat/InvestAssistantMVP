@@ -98,6 +98,15 @@ export interface DecisionRecord {
   logs: { level: 'info' | 'warn'; message: string }[];
 }
 
+/** 时点池兜底计数（`meta.universeStats`；只统计，不改变策略行为） */
+export interface UniverseStats {
+  days: number;
+  noNameCandidateTotal: number;
+  noNameCandidateMax: number;
+  fallbackPoolMemberTotal: number;
+  fallbackPoolMemberMax: number;
+}
+
 export interface BacktestResult {
   meta: {
     strategyId: string;
@@ -118,13 +127,7 @@ export interface BacktestResult {
      * 动态池分组用的是 `raw_symbol_name` 当前快照；无名称标的按代码兜底参与分组。
      * 这里只统计，不改变策略行为（口径不变）。
      */
-    universeStats?: {
-      days: number;
-      noNameCandidateTotal: number;
-      noNameCandidateMax: number;
-      fallbackPoolMemberTotal: number;
-      fallbackPoolMemberMax: number;
-    };
+    universeStats?: UniverseStats;
     /**
      * 本次实际生效的池子口径（审计元数据；策略参数里没有 `divisor/topN`）。
      * 调用方未提供时为 `undefined`（如合成数据的单测）。
@@ -190,7 +193,7 @@ function fieldOf(bar: Bar, field: SeriesField): number {
  * 不做「卖出也缩放」：半仓清不掉会让 `replace` 语义失效（目标集无法达成），
  * 且 v5.2 本身没有换手上限，这条路径只服务于后续策略。
  */
-function capTurnover(args: {
+export function capTurnover(args: {
   date: string;
   targets: TargetSet;
   equity: number;
@@ -278,7 +281,7 @@ function assertTargetSetValid(targets: TargetSet, date: string, qtyOf: (symbol: 
 }
 
 /** 构造某一时点的策略上下文（所有读取都截止到 asOf） */
-function makeContext(args: {
+export function makeContext(args: {
   asOf: string;
   execDate: string;
   dayIndex: number;
@@ -392,6 +395,282 @@ function universeViewOf(snapshot: ReturnType<UniverseResolver>): UniverseView {
   };
 }
 
+/** 引擎逐日推进的可变运行态（`runBacktest` 与纸面落账共用同一段日循环） */
+export interface BacktestRunState {
+  readonly data: BacktestData;
+  readonly strategy: Strategy;
+  readonly params: Record<string, unknown>;
+  readonly priceMode: 'open' | 'close';
+  readonly rules: TradeRules;
+  readonly suspension: SuspensionOptions;
+  readonly actionsByDate: ReadonlyMap<string, readonly CorporateAction[]>;
+  readonly portfolio: Portfolio;
+  readonly equity: EquityPoint[];
+  readonly trades: Fill[];
+  readonly skippedAll: SkippedOrder[];
+  readonly warningsAll: ExecutionWarning[];
+  readonly decisions: DecisionRecord[];
+  readonly roundTripNotified: Set<number>;
+  readonly universeStats: UniverseStats;
+  tradedNotional: number;
+}
+
+/**
+ * `stepBacktestDay` 的入参
+ *
+ * 🔴 `targetsOverride` 用**可辨识联合**表达三态（而不是「可选字段 + 注释」）：
+ * - 不传 → 按策略现算：时点池 / `strategy.decide` / `capTurnover` 全走；
+ * - `null` → 当日**无目标**（跳过策略，目标为空集，走正常清仓链路）；
+ * - `TargetSet` → 外部给定目标，**必须**同时声明 `targetsTruncatedByCaller: true`，
+ *   即「调用方已按当日可承受换手截断，并已在落账侧留痕」；漏声明时运行时会抛错。
+ *
+ * ⚠️ 引擎在 override 模式下**不做** `capTurnover`（对已截断的目标再截是空操作）。
+ * 判断一律用严格 `!== undefined`，**不要**改成真值判断或 `??`（`null` 是合法语义值）。
+ */
+export type StepBacktestDayArgs = {
+  dayIndex: number;
+  execDate: string;
+  /** 与 override 配套的决策时点权益（缺省 = 持仓在 `asOf` 收盘的估值）；`0` 是合法值 */
+  equityAtCutoffOverride?: number;
+} & (
+  | { targetsOverride?: undefined }
+  | { targetsOverride: null }
+  | {
+      targetsOverride: TargetSet;
+      /**
+       * 🔴 硬约束（类型 + 运行时双保险）：调用方必须自己截断换手并留下事件。
+       * 引擎只做 `assertTargetSetValid`，不替调用方截断。
+       */
+      targetsTruncatedByCaller: true;
+    }
+);
+
+/**
+ * 推进一个交易日（T）：决策（可选）→ `startDay` → 除权 → 成交 → 收盘估值。
+ *
+ * 🔴 抽出的目的：纸面账户落账（PA-10）必须复用**同一段**成交/估值代码，
+ * 复制一份必然与回测漂移。
+ *
+ * @returns 当日决策留痕；`execDate` 没有 T-1（区间首日）时返回 null 且不推进。
+ */
+export function stepBacktestDay(state: BacktestRunState, args: StepBacktestDayArgs): DecisionRecord | null {
+  const { data, portfolio } = state;
+  const execDate = args.execDate;
+  const asOf = data.calendar.prev(execDate);
+  if (asOf === null) return null;
+
+  // 持仓在 asOf 收盘的估值（决策上下文 / 换手上限 / 成交金额分配共用）
+  const pricesAtAsOf = new Map<string, number>();
+  for (const pos of portfolio.positions()) {
+    pricesAtAsOf.set(pos.symbol, closeAtOrBefore(data.execBars.get(pos.symbol), asOf) ?? 0);
+  }
+
+  const tags: Record<string, unknown> = {};
+  const logs: { level: 'info' | 'warn'; message: string }[] = [];
+
+  let targets: TargetSet | null;
+  let equityAtCutoff: number;
+
+  if (args.targetsOverride !== undefined) {
+    // 纸面落账路径：目标由调用方给定，只复用除权/成交/估值，不跑时点池与策略
+    if (args.targetsOverride !== null && !('targetsTruncatedByCaller' in args)) {
+      throw new BacktestInvariantError(
+        'stepBacktestDay: 传入 targetsOverride 时必须声明 targetsTruncatedByCaller=true（调用方负责截断换手并留痕）',
+      );
+    }
+    targets = args.targetsOverride;
+    equityAtCutoff = args.equityAtCutoffOverride ?? portfolio.equity(pricesAtAsOf);
+  } else {
+    // ── 1) 时点池（asOf = T-1）＋ 决策上下文 ──
+    const snapshot = data.universe(asOf);
+    if (snapshot.asOf !== asOf) {
+      throw new BacktestInvariantError(
+        `时点池对齐错误：请求 asOf=${asOf}，实际 asOf=${snapshot.asOf}（回测决策必须用 T-1）`,
+      );
+    }
+
+    if (snapshot.noNameCandidateCount !== undefined) {
+      state.universeStats.days++;
+      state.universeStats.noNameCandidateTotal += snapshot.noNameCandidateCount;
+      state.universeStats.noNameCandidateMax = Math.max(
+        state.universeStats.noNameCandidateMax,
+        snapshot.noNameCandidateCount,
+      );
+      const fb = snapshot.fallbackPoolMemberCount ?? 0;
+      state.universeStats.fallbackPoolMemberTotal += fb;
+      state.universeStats.fallbackPoolMemberMax = Math.max(state.universeStats.fallbackPoolMemberMax, fb);
+    }
+
+    const ctx = makeContext({
+      asOf,
+      execDate,
+      dayIndex: args.dayIndex,
+      params: state.params,
+      signalBars: data.signalBars,
+      indexBars: data.indexBars ?? new Map(),
+      universeView: universeViewOf(snapshot),
+      portfolio,
+      pricesAtAsOf,
+      suspension: state.suspension,
+      tags,
+      logs,
+    });
+
+    targets = state.strategy.decide(ctx);
+    equityAtCutoff = ctx.equity;
+  }
+
+  const overrideMode = args.targetsOverride !== undefined;
+  let capSkipped: SkippedOrder[] = [];
+  if (targets) {
+    assertTargetSetValid(targets, execDate, (symbol) => portfolio.position(symbol).qty);
+    // override 模式下目标已是「截断后」的目标集（纸面落账自己截断并留痕），再截一次只会是空操作
+    if (!overrideMode) {
+      const capped = capTurnover({
+        date: execDate,
+        targets,
+        equity: equityAtCutoff,
+        held: portfolio.positions().map((p) => p.symbol),
+        currentValue: (symbol: string) => {
+          const pos = portfolio.position(symbol);
+          return pos.qty * (pricesAtAsOf.get(symbol) ?? 0);
+        },
+      });
+      targets = capped.targets;
+      capSkipped = capped.skipped;
+      if (capSkipped.length > 0) tags.turnoverCapped = capSkipped.length;
+    }
+  }
+
+  // ── 2) 除权事件（T 日开盘前；按 T-1 收盘持仓生效） ──
+  portfolio.startDay();
+  const actions = state.actionsByDate.get(execDate);
+  if (actions && actions.length > 0) portfolio.applyCorporateActions(actions);
+
+  // ── 3) 成交（T 开盘/收盘价 + 摩擦） ──
+  const fills: Fill[] = [];
+  const daySkipped: SkippedOrder[] = [];
+  const dayWarnings: ExecutionWarning[] = [];
+  if (targets) {
+    const execRequest = {
+      date: execDate,
+      targets: targets.targets,
+      mode: targets.mode,
+      heldSymbols: portfolio.positions().map((p) => p.symbol),
+      equityAtCutoff,
+      cash: portfolio.cash,
+      priceMode: state.priceMode,
+      rules: state.rules,
+      positionOf: (symbol: string) => portfolio.position(symbol),
+      barOf: (symbol: string): ExecutionBar | undefined => {
+        const bar = findBarByDate(data.execBars.get(symbol) ?? [], execDate);
+        return bar
+          ? { open: bar.open, close: bar.close, preclose: bar.preclose, volume: bar.volume }
+          : undefined;
+      },
+      /**
+       * 🔴 「日历判为交易日、但当日**实际无 bar**」按**停牌**处理（方案 §6.4）：
+       * - 当日订单作废：成交侧返回 `SkippedOrder.reason='suspended'`（`missing-bar`），
+       *   **不跨日顺延**（次日只来自新决策，不重试同一笔）；
+       * - 持仓维持（`qty/avgCost/cash` 不变），收盘估值走下方 `closeAtOrBefore` 的最近有效价。
+       * 判据由 `isSuspended()` 的 `missingBar`（默认开）负责，故这里不重复判断。
+       */
+      suspensionOf: (symbol: string) => isSuspended(data.execBars.get(symbol), execDate, state.suspension),
+      buyBudget: targets?.buyBudget,
+      exitReasons: targets?.exitReasons,
+    };
+
+    const result = executeTargets(execRequest);
+    fills.push(...result.fills);
+    daySkipped.push(...result.skipped);
+    daySkipped.push(...capSkipped);
+    dayWarnings.push(...result.warnings);
+
+    for (const fill of fills) {
+      portfolio.applyFill(fill);
+      state.trades.push(fill);
+      state.tradedNotional += fill.qty * fill.price;
+      if (state.strategy.onFill) {
+        const notice: FillNotice = {
+          date: fill.date,
+          symbol: fill.symbol,
+          side: fill.side,
+          qty: fill.qty,
+          price: fill.price,
+          fee: fill.fee,
+          reason: fill.reason,
+        };
+        state.strategy.onFill(notice);
+      }
+    }
+  }
+
+  for (let i = state.roundTripNotified.size; i < portfolio.roundTrips.length; i++) {
+    state.roundTripNotified.add(i);
+    if (state.strategy.onRoundTrip) {
+      const rt = portfolio.roundTrips[i];
+      const notice: RoundTripNotice = {
+        symbol: rt.symbol,
+        openDate: rt.openDate,
+        closeDate: rt.closeDate,
+        qty: rt.qty,
+        pnl: rt.pnl,
+        returnPct: rt.returnPct,
+        exitReason: rt.exitReason,
+      };
+      state.strategy.onRoundTrip(notice);
+    }
+  }
+
+  // ── 4) T 收盘估值（停牌/缺 bar 沿用最近有效价） ──
+  let riskMv = 0;
+  let cashMv = 0;
+  for (const pos of portfolio.positions()) {
+    const price = closeAtOrBefore(data.execBars.get(pos.symbol), execDate) ?? 0;
+    const mv = pos.qty * price;
+    if (CASH_BUCKET_SYMBOLS.has(pos.symbol)) cashMv += mv;
+    else riskMv += mv;
+  }
+  const cash = portfolio.cash;
+  const totalEquity = cash + riskMv + cashMv;
+
+  const benchIdx = lastIndexAtOrBefore(data.benchmarkBars, execDate);
+  const benchmarkClose = benchIdx >= 0 ? data.benchmarkBars[benchIdx].close : null;
+  // 当日无基准 bar（沿用上一有效收盘）→ 标记 stale，指标层据此整对剔除 alpha/beta
+  const benchmarkStale = benchIdx >= 0 && data.benchmarkBars[benchIdx].date !== execDate;
+  state.equity.push({
+    date: execDate,
+    equity: totalEquity,
+    cash,
+    riskMv,
+    cashMv,
+    benchmarkClose,
+    benchmarkStale,
+    exposure: totalEquity > 0 ? riskMv / totalEquity : 0,
+    // 回撤在全部点收集后统一算（仍写成 0，最终会被覆盖）
+    drawdownRatio: 0,
+  });
+
+  if (cash < -1e-6) {
+    throw new BacktestInvariantError(`现金为负：${execDate} cash=${cash}（成交模拟器应已拦截）`);
+  }
+
+  const record: DecisionRecord = {
+    execDate,
+    asOf,
+    targets,
+    fills: [...fills],
+    skipped: [...daySkipped],
+    warnings: [...dayWarnings],
+    tags,
+    logs,
+  };
+  state.decisions.push(record);
+  state.skippedAll.push(...daySkipped);
+  state.warningsAll.push(...dayWarnings);
+  return record;
+}
+
 /** 运行一次回测（纯函数，不读库/不写库） */
 export function runBacktest(data: BacktestData, request: BacktestRequest): BacktestResult {
   const strategy = request.strategy;
@@ -413,14 +692,6 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     throw new BacktestInvariantError(`区间内没有交易日：${request.start} ~ ${request.end}`);
   }
 
-  const portfolio = new Portfolio(request.initialCash);
-  const equity: EquityPoint[] = [];
-  const trades: Fill[] = [];
-  const skippedAll: SkippedOrder[] = [];
-  const warningsAll: ExecutionWarning[] = [];
-  const decisions: DecisionRecord[] = [];
-  let tradedNotional = 0;
-
   const actionsByDate = new Map<string, CorporateAction[]>();
   for (const a of data.corporateActions ?? []) {
     const list = actionsByDate.get(a.date) ?? [];
@@ -428,208 +699,42 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     actionsByDate.set(a.date, list);
   }
 
-  const roundTripNotified = new Set<number>();
-  const universeStats = {
-    days: 0,
-    noNameCandidateTotal: 0,
-    noNameCandidateMax: 0,
-    fallbackPoolMemberTotal: 0,
-    fallbackPoolMemberMax: 0,
+  const state: BacktestRunState = {
+    data,
+    strategy,
+    params,
+    priceMode,
+    rules,
+    suspension,
+    actionsByDate,
+    portfolio: new Portfolio(request.initialCash),
+    equity: [],
+    trades: [],
+    skippedAll: [],
+    warningsAll: [],
+    decisions: [],
+    roundTripNotified: new Set<number>(),
+    universeStats: {
+      days: 0,
+      noNameCandidateTotal: 0,
+      noNameCandidateMax: 0,
+      fallbackPoolMemberTotal: 0,
+      fallbackPoolMemberMax: 0,
+    },
+    tradedNotional: 0,
   };
 
   for (let dayIndex = 0; dayIndex < dates.length; dayIndex++) {
-    const execDate = dates[dayIndex];
-    const asOf = data.calendar.prev(execDate);
-    if (asOf === null) continue;
-
-    // ── 1) 时点池（asOf = T-1）＋ 决策上下文 ──
-    const snapshot = data.universe(asOf);
-    if (snapshot.asOf !== asOf) {
-      throw new BacktestInvariantError(
-        `时点池对齐错误：请求 asOf=${asOf}，实际 asOf=${snapshot.asOf}（回测决策必须用 T-1）`,
-      );
-    }
-
-    if (snapshot.noNameCandidateCount !== undefined) {
-      universeStats.days++;
-      universeStats.noNameCandidateTotal += snapshot.noNameCandidateCount;
-      universeStats.noNameCandidateMax = Math.max(
-        universeStats.noNameCandidateMax,
-        snapshot.noNameCandidateCount,
-      );
-      const fb = snapshot.fallbackPoolMemberCount ?? 0;
-      universeStats.fallbackPoolMemberTotal += fb;
-      universeStats.fallbackPoolMemberMax = Math.max(universeStats.fallbackPoolMemberMax, fb);
-    }
-
-    const pricesAtAsOf = new Map<string, number>();
-    for (const pos of portfolio.positions()) {
-      pricesAtAsOf.set(pos.symbol, closeAtOrBefore(data.execBars.get(pos.symbol), asOf) ?? 0);
-    }
-
-    const tags: Record<string, unknown> = {};
-    const logs: { level: 'info' | 'warn'; message: string }[] = [];
-    const ctx = makeContext({
-      asOf,
-      execDate,
-      dayIndex,
-      params,
-      signalBars: data.signalBars,
-      indexBars: data.indexBars ?? new Map(),
-      universeView: universeViewOf(snapshot),
-      portfolio,
-      pricesAtAsOf,
-      suspension,
-      tags,
-      logs,
-    });
-
-    let targets = strategy.decide(ctx);
-    const capSkipped: SkippedOrder[] = [];
-    if (targets) {
-      assertTargetSetValid(targets, execDate, (symbol) => portfolio.position(symbol).qty);
-      const capped = capTurnover({
-        date: execDate,
-        targets,
-        equity: ctx.equity,
-        held: portfolio.positions().map((p) => p.symbol),
-        currentValue: (symbol: string) => {
-          const pos = portfolio.position(symbol);
-          return pos.qty * (pricesAtAsOf.get(symbol) ?? 0);
-        },
-      });
-      targets = capped.targets;
-      capSkipped.push(...capped.skipped);
-      if (capSkipped.length > 0) ctx.tag('turnoverCapped', capSkipped.length);
-    }
-
-    // ── 2) 除权事件（T 日开盘前；按 T-1 收盘持仓生效） ──
-    portfolio.startDay();
-    const actions = actionsByDate.get(execDate);
-    if (actions && actions.length > 0) portfolio.applyCorporateActions(actions);
-
-    // ── 3) 成交（T 开盘/收盘价 + 摩擦） ──
-    const fills: Fill[] = [];
-    const daySkipped: SkippedOrder[] = [];
-    const dayWarnings: ExecutionWarning[] = [];
-    if (targets) {
-      const execRequest = {
-        date: execDate,
-        targets: targets.targets,
-        mode: targets.mode,
-        heldSymbols: portfolio.positions().map((p) => p.symbol),
-        equityAtCutoff: ctx.equity,
-        cash: portfolio.cash,
-        priceMode,
-        rules,
-        positionOf: (symbol: string) => portfolio.position(symbol),
-        barOf: (symbol: string): ExecutionBar | undefined => {
-          const bar = findBarByDate(data.execBars.get(symbol) ?? [], execDate);
-          return bar
-            ? { open: bar.open, close: bar.close, preclose: bar.preclose, volume: bar.volume }
-            : undefined;
-        },
-        suspensionOf: (symbol: string) => isSuspended(data.execBars.get(symbol), execDate, suspension),
-        buyBudget: targets?.buyBudget,
-        exitReasons: targets?.exitReasons,
-      };
-
-      const result = executeTargets(execRequest);
-      fills.push(...result.fills);
-      daySkipped.push(...result.skipped);
-      daySkipped.push(...capSkipped);
-      dayWarnings.push(...result.warnings);
-
-      for (const fill of fills) {
-        portfolio.applyFill(fill);
-        trades.push(fill);
-        tradedNotional += fill.qty * fill.price;
-        if (strategy.onFill) {
-          const notice: FillNotice = {
-            date: fill.date,
-            symbol: fill.symbol,
-            side: fill.side,
-            qty: fill.qty,
-            price: fill.price,
-            fee: fill.fee,
-            reason: fill.reason,
-          };
-          strategy.onFill(notice);
-        }
-      }
-    }
-
-    for (let i = roundTripNotified.size; i < portfolio.roundTrips.length; i++) {
-      roundTripNotified.add(i);
-      if (strategy.onRoundTrip) {
-        const rt = portfolio.roundTrips[i];
-        const notice: RoundTripNotice = {
-          symbol: rt.symbol,
-          openDate: rt.openDate,
-          closeDate: rt.closeDate,
-          qty: rt.qty,
-          pnl: rt.pnl,
-          returnPct: rt.returnPct,
-          exitReason: rt.exitReason,
-        };
-        strategy.onRoundTrip(notice);
-      }
-    }
-
-    // ── 4) T 收盘估值（停牌/缺 bar 沿用最近有效价） ──
-    let riskMv = 0;
-    let cashMv = 0;
-    for (const pos of portfolio.positions()) {
-      const price = closeAtOrBefore(data.execBars.get(pos.symbol), execDate) ?? 0;
-      const mv = pos.qty * price;
-      if (CASH_BUCKET_SYMBOLS.has(pos.symbol)) cashMv += mv;
-      else riskMv += mv;
-    }
-    const cash = portfolio.cash;
-    const totalEquity = cash + riskMv + cashMv;
-
-    const benchIdx = lastIndexAtOrBefore(data.benchmarkBars, execDate);
-    const benchmarkClose = benchIdx >= 0 ? data.benchmarkBars[benchIdx].close : null;
-    // 当日无基准 bar（沿用上一有效收盘）→ 标记 stale，指标层据此整对剔除 alpha/beta
-    const benchmarkStale = benchIdx >= 0 && data.benchmarkBars[benchIdx].date !== execDate;
-    equity.push({
-      date: execDate,
-      equity: totalEquity,
-      cash,
-      riskMv,
-      cashMv,
-      benchmarkClose,
-      benchmarkStale,
-      exposure: totalEquity > 0 ? riskMv / totalEquity : 0,
-      // 回撤在全部点收集后统一算（仍写成 0，最终会被覆盖）
-      drawdownRatio: 0,
-    });
-
-    if (cash < -1e-6) {
-      throw new BacktestInvariantError(`现金为负：${execDate} cash=${cash}（成交模拟器应已拦截）`);
-    }
-
-    decisions.push({
-      execDate,
-      asOf,
-      targets,
-      fills: [...fills],
-      skipped: [...daySkipped],
-      warnings: [...dayWarnings],
-      tags,
-      logs,
-    });
-    skippedAll.push(...daySkipped);
-    warningsAll.push(...dayWarnings);
+    stepBacktestDay(state, { dayIndex, execDate: dates[dayIndex] });
   }
 
   // 回撤序列补齐
-  const drawdowns = computeDrawdownSeries(equity.map((p) => p.equity));
-  for (let i = 0; i < equity.length; i++) equity[i].drawdownRatio = drawdowns[i];
+  const drawdowns = computeDrawdownSeries(state.equity.map((p) => p.equity));
+  for (let i = 0; i < state.equity.length; i++) state.equity[i].drawdownRatio = drawdowns[i];
 
-  const metrics = computeMetrics(equity, portfolio.roundTrips, {
+  const metrics = computeMetrics(state.equity, state.portfolio.roundTrips, {
     initialEquity: request.initialCash,
-    tradedNotional,
+    tradedNotional: state.tradedNotional,
   });
 
   return {
@@ -646,17 +751,17 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       benchmarkSymbol,
       rules,
       suspension,
-      universeStats: universeStats.days > 0 ? universeStats : undefined,
+      universeStats: state.universeStats.days > 0 ? state.universeStats : undefined,
       universeParams: request.universeParams,
     },
-    equity,
-    trades,
-    roundTrips: portfolio.roundTrips,
-    dividends: portfolio.dividends,
+    equity: state.equity,
+    trades: state.trades,
+    roundTrips: state.portfolio.roundTrips,
+    dividends: state.portfolio.dividends,
     metrics,
-    decisions,
-    skipped: skippedAll,
-    warnings: warningsAll,
-    tradedNotional,
+    decisions: state.decisions,
+    skipped: state.skippedAll,
+    warnings: state.warningsAll,
+    tradedNotional: state.tradedNotional,
   };
 }

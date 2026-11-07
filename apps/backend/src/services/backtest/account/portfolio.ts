@@ -59,6 +59,16 @@ export interface PortfolioPosition {
   closeableQty: number;
 }
 
+/** `Portfolio.restore()` 的输入：来自检查点（`paper_position` + 账户现金） */
+export interface PortfolioRestorePosition {
+  symbol: string;
+  qty: number;
+  /** 已在检查点算定的均价（含买入费用分摊）；合成成交价 = 该值 */
+  avgCost: number;
+  /** T+1 只剩「上一交易日及更早买入」的部分 */
+  closeableQty: number;
+}
+
 export class Portfolio {
   private cashAmount: number;
   /** 逐标的交易记录（喂给 core 的唯一输入） */
@@ -74,6 +84,62 @@ export class Portfolio {
   constructor(initialCash: number) {
     if (!(initialCash > 0)) throw new Error(`Portfolio: 初始现金必须 > 0（收到 ${initialCash}）`);
     this.cashAmount = initialCash;
+  }
+
+  /**
+   * 从检查点恢复账户（纸面账户 §5.6）。
+   *
+   * 口径：每个持仓压**一笔合成 `buy`**（`price = avgCost`、`fee = 0`），喂给 core 重算出
+   * 同样的 `costBasis / avgCost`；`boughtToday = qty − closeableQty` 复现决策视图的 T+1 冻结。
+   * 结算阶段随后调用 `startDay()` 即全部可卖；决策阶段**不调用** `startDay()`。
+   *
+   * ⚠️ 恢复出来的 `roundTrips` 从空开始，`openDate` 会是恢复日 —— 回合报告必须走全量回放，
+   * 不能用本实例的 `roundTrips`（§5.6）。
+   */
+  restore(positions: readonly PortfolioRestorePosition[], cash: number, date: string): void {
+    if (this.tradesBySymbol.size > 0) {
+      throw new Error('Portfolio.restore: 只能恢复到空账户（已有交易记录）');
+    }
+    if (!Number.isFinite(cash) || cash < 0) {
+      throw new Error(`Portfolio.restore: 现金必须 ≥ 0 且有限（收到 ${cash}）`);
+    }
+    if (!date) throw new Error('Portfolio.restore: 恢复日不能为空');
+
+    for (const p of positions) {
+      if (!p.symbol) throw new Error('Portfolio.restore: symbol 不能为空');
+      if (this.tradesBySymbol.has(p.symbol)) {
+        throw new Error(`Portfolio.restore: 重复持仓 ${p.symbol}`);
+      }
+      if (!(p.qty > 0) || !Number.isFinite(p.qty)) {
+        throw new Error(`Portfolio.restore: ${p.symbol} 持仓份数必须 > 0（收到 ${p.qty}）`);
+      }
+      if (!(p.avgCost >= 0) || !Number.isFinite(p.avgCost)) {
+        throw new Error(`Portfolio.restore: ${p.symbol} 均价必须 ≥ 0（收到 ${p.avgCost}）`);
+      }
+      if (!(p.closeableQty >= 0) || p.closeableQty > p.qty) {
+        throw new Error(
+          `Portfolio.restore: ${p.symbol} 可用份数必须在 [0, ${p.qty}]（收到 ${p.closeableQty}）`,
+        );
+      }
+
+      this.tradesBySymbol.set(p.symbol, [
+        { date, direction: 'buy', quantity: p.qty, price: p.avgCost, fee: 0 },
+      ]);
+      const frozen = p.qty - p.closeableQty;
+      if (frozen > 0) this.boughtToday.set(p.symbol, frozen);
+
+      const st = this.stateOf(p.symbol);
+      if (
+        Math.abs(st.totalQuantity - p.qty) > 1e-9 ||
+        Math.abs(st.avgCost - p.avgCost) > 1e-9 * Math.max(1, p.avgCost)
+      ) {
+        throw new Error(
+          `Portfolio.restore: ${p.symbol} 重建结果与检查点不一致（qty ${st.totalQuantity} vs ${p.qty}，avgCost ${st.avgCost} vs ${p.avgCost}）`,
+        );
+      }
+    }
+
+    this.cashAmount = cash;
   }
 
   /** 新交易日开始：清空「当日买入」标记（T+1 每日重置） */

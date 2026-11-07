@@ -64,6 +64,20 @@
       "test": "POST /api/admin/backup → 响应体无 `success` 键，且符合统一 envelope",
       "condition": "备份路由是重操作：① 真库可用（HAS_MARKET，会把整个行情视图 COPY 成 parquet >100s）；或 ② `BACKUP_DIR` 未被隔离到本测试临时目录（避免把备份写进仓库 data/backup）",
       "reason": "该路由的 envelope 形状已由 smoke-m4 覆盖；日常套件里跑它会超时或污染仓库，故只在环境不满足时跳过。"
+    },
+    {
+      "file": "tests/unit/backtest-m1-calendar.test.ts",
+      "suites": ["ForwardCalendar —— 与历史交易日历交叉验证"],
+      "test": "历史日期上 nextTradingDay 等于下一根 sh000001 bar",
+      "condition": "行情库不可用（`marketDataAvailable()` 为 false：迷你库 Parquet 构建失败或临时目录不可写）",
+      "reason": "该用例要把前向日历（工作日 − raw_holidays）与真实历史日历（sh000001 的 bar）对齐；没有行情库就没有历史 side 可比。日常套件由 setup.ts 强制 `MARKET_DATA_MODE=ci` 现生成迷你库，正常不会命中。"
+    },
+    {
+      "file": "tests/unit/backtest-m1-calendar.test.ts",
+      "suites": ["ForwardCalendar —— 黑名单完整性对账（全区间）"],
+      "test": "sh000001 bar 集与「工作日 − raw_holidays」逐日一致",
+      "condition": "行情库不可用（`marketDataAvailable()` 为 false：迷你库 Parquet 构建失败或临时目录不可写）",
+      "reason": "对账的唯一证据源就是 sh000001 的 bar 集（`raw_kline_daily`）；没有行情库就无法判定黑名单完整性，属于环境型跳过而非掩盖缺陷——有库时该断言是硬性的（差异必 FAIL）。"
     }
   ]
 }
