@@ -31,7 +31,7 @@
  * | 能力 | 迷你库能否 | 真库能否 | 判据 |
  * |---|---|---|---|
  * | `numeric`（数值型）    | ✅ 可信 | ✅ | 迷你库是���库的**逐位一致子集**（实测 6 张视图 34839 行 0 差异）|
- * | `scale`（规模型）      | ❌ | ✅ | 迷你库只有 250 只标的（真库 12449）|
+ * | `scale`（规模型）      | ❌ | ✅ | 迷你库只有 410 只标的（真库 12449）|
  * | `performance`（性能型）| ❌ | ✅ | 迷你库测不出「5000 标的 ≤3s」|
  *
  * ⚠️ **一个开关混两类是最危险的**：迷你库能过「数值对不对」，但**过不了**「规模够不够」
@@ -169,8 +169,8 @@ export function resolveMarketData(): ResolvedMarketData {
         //   ⇒ **同进程内的下一个测试文件**（vitest 同进程跑多个文件）会看到
         //      「DUCKDB_PATH 已设」⇒ auto 档被误判成 **full**
         //      ⇒ `marketDataSupports('scale')` 返回 true
-        //      ⇒ **规模型用例不再 skip**（迷你库只有 104 只 stock / 41 只 ETF）
-        //      ⇒ CI 红：`expected 104 to be greater than 3000`。
+        //      ⇒ **规模型用例不再 skip**（迷你库只有 137 只 stock / 186 只 ETF）
+        //      ⇒ CI 红：`expected 137 to be greater than 3000`。
         //   ⇒ 判定「这个 DUCKDB_PATH 是不是我自己写的迷你库路径」——
         //      是 ⇒ 仍按 mini 处理；不是 ⇒ 才是 full。
         const p = process.env.DUCKDB_PATH;
@@ -286,8 +286,8 @@ export function marketDataTier(): MarketDataTier {
  *
  * - `numeric`：任何可用档位都支持 —— 迷你库是真库的**逐位一致子集**
  *   （实测：10 张表行数全等、6 张视图 34839 行 0 数值差异、视图 DDL 逐字一致）
- * - `scale` / `performance`：**只有真库**支持 —— 迷你库只有 250 只标的
- *   （实测 stock 104 只 vs 真库 5561 只），撑不起「5000 候选」，也测不出「≤3s」
+ * - `scale` / `performance`：**只有真库**支持 —— 迷你库只有 410 只标的
+ *   （实测 stock 137 只 vs 真库 5561 只），撑不起「5000 候选」，也测不出「≤3s」
  */
 export function marketDataSupports(capability: MarketDataCapability): boolean {
   const tier = marketDataTier();
@@ -335,7 +335,7 @@ export const SKIP_REASON_NO_MARKET_DATA =
 
 /** 规模/性能型用例的跳过原因文案 */
 export const SKIP_REASON_NO_SCALE_DATA =
-  '需要**真库**（≥5000 标的）才能验证规模/性能；迷你库只有 250 只标的，撑不起该门槛';
+  '需要**真库**（≥5000 标的）才能验证规模/性能；迷你库只有 400 余只标的，撑不起该门槛';
 
 // ════════════════════════════════════════════════════════════════════════
 // 🔴 **模块体里就解析一次**（import 本文件即生效）
