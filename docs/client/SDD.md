@@ -1708,7 +1708,7 @@ sequenceDiagram
 #### 核心接口定义
 
 ```typescript
-/** 插件唯一标识，全系统唯一，不可变（例如 'rsi'、'macd_cross'）*/
+/** 插件唯一标识，全系统唯一，不可变（例如 'rsi_oversold'、'macd_cross'）*/
 export type PluginId = string;
 
 /** 周期类型，MVP 固定为日线 */
@@ -1717,15 +1717,25 @@ export type Period = "daily";
 /** 插件分类：monitor=监控类（每日收盘跑信号）/ filter=筛选类（全市场条件选股） */
 export type PluginCategory = "monitor" | "filter";
 
-/** 插件归属子分类（UI 分组用，50+ 插件后必须有） */
+/**
+ * 插件归属子分类（UI 分组用）
+ *
+ * 🔴 对外口径 = V3 §4.1 的**六分类**（趋势 / 动量 / 波动率 / 量价 / 形态 / 风险）。
+ * `custom` 是**内部兜底值**（「未分类」）：仅用于插件契约字段缺失或旧插件值无法识别，
+ * **不对外展示、不计入六类**，API 与 UI 都必须显式过滤掉它。
+ *
+ * 旧值迁移（2026-11-07 裁决）：`breakout` → `volume`（突破属量价确认），
+ * `mean_reversion` → `volatility`（波动率通道回归）。映射只允许存在于
+ * `normalizeSubCategory()` 一个入口，禁止在调用点各写一份。
+ */
 export type PluginSubCategory =
+  | "trend"       // 趋势类：MACD、均线排列
   | "momentum"    // 动量类：RSI、KDJ
-  | "trend"       // 趋势类：MACD、均线
-  | "volume"      // 量能类：OBV、量比
-  | "breakout"    // 突破类
-  | "mean_reversion" // 均值回归类
-  | "pattern"     // 形态类
-  | "custom";     // 自定义
+  | "volatility"  // 波动率类：布林带、ATR 通道
+  | "volume"      // 量价类：放量突破、缩量回调、量价背离
+  | "pattern"     // 形态类：锤子线、吞没、缺口
+  | "risk"        // 风险类：ATR 止损、回撤、组合暴露
+  | "custom";     // 未分类（内部兜底，不对外展示）
 
 /** 执行复杂度标记（日志统计用，非硬约束） */
 export type PluginComplexity = "simple" | "medium" | "complex";
@@ -1842,7 +1852,7 @@ export interface StrategyPlugin {
 
 | 规则 | 说明 |
 |------|------|
-| 内置插件库 | 打包在 `@invest/core` 包内；MVP 仅 `rsi` + `macd_cross`（默认启用） |
+| 内置插件库 | 打包在 `@invest/core` 包内；MVP 仅 `rsi_oversold` + `macd_cross`（默认启用） |
 | 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
@@ -1871,7 +1881,7 @@ export interface StrategyPlugin {
 
 | plugin.id | name | category | sub_category | 默认参数 | 信号触发逻辑 |
 |-----------|------|----------|-------------|---------|------------|
-| `rsi` | RSI(14) 超买超卖 | monitor + filter | momentum | period=14, oversold=30, overbought=70 | RSI < oversold → buy；RSI > overbought → sell |
+| `rsi_oversold` | RSI(14) 超买超卖 | monitor | momentum | period=14, oversold=30, overbought=70 | RSI < oversold → buy；RSI > overbought → sell |
 | `macd_cross` | MACD 金叉死叉 | monitor | trend | fast=12, slow=26, signal=9 | DIF 上穿 DEA → buy；下穿 → sell |
 
 ### 5.4 策略插件引擎执行流程（含故障隔离）
@@ -2385,8 +2395,8 @@ flowchart TD
   "log_type": "PLUGIN",
   "level": "WARN",
   "user_id": 1,
-  "message": "Plugin rsi TIMEOUT after 50ms",
-  "detail": { "plugin_id": "rsi", "symbol": "000001.SZ" },
+  "message": "Plugin rsi_oversold TIMEOUT after 50ms",
+  "detail": { "plugin_id": "rsi_oversold", "symbol": "000001.SZ" },
   "created_at": "2026-10-14T17:03:12.345Z"
 }
 ```
