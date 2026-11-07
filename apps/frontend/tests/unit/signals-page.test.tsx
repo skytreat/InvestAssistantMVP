@@ -95,6 +95,10 @@ function installPagedMock(
     if (url === '/market/latest-date') {
       return Promise.resolve(mockResponse({ date: '2026-11-06' }));
     }
+    // F3：摘要区默认返回空（避免与主列表的 pill / 进度条断言互相干扰）
+    if (url === '/signal/top5') {
+      return Promise.resolve(mockResponse([], DEFAULT_META));
+    }
     const requested = Number(cfg?.params?.page ?? 1);
     const idx = Math.min(Math.max(requested - 1, 0), pages.length - 1);
     const hit = pages[idx];
@@ -472,5 +476,62 @@ describe('T149 · 信号操作列（采纳/忽略 → PATCH /signal/:id/{adopt|i
     renderWithRouter(<Signals />);
     await userEvent.click(await screen.findByRole('button', { name: '忽略' }));
     await waitFor(() => expect(patchMock).toHaveBeenCalledWith('/signal/1/ignore'));
+  });
+});
+
+/** F3 · 今日 Top 5 摘要区（PRD_v3 §4.2） */
+describe('F3 · 今日 Top 5 摘要区', () => {
+  it('跟随主列表展示日拉取摘要，并展示排名 / 日期来源', async () => {
+    const top5Calls: Array<Record<string, unknown> | undefined> = [];
+    getMock.mockImplementation((url: string, cfg?: ApiGetConfig) => {
+      if (url === '/market/latest-date') {
+        return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+      }
+      if (url === '/signal/top5') {
+        top5Calls.push(cfg?.params);
+        return Promise.resolve(
+          mockResponse([BUY_ROW], {
+            trade_date: '2026-10-13',
+            trade_date_source: 'signal',
+            latest_quote_date: null,
+            limit: 5,
+          }),
+        );
+      }
+      return Promise.resolve(pagedResponse([BUY_ROW], 1, 1, 1));
+    });
+
+    renderWithRouter(<Signals />);
+
+    const summary = await screen.findByTestId('signals-top5-summary');
+    expect(within(summary).getByText('今日 Top 5 摘要')).toBeInTheDocument();
+
+    // 摘要跟随主列表解析出的展示日（2026-10-13），不是硬编码「今天」
+    await waitFor(() => expect(top5Calls).toEqual([{ trade_date: '2026-10-13' }]));
+    expect(screen.getByTestId('signals-top5-date-note')).toHaveTextContent(
+      '摘要交易日 2026-10-13（最近有信号日）',
+    );
+
+    const table = within(summary).getByRole('table', { name: '今日 Top 5 摘要' });
+    const rows = within(table).getAllByRole('row');
+    expect(rows).toHaveLength(2); // 表头 + 1 条
+    expect(within(rows[1]).getByText('1')).toBeInTheDocument(); // 排名
+    expect(within(rows[1]).getByText('sh600000')).toBeInTheDocument();
+  });
+
+  it('摘要接口失败时静默降级，不影响主列表', async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url === '/market/latest-date') {
+        return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+      }
+      if (url === '/signal/top5') return Promise.reject(new Error('摘要失败'));
+      return Promise.resolve(pagedResponse([BUY_ROW], 1, 1, 1));
+    });
+
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-top5-empty')).toHaveTextContent('该交易日暂无信号');
+    // 主列表仍然正常渲染
+    expect(screen.getByRole('table', { name: '策略信号列表' })).toBeInTheDocument();
   });
 });

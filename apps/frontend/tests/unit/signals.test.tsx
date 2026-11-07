@@ -104,11 +104,14 @@ function installApiMock(rows: SignalFixture[] = [DEFAULT_ROW]): void {
     Promise.resolve(
       url === '/market/latest-date'
         ? mockResponse({ date: '2026-11-06' })
-        : mockResponse(rows, {
-            trade_date: '2026-10-12',
-            trade_date_source: 'signal',
-            latest_quote_date: null,
-          }),
+        : url === '/signal/top5'
+          ? // F3：摘要区默认返回空（避免与主列表的 pill / 进度条断言互相干扰）
+            mockResponse([])
+          : mockResponse(rows, {
+              trade_date: '2026-10-12',
+              trade_date_source: 'signal',
+              latest_quote_date: null,
+            }),
     ),
   );
 }

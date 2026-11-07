@@ -11,6 +11,7 @@ import PositionCard from '../components/PositionCard';
 import PositionToolbar from '../components/PositionToolbar';
 import PositionDetailModal from '../components/PositionDetailModal';
 import ScrollableTable from '../components/ScrollableTable';
+import { SignalStrength } from '../components/SignalStrength';
 import TodayActivityCard from '../components/TodayActivityCard';
 import TradeFormModal from '../components/TradeFormModal';
 import type { SignalTradeDraft } from '../components/SignalMiniMenu';
@@ -67,12 +68,18 @@ interface PositionSummary {
 }
 
 interface Signal {
+  id?: number;
   asset_code: string;
   plugin_id: string;
   direction: string;
   label: string;
   trade_date: string;
+  /** 信号强度（0~1 小数，可空 —— 口径见 `components/SignalStrength.tsx`）*/
+  strength?: number | null;
 }
+
+/** 后端下发的默认日期口径来源（F 域 P0-1，与 `Signals.tsx` 同款口径）*/
+type SignalDateSource = 'explicit' | 'signal' | 'quote' | 'today';
 
 interface SystemLog {
   created_at: string;
@@ -295,9 +302,14 @@ export default function Dashboard() {
   /** T79 ⑤：持仓概览默认只显示市值 Top 3（≤3 只时无需折叠） */
   const [holdingsExpanded, setHoldingsExpanded] = useState(false);
 
+  /** F3：今日 Top 5（后端按 强>中>弱>未分级 + 强度降序 取单日前 5 条）*/
   const [signals, setSignals] = useState<Signal[]>([]);
   const [sigLoading, setSigLoading] = useState(false);
   const [sigError, setSigError] = useState<string | null>(null);
+  /** Top 5 实际生效的交易日与来源（后端解析，前端只展示）*/
+  const [sigTradeDate, setSigTradeDate] = useState<string | null>(null);
+  const [sigDateSource, setSigDateSource] = useState<SignalDateSource>('explicit');
+  const [sigLatestQuoteDate, setSigLatestQuoteDate] = useState<string | null>(null);
 
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
@@ -488,9 +500,27 @@ export default function Dashboard() {
     (async () => {
       setSigLoading(true);
       try {
-        const res = await api.get('/signal', { params: { page_size: 5 } });
-        if (isOkEnvelope(res.data)) setSignals(res.data.data ?? []);
-        else setSigError(res.data.message ?? '请求失败');
+        /*
+         * F3：概览卡改为「今日 Top 5」（PRD_v3 §4.2）
+         *
+         * ⚠️ 与 `/signal`（跨交易日「最近 N 条」）不同，本端点**强制单日**，
+         *    默认日由后端解析（最近有信号日 → 最近行情日 → 今天），
+         *    并把实际交易日与来源放进 meta —— 前端不再自己猜今天。
+         */
+        const res = await api.get('/signal/top5');
+        if (isOkEnvelope(res.data)) {
+          setSignals((res.data.data ?? []) as Signal[]);
+          const meta = res.data as unknown as {
+            trade_date?: string | null;
+            trade_date_source?: SignalDateSource;
+            latest_quote_date?: string | null;
+          };
+          setSigTradeDate(typeof meta.trade_date === 'string' ? meta.trade_date : null);
+          setSigDateSource(meta.trade_date_source ?? 'explicit');
+          setSigLatestQuoteDate(
+            typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null,
+          );
+        } else setSigError(res.data.message ?? '请求失败');
       } catch (err) {
         setSigError(extractErrorMessage(err));
       } finally {
@@ -600,6 +630,16 @@ export default function Dashboard() {
    *    **不许静默失效**。数据源恢复后会自动启用。
    */
   const industryAvailable = positions.some((p) => p.industry !== null && p.industry !== undefined);
+
+  /** Top 5 的日期来源说明（F3：用户要能看出「这不是今天，而是哪一天」）*/
+  const sigDateSourceLabel =
+    sigDateSource === 'signal'
+      ? '最近有信号日'
+      : sigDateSource === 'quote'
+        ? '行情最新日'
+        : sigDateSource === 'today'
+          ? '兜底交易日（行情库暂不可用）'
+          : '指定日期';
 
   return (
     /*
@@ -932,12 +972,12 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* T79 ⑤：概览第四块 —— 策略信号 Top 5（详情交给 Signals 页） */}
+        {/* F3：概览第四块 —— 今日 Top 5（详情交给 Signals 页） */}
         <section aria-label="策略信号" data-testid="overview-signals">
           <div style={cardStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: SPACING.gapBase, flexWrap: 'wrap' }}>
               <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0, flex: 1 }}>
-                最新信号
+                今日 Top 5
               </div>
               <Link
                 to="/signals"
@@ -952,20 +992,43 @@ export default function Dashboard() {
                 查看全部信号 →
               </Link>
             </div>
+            {/*
+              日期来源说明（F3）
+              ⚠️ 默认日由后端解析（最近有信号日 → 最近行情日 → 今天），
+                 卡片必须写明「展示的是哪一天」，否则周末进页会误以为「今天没信号」。
+            */}
+            {!sigLoading && !sigError && sigTradeDate ? (
+              <div
+                data-testid="dashboard-signal-date-note"
+                style={{
+                  fontSize: TYPO.smallSize,
+                  color: COLORS.neutral,
+                  marginTop: SPACING.gapTight,
+                }}
+              >
+                {`信号日 ${sigTradeDate}（${sigDateSourceLabel}）`}
+                {sigLatestQuoteDate && sigLatestQuoteDate !== sigTradeDate
+                  ? ` · 行情最新 ${sigLatestQuoteDate}`
+                  : ''}
+              </div>
+            ) : null}
             {sigLoading && <Spinner />}
             {sigError && <div style={{ color: COLORS.danger }}>{sigError}</div>}
             {!sigLoading && !sigError && (
               /*
                * ⚠️ **表格必须套在可横向滚动的容器里**（G3.5）：
-               *    `table` 的 `width:100%` 只是最小宽度，5 列（代码/策略/方向/标签/日期）
+               *    `table` 的 `width:100%` 只是最小宽度，6 列（排名/代码/策略/方向/强度/标签）
                *    在 375px 窄屏下最小内容宽度超过卡片宽度 → 表格溢出卡片 →
                *    溢出向上冒泡 → **文档级**横向溢出。
                *    套上 `overflow-x:auto` 的容器后，表格在自己内部横向滚动，文档不再被撑宽。
                */
-              <ScrollableTable label="最新信号表">
-                <table style={tableStyle} aria-label="最新信号">
+              <ScrollableTable label="今日 Top 5 表">
+                <table style={tableStyle} aria-label="今日 Top 5">
                   <thead>
                     <tr>
+                      <th scope="col" style={thStyle}>
+                        排名
+                      </th>
                       <th scope="col" style={thStyle}>
                         代码
                       </th>
@@ -976,23 +1039,24 @@ export default function Dashboard() {
                         方向
                       </th>
                       <th scope="col" style={thStyle}>
-                        标签
+                        强度
                       </th>
                       <th scope="col" style={thStyle}>
-                        日期
+                        标签
                       </th>
                     </tr>
                   </thead>
                   <tbody>
                     {signals.length === 0 ? (
                       <tr>
-                        <td style={thTdStyle} colSpan={5}>
-                          暂无信号
+                        <td style={thTdStyle} colSpan={6}>
+                          今日暂无信号
                         </td>
                       </tr>
                     ) : (
                       signals.map((s, i) => (
-                        <tr key={i}>
+                        <tr key={typeof s.id === 'number' ? s.id : i}>
+                          <td style={thTdStyle}>{i + 1}</td>
                           <td style={thTdStyle}>{s.asset_code}</td>
                           <td style={thTdStyle}>{s.plugin_id}</td>
                           <td style={thTdStyle}>
@@ -1010,8 +1074,13 @@ export default function Dashboard() {
                               {DIRECTION_LABEL[s.direction] ?? s.direction}
                             </span>
                           </td>
+                          <td style={thTdStyle}>
+                            <SignalStrength
+                              value={typeof s.strength === 'number' ? s.strength : null}
+                              label={`${s.asset_code} 信号强度`}
+                            />
+                          </td>
                           <td style={thTdStyle}>{s.label}</td>
-                          <td style={thTdStyle}>{s.trade_date}</td>
                         </tr>
                       ))
                     )}

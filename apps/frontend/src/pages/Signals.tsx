@@ -13,6 +13,7 @@ import {
   pageContainerStyle,
   cardStyle,
   titleStyle,
+  cardTitleStyle,
   inputStyle,
   buttonStyle,
   tableStyle,
@@ -153,6 +154,14 @@ export default function Signals() {
    */
   const [marketQuoteDate, setMarketQuoteDate] = useState<string | null>(null);
 
+  // ── F3：今日 Top 5 摘要区 ────────────────────────────────────────
+  /** 摘要区数据（后端强制单日 + 按 强>中>弱>未分级 + 强度降序 的前 5 条）*/
+  const [top5Rows, setTop5Rows] = useState<SignalRow[]>([]);
+  const [top5Loading, setTop5Loading] = useState(false);
+  /** 摘要区实际交易日与来源（后端解析；摘要失败时静默降级，不影响主列表）*/
+  const [top5TradeDate, setTop5TradeDate] = useState<string | null>(null);
+  const [top5Source, setTop5Source] = useState<DateSource>('explicit');
+
   // ── V3.8 T149：信号生命周期操作（采纳/忽略/关联交易）────────────────
   const [actMsg, setActMsg] = useState<string | null>(null);
 
@@ -187,6 +196,38 @@ export default function Signals() {
       else setActMsg(String(res.data?.message ?? '关联失败'));
     } catch (e) {
       setActMsg(extractErrorMessage(e, '关联失败'));
+    }
+  };
+
+  /**
+   * 拉取「今日 Top 5」摘要（F3）
+   *
+   * `date` 为 null 时由后端解析默认日（最近有信号日 → 最近行情日 → 今天）。
+   * ⚠️ 摘要区失败只做**静默降级**（清空摘要），不覆盖主列表的错误态。
+   */
+  const fetchTop5 = async (date: string | null) => {
+    setTop5Loading(true);
+    try {
+      const res = date
+        ? await api.get('/signal/top5', { params: { trade_date: date } })
+        : await api.get('/signal/top5');
+      if (isOkEnvelope(res.data)) {
+        setTop5Rows((res.data.data ?? []) as SignalRow[]);
+        const meta = res.data as unknown as {
+          trade_date?: string | null;
+          trade_date_source?: DateSource;
+        };
+        setTop5TradeDate(
+          typeof meta.trade_date === 'string' ? meta.trade_date : date,
+        );
+        setTop5Source(meta.trade_date_source ?? 'explicit');
+      } else {
+        setTop5Rows([]);
+      }
+    } catch {
+      setTop5Rows([]);
+    } finally {
+      setTop5Loading(false);
     }
   };
 
@@ -227,6 +268,12 @@ export default function Signals() {
         setResolvedSource(source);
         setResolvedDate(source === 'explicit' ? null : (meta.trade_date ?? null));
         setLatestQuoteDate(typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null);
+        /*
+         * F3：摘要区跟随主列表的展示日 ——
+         * 用户显式选了单日 → 用该日；只选区间/默认视角 → 用后端解析出的交易日；
+         * 区间模式（source=explicit 且无单日）→ 传 null，由后端按默认口径解析。
+         */
+        void fetchTop5(tradeDate || (meta.trade_date ?? null));
       } else {
         setError(res.data.message ?? '请求失败');
       }
@@ -318,6 +365,16 @@ export default function Signals() {
   /** 默认日期来源的中文标签（与筛选栏旁注、列表态旁注共用同一口径）*/
   const dateSourceLabel =
     resolvedSource === 'signal' ? '最近有信号日' : resolvedSource === 'quote' ? '行情最新日' : '兜底交易日';
+
+  /** 摘要区的日期来源标签（显式筛选时是「指定日期」，故比主列表多一档）*/
+  const top5SourceLabel =
+    top5Source === 'signal'
+      ? '最近有信号日'
+      : top5Source === 'quote'
+        ? '行情最新日'
+        : top5Source === 'today'
+          ? '兜底交易日'
+          : '指定日期';
 
   /** 列表里是否有「非当前展示日」的行（决定是否显示灰显说明）*/
   const hasOtherDayRows =
@@ -447,6 +504,94 @@ export default function Signals() {
       </div>
 
       {error && <div style={errorStyle}>{error}</div>}
+
+      {/* F3：今日 Top 5 摘要区（与主列表同屏，先回答「哪几条最值得看」） */}
+      <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
+        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>
+          今日 Top 5 摘要
+        </div>
+        {top5TradeDate ? (
+          <div
+            data-testid="signals-top5-date-note"
+            style={{
+              fontSize: TYPO.smallSize,
+              color: COLORS.neutral,
+              marginTop: SPACING.gapTight,
+              marginBottom: SPACING.gapBase,
+            }}
+          >
+            {`摘要交易日 ${top5TradeDate}（${top5SourceLabel}）`}
+          </div>
+        ) : null}
+        {top5Loading ? (
+          <Spinner />
+        ) : top5Rows.length === 0 ? (
+          <div
+            data-testid="signals-top5-empty"
+            style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}
+          >
+            该交易日暂无信号
+          </div>
+        ) : (
+          <ScrollableTable label="今日 Top 5 摘要表">
+            <table style={tableStyle} aria-label="今日 Top 5 摘要">
+              <thead>
+                <tr>
+                  <th scope="col" style={thStyle}>
+                    排名
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标的代码
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    策略
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    方向
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    强度
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标签
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {top5Rows.map((row, i) => {
+                  const code = assetCodeOf(row);
+                  return (
+                    <tr key={typeof row.id === 'number' ? `top5-${row.id}` : `top5-${i}`}>
+                      <td style={thTdStyle}>{i + 1}</td>
+                      <td style={thTdStyle}>
+                        <code>{code}</code>
+                      </td>
+                      <td style={thTdStyle}>
+                        <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalDirectionPill
+                          direction={typeof row.direction === 'string' ? row.direction : 'hold'}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalStrength
+                          value={typeof row.strength === 'number' ? row.strength : null}
+                          label={`${code} 信号强度`}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollableTable>
+        )}
+      </div>
+
       {/* V3.8 T149：操作反馈（采纳/忽略/关联） */}
       {actMsg && (
         <div
