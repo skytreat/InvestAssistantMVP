@@ -16,7 +16,6 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { queryDuckDB } from '../../db/duckdb.js';
 import { loadTradingCalendar } from './calendar.js';
 import { getBars, isSuspended, summarizePanel, type SymbolPanelSummary } from './marketPanel.js';
 import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from './universe/fixedPool.js';
@@ -34,6 +33,8 @@ import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
 import { createWufuRotationStrategy } from './strategies/wufuRotation/index.js';
 import { computeAttribution, toAttributionRows } from './attribution/index.js';
 import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';
+import { loadCorporateActions } from './corporateActions.js';
+import type { SweepResult } from './optimize/runner.js';
 import type { CorporateAction } from './account/portfolio.js';
 
 type PoolName = 'fixed' | 'dynamic' | 'weak' | 'all';
@@ -445,6 +446,8 @@ interface RunArgs {
   dbPath: string | null;
   divisor: number;
   topN: number;
+  /** 策略参数（JSON；缺省用策略默认值）—— M4 复现单组参数用 */
+  params: Record<string, unknown>;
   suspension: Required<SuspensionOptions>;
 }
 
@@ -466,6 +469,7 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
     dbPath: resolveBacktestDbPath(),
     divisor: 20000,
     topN: 300,
+    params: {},
     suspension: { missingBar: true, zeroVolume: true },
   };
 
@@ -547,6 +551,20 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
       case '--top-n':
         options.topN = Number(readValue());
         break;
+      case '--params': {
+        const raw = readValue();
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error(`--params 必须是 JSON 对象（收到 ${raw}）`);
+        }
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error(`--params 必须是 JSON 对象`);
+        }
+        options.params = parsed as Record<string, unknown>;
+        break;
+      }
       case '--no-missing-bar':
         options.suspension.missingBar = false;
         break;
@@ -587,32 +605,7 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
   return options;
 }
 
-/** 从 `raw_gbbq` 取除权事件（category=1），口径对齐 `exDividendSync`：c1/10 每股派现、c3/10 送转比例 */
-async function loadCorporateActions(
-  symbols: readonly string[],
-  start: string,
-  end: string,
-): Promise<CorporateAction[]> {
-  if (symbols.length === 0) return [];
-  const placeholders = symbols.map(() => '?').join(', ');
-  const rows = await queryDuckDB<{ date: string; symbol: string; c1: number | null; c3: number | null }>(
-    `SELECT date, symbol, c1, c3
-       FROM raw_gbbq
-      WHERE category = 1 AND symbol IN (${placeholders}) AND date BETWEEN ? AND ?
-      ORDER BY date`,
-    [...symbols, start, end],
-  );
-
-  const out: CorporateAction[] = [];
-  for (const r of rows) {
-    const cash = (r.c1 ?? 0) / 10;
-    if (cash > 0) out.push({ date: r.date, symbol: r.symbol, kind: 'dividend', cashPerShare: cash });
-    const ratio = (r.c3 ?? 0) / 10;
-    if (ratio > 0) out.push({ date: r.date, symbol: r.symbol, kind: 'bonus', bonusRatio: ratio });
-  }
-  return out;
-}
-
+/** 回测子命令（M2）：装载行情 + 跑引擎 + 落库 + 打印指标 */
 async function runCommand(argv: readonly string[]): Promise<void> {
   const startedAt = new Date().toISOString();
   const args = parseRunArgs(argv);
@@ -712,7 +705,7 @@ async function runCommand(argv: readonly string[]): Promise<void> {
       strategy,
       params:
         args.strategy === 'wufu-rotation'
-          ? {}
+          ? args.params
           : { symbol: args.symbol, weight: args.weight, rebalance: args.rebalance },
       start: args.start,
       end: args.end,
@@ -779,10 +772,214 @@ async function runCommand(argv: readonly string[]): Promise<void> {
   if (runId) console.log(`已写入回测库：${args.dbPath}（run_id=${runId}）`);
 }
 
+/** ───────────────────────── M4：寻优子命令 ───────────────────────── */
+
+interface SweepArgs {
+  sweepId: string;
+  seed: number;
+  mode: 'pilot' | 'coarse' | 'full';
+  coarseCount: number;
+  fineCount: number;
+  maxMinutes: number | undefined;
+  maxHeapMb: number;
+  initialCash: number;
+  dbPath: string;
+  reportPath: string | null;
+}
+
+const SWEEP_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts sweep --sweep-id <id> [--seed 20261107] [--mode pilot|coarse|full] [--coarse 200] [--fine 120] [--max-minutes N] [--max-heap-mb 2500] [--cash 100000] [--db <path>] [--report <path>]`;
+
+function parseSweepArgs(argv: readonly string[]): SweepArgs {
+  const options: SweepArgs = {
+    sweepId: '',
+    seed: 20261107,
+    mode: 'full',
+    coarseCount: 200,
+    fineCount: 120,
+    maxMinutes: undefined,
+    maxHeapMb: 2500,
+    initialCash: 100_000,
+    dbPath: resolveBacktestDbPath(),
+    reportPath: null,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const readValue = (): string => {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith('--')) throw new Error(`${arg} 缺少取值\n${SWEEP_USAGE}`);
+      i++;
+      return v;
+    };
+    switch (arg) {
+      case '--sweep-id':
+        options.sweepId = readValue();
+        break;
+      case '--seed':
+        options.seed = Number(readValue());
+        break;
+      case '--mode': {
+        const v = readValue();
+        if (v !== 'pilot' && v !== 'coarse' && v !== 'full') {
+          throw new Error(`--mode 只接受 pilot|coarse|full（收到 ${v}）`);
+        }
+        options.mode = v;
+        break;
+      }
+      case '--coarse':
+        options.coarseCount = Number(readValue());
+        break;
+      case '--fine':
+        options.fineCount = Number(readValue());
+        break;
+      case '--max-minutes':
+        options.maxMinutes = Number(readValue());
+        break;
+      case '--max-heap-mb':
+        options.maxHeapMb = Number(readValue());
+        break;
+      case '--cash':
+        options.initialCash = Number(readValue());
+        break;
+      case '--db':
+        options.dbPath = readValue();
+        break;
+      case '--report':
+        options.reportPath = readValue();
+        break;
+      case '--help':
+      case '-h':
+        throw new Error(SWEEP_USAGE);
+      default:
+        throw new Error(`未知参数 ${arg}\n${SWEEP_USAGE}`);
+    }
+  }
+
+  if (!options.sweepId) throw new Error(`缺少 --sweep-id\n${SWEEP_USAGE}`);
+  if (!Number.isInteger(options.seed)) throw new Error(`--seed 必须是整数（收到 ${options.seed}）`);
+  for (const [name, value, min] of [
+    ['--coarse', options.coarseCount, 1],
+    ['--fine', options.fineCount, 0],
+    ['--max-heap-mb', options.maxHeapMb, 512],
+    ['--cash', options.initialCash, 1],
+  ] as const) {
+    if (!Number.isFinite(value) || value < min) throw new Error(`${name} 必须 ≥ ${min}（收到 ${value}）`);
+  }
+  if (options.mode === 'pilot' && options.coarseCount > 50) {
+    throw new Error(`--mode pilot 的 --coarse 不应该 > 50（收到 ${options.coarseCount}）：pilot 只验证通路`);
+  }
+  return options;
+}
+
+/** 打印 sweep 汇总（样本外主指标 + 分年度 + 稳定性 + 多重检验披露） */
+function printSweepSummary(result: SweepResult): void {
+  const s = result.summary;
+  const pct = (x: number | null | undefined): string =>
+    x === null || x === undefined || !Number.isFinite(x) ? 'n/a' : `${(x * 100).toFixed(2)}%`;
+
+  console.log('');
+  console.log('═══ M4 sweep 汇总 ═══');
+  console.log(
+    `试次 ${s.totalTrials}（合格 ${s.eligibleTrials}）/ 用时 ${(result.elapsedSeconds / 60).toFixed(1)} 分钟 / heap 峰值 ${result.heapPeakMb} MB` +
+      (result.stoppedReason ? ` / ⛔ 提前停止：${result.stoppedReason}` : ''),
+  );
+  console.log(
+    `样本外 CAGR 分布：min ${pct(s.oosDistribution.min)} / q1 ${pct(s.oosDistribution.q1)} / median ${pct(
+      s.oosDistribution.median,
+    )} / q3 ${pct(s.oosDistribution.q3)} / max ${pct(s.oosDistribution.max)}`,
+  );
+  console.log(`基准（默认参数）：样本外 CAGR 均值 ${pct(result.baseline.evaluation.oosMeanCagr)}`);
+
+  if (s.bestBySelection) {
+    const b = s.bestBySelection;
+    console.log('');
+    console.log(`训练段最优试次：${b.trialId}`);
+    console.log(
+      `  ${Object.entries(b.params)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ')}`,
+    );
+    console.log(
+      `  训练段均值 CAGR ${pct(b.trainMeanCagr)} → **样本外均值 CAGR ${pct(b.oosMeanCagr)}** / Sharpe ${pct(
+        b.oosMeanSharpe,
+      )} / 样本外回合 ${b.oosRoundTrips}`,
+    );
+    console.log(
+      `  各折：${b.foldCagrs.map((f) => `${f.foldId} train ${pct(f.train)} → test ${pct(f.test)}`).join(' | ')}`,
+    );
+    console.log(`  每折样本外均跑赢基线：${b.beatsBaselineEachFold ? '是' : '否'}`);
+    console.log(
+      `  分年度：${Object.entries(s.yearlyConsistency)
+        .map(([y, v]) => `${y} 基线 ${pct(v.baseline)} / 最优 ${pct(v.best)}（Δ${pct(v.delta)}）`)
+        .join(' | ')}`,
+    );
+  }
+  if (s.bestByOos) {
+    console.log(
+      `样本外最优（仅披露，不作结论）：${s.bestByOos.trialId} oosCAGR=${pct(s.bestByOos.oosMeanCagr)}（其训练段 ${pct(
+        s.bestByOos.selectionScore,
+      )}）`,
+    );
+  }
+
+  console.log('');
+  console.log('稳定性曲面（核心参数 ±1 档，样本外 CAGR）：');
+  if (result.stability.length === 0) console.log('  （未执行/无邻居）');
+  for (const cell of result.stability) {
+    console.log(
+      `  ${cell.param}=${cell.centerValue} [${cell.verdict}] 中心 ${pct(cell.centerOosCagr)} / 邻域中位 ${pct(
+        cell.neighborMedian,
+      )}` +
+        ` / 下侧跌幅 ${pct(cell.lowerDropPct)} / 上侧跌幅 ${pct(cell.upperDropPct)}:` +
+        ` ${cell.neighbors.map((n) => `${n.value}=${pct(n.oosCagr)}`).join(' ')}`,
+    );
+  }
+
+  console.log('');
+  console.log('披露：');
+  for (const d of s.disclosure) console.log(`  - ${d}`);
+  if (s.topCandidates.length > 0) {
+    console.log('训练段 Top10：');
+    for (const t of s.topCandidates) {
+      console.log(`  ${t.trialId} train=${pct(t.trainMeanCagr)} oos=${pct(t.oosMeanCagr)}`);
+    }
+  }
+}
+
+async function sweepCommand(argv: readonly string[]): Promise<void> {
+  const args = parseSweepArgs(argv);
+  const { runSweep } = await import('./optimize/runner.js');
+  const store = new BacktestStore(args.dbPath);
+  try {
+    const result = await runSweep(
+      {
+        sweepId: args.sweepId,
+        seed: args.seed,
+        mode: args.mode,
+        coarseCount: args.coarseCount,
+        fineCount: args.fineCount,
+        initialCash: args.initialCash,
+        maxMinutes: args.maxMinutes,
+        maxHeapMb: args.maxHeapMb,
+        reportPath: args.reportPath ?? undefined,
+      },
+      store,
+    );
+    printSweepSummary(result);
+    if (result.stoppedReason === 'max-heap') process.exitCode = 2;
+  } finally {
+    store.close();
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv[0] === 'run') {
     await runCommand(argv.slice(1));
+    return;
+  }
+  if (argv[0] === 'sweep') {
+    await sweepCommand(argv.slice(1));
     return;
   }
   const args = parseArgs(argv);
