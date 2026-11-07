@@ -201,6 +201,8 @@ export default function BrokerReconcile() {
   /** 差异查询失败必须显式上报，不能静默显示成「无」（UX-01 同类信任缺陷） */
   const [diffError, setDiffError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  /** I8：CSV 导出进行中（防重复点击） */
+  const [exporting, setExporting] = useState(false);
 
   // ── 补录对话框（T145）──
   const [selected, setSelected] = useState<Map<number, ConfirmItem>>(new Map());
@@ -298,6 +300,39 @@ export default function BrokerReconcile() {
       setDiffError(extractErrorMessage(e, '差异明细加载失败'));
     }
   }, []);
+
+  /**
+   * I8：导出当前分类的差异明细 CSV（PRD_v3 §3.2.1「可筛选 + 可导出」）。
+   *
+   * 导出的是该分类下**全量**明细（后端不分页），文件名取自 Content-Disposition；
+   * 列序与页面表格一致，用户拿到的 CSV 可直接与页面对照。
+   */
+  const exportDiffCsv = async () => {
+    if (!brokerCode || exporting) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const res = await api.get('/broker-reconcile/diff/export', {
+        params: { brokerCode, category },
+        responseType: 'blob',
+      });
+      const blob =
+        res.data instanceof Blob
+          ? res.data
+          : new Blob([res.data as BlobPart], { type: 'text/csv;charset=utf-8' });
+      const disposition = String(
+        (res.headers as unknown as Record<string, string> | undefined)?.['content-disposition'] ?? '',
+      );
+      const filename =
+        /filename="?([^";]+)"?/i.exec(disposition)?.[1] ?? `broker-reconcile-${brokerCode}-${category}.csv`;
+      triggerDownload(blob, filename);
+      setNotice(`已导出「${ATTR_LABELS[category] ?? category}」明细（${diffTotal} 条）`);
+    } catch (e) {
+      setError(extractErrorMessage(e, '导出 CSV 失败'));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // 切换券商：清空上一个券商的状态（报告 / 差异 / 勾选 / 提示），避免旧数据残留
   useEffect(() => {
@@ -1041,20 +1076,31 @@ export default function BrokerReconcile() {
               }}
             >
               <h2 style={subtitleStyle}>差异明细（{diffTotal}）</h2>
-              <select
-                value={category}
-                onChange={(e) => {
-                  setCategory(e.target.value);
-                  setPage(1);
-                }}
-                style={{ fontSize: TYPO.smallSize }}
-              >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {ATTR_LABELS[c] ?? c}
-                  </option>
-                ))}
-              </select>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select
+                  value={category}
+                  onChange={(e) => {
+                    setCategory(e.target.value);
+                    setPage(1);
+                  }}
+                  style={{ fontSize: TYPO.smallSize }}
+                >
+                  {CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {ATTR_LABELS[c] ?? c}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  data-testid="diff-export-csv"
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  onClick={() => void exportDiffCsv()}
+                  disabled={!brokerCode || diffTotal === 0 || exporting}
+                  title="导出当前分类的全部差异明细（CSV，列序与下表一致）"
+                >
+                  {exporting ? '导出中…' : '导出 CSV'}
+                </button>
+              </div>
             </div>
             {category === 'nonTrade' && (
               <p
@@ -1307,6 +1353,18 @@ export default function BrokerReconcile() {
       />
     </div>
   );
+}
+
+/** 浏览器端触发下载（I8）；jsdom 无 createObjectURL 时由测试 stub */
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function SummaryCard({

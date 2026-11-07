@@ -183,6 +183,9 @@ function installApiMock(overrides: ApiOverrides = {}): void {
         return mockResponse(stat);
       case '/signal':
         return mockResponse([]);
+      // F3：今日 Top 5 摘要卡
+      case '/signal/top5':
+        return mockResponse([]);
       case '/admin/system-log':
         return mockResponse([]);
       default:

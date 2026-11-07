@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Dashboard, { DonutChart, isEtf } from '../../src/pages/Dashboard';
@@ -125,6 +125,9 @@ interface ApiOverrides {
   positions?: PositionFixture[];
   summary?: PositionSummaryFixture;
   candidate?: unknown[];
+  /** F3：今日 Top 5 数据与日期来源元信息 */
+  top5?: unknown[];
+  top5Meta?: Record<string, unknown>;
 }
 
 /** 安装 api.get 的分派实现（每个用例自给自足，不依赖其它用例的副作用）*/
@@ -141,6 +144,9 @@ function installApiMock(overrides: ApiOverrides = {}): void {
         return mockResponse(stat);
       case '/signal':
         return mockResponse([]);
+      // F3：概览卡改为「今日 Top 5」（后端强制单日 + 优先级排序）
+      case '/signal/top5':
+        return mockResponse(overrides.top5 ?? [], overrides.top5Meta);
       case '/admin/system-log':
         return mockResponse([]);
       /*
@@ -268,11 +274,11 @@ describe('Dashboard · 双口径 Tab 切换', () => {
     const urls = getMock.mock.calls.map((call) => call[0]);
     expect(urls).toContain('/holding');
     expect(urls).toContain('/asset-stat/latest');
-    expect(urls).toContain('/signal');
+    // F3：概览信号卡固定走「今日 Top 5」单日端点（不再跨交易日取最近 5 条）
+    expect(urls).toContain('/signal/top5');
     expect(urls).not.toContain('/admin/system-log');
 
-    // 信号接口固定带 page_size=5
-    expect(getMock).toHaveBeenCalledWith('/signal', { params: { page_size: 5 } });
+    expect(getMock).toHaveBeenCalledWith('/signal/top5');
     expect(screen.queryByText('最近日志')).not.toBeInTheDocument();
   });
 });
@@ -367,6 +373,70 @@ describe('T79 ⑤ / ⑥ · Dashboard 概览结构', () => {
     await waitFor(() => expect(screen.getAllByTestId('position-card')).toHaveLength(4));
     expect(screen.getByText('持仓明细（4 只）')).toBeInTheDocument();
     expect(screen.getByTestId('holdings-toggle')).toHaveTextContent('收起');
+  });
+});
+
+describe('F3 · 今日 Top 5 摘要卡', () => {
+  beforeEach(() => {
+    useUserStore.setState({ role: 'user', token: null, username: null });
+  });
+
+  it('展示后端排序的前 5 条（排名 / 强度），并写明日期来源', async () => {
+    installApiMock({
+      top5: [
+        {
+          id: 3,
+          asset_code: 'sh600519',
+          plugin_id: 'macd_cross',
+          direction: 'buy',
+          label: '金叉',
+          trade_date: '2026-11-06',
+          strength: 0.92,
+          grade: 'strong',
+        },
+        {
+          id: 8,
+          asset_code: 'sz159915',
+          plugin_id: 'ma_cross',
+          direction: 'hold',
+          label: '观望',
+          trade_date: '2026-11-06',
+          strength: 0.41,
+          // F1：Top 5 允许带中/弱 —— 分级 tag 必须让「不是强档」一眼可辨
+          grade: 'weak',
+        },
+      ],
+      top5Meta: {
+        trade_date: '2026-11-06',
+        trade_date_source: 'signal',
+        latest_quote_date: '2026-11-07',
+        limit: 5,
+      },
+    });
+    renderWithRouter(<Dashboard />);
+
+    expect(await screen.findByText('今日 Top 5')).toBeInTheDocument();
+
+    const note = await screen.findByTestId('dashboard-signal-date-note');
+    expect(note).toHaveTextContent('信号日 2026-11-06（最近有信号日）');
+    expect(note).toHaveTextContent('行情最新 2026-11-07');
+
+    const table = screen.getByRole('table', { name: '今日 Top 5' });
+    const rows = within(table).getAllByRole('row');
+    expect(rows).toHaveLength(3); // 表头 + 2 条信号
+
+    // 排名从 1 起；强度按 0~1 小数渲染为百分比
+    expect(within(rows[1]).getByText('1')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('sh600519')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('92%')).toBeInTheDocument();
+    // 后端已按优先级排序，前端原样展示（不重排）
+    expect(within(rows[2]).getByText('sz159915')).toBeInTheDocument();
+
+    // F1：分级 tag —— 第 1 行「强」，第 2 行「弱」（一眼看出不是强档）
+    const grades = within(table)
+      .getAllByTestId('signal-grade-tag')
+      .map((t) => t.textContent);
+    expect(grades).toEqual(['强', '弱']);
   });
 });
 

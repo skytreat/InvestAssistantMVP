@@ -2,10 +2,19 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
 import { getTodaySignalStats } from '../services/todaySignals.js';
-import { resolveDefaultSignalTradeDate } from '../services/signalService.js';
+import {
+  collapseSignalsByCooldown,
+  getTradeDate,
+  resolveDefaultSignalTradeDate,
+  resolveSignalCooldownBars,
+} from '../services/signalService.js';
+import type { CooldownRowFields } from '../services/signalService.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
+
+/** F3：今日 Top 5 摘要的固定条数（PRD_v3 §4.2「今日 Top 5 摘要」） */
+const TOP_SIGNALS_LIMIT = 5;
 
 /**
  * 策略信号查询 API（T28 + T54）
@@ -90,6 +99,45 @@ export async function registerSignalRoutes(app: FastifyInstance) {
         where.push('direction = ?');
         params.push(q.direction);
       }
+      /**
+       * F1：分级筛选（PRD_v3 §4.2 顶部 tab：全部 / 强 / 中 / 弱 / 已过期）
+       *
+       * - `grade=strong|medium|weak` → 只看该档，并**排除已过期**（过期在「已过期」tab 单独展示）
+       * - `grade=expired` → `expires_at < 今天`（未写过 expires_at 的历史行不算过期）
+       * - 不传 → 保持既有「全部」语义（含过期），供 Dashboard / 其他调用方兼容
+       */
+      if (q.grade) {
+        if (q.grade === 'expired') {
+          where.push('(expires_at IS NOT NULL AND expires_at < ?)');
+          params.push(getTradeDate());
+        } else if (q.grade === 'strong' || q.grade === 'medium' || q.grade === 'weak') {
+          where.push('grade = ?');
+          params.push(q.grade);
+          where.push('(expires_at IS NULL OR expires_at >= ?)');
+          params.push(getTradeDate());
+        } else {
+          return reply
+            .code(400)
+            .send(fail(400, 'PARAM_INVALID', 'grade 只能是 strong / medium / weak / expired'));
+        }
+      }
+
+      /**
+       * F6：**展示层冷却合并去重**（`dedupe=1`）
+       *
+       * `dedupe` 缺省关闭 ⇒ 既有契约（原始行 + 分页计数）不变；
+       * 前端 Signals 页显式传 `dedupe=1`，后端把「同策略+同标的+同方向、
+       * 冷却窗口内重复」的信号合并成一条，并附 `consecutive_days`。
+       *
+       * ⚠️ 合并**只影响展示**：信号生成照旧一条不少，`cooldown_until` 只在这里读判窗口。
+       * ⚠️ 合并必须在**分页前**做（否则 total 与页内条数对不上），
+       *    故该路径一次性取全部过滤行再切页（MVP 信号量级可控）。
+       */
+      const dedupe = q.dedupe === '1' || q.dedupe === 'true';
+      const requestedBars = parseInt(q.cooldown_bars ?? '', 10);
+      const cooldownBars = Number.isFinite(requestedBars)
+        ? Math.min(20, Math.max(1, requestedBars))
+        : resolveSignalCooldownBars();
 
       const whereSql = 'WHERE ' + where.join(' AND ');
       const count = (
@@ -117,24 +165,44 @@ export async function registerSignalRoutes(app: FastifyInstance) {
        *   `Dashboard.tsx` 的「最新信号」卡片此前因本口径**显示的是最早的 5 条**（与卡片标题矛盾），
        *   改后与标题一致。
        */
-      const rows = db
-        .prepare(
-          `SELECT * FROM (
-             SELECT * FROM user_strategy_signal ${whereSql}
-             ORDER BY trade_date DESC, created_at DESC, id DESC
-             LIMIT ? OFFSET ?
-           )
-           ORDER BY trade_date ASC, created_at ASC, id ASC`,
-        )
-        .all(...params, pageSize, (page - 1) * pageSize);
+      let rows: unknown[];
+      let total = count;
+      if (dedupe) {
+        const all = db
+          .prepare(
+            `SELECT * FROM user_strategy_signal ${whereSql}
+             ORDER BY trade_date ASC, created_at ASC, id ASC`,
+          )
+          .all(...params) as Array<CooldownRowFields & Record<string, unknown>>;
+        const collapsed = collapseSignalsByCooldown(all, cooldownBars);
+        total = collapsed.length;
+        // 「最近 N 条 + 输出升序」：第 1 页仍是**最新**的一页（与未合并路径同口径）
+        const end = Math.max(0, total - (page - 1) * pageSize);
+        const start = Math.max(0, total - page * pageSize);
+        rows = collapsed.slice(start, end);
+      } else {
+        rows = db
+          .prepare(
+            `SELECT * FROM (
+               SELECT * FROM user_strategy_signal ${whereSql}
+               ORDER BY trade_date DESC, created_at DESC, id DESC
+               LIMIT ? OFFSET ?
+             )
+             ORDER BY trade_date ASC, created_at ASC, id ASC`,
+          )
+          .all(...params, pageSize, (page - 1) * pageSize);
+      }
 
       reply.send(
         ok(rows, {
-          pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) },
+          pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
           // F 域 P0-1：把「实际生效的交易日 + 来源 + 行情最新日」下发，前端不再自己猜今天
           trade_date: effectiveTradeDate,
           trade_date_source: dateSource,
           latest_quote_date: latestQuoteDate,
+          // F6：展示层冷却合并的窗口根数（前端据此写旁注）
+          cooldown_bars: cooldownBars,
+          display_dedupe: dedupe,
         }),
       );
     } catch (err) {
@@ -187,6 +255,69 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
+  /**
+   * GET /api/signal/top5 —— **今日 Top 5 摘要与优先级**（F3，PRD_v3 §4.2）
+   *
+   * ?trade_date=2026-11-06   指定交易日；缺省 = 最近有信号日 → 最近行情日 → 今天
+   *
+   * 与 `GET /api/signal` 的区别：
+   *   - **强制单日**：只取一个交易日（默认日由后端解析），不跨交易日；
+   *   - **按优先级排序**：`grade` 强 > 中 > 弱 > 未分级，同档 `strength` 降序
+   *     （`strength` 为空排在同档末尾），最后按 `id` 倒序保证确定性；
+   *   - 固定 `LIMIT 5`，供 Dashboard 摘要卡与 Signals 页摘要区共用。
+   *
+   * ⚠️ 未分级行（F1 尚未回填 `grade` 的存量数据）按 strength 排序，
+   *    因此本端点**不依赖 F1 是否已落地**即可工作。
+   */
+  app.get('/api/signal/top5', async (request, reply) => {
+    try {
+      const user = (request as AuthedRequest).user;
+      const q = request.query as Record<string, string | undefined>;
+      let tradeDate: string;
+      let dateSource: 'explicit' | 'signal' | 'quote' | 'today' = 'explicit';
+      let latestQuoteDate: string | null = null;
+      if (q.trade_date) {
+        tradeDate = q.trade_date;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
+          return reply.code(400).send(fail(400, 'PARAM_INVALID', 'trade_date 格式应为 YYYY-MM-DD'));
+        }
+      } else {
+        const resolved = await resolveDefaultSignalTradeDate(user.sub);
+        tradeDate = resolved.tradeDate;
+        dateSource = resolved.source;
+        latestQuoteDate = resolved.latestQuoteDate;
+      }
+
+      const rows = ConfigStore.getInstance()
+        .db.prepare(
+          `SELECT * FROM user_strategy_signal
+            WHERE user_id = ? AND is_deleted = 0 AND trade_date = ?
+            ORDER BY CASE grade
+                       WHEN 'strong' THEN 0
+                       WHEN 'medium' THEN 1
+                       WHEN 'weak' THEN 2
+                       ELSE 3
+                     END,
+                     strength IS NULL,
+                     strength DESC,
+                     id DESC
+            LIMIT ?`,
+        )
+        .all(user.sub, tradeDate, TOP_SIGNALS_LIMIT);
+
+      return reply.send(
+        ok(rows, {
+          trade_date: tradeDate,
+          trade_date_source: dateSource,
+          latest_quote_date: latestQuoteDate,
+          limit: TOP_SIGNALS_LIMIT,
+        }),
+      );
+    } catch (err) {
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
+  });
+
   // T134（V3.4）信号采纳/忽略标注
   app.patch('/api/signal/:id/adopt', async (request, reply) => {
     const user = (request as AuthedRequest).user;

@@ -6,13 +6,14 @@ import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
-import { SignalDirectionPill, SignalLabelTag } from '../components/SignalPills';
+import { SignalDirectionPill, SignalGradeTag, SignalLabelTag } from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
   cardStyle,
   titleStyle,
+  cardTitleStyle,
   inputStyle,
   buttonStyle,
   tableStyle,
@@ -88,8 +89,42 @@ interface SignalRow {
   label?: string;
   /** 信号强度（**0~1 的小数**，可空 —— 见 `components/SignalStrength.tsx`）*/
   strength?: number | null;
+  /** F1：分级（strong / medium / weak；历史行/无强度行为 null）*/
+  grade?: string | null;
+  /** F1：有效期（YYYY-MM-DD；过期信号置灰不删）*/
+  expires_at?: string | null;
+  /**
+   * F6：同一策略+标的+方向在冷却窗口内被合并的「连续第 N 日选中」计数
+   *
+   * 仅 `dedupe=1` 时由后端下发；1 = 未被合并。
+   */
+  consecutive_days?: number;
   trade_date?: string;
   [key: string]: unknown;
+}
+
+/** F1：分级 tab（PRD_v3 §4.2「全部 / 强 / 中 / 弱 / 已过期」）*/
+type GradeTab = 'all' | 'strong' | 'medium' | 'weak' | 'expired';
+
+/** tab 文案（顺序即渲染顺序）*/
+const GRADE_TABS: Array<{ key: GradeTab; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'strong', label: '强' },
+  { key: 'medium', label: '中' },
+  { key: 'weak', label: '弱' },
+  { key: 'expired', label: '已过期' },
+];
+
+/** 东八区今天（YYYY-MM-DD）—— 与后端 `getTradeDate()` 同口径，用于过期判断 */
+function todayInShanghai(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** `date` 距今天的天数（仅用于「生成于 X 天前」文案，非法日期返回 null）*/
+function daysSince(date: string, today: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const diff = Date.parse(`${today}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(diff) ? Math.floor(diff / 86_400_000) : null;
 }
 
 /** 插件类别 → 中文（`monitor` = 监控类 / `filter` = 筛选类，Requirements §5.5）*/
@@ -126,6 +161,10 @@ export default function Signals() {
   const [assetCode, setAssetCode] = useState<string>('');
   const [pluginId, setPluginId] = useState<string>('');
   const [direction, setDirection] = useState<string>('');
+  /**
+   * F1：分级 tab，**默认只看强**（用户口径：默认只显强；全部/中/弱/已过期按需切换）
+   */
+  const [gradeTab, setGradeTab] = useState<GradeTab>('strong');
 
   // ── 数据与分页 ──────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
@@ -142,6 +181,8 @@ export default function Signals() {
   const [resolvedSource, setResolvedSource] = useState<DateSource | null>(null);
   /** 行情最新日（仅在后端走「最近行情日」兜底时下发，用于空态文案）*/
   const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
+  /** F6：冷却展示合并窗口（后端下发；仅用于旁注文案）*/
+  const [cooldownBars, setCooldownBars] = useState<number>(3);
 
   /**
    * 行情最新日（独立取一次，仅用于「当前展示日 vs 行情最新日」旁注）
@@ -152,6 +193,14 @@ export default function Signals() {
    *    （与 Dashboard / Admin 同款），只做展示，不参与任何筛选或默认日期解析。
    */
   const [marketQuoteDate, setMarketQuoteDate] = useState<string | null>(null);
+
+  // ── F3：今日 Top 5 摘要区 ────────────────────────────────────────
+  /** 摘要区数据（后端强制单日 + 按 强>中>弱>未分级 + 强度降序 的前 5 条）*/
+  const [top5Rows, setTop5Rows] = useState<SignalRow[]>([]);
+  const [top5Loading, setTop5Loading] = useState(false);
+  /** 摘要区实际交易日与来源（后端解析；摘要失败时静默降级，不影响主列表）*/
+  const [top5TradeDate, setTop5TradeDate] = useState<string | null>(null);
+  const [top5Source, setTop5Source] = useState<DateSource>('explicit');
 
   // ── V3.8 T149：信号生命周期操作（采纳/忽略/关联交易）────────────────
   const [actMsg, setActMsg] = useState<string | null>(null);
@@ -191,6 +240,38 @@ export default function Signals() {
   };
 
   /**
+   * 拉取「今日 Top 5」摘要（F3）
+   *
+   * `date` 为 null 时由后端解析默认日（最近有信号日 → 最近行情日 → 今天）。
+   * ⚠️ 摘要区失败只做**静默降级**（清空摘要），不覆盖主列表的错误态。
+   */
+  const fetchTop5 = async (date: string | null) => {
+    setTop5Loading(true);
+    try {
+      const res = date
+        ? await api.get('/signal/top5', { params: { trade_date: date } })
+        : await api.get('/signal/top5');
+      if (isOkEnvelope(res.data)) {
+        setTop5Rows((res.data.data ?? []) as SignalRow[]);
+        const meta = res.data as unknown as {
+          trade_date?: string | null;
+          trade_date_source?: DateSource;
+        };
+        setTop5TradeDate(
+          typeof meta.trade_date === 'string' ? meta.trade_date : date,
+        );
+        setTop5Source(meta.trade_date_source ?? 'explicit');
+      } else {
+        setTop5Rows([]);
+      }
+    } catch {
+      setTop5Rows([]);
+    } finally {
+      setTop5Loading(false);
+    }
+  };
+
+  /**
    * 拉取信号
    *
    * @param targetPage 目标页码（1 起）
@@ -210,6 +291,10 @@ export default function Signals() {
       const plugin = pluginId.trim();
       if (plugin) params.plugin_id = plugin;
       if (direction) params.direction = direction;
+      // F1：分级 tab 直接下推后端（避免前端只过滤当前页导致分页错乱）
+      if (gradeTab !== 'all') params.grade = gradeTab;
+      // F6：展示层冷却合并去重（同策略+标的+方向窗口内合并，只影响展示，不影响生成）
+      params.dedupe = 1;
 
       const res = await api.get('/signal', { params });
       if (isOkEnvelope(res.data)) {
@@ -222,11 +307,21 @@ export default function Signals() {
           trade_date?: string | null;
           trade_date_source?: DateSource;
           latest_quote_date?: string | null;
+          cooldown_bars?: number;
         };
         const source = meta.trade_date_source ?? 'explicit';
         setResolvedSource(source);
         setResolvedDate(source === 'explicit' ? null : (meta.trade_date ?? null));
         setLatestQuoteDate(typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null);
+        if (typeof meta.cooldown_bars === 'number' && meta.cooldown_bars >= 1) {
+          setCooldownBars(meta.cooldown_bars);
+        }
+        /*
+         * F3：摘要区跟随主列表的展示日 ——
+         * 用户显式选了单日 → 用该日；只选区间/默认视角 → 用后端解析出的交易日；
+         * 区间模式（source=explicit 且无单日）→ 传 null，由后端按默认口径解析。
+         */
+        void fetchTop5(tradeDate || (meta.trade_date ?? null));
       } else {
         setError(res.data.message ?? '请求失败');
       }
@@ -269,7 +364,15 @@ export default function Signals() {
    * ⚠️ 指纹比对放在 **timer 回调内** —— 这样「点【查询】按钮」先把指纹写进去，
    *    300ms 后到期的防抖就会自己跳过，**不会重复发两次请求**。
    */
-  const filterKey = JSON.stringify([tradeDate, startDate, endDate, assetCode, pluginId, direction]);
+  const filterKey = JSON.stringify([
+    tradeDate,
+    startDate,
+    endDate,
+    assetCode,
+    pluginId,
+    direction,
+    gradeTab,
+  ]);
   const lastQueriedFilterKey = useRef<string>(filterKey);
 
   useEffect(() => {
@@ -319,10 +422,23 @@ export default function Signals() {
   const dateSourceLabel =
     resolvedSource === 'signal' ? '最近有信号日' : resolvedSource === 'quote' ? '行情最新日' : '兜底交易日';
 
+  /** 摘要区的日期来源标签（显式筛选时是「指定日期」，故比主列表多一档）*/
+  const top5SourceLabel =
+    top5Source === 'signal'
+      ? '最近有信号日'
+      : top5Source === 'quote'
+        ? '行情最新日'
+        : top5Source === 'today'
+          ? '兜底交易日'
+          : '指定日期';
+
   /** 列表里是否有「非当前展示日」的行（决定是否显示灰显说明）*/
   const hasOtherDayRows =
     resolvedDate !== null &&
     rows.some((r) => typeof r.trade_date === 'string' && r.trade_date !== resolvedDate);
+
+  /** F1：东八区今天，用于判断 `expires_at` 是否已过期（过期置灰不删）*/
+  const today = todayInShanghai();
 
   const filterLabelStyle: React.CSSProperties = {
     fontSize: TYPO.bodySize,
@@ -446,7 +562,134 @@ export default function Signals() {
         </button>
       </div>
 
+      {/*
+        F1：分级 tab（PRD_v3 §4.2）
+        ⚠️ **默认只看强**（用户口径）；切 tab 走防抖即时重查，并回到第 1 页。
+      */}
+      <div
+        role="group"
+        aria-label="信号分级筛选"
+        data-testid="signals-grade-tabs"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+      >
+        <span style={filterLabelStyle}>分级</span>
+        {GRADE_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            aria-pressed={gradeTab === tab.key}
+            data-testid={`signals-grade-tab-${tab.key}`}
+            onClick={() => setGradeTab(tab.key)}
+            style={{
+              ...buttonStyle,
+              background: gradeTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
+              color: gradeTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
+          默认只看强信号；过期信号置灰不删
+        </span>
+      </div>
+
       {error && <div style={errorStyle}>{error}</div>}
+
+      {/* F3：今日 Top 5 摘要区（与主列表同屏，先回答「哪几条最值得看」） */}
+      <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
+        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>
+          今日 Top 5 摘要
+        </div>
+        {top5TradeDate ? (
+          <div
+            data-testid="signals-top5-date-note"
+            style={{
+              fontSize: TYPO.smallSize,
+              color: COLORS.neutral,
+              marginTop: SPACING.gapTight,
+              marginBottom: SPACING.gapBase,
+            }}
+          >
+            {`摘要交易日 ${top5TradeDate}（${top5SourceLabel}）`}
+          </div>
+        ) : null}
+        {top5Loading ? (
+          <Spinner />
+        ) : top5Rows.length === 0 ? (
+          <div
+            data-testid="signals-top5-empty"
+            style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}
+          >
+            该交易日暂无信号
+          </div>
+        ) : (
+          <ScrollableTable label="今日 Top 5 摘要表">
+            <table style={tableStyle} aria-label="今日 Top 5 摘要">
+              <thead>
+                <tr>
+                  <th scope="col" style={thStyle}>
+                    排名
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标的代码
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    策略
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    方向
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    分级
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    强度
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标签
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {top5Rows.map((row, i) => {
+                  const code = assetCodeOf(row);
+                  return (
+                    <tr key={typeof row.id === 'number' ? `top5-${row.id}` : `top5-${i}`}>
+                      <td style={thTdStyle}>{i + 1}</td>
+                      <td style={thTdStyle}>
+                        <code>{code}</code>
+                      </td>
+                      <td style={thTdStyle}>
+                        <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalDirectionPill
+                          direction={typeof row.direction === 'string' ? row.direction : 'hold'}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        {/* F1：Top 5 可含中/弱，用分级 tag 保证「一眼看出不是强档」 */}
+                        <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalStrength
+                          value={typeof row.strength === 'number' ? row.strength : null}
+                          label={`${code} 信号强度`}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollableTable>
+        )}
+      </div>
+
       {/* V3.8 T149：操作反馈（采纳/忽略/关联） */}
       {actMsg && (
         <div
@@ -540,6 +783,19 @@ export default function Signals() {
               </div>
             ) : null}
             {/*
+              F6：冷却旁注 —— 明示「合并只是展示层」，信号生成/交易链路一条不少
+            */}
+            <div
+              data-testid="signals-cooldown-note"
+              style={{
+                fontSize: TYPO.smallSize,
+                color: COLORS.textMuted,
+                marginBottom: SPACING.gapTight,
+              }}
+            >
+              {`冷却 ${cooldownBars} 根 K 线内，同策略 + 同标的 + 同方向的重复信号已合并为一条（仅展示层去重，不影响信号生成与交易链路）`}
+            </div>
+            {/*
               表格用 `ScrollableTable` 包一层 —— 表格在**自己内部**横向滚动，
               不会把文档撑宽（G3.5 / G4.6 的 375px 无横向溢出判据）。
             */}
@@ -555,6 +811,9 @@ export default function Signals() {
                     </th>
                     <th scope="col" style={thStyle}>
                       方向
+                    </th>
+                    <th scope="col" style={thStyle}>
+                      分级
                     </th>
                     <th scope="col" style={thStyle}>
                       强度
@@ -588,14 +847,30 @@ export default function Signals() {
                       resolvedDate !== null &&
                       typeof row.trade_date === 'string' &&
                       row.trade_date !== resolvedDate;
+                    /**
+                     * F1：过期判断 —— `expires_at < 今天` 即过期。
+                     * **置灰不删**：行照常渲染，标注「生成于 X 天前」，让用户知道它失效了。
+                     */
+                    const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null;
+                    const isExpired = expiresAt !== null && expiresAt < today;
+                    const generatedDaysAgo =
+                      isExpired && typeof row.trade_date === 'string'
+                        ? daysSince(row.trade_date, today)
+                        : null;
+                    const muted = isOtherDay || isExpired;
                     return (
                       <tr
                         key={typeof row.id === 'number' ? row.id : i}
-                        style={isOtherDay ? { color: COLORS.textMuted } : undefined}
+                        data-testid={isExpired ? 'signals-row-expired' : undefined}
+                        style={
+                          muted ? { color: COLORS.textMuted, opacity: isExpired ? 0.6 : 1 } : undefined
+                        }
                         title={
-                          isOtherDay
-                            ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
-                            : undefined
+                          isExpired
+                            ? `已过期（有效期至 ${expiresAt}）`
+                            : isOtherDay
+                              ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
+                              : undefined
                         }
                       >
                         <td style={thTdStyle}>
@@ -616,6 +891,9 @@ export default function Signals() {
                           />
                         </td>
                         <td style={thTdStyle}>
+                          <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
+                        </td>
+                        <td style={thTdStyle}>
                           <SignalStrength
                             value={typeof row.strength === 'number' ? row.strength : null}
                             label={`${code} 信号强度`}
@@ -623,9 +901,35 @@ export default function Signals() {
                         </td>
                         <td style={thTdStyle}>
                           <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+                          {/* F6：冷却窗口内被合并 → 标注「连续第 N 日选中」 */}
+                          {typeof row.consecutive_days === 'number' && row.consecutive_days >= 2 ? (
+                            <span
+                              data-testid="signals-consecutive-count"
+                              style={{
+                                display: 'block',
+                                fontSize: TYPO.captionSize,
+                                color: COLORS.textMuted,
+                              }}
+                            >
+                              {`连续第 ${row.consecutive_days} 日选中`}
+                            </span>
+                          ) : null}
                         </td>
                         <td style={thTdStyle}>
                           {typeof row.trade_date === 'string' ? row.trade_date : '--'}
+                          {/* F1：过期行标注「生成于 X 天前」（置灰不删，信息不丢） */}
+                          {generatedDaysAgo !== null ? (
+                            <span
+                              data-testid="signals-expired-age"
+                              style={{
+                                display: 'block',
+                                fontSize: TYPO.captionSize,
+                                color: COLORS.textMuted,
+                              }}
+                            >
+                              生成于 {generatedDaysAgo} 天前
+                            </span>
+                          ) : null}
                         </td>
                         {/* V3.8 T149：采纳/忽略/关联交易（过期信号仍可标注，标灰由后端 T134 的 expires_at 承担） */}
                         <td style={thTdStyle}>
