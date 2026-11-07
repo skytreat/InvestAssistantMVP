@@ -76,6 +76,12 @@ export interface BacktestRequest {
   rules?: Partial<TradeRules>;
   suspension?: SuspensionOptions;
   benchmarkSymbol?: string;
+  /**
+   * 本次实际生效的池子口径（M1：由 `loadUniverseProvider` 入参决定）。
+   *
+   * **不是策略参数**：策略从不读取，仅作为审计元数据写入 `bt_run.universe_params_json`。
+   */
+  universeParams?: { divisor: number; topN: number };
 }
 
 /** 单日决策留痕（前视探针逐条比对它） */
@@ -116,6 +122,11 @@ export interface BacktestResult {
       fallbackPoolMemberTotal: number;
       fallbackPoolMemberMax: number;
     };
+    /**
+     * 本次实际生效的池子口径（审计元数据；策略参数里没有 `divisor/topN`）。
+     * 调用方未提供时为 `undefined`（如合成数据的单测）。
+     */
+    universeParams?: { divisor: number; topN: number };
   };
   equity: EquityPoint[];
   trades: Fill[];
@@ -589,6 +600,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       rules,
       suspension,
       universeStats: universeStats.days > 0 ? universeStats : undefined,
+      universeParams: request.universeParams,
     },
     equity,
     trades,

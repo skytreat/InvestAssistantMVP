@@ -33,12 +33,14 @@ import { CANDIDATE_TOP_ROWS, buildCandidatePool, selectTargets } from './candida
 import { evaluateCandidate, type CandidateMetrics, type FilterParams } from './filters.js';
 import { evaluateWeakPeriodFromContext, type WeakPeriodState } from './weakPeriod.js';
 
-/** 策略参数（默认值全部来自 v5.2 L158-L195） */
+/**
+ * 策略参数（默认值全部来自 v5.2 L158-L195）
+ *
+ * ⚠️ 不含 `divisor` / `topN`：池子归 **universe 层**（M1 分层），由
+ * `loadUniverseProvider` 的入参决定，策略从不读取。它们只作为审计元数据记入
+ * `bt_run.universe_params_json`，不是可调参数（避免出现第二个真值源）。
+ */
 export interface WufuRotationParams extends FilterParams {
-  /** 流动性阈值除数（M1 用，这里仅透传/文档） */
-  divisor: number;
-  /** 动态池规模（M1 用，这里仅透传/文档） */
-  topN: number;
   holdingsNum: number;
   scoreThresholdRatio: number;
   maxWeakDays: number;
@@ -47,8 +49,6 @@ export interface WufuRotationParams extends FilterParams {
 }
 
 export const WUFU_ROTATION_DEFAULTS: WufuRotationParams = {
-  divisor: 20000,
-  topN: 300,
   holdingsNum: 1,
   lookbackDays: 25,
   minScore: 0,
@@ -68,31 +68,14 @@ export const WUFU_ROTATION_DEFAULTS: WufuRotationParams = {
 /** 参数 schema（沿用 `pluginEngine.ParamField`） */
 export const WUFU_ROTATION_PARAM_SCHEMA: ParamField[] = [
   {
-    key: 'divisor',
-    label: '流动性阈值除数',
-    type: 'number',
-    default: WUFU_ROTATION_DEFAULTS.divisor,
-    min: 1,
-    step: 100,
-    description: '全市场 ETF 日均成交额 ÷ divisor = 流动性门槛（M1 时点池使用，本策略仅透传）',
-  },
-  {
-    key: 'topN',
-    label: '动态池规模',
-    type: 'integer',
-    default: WUFU_ROTATION_DEFAULTS.topN,
-    min: 1,
-    max: 5000,
-    step: 1,
-    description: '动态时点池按成交额取前 N（M1 使用，本策略仅透传）',
-  },
-  {
     key: 'holdingsNum',
     label: '目标持仓数',
     type: 'integer',
     default: WUFU_ROTATION_DEFAULTS.holdingsNum,
     min: 1,
-    max: 10,
+    // 候选阈值取候选池第 holdingsNum 名（candidate.ts: `top10[holdingsNum - 1]`），
+    // 故持仓数不能超过候选行数；由常量推导，避免两处字面量各自漂移。
+    max: CANDIDATE_TOP_ROWS,
     step: 1,
     description: 'v5.2 `holdings_num`；1 = 全仓单只',
   },
@@ -244,8 +227,6 @@ function toNumber(value: unknown, fallback: number): number {
 export function resolveWufuRotationParams(raw: Readonly<Record<string, unknown>>): WufuRotationParams {
   const d = WUFU_ROTATION_DEFAULTS;
   return {
-    divisor: toNumber(raw.divisor, d.divisor),
-    topN: toNumber(raw.topN, d.topN),
     holdingsNum: Math.max(1, Math.trunc(toNumber(raw.holdingsNum, d.holdingsNum))),
     lookbackDays: Math.max(2, Math.trunc(toNumber(raw.lookbackDays, d.lookbackDays))),
     minScore: toNumber(raw.minScore, d.minScore),

@@ -6,8 +6,11 @@
  * - **连续型**：以固定步长离散化（如 `stopLossThreshold` 0.80~1.00 step 0.02），
  *   相邻两档即"稳定性邻域"的定义单元。
  *
- * 固定不搜的参数（`divisor/topN/minScore/maxScore/defensiveEtf`）来自 M1/M3 的
- * 口径锁定：它们决定**时点池**或**保护性边界**，不属于策略择时参数。
+ * 固定不搜的参数（`minScore/maxScore/defensiveEtf`）来自 M3 的口径锁定：
+ * 它们是**保护性边界**，不属于策略择时参数。
+ *
+ * ⚠️ `divisor` / `topN` **不在策略参数里**（池子归 universe 层，M1 分层），
+ * 故也不在此列；sweep 实际生效值由 `loadSweepData` 决定并记入 `bt_run.universe_params_json`。
  *
  * 确定性：`seed` 只由 `--seed`（整数）+ 试次序号决定，与 `sweep_id` 无关
  * ⇒ 同一个 `--seed` 重跑任何 sweep 都会得到**逐位一致**的参数序列。
@@ -26,10 +29,8 @@ export interface ParamSpec {
   core: boolean;
 }
 
-/** 固定参数（不参与搜索；锁 M1/M3 口径） */
+/** 固定参数（不参与搜索；锁 M3 口径） */
 export const FIXED_PARAMS = {
-  divisor: 20000,
-  topN: 300,
   minScore: 0,
   maxScore: 5,
   defensiveEtf: 'sh511880',
