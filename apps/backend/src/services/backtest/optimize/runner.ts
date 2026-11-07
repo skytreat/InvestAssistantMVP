@@ -207,6 +207,19 @@ export async function runSweep(options: SweepOptions, store: BacktestStore): Pro
   const startedAt = Date.now();
   const maxHeapMb = options.maxHeapMb ?? 2500;
 
+  // 「每 5 组强制 GC」依赖 `--expose-gc`。缺 flag 时 `globalThis.gc` 为 undefined，
+  // 该安全阀会**静默失效**（实测：RSS 以 +4.7MB/组线性爬升，比有 GC 时快 5 倍以上），
+  // 所以这里必须显式告知，而不是悄悄跳过。
+  const gcFn = (globalThis as { gc?: () => void }).gc;
+  if (typeof gcFn === 'function') {
+    log('强制 GC：已启用（--expose-gc），每 5 组执行一次 global.gc()');
+  } else {
+    log(
+      '⚠️ WARN 强制 GC 未启用：globalThis.gc 不可用（缺 --expose-gc），' +
+        'RSS 将随 V8 自然节奏线性爬升，可能提前触发 max-heap 看门狗',
+    );
+  }
+
   log(
     `sweep=${options.sweepId} seed=${options.seed} mode=${options.mode} ` +
       `coarse=${options.coarseCount} fine=${options.fineCount} 全网格=${totalCombinations()}`,
@@ -264,9 +277,8 @@ export async function runSweep(options: SweepOptions, store: BacktestStore): Pro
     const done: TrialOutcome[] = [];
     for (let i = 0; i < specs.length; i++) {
       // 每 5 组强制一次 GC：引擎每组的净值/成交数组体量不小，默认堆增长会把 RSS 推到红线
-      // （实测无 GC 时约 +1 MB/组，75 组就从 1975 MB 爬到 2501 MB）
-      const gc = (globalThis as { gc?: () => void }).gc;
-      if (gc && i % 5 === 0) gc();
+      // （实测无 GC 时约 +4.7 MB/组；正式 200 组跑里首段约 +6.5 MB/组，直到 major GC 自己触发才回落）
+      if (gcFn && i % 5 === 0) gcFn();
       if (checkStop()) {
         log(`⛔ ${label} 提前停止（${stoppedReason}，已完成 ${i}/${specs.length}）`);
         break;
