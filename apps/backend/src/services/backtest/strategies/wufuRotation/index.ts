@@ -30,7 +30,14 @@ import {
   type TargetSet,
 } from '../../strategy/types.js';
 import { CANDIDATE_TOP_ROWS, buildCandidatePool, selectTargets } from './candidate.js';
-import { evaluateCandidate, type CandidateMetrics, type FilterParams } from './filters.js';
+import {
+  evaluateCandidate,
+  momentumFilteredWindow,
+  momentumRawWindow,
+  selectValidVolumeWindow,
+  type CandidateMetrics,
+  type FilterParams,
+} from './filters.js';
 import { evaluateWeakPeriodFromContext, type WeakPeriodState } from './weakPeriod.js';
 
 /**
@@ -271,14 +278,25 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
   const poolSet = new Set(pool);
 
   // ── 3) 逐票打分 + 过滤（一次批量取序列，避免逐票往返） ──
-  const closesBySymbol = ctx.seriesBatch(pool, p.lookbackDays + 1, 'close');
-  const volumesBySymbol = ctx.seriesBatch(pool, p.volumeLookback + 1, 'volume');
+  // v5.2 L890-L895：历史序列按 `valid_mask` 剔除零成交量日（停牌），由更早交易日补足。
+  // 原版先取 `safe_lookback`（默认 65）根日历 bar，过滤后保留最后 45 个有效点。
+  const rawWindow = momentumRawWindow(p);
+  const keepWindow = momentumFilteredWindow(p);
+  const rawClosesBySymbol = ctx.seriesBatch(pool, rawWindow, 'close');
+  const rawVolumesBySymbol = ctx.seriesBatch(pool, rawWindow, 'volume');
   const passed: CandidateMetrics[] = [];
   for (const symbol of pool) {
+    const closes = rawClosesBySymbol.get(symbol) ?? [];
+    const volumes = rawVolumesBySymbol.get(symbol) ?? [];
+    // 缺成交量数据（测试桩 / 坏数据）时不强行过滤，避免整池因空数组被判死
+    const window =
+      volumes.length === closes.length
+        ? selectValidVolumeWindow(closes, volumes, keepWindow)
+        : { closes, volumes };
     const evaluation = evaluateCandidate({
       symbol,
-      closes: closesBySymbol.get(symbol) ?? [],
-      volumes: volumesBySymbol.get(symbol) ?? [],
+      closes: window.closes,
+      volumes: window.volumes,
       paused: ctx.isPaused(symbol),
       weak,
       params: p,
@@ -365,7 +383,8 @@ export function createWufuRotationStrategy(): Strategy {
     version: '5.2.0-m3',
     name: '五福轮动 ETF v5.2（日线主干）',
     paramSchema: WUFU_ROTATION_PARAM_SCHEMA,
-    warmupDays: WUFU_ROTATION_DEFAULTS.lookbackDays + 1,
+    // v5.2 `safe_lookback`：默认 65 根日历 bar（过滤零量日后仍能凑出 45 个有效点）
+    warmupDays: momentumRawWindow(WUFU_ROTATION_DEFAULTS),
     priceMode: 'open',
 
     init() {

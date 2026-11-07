@@ -10,11 +10,10 @@
  * 6. 正常期 `r2 > r2Threshold`（L735，`enable_r2_filter and not is_weak`）
  * 7. 走弱期 `close > MA(maLookback) * maThreshold`（L737-L743，`enable_ma_filter and is_weak`）
  *
- * 与 v5.2 的已知差异（已登记在 M3 报告）：
- * - 历史序列**不做**零量日剔除（v5.2 用 `valid_mask` 过滤历史零量 bar；日线档只有 `asOf` 的停牌判定）。
- *
- * ⚠️ 短期风控已于「第一批」修正为 `<`，与 v5.2 L732 `min(day_ratios) < g.loss` 一致
- * （恰好等于阈值的涨跌幅**保留**，不再淘汰）。
+ * 与 v5.2 的对齐状态：
+ * - 历史序列按 `valid_mask` 剔除零量日（见 `selectValidVolumeWindow` / `momentumRawWindow`）；
+ * - 短期风控边界为 `<`（v5.2 L732 `min(day_ratios) < g.loss`），恰好等于阈值的涨跌幅**保留**。
+ * 以上两处均已与 v5.2 一致，不再作为「已知差异」登记。
  */
 import { calculateMomentumScore } from './momentum.js';
 
@@ -62,6 +61,49 @@ export function meanOf(values: readonly number[]): number {
   return sum / values.length;
 }
 
+/**
+ * v5.2 `safe_lookback`（L890）：为「剔除零量日」预留的**日历 bar 数**。
+ *
+ * 原版 = `max(lookbackDays, volumeLookback, maLookback) + 20`（留白）`+ 20`（再留白）
+ * ⇒ 默认 25/5/10 → **65**。引擎按这个数量预热，才能在停牌日后仍有 45 个有效点。
+ */
+export function momentumRawWindow(params: FilterParams): number {
+  return Math.max(params.lookbackDays, params.volumeLookback, params.maLookback) + 40;
+}
+
+/**
+ * v5.2 `lookback`（L891）：剔除零量日后**保留**的窗口长度 = `max(...) + 20`（默认 45）。
+ */
+export function momentumFilteredWindow(params: FilterParams): number {
+  return Math.max(params.lookbackDays, params.volumeLookback, params.maLookback) + 20;
+}
+
+/**
+ * v5.2 `valid_mask = (volume > 0) & (~volume.isna())`（L890-L895）：
+ * 把**零成交量日（停牌）**从历史序列中剔除，再保留最后 `keep` 个有效点。
+ *
+ * 调用前提：`closes` 与 `volumes` 按下标一一对应（同一批 bar）。
+ * 返回的 `closes` / `volumes` 仍按时间升序，最后一个是 asOf。
+ */
+export function selectValidVolumeWindow(
+  closes: readonly number[],
+  volumes: readonly number[],
+  keep: number,
+): { closes: number[]; volumes: number[] } {
+  const outCloses: number[] = [];
+  const outVolumes: number[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    const vol = volumes[i];
+    if (!(vol > 0)) continue; // NaN / 0 / 负数（停牌或坏数据）
+    outCloses.push(closes[i]);
+    outVolumes.push(vol);
+  }
+  if (keep > 0 && outCloses.length > keep) {
+    return { closes: outCloses.slice(-keep), volumes: outVolumes.slice(-keep) };
+  }
+  return { closes: outCloses, volumes: outVolumes };
+}
+
 /** `closes` 末尾 n 个的均值；不足 n 返回 null（v5.2 L739-L743：不足则 `passed_ma=False`） */
 export function movingAverageOfLast(closes: readonly number[], n: number): number | null {
   if (closes.length < n || n <= 0) return null;
@@ -98,9 +140,9 @@ export function volumeRatioFromSeries(series: readonly number[], lookback: numbe
 
 export interface EvaluateCandidateInput {
   symbol: string;
-  /** 截止 asOf 的收盘（长度 ≥ lookbackDays + 1） */
+  /** 已剔除零成交量日的收盘序列（长度 ≥ lookbackDays + 1，末位 = asOf） */
   closes: readonly number[];
-  /** 截止 asOf 的成交量（长度 ≥ volumeLookback + 1） */
+  /** 与 `closes` 对齐的成交量序列（同样已剔除零量日） */
   volumes: readonly number[];
   paused: boolean;
   /** 走弱期决定用 R² 还是 MA 过滤 */

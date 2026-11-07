@@ -18,7 +18,10 @@ import { createWufuRotationStrategy } from '../../src/services/backtest/strategi
 import { calculateMomentumScore } from '../../src/services/backtest/strategies/wufuRotation/momentum.js';
 import {
   evaluateCandidate,
+  momentumFilteredWindow,
+  momentumRawWindow,
   movingAverageOfLast,
+  selectValidVolumeWindow,
   volumeRatioFromSeries,
   type FilterParams,
 } from '../../src/services/backtest/strategies/wufuRotation/filters.js';
@@ -672,6 +675,22 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     expect(ts.exitReasons?.['sh512880']).toBe('weak-period-exit');
   });
 
+  it('② 历史零量日剔除：停牌日由更早交易日补足，打分与无停牌序列一致', () => {
+    // 27 根原始 bar：首日 volume=0（模拟停牌），过滤后恰好还原 UP_26
+    const rawCloses = [UP_26[0], ...UP_26];
+    const rawVolumes = [0, ...Array<number>(UP_26.length).fill(1_000_000)];
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: rawCloses },
+      volumes: { sh512880: rawVolumes },
+      indexCloses: risingIndex(),
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
+    expect(ts.targets[0].score).toBeCloseTo(1.718282, 5);
+  });
+
   it('defensive-fallback：防御 ETF 被换成股票', () => {
     const ctx = makeCtx({
       universe: { fixed: ['sh510300'] },
@@ -689,6 +708,22 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     const ts = decideWith(ctx);
     expect(ts.targets.map((t) => t.symbol)).toEqual(['sh510300']);
     expect(ts.exitReasons?.[DEFENSIVE]).toBe('defensive-fallback');
+  });
+});
+
+describe('M3 wufu · ② valid_mask 与窗口常量', () => {
+  it('剔除 volume=0 / NaN 的 bar，并保留最后 keep 个有效点', () => {
+    const closes = [1, 2, 3, 4, 5, 6];
+    const volumes = [1, 0, 1, Number.NaN, 1, 1];
+    expect(selectValidVolumeWindow(closes, volumes, 3)).toEqual({
+      closes: [3, 5, 6],
+      volumes: [1, 1, 1],
+    });
+  });
+
+  it('窗口常量与 v5.2 safe_lookback / lookback 一致（默认 65 / 45）', () => {
+    expect(momentumRawWindow(DEFAULT_FILTER_PARAMS)).toBe(65);
+    expect(momentumFilteredWindow(DEFAULT_FILTER_PARAMS)).toBe(45);
   });
 });
 
