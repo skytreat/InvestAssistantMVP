@@ -419,3 +419,132 @@ export async function assignSignalGrades(
   tx();
   return result;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F6 · 冷却（**仅展示层合并去重**，不改生成/交易链路，也不改回测口径）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 冷却窗口默认根数（PRD_v3 §4.1「冷却 [3] 根 K 线内不重复」）
+ *
+ * 可通过 `SIGNAL_COOLDOWN_BARS` 覆盖（1~20），也可由 `GET /api/signal`
+ * 的 `cooldown_bars` 查询参数临时覆盖（排查/演示用）。
+ */
+const DEFAULT_COOLDOWN_BARS = 3;
+const MAX_COOLDOWN_BARS = 20;
+
+/** 读取冷却窗口根数（**惰性读 env**，避免模块顶层求值——CI coverage 陷阱）*/
+export function resolveSignalCooldownBars(): number {
+  const n = Number(process.env.SIGNAL_COOLDOWN_BARS);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_COOLDOWN_BARS;
+  return Math.min(MAX_COOLDOWN_BARS, Math.floor(n));
+}
+
+/** `YYYY-MM-DD` + n 个**工作日**（仅在 `cooldown_until` 缺失时做兜底窗口）*/
+function addWeekdays(date: string, n: number): string {
+  let cursor = date;
+  let count = 0;
+  while (count < n) {
+    cursor = addDays(cursor, 1);
+    const dow = new Date(`${cursor}T00:00:00Z`).getUTCDay();
+    if (dow >= 1 && dow <= 5) count++;
+  }
+  return cursor;
+}
+
+/**
+ * 给某一交易日的全部信号回填 `cooldown_until`（F6）
+ *
+ * ⚠️ **只写展示判断用的列**：信号生成照旧一条不少（不因冷却而抑制），
+ * 交易链路与回测口径都不读取该列。
+ */
+export async function assignSignalCooldowns(
+  tradeDate: string,
+  userId: number = SIGNAL_USER_ID,
+  bars: number = resolveSignalCooldownBars(),
+): Promise<{ updated: number; cooldownUntil: string }> {
+  const db = ConfigStore.getInstance().db;
+  const cooldownUntil = await nthTradingDayAfter(tradeDate, bars);
+  const info = db
+    .prepare(
+      `UPDATE user_strategy_signal SET cooldown_until = ?
+       WHERE user_id = ? AND trade_date = ? AND is_deleted = 0`,
+    )
+    .run(cooldownUntil, userId, tradeDate);
+  return { updated: info.changes, cooldownUntil };
+}
+
+/** 冷却合并所需字段（`SELECT *` 行够用）*/
+export interface CooldownRowFields {
+  plugin_id: string;
+  asset_code: string;
+  direction: string;
+  trade_date: string;
+  created_at?: string | null;
+  id?: number;
+  cooldown_until?: string | null;
+}
+
+/** 合并后的展示行：附带「连续第 N 日选中」计数 */
+export type CooldownCollapsed<T> = T & { consecutive_days: number };
+
+/**
+ * 展示层冷却合并去重（纯函数，便于单测）
+ *
+ * 口径（用户指定）：
+ * - 同一 **策略 + 标的 + 方向** 的信号，在冷却窗口（默认 3 根 K 线）内合并为**一条**；
+ * - 窗口判定优先用行上的 `cooldown_until`（生成时照写）；历史行无该值时
+ *   用 `trade_date + bars` 个**工作日**兜底；
+ * - 合并后保留**最新一条**（其分级/强度/标签即为展示值），并标注 `consecutive_days`；
+ * - 输出按 `trade_date ASC, created_at ASC, id ASC` 排序（与列表契约一致）。
+ */
+export function collapseSignalsByCooldown<T extends CooldownRowFields>(
+  rows: T[],
+  bars: number = resolveSignalCooldownBars(),
+): Array<CooldownCollapsed<T>> {
+  const windowEndOf = (row: T): string => {
+    const raw = row.cooldown_until;
+    if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    return addWeekdays(row.trade_date, bars);
+  };
+
+  // 入参已按升序查询；这里再排一次保证纯函数对任意输入顺序都确定
+  const ordered = [...rows].sort(
+    (a, b) =>
+      a.trade_date.localeCompare(b.trade_date) ||
+      String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
+      (a.id ?? 0) - (b.id ?? 0),
+  );
+
+  const active = new Map<string, { row: CooldownCollapsed<T>; end: string }>();
+  const out: Array<CooldownCollapsed<T>> = [];
+  const flush = (): void => {
+    for (const chain of active.values()) out.push(chain.row);
+    active.clear();
+  };
+
+  for (const row of ordered) {
+    const key = `${row.plugin_id}|${row.asset_code}|${row.direction}`;
+    const chain = active.get(key);
+    if (!chain) {
+      active.set(key, { row: { ...row, consecutive_days: 1 }, end: windowEndOf(row) });
+      continue;
+    }
+    if (row.trade_date <= chain.end) {
+      // 窗口内 → 合并进当前链，代表行换成最新一条，窗口顺延
+      chain.row = { ...row, consecutive_days: chain.row.consecutive_days + 1 };
+      const end = windowEndOf(row);
+      if (end > chain.end) chain.end = end;
+    } else {
+      out.push(chain.row);
+      active.set(key, { row: { ...row, consecutive_days: 1 }, end: windowEndOf(row) });
+    }
+  }
+  flush();
+  return out.sort(
+    (a, b) =>
+      a.trade_date.localeCompare(b.trade_date) ||
+      String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
+      (a.id ?? 0) - (b.id ?? 0),
+  );
+}

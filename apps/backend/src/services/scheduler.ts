@@ -13,6 +13,7 @@ import {
   getTradeDate,
   resolveSignalSymbols,
   SIGNAL_USER_ID,
+  assignSignalCooldowns,
   assignSignalGrades,
 } from './signalService.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
@@ -438,6 +439,17 @@ export function registerCronJobs(app: FastifyInstance): void {
                   level: 'WARN',
                   message: '信号分级失败（不影响信号生成主流程）',
                   detail: String(gradeErr),
+                });
+              }
+              // F6：回填 cooldown_until（**只供展示层冷却合并判断**，不抑制任何信号）
+              try {
+                await assignSignalCooldowns(tradeDate, SIGNAL_USER_ID);
+              } catch (coolErr: unknown) {
+                writeSystemLog({
+                  logType: 'signal_generate',
+                  level: 'WARN',
+                  message: '信号冷却回填失败（不影响信号生成主流程）',
+                  detail: String(coolErr),
                 });
               }
               writeSystemLog({

@@ -221,7 +221,7 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(signalCalls()[1]?.[0]).toBe('/signal');
     // F1：默认分级 tab = 强 → 固定带 grade=strong
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong' });
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
   });
 
   it('「查询」按钮可用空格键触发', async () => {
@@ -306,6 +306,7 @@ describe('Signals · 查询参数组装', () => {
       page: 1,
       page_size: 50,
       grade: 'strong',
+      dedupe: 1,
       trade_date: '2026-10-12',
       plugin_id: 'filter_v2',
       direction: 'buy',
@@ -322,7 +323,7 @@ describe('Signals · 查询参数组装', () => {
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     const params = lastParams();
-    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong' });
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
     expect(params).not.toHaveProperty('trade_date');
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
@@ -346,7 +347,7 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong' });
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
   });
 });
 

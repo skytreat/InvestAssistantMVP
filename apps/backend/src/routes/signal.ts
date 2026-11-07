@@ -2,7 +2,13 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
 import { getTodaySignalStats } from '../services/todaySignals.js';
-import { getTradeDate, resolveDefaultSignalTradeDate } from '../services/signalService.js';
+import {
+  collapseSignalsByCooldown,
+  getTradeDate,
+  resolveDefaultSignalTradeDate,
+  resolveSignalCooldownBars,
+} from '../services/signalService.js';
+import type { CooldownRowFields } from '../services/signalService.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
@@ -116,6 +122,23 @@ export async function registerSignalRoutes(app: FastifyInstance) {
         }
       }
 
+      /**
+       * F6：**展示层冷却合并去重**（`dedupe=1`）
+       *
+       * `dedupe` 缺省关闭 ⇒ 既有契约（原始行 + 分页计数）不变；
+       * 前端 Signals 页显式传 `dedupe=1`，后端把「同策略+同标的+同方向、
+       * 冷却窗口内重复」的信号合并成一条，并附 `consecutive_days`。
+       *
+       * ⚠️ 合并**只影响展示**：信号生成照旧一条不少，`cooldown_until` 只在这里读判窗口。
+       * ⚠️ 合并必须在**分页前**做（否则 total 与页内条数对不上），
+       *    故该路径一次性取全部过滤行再切页（MVP 信号量级可控）。
+       */
+      const dedupe = q.dedupe === '1' || q.dedupe === 'true';
+      const requestedBars = parseInt(q.cooldown_bars ?? '', 10);
+      const cooldownBars = Number.isFinite(requestedBars)
+        ? Math.min(20, Math.max(1, requestedBars))
+        : resolveSignalCooldownBars();
+
       const whereSql = 'WHERE ' + where.join(' AND ');
       const count = (
         db.prepare(`SELECT COUNT(*) AS c FROM user_strategy_signal ${whereSql}`).get(...params) as {
@@ -142,24 +165,44 @@ export async function registerSignalRoutes(app: FastifyInstance) {
        *   `Dashboard.tsx` 的「最新信号」卡片此前因本口径**显示的是最早的 5 条**（与卡片标题矛盾），
        *   改后与标题一致。
        */
-      const rows = db
-        .prepare(
-          `SELECT * FROM (
-             SELECT * FROM user_strategy_signal ${whereSql}
-             ORDER BY trade_date DESC, created_at DESC, id DESC
-             LIMIT ? OFFSET ?
-           )
-           ORDER BY trade_date ASC, created_at ASC, id ASC`,
-        )
-        .all(...params, pageSize, (page - 1) * pageSize);
+      let rows: unknown[];
+      let total = count;
+      if (dedupe) {
+        const all = db
+          .prepare(
+            `SELECT * FROM user_strategy_signal ${whereSql}
+             ORDER BY trade_date ASC, created_at ASC, id ASC`,
+          )
+          .all(...params) as Array<CooldownRowFields & Record<string, unknown>>;
+        const collapsed = collapseSignalsByCooldown(all, cooldownBars);
+        total = collapsed.length;
+        // 「最近 N 条 + 输出升序」：第 1 页仍是**最新**的一页（与未合并路径同口径）
+        const end = Math.max(0, total - (page - 1) * pageSize);
+        const start = Math.max(0, total - page * pageSize);
+        rows = collapsed.slice(start, end);
+      } else {
+        rows = db
+          .prepare(
+            `SELECT * FROM (
+               SELECT * FROM user_strategy_signal ${whereSql}
+               ORDER BY trade_date DESC, created_at DESC, id DESC
+               LIMIT ? OFFSET ?
+             )
+             ORDER BY trade_date ASC, created_at ASC, id ASC`,
+          )
+          .all(...params, pageSize, (page - 1) * pageSize);
+      }
 
       reply.send(
         ok(rows, {
-          pagination: { page, pageSize, total: count, totalPages: Math.ceil(count / pageSize) },
+          pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
           // F 域 P0-1：把「实际生效的交易日 + 来源 + 行情最新日」下发，前端不再自己猜今天
           trade_date: effectiveTradeDate,
           trade_date_source: dateSource,
           latest_quote_date: latestQuoteDate,
+          // F6：展示层冷却合并的窗口根数（前端据此写旁注）
+          cooldown_bars: cooldownBars,
+          display_dedupe: dedupe,
         }),
       );
     } catch (err) {

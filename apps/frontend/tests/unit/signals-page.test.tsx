@@ -55,6 +55,8 @@ interface SignalFixture {
   strength?: number | null;
   grade?: string | null;
   expires_at?: string | null;
+  /** F6 用：同一策略+标的+方向在冷却窗口内被合并的计数 */
+  consecutive_days?: number;
   trade_date: string;
 }
 
@@ -146,7 +148,7 @@ describe('T72 ① · 进页自动加载', () => {
     const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
     // F1：分级 tab 默认「强」→ 参数里固定带 grade=strong（用户口径：默认只显强）
-    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong' });
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
     expect(params).not.toHaveProperty('trade_date');
     // 「全部策略 / 全部方向」⇒ 不预设这些过滤条件
     expect(params).not.toHaveProperty('plugin_id');
@@ -592,5 +594,52 @@ describe('F1 · 信号分级', () => {
     expect(row).toHaveStyle({ opacity: '0.6' });
     // 行仍在表内（不删），并给出「生成于 N 天前」
     expect(within(row).getByTestId('signals-expired-age')).toHaveTextContent(/生成于 \d+ 天前/);
+  });
+});
+
+/** F6 · 冷却只做展示层合并去重（不影响生成与交易链路） */
+describe('F6 · 冷却展示合并', () => {
+  it('列表请求带 dedupe=1（只影响展示，不改生成）', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
+    expect(signalCalls()[0]?.[1]?.params).toMatchObject({ dedupe: 1 });
+  });
+
+  it('合并行标注「连续第 N 日选中」，并显示默认 3 根 K 线旁注', async () => {
+    installPagedMock([
+      { rows: [{ ...BUY_ROW, consecutive_days: 3 }], totalPages: 1, total: 1 },
+    ]);
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-consecutive-count')).toHaveTextContent(
+      '连续第 3 日选中',
+    );
+    expect(screen.getByTestId('signals-cooldown-note')).toHaveTextContent('冷却 3 根 K 线');
+    // 旁注必须写明「仅展示层」，避免被误解为抑制信号
+    expect(screen.getByTestId('signals-cooldown-note')).toHaveTextContent('不影响信号生成与交易链路');
+  });
+
+  it('未合并行（consecutive_days=1 或缺失）不显示连续标注', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByTestId('signal-label-tag');
+    expect(screen.queryByTestId('signals-consecutive-count')).not.toBeInTheDocument();
+  });
+
+  it('后端下发的 cooldown_bars 覆盖旁注窗口（可配置）', async () => {
+    installPagedMock([
+      {
+        rows: [BUY_ROW],
+        totalPages: 1,
+        total: 1,
+        meta: { ...DEFAULT_META, cooldown_bars: 5 },
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-cooldown-note')).toHaveTextContent('冷却 5 根 K 线');
   });
 });

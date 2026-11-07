@@ -12,6 +12,7 @@ import {
   resolveLatestSignalDate,
   getTradeDate,
   SIGNAL_USER_ID,
+  assignSignalCooldowns,
   assignSignalGrades,
   type SignalOrigin,
 } from './signalService.js';
@@ -325,6 +326,12 @@ export async function replaySignals(options: SignalReplayOptions = {}): Promise<
           await assignSignalGrades(tradeDate, userId);
         } catch (gradeErr: unknown) {
           notes.push(`${tradeDate} 信号分级失败：${String(gradeErr)}`);
+        }
+        // F6：回填 cooldown_until（仅展示层冷却合并判断用，回放信号集合不变）
+        try {
+          await assignSignalCooldowns(tradeDate, userId);
+        } catch (coolErr: unknown) {
+          notes.push(`${tradeDate} 冷却回填失败：${String(coolErr)}`);
         }
       }
     } catch (err) {

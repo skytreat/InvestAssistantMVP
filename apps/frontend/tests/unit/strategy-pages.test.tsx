@@ -141,6 +141,29 @@ describe('T148 策略配置页（/strategy/config）', () => {
   });
 });
 
+describe('F6 · 跨境 ETF 提示（PRD U13）', () => {
+  it('编辑组合策略参数时提示一次，可关闭；再次编辑不再出现', async () => {
+    renderWithRouter(<StrategyConfig />);
+    await screen.findByText('RSI 超卖');
+
+    // 第一次打开参数编辑器 → 出现提示
+    await userEvent.click(screen.getAllByRole('button', { name: /编辑参数/ })[0]);
+    const hint = await screen.findByTestId('strategy-crossborder-hint');
+    expect(hint).toHaveTextContent('跨境 ETF 在 A 股时段流动性受限');
+    // 提示不阻断保存/编辑（参数表单照常渲染）
+    expect(await screen.findByLabelText(/阈值/)).toBeInTheDocument();
+
+    // 关闭提示
+    await userEvent.click(screen.getByRole('button', { name: '知道了' }));
+    expect(screen.queryByTestId('strategy-crossborder-hint')).not.toBeInTheDocument();
+
+    // 收起后再打开另一个策略 → 不再重复提示
+    await userEvent.click(screen.getByRole('button', { name: '收起参数' }));
+    await userEvent.click(screen.getAllByRole('button', { name: /编辑参数/ })[1]);
+    expect(screen.queryByTestId('strategy-crossborder-hint')).not.toBeInTheDocument();
+  });
+});
+
 describe('T150 策略有效性页（/strategy/effectiveness）', () => {
   it('列出信号，点「后续表现」渲染 T+1/T+5/T+10', async () => {
     renderWithRouter(<StrategyEffectiveness />);

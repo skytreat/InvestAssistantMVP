@@ -93,6 +93,12 @@ interface SignalRow {
   grade?: string | null;
   /** F1：有效期（YYYY-MM-DD；过期信号置灰不删）*/
   expires_at?: string | null;
+  /**
+   * F6：同一策略+标的+方向在冷却窗口内被合并的「连续第 N 日选中」计数
+   *
+   * 仅 `dedupe=1` 时由后端下发；1 = 未被合并。
+   */
+  consecutive_days?: number;
   trade_date?: string;
   [key: string]: unknown;
 }
@@ -175,6 +181,8 @@ export default function Signals() {
   const [resolvedSource, setResolvedSource] = useState<DateSource | null>(null);
   /** 行情最新日（仅在后端走「最近行情日」兜底时下发，用于空态文案）*/
   const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
+  /** F6：冷却展示合并窗口（后端下发；仅用于旁注文案）*/
+  const [cooldownBars, setCooldownBars] = useState<number>(3);
 
   /**
    * 行情最新日（独立取一次，仅用于「当前展示日 vs 行情最新日」旁注）
@@ -285,6 +293,8 @@ export default function Signals() {
       if (direction) params.direction = direction;
       // F1：分级 tab 直接下推后端（避免前端只过滤当前页导致分页错乱）
       if (gradeTab !== 'all') params.grade = gradeTab;
+      // F6：展示层冷却合并去重（同策略+标的+方向窗口内合并，只影响展示，不影响生成）
+      params.dedupe = 1;
 
       const res = await api.get('/signal', { params });
       if (isOkEnvelope(res.data)) {
@@ -297,11 +307,15 @@ export default function Signals() {
           trade_date?: string | null;
           trade_date_source?: DateSource;
           latest_quote_date?: string | null;
+          cooldown_bars?: number;
         };
         const source = meta.trade_date_source ?? 'explicit';
         setResolvedSource(source);
         setResolvedDate(source === 'explicit' ? null : (meta.trade_date ?? null));
         setLatestQuoteDate(typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null);
+        if (typeof meta.cooldown_bars === 'number' && meta.cooldown_bars >= 1) {
+          setCooldownBars(meta.cooldown_bars);
+        }
         /*
          * F3：摘要区跟随主列表的展示日 ——
          * 用户显式选了单日 → 用该日；只选区间/默认视角 → 用后端解析出的交易日；
@@ -769,6 +783,19 @@ export default function Signals() {
               </div>
             ) : null}
             {/*
+              F6：冷却旁注 —— 明示「合并只是展示层」，信号生成/交易链路一条不少
+            */}
+            <div
+              data-testid="signals-cooldown-note"
+              style={{
+                fontSize: TYPO.smallSize,
+                color: COLORS.textMuted,
+                marginBottom: SPACING.gapTight,
+              }}
+            >
+              {`冷却 ${cooldownBars} 根 K 线内，同策略 + 同标的 + 同方向的重复信号已合并为一条（仅展示层去重，不影响信号生成与交易链路）`}
+            </div>
+            {/*
               表格用 `ScrollableTable` 包一层 —— 表格在**自己内部**横向滚动，
               不会把文档撑宽（G3.5 / G4.6 的 375px 无横向溢出判据）。
             */}
@@ -874,6 +901,19 @@ export default function Signals() {
                         </td>
                         <td style={thTdStyle}>
                           <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+                          {/* F6：冷却窗口内被合并 → 标注「连续第 N 日选中」 */}
+                          {typeof row.consecutive_days === 'number' && row.consecutive_days >= 2 ? (
+                            <span
+                              data-testid="signals-consecutive-count"
+                              style={{
+                                display: 'block',
+                                fontSize: TYPO.captionSize,
+                                color: COLORS.textMuted,
+                              }}
+                            >
+                              {`连续第 ${row.consecutive_days} 日选中`}
+                            </span>
+                          ) : null}
                         </td>
                         <td style={thTdStyle}>
                           {typeof row.trade_date === 'string' ? row.trade_date : '--'}

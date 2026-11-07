@@ -40,6 +40,14 @@ export default function StrategyConfig() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, Record<string, unknown>>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  /**
+   * F6 / PRD U13：跨境 ETF 流动性提示
+   *
+   * 「编辑组合策略时提示一次」——`crossBorderHintShown` 保证**整个页面会话只弹一次**，
+   * 用户点「知道了」后不再打扰；不阻塞保存，也不在下单时拦截。
+   */
+  const [crossBorderHintVisible, setCrossBorderHintVisible] = useState(false);
+  const [crossBorderHintShown, setCrossBorderHintShown] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -60,7 +68,13 @@ export default function StrategyConfig() {
       next[f.key] = p.params?.[f.key] !== undefined ? p.params[f.key] : paramDefault(f);
     }
     setDraft((d) => ({ ...d, [p.id]: next }));
-    setExpanded(expanded === p.id ? null : p.id);
+    const opening = expanded !== p.id;
+    setExpanded(opening ? p.id : null);
+    // F6：首次打开参数编辑器时提示一次（不是每次编辑都提示）
+    if (opening && !crossBorderHintShown) {
+      setCrossBorderHintShown(true);
+      setCrossBorderHintVisible(true);
+    }
     setMsg(null);
   };
 
@@ -165,6 +179,39 @@ export default function StrategyConfig() {
                     {expanded === p.id && (
                       <tr>
                         <td colSpan={4} style={tdStyle}>
+                          {/* F6 / PRD U13：跨境 ETF 流动性提示（编辑组合策略时提示一次） */}
+                          {crossBorderHintVisible && (
+                            <div
+                              role="status"
+                              data-testid="strategy-crossborder-hint"
+                              style={{
+                                background: COLORS.bgPillNeutral,
+                                border: `1px solid ${COLORS.borderPillNeutral}`,
+                                borderRadius: 4,
+                                padding: '8px 10px',
+                                marginBottom: SPACING.gapBase,
+                                fontSize: TYPO.smallSize,
+                                color: COLORS.textPillNeutral,
+                              }}
+                            >
+                              <b>跨境 ETF 提示</b>：跨境 ETF 在 A 股时段流动性受限。若组合策略适用于跨境
+                              ETF，请把信号视为次日参考，避免在 A 股早盘追价。
+                              <button
+                                type="button"
+                                style={{
+                                  marginLeft: 8,
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: COLORS.brand,
+                                  cursor: 'pointer',
+                                  fontSize: TYPO.smallSize,
+                                }}
+                                onClick={() => setCrossBorderHintVisible(false)}
+                              >
+                                知道了
+                              </button>
+                            </div>
+                          )}
                           <PluginParamForm
                             pluginId={p.id}
                             schema={p.paramSchema ?? []}
