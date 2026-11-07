@@ -42,6 +42,12 @@ export interface LoadSweepDataOptions {
   divisor?: number;
   topN?: number;
   benchmark?: string;
+  /**
+   * 预热天数（日历 bar）；不传则用策略默认参数推导的 `warmupDays`。
+   * 网格会扫到 `lookbackDays=40` ⇒ 调用方须按**网格最大值**传入（见 `runner.ts`），
+   * 否则起点附近有效点不足，试次会成片「数据不足」。
+   */
+  warmupDays?: number;
 }
 
 /**
@@ -56,7 +62,7 @@ export async function loadSweepData(options: LoadSweepDataOptions): Promise<Swee
   const strategy = createWufuRotationStrategy();
 
   const calendar = await loadTradingCalendar();
-  const warmup = Math.max(5, strategy.warmupDays + 1);
+  const warmup = Math.max(5, (options.warmupDays ?? strategy.warmupDays) + 1);
   const loadStart = calendar.lastN(options.start, warmup)[0] ?? options.start;
 
   const extraSymbols = [...new Set([...FIXED_ETF_POOL, ...GLOBAL_ETF_POOL, DEFENSIVE_ETF, benchmark])];

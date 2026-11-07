@@ -20,6 +20,7 @@ import {
   evaluateCandidate,
   momentumFilteredWindow,
   momentumRawWindow,
+  momentumRequiredPoints,
   movingAverageOfLast,
   selectValidVolumeWindow,
   volumeRatioFromSeries,
@@ -705,6 +706,40 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     expect(ts.targets[0].score).toBeCloseTo(1.718282, 5);
   });
 
+  it('② 有效点不足时向前扩窗：65 根里全零量，扩到 130 根后凑够 26 个有效点', () => {
+    // 200 根日历 bar：前 135 根有量、后 65 根零量（模拟长期停牌）；固定 65 根窗口内有效点 = 0
+    const closes = Array.from({ length: 200 }, (_, i) => 10 * Math.pow(1.004, i));
+    const volumes = Array.from({ length: 200 }, (_, i) => (i < 135 ? 1_000_000 : 0));
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: closes },
+      volumes: { sh512880: volumes },
+      indexCloses: risingIndex(),
+    });
+    const ts = decideWith(ctx);
+    // 过滤后的有效点为 135 根里的最后 45 根（下标 90..134），动量取其中最后 26 根（109..134）
+    const expected = calculateMomentumScore(closes.slice(109, 135), 25);
+    expect(expected).not.toBeNull();
+    expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
+    expect(ts.targets[0].score).toBeCloseTo(expected!.score, 8);
+  });
+
+  it('② 扩窗见底仍不足：数据不足淘汰，空仓期回退防御', () => {
+    // 只有 65 根日历 bar，其中仅 20 根有量 → 无论怎么扩都凑不满 26 个有效点
+    const closes = Array.from({ length: 65 }, (_, i) => 10 * Math.pow(1.004, i));
+    const volumes = Array.from({ length: 65 }, (_, i) => (i < 20 ? 1_000_000 : 0));
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: closes },
+      volumes: { sh512880: volumes },
+      indexCloses: risingIndex(),
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+  });
+
   it('defensive-fallback：防御 ETF 被换成股票', () => {
     const ctx = makeCtx({
       universe: { fixed: ['sh510300'] },
@@ -738,6 +773,18 @@ describe('M3 wufu · ② valid_mask 与窗口常量', () => {
   it('窗口常量与 v5.2 safe_lookback / lookback 一致（默认 65 / 45）', () => {
     expect(momentumRawWindow(DEFAULT_FILTER_PARAMS)).toBe(65);
     expect(momentumFilteredWindow(DEFAULT_FILTER_PARAMS)).toBe(45);
+  });
+
+  it('所需有效点由参数推导：默认 26；lookbackDays=40 → 41', () => {
+    expect(momentumRequiredPoints(DEFAULT_FILTER_PARAMS)).toBe(26);
+    expect(momentumRequiredPoints({ ...DEFAULT_FILTER_PARAMS, lookbackDays: 40 })).toBe(41);
+    expect(momentumRequiredPoints({ ...DEFAULT_FILTER_PARAMS, volumeLookback: 30 })).toBe(31);
+  });
+
+  it('扩窗窗口同样由参数推导：lookbackDays=40 → raw 80 / keep 60', () => {
+    const p = { ...DEFAULT_FILTER_PARAMS, lookbackDays: 40 };
+    expect(momentumRawWindow(p)).toBe(80);
+    expect(momentumFilteredWindow(p)).toBe(60);
   });
 });
 

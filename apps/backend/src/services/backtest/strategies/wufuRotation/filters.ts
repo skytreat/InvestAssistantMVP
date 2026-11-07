@@ -79,6 +79,23 @@ export function momentumFilteredWindow(params: FilterParams): number {
 }
 
 /**
+ * 打满三个指标所需的**最小有效点数**（不是日历 bar 数）：
+ * - 动量 `calculate_momentum_score` 要 `lookbackDays + 1` 个收盘（L690）；
+ * - 量比 `get_volume_ratio` 要 `volumeLookback + 1` 个成交量（L772）；
+ * - MA 过滤要 `maLookback` 个收盘（L739）。
+ */
+export function momentumRequiredPoints(params: FilterParams): number {
+  return Math.max(params.lookbackDays + 1, params.volumeLookback + 1, params.maLookback);
+}
+
+/** 序列里「有效」的成交量个数（`valid_mask` 的计数形式） */
+export function countValidVolumes(volumes: readonly number[]): number {
+  let n = 0;
+  for (const v of volumes) if (v > 0) n++;
+  return n;
+}
+
+/**
  * v5.2 `valid_mask = (volume > 0) & (~volume.isna())`（L890-L895）：
  * 把**零成交量日（停牌）**从历史序列中剔除，再保留最后 `keep` 个有效点。
  *

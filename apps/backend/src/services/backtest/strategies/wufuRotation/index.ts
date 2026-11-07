@@ -17,7 +17,8 @@
  *    `>1` 时 v5.2 按**剩余现金逐笔均分**（L1091-L1099），这里按**总权益等权**，是近似。
  * 2. 止损由「分钟级每 bar 检查 + 立即市价卖」改为「决策时按 `asOf` 收盘判定 + 当日不进 targets」，
  *    实际卖出发生在 T 开盘。
- * 3. 历史序列不剔除零量日（v5.2 用 `valid_mask`）；`asOf` 停牌仍走 `ctx.isPaused`。
+ * 3. 历史序列按 `valid_mask` 剔除零量日（与 v5.2 一致）；有效点不足时向前扩窗（原版直接跳过，
+ *    属有意偏离，见 `loadValidSeries`）；`asOf` 停牌仍走 `ctx.isPaused`。
  * 4. 短期风控「跌幅 ≥ 3%」用 `<=` 判定（v5.2 是严格 `<`）。
  */
 import type { ParamField } from '../../../pluginEngine.js';
@@ -31,9 +32,11 @@ import {
 } from '../../strategy/types.js';
 import { CANDIDATE_TOP_ROWS, buildCandidatePool, selectTargets } from './candidate.js';
 import {
+  countValidVolumes,
   evaluateCandidate,
   momentumFilteredWindow,
   momentumRawWindow,
+  momentumRequiredPoints,
   selectValidVolumeWindow,
   type CandidateMetrics,
   type FilterParams,
@@ -279,11 +282,18 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
 
   // ── 3) 逐票打分 + 过滤（一次批量取序列，避免逐票往返） ──
   // v5.2 L890-L895：历史序列按 `valid_mask` 剔除零成交量日（停牌），由更早交易日补足。
-  // 原版先取 `safe_lookback`（默认 65）根日历 bar，过滤后保留最后 45 个有效点。
+  // 窗口由参数推导（不是常量）：safe_lookback = max(lookbackDays, volumeLookback, maLookback) + 40
+  // （v5.2 L885：lookback = max(...) + 20；L888：safe_lookback = lookback + 20）。
+  // 停牌密集的标的（尤其跨境 ETF）在固定窗口内有效点可能不足 ⇒ 向前扩窗（见 `loadValidSeries`）。
   const rawWindow = momentumRawWindow(p);
   const keepWindow = momentumFilteredWindow(p);
-  const rawClosesBySymbol = ctx.seriesBatch(pool, rawWindow, 'close');
-  const rawVolumesBySymbol = ctx.seriesBatch(pool, rawWindow, 'volume');
+  const required = momentumRequiredPoints(p);
+  const { closesBySymbol: rawClosesBySymbol, volumesBySymbol: rawVolumesBySymbol } = loadValidSeries(
+    ctx,
+    pool,
+    rawWindow,
+    required,
+  );
   const passed: CandidateMetrics[] = [];
   for (const symbol of pool) {
     const closes = rawClosesBySymbol.get(symbol) ?? [];
@@ -376,6 +386,54 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
   return { targets, mode: 'replace', exitReasons };
 }
 
+/** 扩窗最多再取 2 轮（65 → 130 → 260 根日历 bar）；再不够视为长期停牌，按数据不足淘汰 */
+const MAX_WINDOW_ROUNDS = 2;
+
+/**
+ * 批量取「有成交量」的历史序列。
+ *
+ * 起始窗口 = `momentumRawWindow`（v5.2 `safe_lookback` = `max(...) + 40`）。
+ * 若某个标的**有效点不足**（停牌密集，尤其跨境 ETF），向前扩窗重取，直到：
+ * - 有效点够用；或
+ * - 已到面板起点（返回长度不再等于请求长度，说明没有更早的数据）。
+ *
+ * 这是对原版有意偏离：v5.2 在 `safe_lookback` 内凑不够就 `continue`（L913），
+ * 而 M4 网格会跑到 `lookbackDays=40`（需要 41 个有效点），固定窗口下会整片「算不出来」。
+ */
+function loadValidSeries(
+  ctx: StrategyContext,
+  pool: readonly string[],
+  initialWindow: number,
+  required: number,
+): { closesBySymbol: Map<string, number[]>; volumesBySymbol: Map<string, number[]> } {
+  let windowSize = initialWindow;
+  const closesBySymbol = ctx.seriesBatch(pool, windowSize, 'close');
+  const volumesBySymbol = ctx.seriesBatch(pool, windowSize, 'volume');
+
+  for (let round = 0; round < MAX_WINDOW_ROUNDS; round++) {
+    const short = pool.filter((s) => {
+      const closes = closesBySymbol.get(s) ?? [];
+      const volumes = volumesBySymbol.get(s) ?? [];
+      // 缺成交量数据（测试桩 / 坏数据）不扩窗，交由调用方跳过过滤
+      if (volumes.length !== closes.length) return false;
+      return countValidVolumes(volumes) < required;
+    });
+    if (short.length === 0) break;
+    // 长度已短于请求长度 ⇒ 已经取到面板第一根 bar，再扩也没有更早数据
+    const canGrow = short.some((s) => (closesBySymbol.get(s) ?? []).length >= windowSize);
+    if (!canGrow) break;
+    windowSize *= 2;
+    const nextCloses = ctx.seriesBatch(short, windowSize, 'close');
+    const nextVolumes = ctx.seriesBatch(short, windowSize, 'volume');
+    for (const s of short) {
+      closesBySymbol.set(s, nextCloses.get(s) ?? []);
+      volumesBySymbol.set(s, nextVolumes.get(s) ?? []);
+    }
+  }
+
+  return { closesBySymbol, volumesBySymbol };
+}
+
 /** 返回**新实例**（每次调用独立的跨日状态，便于并行跑多组参数/多区间） */
 export function createWufuRotationStrategy(): Strategy {
   const state = createState();
@@ -384,7 +442,9 @@ export function createWufuRotationStrategy(): Strategy {
     version: '5.2.0-m3',
     name: '五福轮动 ETF v5.2（日线主干）',
     paramSchema: WUFU_ROTATION_PARAM_SCHEMA,
-    // v5.2 `safe_lookback`：默认 65 根日历 bar（过滤零量日后仍能凑出 45 个有效点）
+    // v5.2 `safe_lookback`：由默认参数推导（25/5/10 → 65 根日历 bar），**不是常量**。
+    // 注意：`warmupDays` 是策略级静态字段，拿不到运行时 `--params`；按非默认参数跑时必须由调用方
+    // 用 `momentumRawWindow({...默认值, ...params})` 覆盖装载窗口（见 cli.ts / optimize/marketData.ts）。
     warmupDays: momentumRawWindow(WUFU_ROTATION_DEFAULTS),
     priceMode: 'open',
 
