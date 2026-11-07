@@ -31,7 +31,6 @@ import { loadUniversePanel } from './universe/dynamicPanel.js';
 import { runBacktest } from './engine.js';
 import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
 import {
-  WUFU_ROTATION_DEFAULTS,
   createWufuRotationStrategy,
   resolveWufuRotationParams,
 } from './strategies/wufuRotation/index.js';
