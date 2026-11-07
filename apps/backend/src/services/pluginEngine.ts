@@ -3,11 +3,13 @@
 // SDD §5.3 硬约束：沙盒禁止 global / process / require；
 //                  execute() 50ms 预算**只覆盖纯计算，行情 IO 不计入**（T88 / DEC-12 B-3）
 
-import { calculateRSI, calculateMACD, type MACDResult } from '@invest/core';
+import { calculateRSI, calculateMACD, calculateBoll, type MACDResult, type BollResult } from '@invest/core';
 import { calculateSMA } from './indicators.js';
-import { batchGetDailyRange } from './marketData.js';
+import { batchGetDailyRange, batchGetLatestClose } from './marketData.js';
 import { ConfigStore } from '../config/configStore.js';
 import { SIGNAL_USER_ID } from './signalService.js';
+import { calcAllPositions } from './positionCalculator.js';
+import { getAssetClass } from './assetClass.js';
 import type { DailyKline } from '@invest/core';
 import { writeSystemLog } from './logger.js';
 import fs from 'node:fs';
@@ -51,14 +53,24 @@ const round3 = (ms: number): number => Math.round(ms * 1000) / 1000;
 export type PluginId = string;
 export type Period = 'daily'; // MVP 固定日线
 export type PluginCategory = 'monitor' | 'filter';
+/**
+ * 插件归属子分类
+ *
+ * 🔴 对外口径 = V3 §4.1 **六分类**（趋势 / 动量 / 波动率 / 量价 / 形态 / 风险）。
+ * `custom` 是**内部兜底值**（未分类）：仅用于契约字段缺失或旧插件值无法识别，
+ * **不对外展示、不计入六类**，API 与 UI 必须显式过滤。
+ *
+ * 旧值迁移（2026-11-07 裁决）：`breakout → volume`、`mean_reversion → volatility`。
+ * 映射只允许存在于 `normalizeSubCategory()` 一个入口，禁止在调用点各写一份。
+ */
 export type PluginSubCategory =
-  | 'momentum' // 动量类：RSI、KDJ
-  | 'trend' // 趋势类：MACD、均线
-  | 'volume' // 量能类：OBV、量比
-  | 'breakout' // 突破类
-  | 'mean_reversion' // 均值回归类
-  | 'pattern' // 形态类
-  | 'custom'; // 自定义
+  | 'trend' // 趋势：MACD、均线排列
+  | 'momentum' // 动量：RSI、KDJ
+  | 'volatility' // 波动率：布林带、ATR 通道
+  | 'volume' // 量价：放量突破、缩量回调、量价背离
+  | 'pattern' // 形态：锤子线、吞没、缺口
+  | 'risk' // 风险：ATR 止损、回撤、组合暴露
+  | 'custom'; // 未分类（内部兜底，不对外展示）
 export type PluginComplexity = 'simple' | 'medium' | 'complex';
 
 /** 图表渲染元数据（前端 KLineChart 副图 / 叠加层渲染用） */
@@ -113,7 +125,66 @@ export interface PluginContext {
   calculateRSI(prices: number[], period?: number): number[];
   calculateMACD(prices: number[]): MACDResult;
   calculateSMA(prices: number[], period: number): number[];
+  /** 布林带（波动率通道，S3：`volatility` 类的数据来源） */
+  calculateBoll(closes: number[], period?: number, stdDev?: number): BollResult;
+
+  // ── 只读持仓视图（S2：风险类插件的数据来源） ──
+  /** 持仓快照（构建期冻结，`execute()` 内零 IO） */
+  positions(): readonly PluginPositionView[];
+  /**
+   * 现金类资产市值（`asset_class = 'cash'` 的持仓市值合计）。
+   * 🔴 **不是「可用现金余额」** —— 本系统不建模现金余额，禁止拿它当加仓额度用。
+   */
+  readonly cash: number;
+  /** 权益 = 现金类资产市值 + 全部风险资产市值 */
+  readonly equity: number;
+  /** 持仓快照是否可用：无 userId / 回放（asOfDate）/ 读取失败 → false */
+  readonly positionsAvailable: boolean;
 }
+
+/** 插件侧只读持仓视图（不直接暴露业务层 DTO，避免插件依赖内部字段） */
+export interface PluginPositionView {
+  symbol: string;
+  /** 持仓数量（已夹到 ≥ 0） */
+  quantity: number;
+  /** 移动加权平均成本（含手续费） */
+  avgCost: number;
+  /** 按最新收盘价估算的市值（取不到价时为 0） */
+  marketValue: number;
+}
+
+/**
+ * 持仓快照（构建期算一次，`execute()` 内零 IO）
+ * 不可用时 `positions = []`、`cash/equity = 0`。
+ */
+export interface PluginPositionSnapshot {
+  available: boolean;
+  /** 不可用原因，仅用于日志与 SKIP 归因（`NO_USER` / `REPLAY` / `READ_FAILED`） */
+  unavailableReason?: string;
+  positions: readonly PluginPositionView[];
+  cash: number;
+  equity: number;
+}
+
+/** 空快照：无 userId / 回放 / 读取失败时的降级值 */
+export const EMPTY_POSITION_SNAPSHOT: PluginPositionSnapshot = {
+  available: false,
+  positions: [],
+  cash: 0,
+  equity: 0,
+};
+
+/**
+ * 「无用户语义」的快照（如全市场选股）：显式空持仓 + `NO_USER` 归因。
+ *
+ * 调用点必须**显式传入**，不要依赖 `buildPluginContext` 的默认值 ——
+ * 默认值只是兜底，写出来才能让「这里没有用户」这件事在代码里可见：
+ * 风险类插件据此 SKIP（`POSITION_UNAVAILABLE`），而不是按某个真实用户的持仓出结果。
+ */
+export const NO_USER_POSITION_SNAPSHOT: PluginPositionSnapshot = {
+  ...EMPTY_POSITION_SNAPSHOT,
+  unavailableReason: 'NO_USER',
+};
 
 /**
  * 插件信号输出
@@ -161,6 +232,12 @@ export interface Plugin {
    * 单字段的 min/max 走 paramSchema，这里只管字段之间的关系。
    */
   validateCrossFields?(params: Record<string, unknown>): void;
+  /**
+   * 需要持仓视图才能工作（风险类插件）。
+   * 持仓快照不可用（无 userId / 回放）时，引擎直接 SKIP 并标记 `POSITION_UNAVAILABLE`，
+   * **不静默返回空信号** —— 否则「风险类在回放中不出信号」会变成查不出来的空洞。
+   */
+  readonly requiresPositions?: boolean;
   execute(context: PluginContext, params: Record<string, unknown>): Promise<PluginSignal[] | PluginSignal>;
 }
 
@@ -185,6 +262,63 @@ export function definePlugin(spec: PluginSpec): Plugin {
     ...spec,
     defaultParams: deriveDefaultParams(spec.paramSchema),
   };
+}
+
+/** 合法子分类集合（六类 + 内部兜底 `custom`） */
+const SUB_CATEGORY_VALUES: ReadonlySet<string> = new Set<PluginSubCategory>([
+  'trend',
+  'momentum',
+  'volatility',
+  'volume',
+  'pattern',
+  'risk',
+  'custom',
+]);
+
+/**
+ * 旧子分类字面值 → 新口径（**唯一映射入口的映射表**）
+ *
+ * - `breakout → volume`：突破必须由量价确认，V3 六分类无独立「突破类」
+ * - `mean_reversion → volatility`：均值回归在本项目只由波动率通道（布林带）承载
+ */
+const LEGACY_SUB_CATEGORY_MAP: Readonly<Record<string, PluginSubCategory>> = {
+  breakout: 'volume',
+  mean_reversion: 'volatility',
+};
+
+/**
+ * 子分类归一化（**唯一入口**）—— 磁盘插件、契约兜底、内置插件都必须走这里
+ *
+ * | 输入 | 输出 | 是否告警 |
+ * |---|---|---|
+ * | 六类 + `custom` | 原值 | 否 |
+ * | `breakout` / `mean_reversion` | 映射后的新值 | WARN（旧值需迁移） |
+ * | 其它任意字符串 | `custom` | WARN（无法识别） |
+ * | 非字符串 / 空串 | `custom` | 否（由契约缺失告警覆盖） |
+ */
+export function normalizeSubCategory(raw: unknown, pluginId = '<unknown>'): PluginSubCategory {
+  if (typeof raw === 'string' && SUB_CATEGORY_VALUES.has(raw)) {
+    return raw as PluginSubCategory;
+  }
+  if (typeof raw === 'string' && Object.prototype.hasOwnProperty.call(LEGACY_SUB_CATEGORY_MAP, raw)) {
+    const mapped = LEGACY_SUB_CATEGORY_MAP[raw];
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: `插件 ${pluginId} 的 sub_category '${raw}' 为旧口径，已迁移为 '${mapped}'`,
+      checkItem: pluginId,
+    });
+    return mapped;
+  }
+  if (typeof raw === 'string' && raw) {
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: `插件 ${pluginId} 的 sub_category '${raw}' 无法识别，已降级为 'custom'`,
+      checkItem: pluginId,
+    });
+  }
+  return 'custom';
 }
 
 /** 自定义（磁盘）插件的契约字段兜底值 —— 缺失时填这里并记 WARN，不静默填 undefined */
@@ -223,10 +357,7 @@ export function normalizePlugin(plugin: Plugin): Plugin {
       typeof plugin.version === 'string' && plugin.version ? plugin.version : CONTRACT_FALLBACK.version,
     author: typeof plugin.author === 'string' && plugin.author ? plugin.author : CONTRACT_FALLBACK.author,
     period: plugin.period === 'daily' ? 'daily' : CONTRACT_FALLBACK.period,
-    subCategory:
-      typeof plugin.subCategory === 'string' && plugin.subCategory
-        ? plugin.subCategory
-        : CONTRACT_FALLBACK.subCategory,
+    subCategory: normalizeSubCategory(plugin.subCategory, plugin.id),
     complexity:
       typeof plugin.complexity === 'string' && plugin.complexity
         ? plugin.complexity
@@ -556,6 +687,113 @@ export const builtinPlugins: Plugin[] = [
     },
   }),
 
+  // ---------- 布林带回归（S3：V3 六分类的 volatility 代表） ----------
+  definePlugin({
+    id: 'boll_reversion',
+    name: '布林带均值回归',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'volatility',
+    complexity: 'simple',
+    description:
+      '收盘跌破布林下轨（%B < pbBuy）发出超跌回归买入信号；冲破上轨（%B > pbSell）发出超涨回归卖出信号',
+    chartOverlay: {
+      position: 'sub',
+      subChartHeightRatio: 0.3,
+      thresholdLines: [
+        { value: 0, color: '#2ecc71', label: '下轨 %B=0' },
+        { value: 1, color: '#e74c3c', label: '上轨 %B=1' },
+      ],
+    },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'period', label: '布林周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'stdDev', label: '标准差倍数', type: 'number', default: 2, min: 1, max: 4, step: 0.1 },
+      { key: 'pbBuy', label: '买入 %B 阈值', type: 'number', default: 0, min: -1, max: 0.5, step: 0.05 },
+      { key: 'pbSell', label: '卖出 %B 阈值', type: 'number', default: 1, min: 0.5, max: 2, step: 0.05 },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    // 跨字段约束：买入阈值必须低于卖出阈值，否则两条分支区间重叠、方向自相矛盾
+    validateCrossFields(params) {
+      const pbBuy = params.pbBuy;
+      const pbSell = params.pbSell;
+      if (typeof pbBuy === 'number' && typeof pbSell === 'number' && pbBuy >= pbSell) {
+        throw new PluginParamError(
+          'boll_reversion',
+          'pbSell',
+          `买入阈值 pbBuy(${pbBuy}) 必须小于卖出阈值 pbSell(${pbSell})`,
+        );
+      }
+    },
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const period = params.period as number;
+      const stdDev = params.stdDev as number;
+      const pbBuy = params.pbBuy as number;
+      const pbSell = params.pbSell as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      if (klines.length < period + 1) return [];
+
+      const closes = klines.map((k) => k.close);
+      const boll = ctx.calculateBoll(closes, period, stdDev);
+      const i = closes.length - 1;
+      const pb = boll.pb[i];
+      // 带宽为 0（横盘无波动）时 %B 为 NaN → 不臆造信号
+      if (pb === undefined || Number.isNaN(pb)) return [];
+
+      const close = closes[i];
+      const upper = boll.upper[i];
+      const middle = boll.middle[i];
+      const lower = boll.lower[i];
+
+      const base = {
+        symbol,
+        pluginId: 'boll_reversion',
+        timestamp: new Date().toISOString(),
+        metrics: { period, stdDev, pbBuy, pbSell, days, close, upper, middle, lower, pb },
+      };
+
+      // 跌破下轨 → 超跌回归买入
+      if (pb < pbBuy) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `布林下轨超跌买入（%B ${pb.toFixed(2)} < ${pbBuy}）`,
+            strength: Math.min(1, pbBuy - pb),
+            detail: `收盘 ${close.toFixed(2)} 低于布林下轨 ${lower.toFixed(2)}（%B=${pb.toFixed(2)}）`,
+          },
+        ];
+      }
+      // 冲破上轨 → 超涨回归卖出
+      if (pb > pbSell) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `布林上轨超涨卖出（%B ${pb.toFixed(2)} > ${pbSell}）`,
+            strength: Math.min(1, pb - pbSell),
+            detail: `收盘 ${close.toFixed(2)} 高于布林上轨 ${upper.toFixed(2)}（%B=${pb.toFixed(2)}）`,
+          },
+        ];
+      }
+      // 带内 → 无信号
+      return [];
+    },
+    requiresPositions: false,
+  }),
+
   // ---------- 放量突破（T83：filter 类） ----------
   definePlugin({
     id: 'volume_breakout',
@@ -564,7 +802,7 @@ export const builtinPlugins: Plugin[] = [
     author: 'invest-core',
     period: 'daily',
     category: 'filter',
-    subCategory: 'breakout',
+    subCategory: 'volume',
     complexity: 'simple',
     description: '筛选出收盘价创 N 日新高且成交量放大到 N 日均量指定倍数的标的',
     paramSchema: [
@@ -831,12 +1069,8 @@ export function createPluginSandbox(source: string): Plugin {
     author: typeof p.author === 'string' ? (p.author as string) : CONTRACT_FALLBACK.author,
     period: p.period === 'daily' ? 'daily' : CONTRACT_FALLBACK.period,
     category: p.category as 'monitor' | 'filter',
-    subCategory:
-      typeof p.sub_category === 'string'
-        ? (p.sub_category as PluginSubCategory)
-        : typeof p.subCategory === 'string'
-          ? (p.subCategory as PluginSubCategory)
-          : CONTRACT_FALLBACK.subCategory,
+    // 磁盘插件旧值（breakout / mean_reversion）在这里收口，映射表不外泄到调用点
+    subCategory: normalizeSubCategory(p.sub_category ?? p.subCategory, p.id as string),
     complexity:
       typeof p.complexity === 'string' ? (p.complexity as PluginComplexity) : CONTRACT_FALLBACK.complexity,
     description: typeof p.description === 'string' ? (p.description as string) : undefined,
@@ -850,6 +1084,13 @@ export function createPluginSandbox(source: string): Plugin {
       typeof p.validateCrossFields === 'function'
         ? (p.validateCrossFields as Plugin['validateCrossFields'])
         : undefined,
+    // 风险类插件声明：仅接受显式 boolean，缺失 = false（与内置插件语义一致）
+    requiresPositions:
+      typeof p.requires_positions === 'boolean'
+        ? (p.requires_positions as boolean)
+        : typeof p.requiresPositions === 'boolean'
+          ? (p.requiresPositions as boolean)
+          : undefined,
     execute: p.execute as Plugin['execute'],
   });
 }
@@ -1038,7 +1279,10 @@ export function shiftTradeDate(anchor: string, deltaDays: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContext {
+export function buildPluginContext(
+  prefetch?: PluginKlinePrefetch,
+  snapshot: PluginPositionSnapshot = EMPTY_POSITION_SNAPSHOT,
+): PluginContext {
   /** 取数窗口的终点：回放时锁在基准交易日，日常链路仍是今天 */
   const endDate = prefetch?.endDate ?? new Date().toISOString().slice(0, 10);
   /** 预取窗口：days 天之前的日期（与原单查口径一致） */
@@ -1076,6 +1320,11 @@ export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContex
     calculateRSI: (prices: number[], period?: number) => calculateRSI(prices, period ?? 14),
     calculateMACD: (prices: number[]) => calculateMACD(prices),
     calculateSMA,
+    calculateBoll,
+    positions: () => snapshot.positions,
+    cash: snapshot.cash,
+    equity: snapshot.equity,
+    positionsAvailable: snapshot.available,
   };
 }
 
@@ -1099,12 +1348,14 @@ export interface PluginExecutionResult {
    */
   klines?: number;
   /**
-   * SKIP 的两种成因（F 域缺陷修复）：
+   * SKIP 的三种成因（F 域缺陷修复 / S2 持仓视图）：
    *   - `NO_DATA`   —— 取不到日线（行情缺失 / 标的不在该品种视图 / 数据不足到无法计算）
    *   - `NO_SIGNAL` —— 有日线，但指标条件未触发
+   *   - `POSITION_UNAVAILABLE` —— 插件声明 `requiresPositions`，但持仓快照不可用
+   *     （无 userId / 回放 asOfDate / 持仓读取失败）。**显式归因，不静默返回空信号**
    * 仅 `status === 'SKIP'` 时有值；SUCCESS / TIMEOUT / ERROR 为 undefined。
    */
-  skipReason?: 'NO_DATA' | 'NO_SIGNAL';
+  skipReason?: 'NO_DATA' | 'NO_SIGNAL' | 'POSITION_UNAVAILABLE';
   error?: string;
 }
 
@@ -1153,6 +1404,24 @@ export async function executePlugin(
 
   // 2. 构建上下文（如果调用方没传）
   const ctx = context ?? buildPluginContext();
+
+  // 2.5 风险类插件必须有持仓视图：不可用时显式 SKIP（不得静默返回空信号）
+  if (plugin.requiresPositions && !ctx.positionsAvailable) {
+    const duration = performance.now() - validateStart;
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'SKIP',
+      message: `插件 ${plugin.id} 需要持仓视图，但快照不可用（无 userId / 回放 / 读取失败），已跳过`,
+      checkItem: plugin.id,
+    });
+    return {
+      pluginId: plugin.id,
+      status: 'SKIP',
+      signals: [],
+      durationMs: round3(duration),
+      skipReason: 'POSITION_UNAVAILABLE',
+    };
+  }
 
   // === 3. T88：IO 感知的 50ms 预算窗口 ===
   let computeStart = performance.now(); // 计时起点（每次 IO 结束后重置）
@@ -1243,6 +1512,12 @@ export async function executePlugin(
     calculateRSI: ctx.calculateRSI,
     calculateMACD: ctx.calculateMACD,
     calculateSMA: ctx.calculateSMA,
+    calculateBoll: ctx.calculateBoll,
+    // 🔴 显式拷贝（禁止 `...ctx` 展开：会绕过上面的 withIo 包装，把 IO 算进 50ms 预算）
+    positions: ctx.positions,
+    cash: ctx.cash,
+    equity: ctx.equity,
+    positionsAvailable: ctx.positionsAvailable,
   };
 
   // 4. 计时开始 → 执行插件（IO 不计入，见上方 withIo）
@@ -1333,10 +1608,12 @@ export interface PluginBatchStats {
   success: number;
   timeout: number;
   error: number;
-  /** SKIP 总数 = noData + noSignal（保留既有字段语义，不拆两半） */
+  /** SKIP 总数 = noData + noSignal + positionUnavailable（保留既有字段语义，不拆多份） */
   skip: number;
-  /** SKIP 中「取不到行情」的次数（`skipReason === 'NO_DATA'`），其余为「指标未触发」 */
+  /** SKIP 中「取不到行情」的次数（`skipReason === 'NO_DATA'`），其余按 `skipReason` 细分 */
   noData: number;
+  /** SKIP 中「需要持仓但快照不可用」的次数（`skipReason === 'POSITION_UNAVAILABLE'`） */
+  positionUnavailable: number;
 }
 
 export interface PluginBatchResult {
@@ -1365,6 +1642,11 @@ export interface ExecuteAllPluginsOptions {
    *    故第 T 天的计算不可能读到 T 之后的行情。
    */
   asOfDate?: string;
+  /**
+   * 持仓快照的用户（S2）。缺省 = `SIGNAL_USER_ID`（与 `user_plugin_config` 读取口径一致）。
+   * 回放（传了 `asOfDate`）时快照统一不可用：`POSITION_UNAVAILABLE`。
+   */
+  userId?: number;
 }
 
 /** 用户级插件配置（`user_plugin_config` 的一行解析结果） */
@@ -1436,6 +1718,57 @@ function loadUserPluginConfigs(userId: number): Map<string, UserPluginConfig> {
 }
 
 /**
+ * 构建持仓快照（S2）—— 只读、**在构建期算一次**，`execute()` 内零 IO。
+ *
+ * 口径：
+ * - `cash` = `asset_class = 'cash'` 的持仓**市值**合计。🔴 不是「可用现金余额」，
+ *   本系统不建模现金余额，禁止把它当加仓额度；
+ * - `equity` = 现金类 + 全部风险资产市值；
+ * - 市值按最新收盘价估算，取不到价记 0（不阻断快照可用性）。
+ *
+ * 不可用（降级为 `EMPTY_POSITION_SNAPSHOT`）：
+ * - 回放（`asOfDate`）：业务层没有历史持仓快照，无法重建当日持仓 → `REPLAY`；
+ * - 读取失败 → `READ_FAILED`（记 WARN，不静默）。
+ */
+async function loadPositionSnapshot(userId: number, asOfDate?: string): Promise<PluginPositionSnapshot> {
+  if (asOfDate) {
+    return { ...EMPTY_POSITION_SNAPSHOT, unavailableReason: 'REPLAY' };
+  }
+  try {
+    const positions = calcAllPositions(userId).filter((p) => p.totalQuantity > 0);
+    if (positions.length === 0) {
+      return { available: true, positions: [], cash: 0, equity: 0 };
+    }
+
+    const prices = await batchGetLatestClose(positions.map((p) => p.asset_code));
+    const db = ConfigStore.getInstance().db;
+    const views: PluginPositionView[] = [];
+    let cash = 0;
+    let equity = 0;
+    for (const p of positions) {
+      const marketValue = (prices.get(p.asset_code)?.close ?? 0) * p.totalQuantity;
+      if (getAssetClass(db, p.asset_code) === 'cash') cash += marketValue;
+      equity += marketValue;
+      views.push({
+        symbol: p.asset_code,
+        quantity: p.totalQuantity,
+        avgCost: p.avgCost,
+        marketValue,
+      });
+    }
+    return { available: true, positions: views, cash, equity };
+  } catch (err) {
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: '读取持仓快照失败，需要持仓视图的插件将跳过（POSITION_UNAVAILABLE）',
+      detail: String(err),
+    });
+    return { ...EMPTY_POSITION_SNAPSHOT, unavailableReason: 'READ_FAILED' };
+  }
+}
+
+/**
  * 依次执行所有内置 monitor 类插件（MVP 暂不并发，避免同时打 DuckDB）。
  * 自定义插件将来从 PLUGIN_ALLOWED_PATH 加载后追加执行。
  *
@@ -1451,7 +1784,8 @@ function loadUserPluginConfigs(userId: number): Map<string, UserPluginConfig> {
  */
 export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}): Promise<PluginBatchResult> {
   // 用户配置（enabled 过滤 + params 合并）
-  const userConfigs = loadUserPluginConfigs(SIGNAL_USER_ID);
+  const userId = options.userId ?? SIGNAL_USER_ID;
+  const userConfigs = loadUserPluginConfigs(userId);
   // 合并内置 + 磁盘加载（SDD §5.3 磁盘热加载）
   // 只有**显式 enabled=0** 才停用；配置里没有记录的插件保持启用（默认行为不变）
   const monitorPlugins = getAllPlugins()
@@ -1471,6 +1805,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
         error: 0,
         skip: 0,
         noData: 0,
+        positionUnavailable: 0,
       };
       writeSystemLog({
         logType: 'plugin_execute',
@@ -1486,7 +1821,8 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     const start = shiftTradeDate(end, -days);
     // 1 次 IN 查询拿回整个标的域的日线（N 个插件共享）
     const prefetchKlines = await batchGetDailyRange(symbols, start, end);
-    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end });
+    const snapshot = await loadPositionSnapshot(userId, options.asOfDate);
+    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end }, snapshot);
 
     const stats: PluginBatchStats = {
       total: monitorPlugins.length * symbols.length,
@@ -1495,6 +1831,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
       error: 0,
       skip: 0,
       noData: 0,
+      positionUnavailable: 0,
     };
     const allSignals: PluginSignal[] = [];
     const results: PluginExecutionResult[] = [];
@@ -1519,6 +1856,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
         } else {
           stats.skip += 1;
           if (res.skipReason === 'NO_DATA') stats.noData += 1;
+          else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
         }
       }
     }
@@ -1526,7 +1864,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     writeSystemLog({
       logType: 'plugin_execute',
       level: 'INFO',
-      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData}`,
+      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData} positionUnavailable=${stats.positionUnavailable}`,
       detail: JSON.stringify({ ...stats, symbolCount: symbols.length, pluginCount: monitorPlugins.length }),
     });
 
@@ -1535,8 +1873,10 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
 
   // ── 旧行为（未传标的域）：每个插件跑 1 次 ──
   // 回放给了 asOfDate 时同样锁住取数终点（空预取 → 每次取数都走回落，但终点仍受控）
+  const snapshot = await loadPositionSnapshot(userId, options.asOfDate);
   const ctx = buildPluginContext(
     options.asOfDate ? { klines: new Map(), windowDays: 0, endDate: options.asOfDate } : undefined,
+    snapshot,
   );
 
   const stats: PluginBatchStats = {
@@ -1546,6 +1886,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     error: 0,
     skip: 0,
     noData: 0,
+    positionUnavailable: 0,
   };
   const allSignals: PluginSignal[] = [];
   const results: PluginExecutionResult[] = [];
@@ -1565,13 +1906,14 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     } else {
       stats.skip += 1;
       if (res.skipReason === 'NO_DATA') stats.noData += 1;
+      else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
     }
   }
 
   writeSystemLog({
     logType: 'plugin_execute',
     level: 'INFO',
-    message: `批量执行完成 total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData}`,
+    message: `批量执行完成 total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData} positionUnavailable=${stats.positionUnavailable}`,
     detail: JSON.stringify(stats),
   });
 

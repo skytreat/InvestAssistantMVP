@@ -9,6 +9,7 @@ import {
   executePlugin,
   getAllPlugins,
   buildPluginContext,
+  NO_USER_POSITION_SNAPSHOT,
   type Plugin,
   type PluginExecutionResult,
   type PluginSignal,
@@ -510,7 +511,9 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       const prefetchKlines = await batchGetDailyRangeByView(symbolsByView, prefetchStart, prefetchEnd);
       const prefetch = { klines: prefetchKlines, windowDays: scanDays };
       // 复用同一个 ctx 实例（行情查询函数无状态）
-      const ctx = buildPluginContext(prefetch);
+      // 全市场选股**没有用户语义**：显式传空快照（`NO_USER`），
+      // 不依赖 `buildPluginContext` 的默认值 —— 否则风险类插件可能按某个真实用户的持仓筛选。
+      const ctx = buildPluginContext(prefetch, NO_USER_POSITION_SNAPSHOT);
 
       // 🔴 2026-10-20：**去掉冗余的第 2 次 IN 查询**（loadCandidateDaily）
       //   原实现先用 1 次单日 IN 查询取回 5000 根「当日日线」，但路由只用到

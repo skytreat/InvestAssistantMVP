@@ -35,11 +35,12 @@ import {
   executePlugin,
   loadPluginsFromDir,
   normalizePlugin,
+  normalizeSubCategory,
   validatePluginParams,
   type Plugin,
   type PluginContext,
 } from '../../src/services/pluginEngine.js';
-import type { DailyKline } from '@invest/core';
+import { calculateBoll, type DailyKline } from '@invest/core';
 
 // ---------------------------------------------------------------------------
 // 通用工具
@@ -271,6 +272,41 @@ describe('pluginEngine 覆盖 — normalizePlugin 契约兜底', () => {
     } as unknown as Plugin);
 
     expect(p.defaultParams).toEqual({ x: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. normalizeSubCategory —— 旧值映射的唯一入口（V3 §4.1 六分类）
+// ---------------------------------------------------------------------------
+
+describe('pluginEngine 覆盖 — normalizeSubCategory 旧值映射', () => {
+  it('六类原值直通，不改写', () => {
+    for (const v of ['trend', 'momentum', 'volatility', 'volume', 'pattern', 'risk', 'custom'] as const) {
+      expect(normalizeSubCategory(v, 'p')).toBe(v);
+    }
+  });
+
+  it('breakout（旧口径）→ volume', () => {
+    expect(normalizeSubCategory('breakout', 'legacy-breakout')).toBe('volume');
+  });
+
+  it('mean_reversion（旧口径）→ volatility', () => {
+    expect(normalizeSubCategory('mean_reversion', 'legacy-mr')).toBe('volatility');
+  });
+
+  it('无法识别的字符串 → custom（降级不抛错）', () => {
+    expect(normalizeSubCategory('unknown-class', 'weird')).toBe('custom');
+  });
+
+  it('非字符串 / 空串 → custom', () => {
+    expect(normalizeSubCategory(undefined, 'no-field')).toBe('custom');
+    expect(normalizeSubCategory(null, 'null-field')).toBe('custom');
+    expect(normalizeSubCategory('', 'empty')).toBe('custom');
+  });
+
+  it('内置 volume_breakout 已迁移到 volume（无 breakout 残留）', () => {
+    const p = builtinPlugins.find((x) => x.id === 'volume_breakout');
+    expect(p?.subCategory).toBe('volume');
   });
 });
 
@@ -816,11 +852,12 @@ describe('pluginEngine 覆盖 — executePlugin 参数与 context', () => {
 // ---------------------------------------------------------------------------
 
 describe('pluginEngine 覆盖 — executeAllPlugins 统计分支', () => {
-  /** 隔离 DuckDB：行情查询一律 mock 成空结果 */
+  /** 隔离 DuckDB：行情查询一律 mock 成空结果（含 S2 持仓快照的取价） */
   async function mockMarketData(): Promise<void> {
     const md = await import('../../src/services/marketData.js');
     vi.spyOn(md, 'batchGetDailyRange').mockResolvedValue(new Map());
     vi.spyOn(md, 'getDailyRange').mockResolvedValue([]);
+    vi.spyOn(md, 'batchGetLatestClose').mockResolvedValue(new Map());
   }
 
   it('标的域模式：SUCCESS 被统计（probe 插件产出信号）', async () => {
@@ -866,5 +903,189 @@ describe('pluginEngine 覆盖 — executeAllPlugins 统计分支', () => {
 
     const to = await executeAllPlugins({ userParams: { mode: 'timeout' } });
     expect(to.stats.timeout).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. S2 —— 只读持仓视图（positions / cash / equity / POSITION_UNAVAILABLE）
+// ---------------------------------------------------------------------------
+
+describe('pluginEngine 覆盖 — S2 持仓视图', () => {
+  const snapshot = {
+    available: true,
+    positions: [{ symbol: 'sh600000', quantity: 100, avgCost: 10, marketValue: 1200 }],
+    cash: 500,
+    equity: 1700,
+  };
+
+  /** 需要持仓视图的插件 */
+  function makeRiskPlugin(execute: Plugin['execute']): Plugin {
+    return {
+      id: 'risk-probe',
+      name: '风险探针',
+      version: '1.0.0',
+      author: 'test',
+      period: 'daily',
+      category: 'monitor',
+      subCategory: 'risk',
+      complexity: 'simple',
+      defaultParams: {},
+      requiresPositions: true,
+      execute,
+    };
+  }
+
+  it('buildPluginContext 注入快照：positions() / cash / equity / positionsAvailable', () => {
+    const ctx = buildPluginContext(undefined, snapshot);
+    expect(ctx.positionsAvailable).toBe(true);
+    expect(ctx.positions()).toEqual(snapshot.positions);
+    expect(ctx.cash).toBe(500);
+    expect(ctx.equity).toBe(1700);
+  });
+
+  it('不传快照 → 空快照（positions 为空、cash/equity=0、不可用）', () => {
+    const ctx = buildPluginContext();
+    expect(ctx.positionsAvailable).toBe(false);
+    expect(ctx.positions()).toEqual([]);
+    expect(ctx.cash).toBe(0);
+    expect(ctx.equity).toBe(0);
+  });
+
+  it('requiresPositions 且快照不可用 → SKIP + POSITION_UNAVAILABLE，execute 不被调用', async () => {
+    let called = false;
+    const plugin = makeRiskPlugin(async () => {
+      called = true;
+      return [];
+    });
+
+    const res = await executePlugin(plugin);
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('POSITION_UNAVAILABLE');
+    expect(res.signals).toEqual([]);
+    expect(called).toBe(false);
+  });
+
+  it('timedCtx 显式拷贝快照字段（execute 内读到 cash / equity / positions）', async () => {
+    let seen: Record<string, unknown> | undefined;
+    const plugin = makeRiskPlugin(async (ctx) => {
+      seen = {
+        cash: ctx.cash,
+        equity: ctx.equity,
+        available: ctx.positionsAvailable,
+        count: ctx.positions().length,
+      };
+      return [];
+    });
+
+    const res = await executePlugin(plugin, {}, buildPluginContext(undefined, snapshot));
+    // 返回空信号 → 有快照但无行情，归为 NO_DATA（不是 POSITION_UNAVAILABLE）
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('NO_DATA');
+    expect(seen).toEqual({ cash: 500, equity: 1700, available: true, count: 1 });
+  });
+
+  it('executeAllPlugins：回放（asOfDate）→ positionUnavailable 被统计', async () => {
+    const md = await import('../../src/services/marketData.js');
+    vi.spyOn(md, 'batchGetDailyRange').mockResolvedValue(new Map());
+    vi.spyOn(md, 'getDailyRange').mockResolvedValue([]);
+    vi.spyOn(md, 'batchGetLatestClose').mockResolvedValue(new Map());
+
+    const plugin = makeRiskPlugin(async () => []);
+    builtinPlugins.push(plugin);
+    try {
+      const res = await executeAllPlugins({ symbols: ['sh600000'], asOfDate: '2026-01-05' });
+      expect(res.stats.positionUnavailable).toBe(1);
+      expect(res.results.find((r) => r.pluginId === 'risk-probe')?.skipReason).toBe('POSITION_UNAVAILABLE');
+    } finally {
+      builtinPlugins.splice(builtinPlugins.indexOf(plugin), 1);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. S3 —— boll_reversion（V3 六分类的 volatility 代表）
+// ---------------------------------------------------------------------------
+
+describe('pluginEngine 覆盖 — S3 boll_reversion', () => {
+  const plugin = builtinPlugins.find((p) => p.id === 'boll_reversion');
+  if (!plugin) throw new Error('内置插件 boll_reversion 不存在');
+
+  function ctxWithCloses(closes: number[]): PluginContext {
+    const klines: DailyKline[] = closes.map((close, i) => ({
+      date: `2026-01-${String((i % 28) + 1).padStart(2, '0')}`,
+      open: close,
+      high: close * 1.01,
+      low: close * 0.99,
+      close,
+      volume: 1_000_000,
+      amount: close * 1_000_000,
+    }));
+    const map = new Map([['sh600000', klines]]);
+    return {
+      getDailyKlines: async () => klines,
+      batchGetDailyKlines: async () => map,
+      calculateRSI: () => [],
+      calculateMACD: () => ({ dif: [], dea: [], macd: [] }),
+      calculateSMA: () => [],
+      calculateBoll,
+      positions: () => [],
+      cash: 0,
+      equity: 0,
+      positionsAvailable: false,
+    };
+  }
+
+  // 25 根在 100 附近小幅波动的收盘价（留出周期 20 的稳定带宽）
+  const baseCloses = Array.from({ length: 25 }, (_, i) => 100 + Math.sin(i / 3) * 2);
+
+  it('元数据：volatility + monitor，且不依赖持仓视图', () => {
+    expect(plugin.subCategory).toBe('volatility');
+    expect(plugin.category).toBe('monitor');
+    expect(plugin.requiresPositions).toBe(false);
+  });
+
+  it('跨字段校验：pbBuy >= pbSell → 参数校验失败（ERROR）', async () => {
+    const res = await executePlugin(plugin, { pbBuy: 0.5, pbSell: 0.5 }, ctxWithCloses(baseCloses));
+    expect(res.status).toBe('ERROR');
+    expect(res.error).toContain('pbBuy');
+  });
+
+  it('收盘跌破下轨 → BUY（带描述性 label 与 %B 指标）', async () => {
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses([...baseCloses, 80]));
+    expect(res.status).toBe('SUCCESS');
+    expect(res.signals).toHaveLength(1);
+    expect(res.signals[0].signalType).toBe('BUY');
+    expect(res.signals[0].label).toContain('布林下轨');
+    expect(res.signals[0].metrics?.pb).toBeLessThan(0);
+  });
+
+  it('收盘冲破上轨 → SELL', async () => {
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses([...baseCloses, 120]));
+    expect(res.status).toBe('SUCCESS');
+    expect(res.signals).toHaveLength(1);
+    expect(res.signals[0].signalType).toBe('SELL');
+  });
+
+  it('带内 → SKIP + NO_SIGNAL', async () => {
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses(baseCloses));
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('NO_SIGNAL');
+  });
+
+  it('带宽为 0（横盘）→ %B=NaN，不臆造信号', async () => {
+    const flat = Array.from({ length: 30 }, () => 100);
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses(flat));
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('NO_SIGNAL');
+  });
+
+  it('空日线 → SKIP + NO_DATA；样本不足（< period+1）→ 不产出信号', async () => {
+    const empty = await executePlugin(plugin, { days: 120 }, ctxWithCloses([]));
+    expect(empty.status).toBe('SKIP');
+    expect(empty.skipReason).toBe('NO_DATA');
+
+    const short = await executePlugin(plugin, { days: 120 }, ctxWithCloses(baseCloses.slice(0, 20)));
+    expect(short.status).toBe('SKIP');
+    expect(short.signals).toEqual([]);
   });
 });
