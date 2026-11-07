@@ -13,12 +13,16 @@
  * 时点：决策发生在 T-1 收盘后（`ctx.asOf`），成交在 T 开盘（`priceMode: 'open'`）。
  *
  * 与 v5.2 字面不同（有意为之，均已登记）：
- * 1. `targetWeight = 1/holdingsNum`。`holdingsNum=1` 与 v5.2「全部可用现金」等价；
+ * 1. 正常目标 `targetWeight = 1/holdingsNum`。`holdingsNum=1` 与 v5.2「全部可用现金」等价；
  *    `>1` 时 v5.2 按**剩余现金逐笔均分**（L1091-L1099），这里按**总权益等权**，是近似。
+ *    **空仓期防御标的吃满可用现金（⑤）**：100% 指**首次进防御时吃满可用现金**，之后不再调整
+ *    （v5.2 L1041-L1048 → L1077-L1105，已持有即 `etfs_to_buy` 为空）。
  * 2. 止损由「分钟级每 bar 检查 + 立即市价卖」改为「决策时按 `asOf` 收盘判定 + 当日不进 targets」，
  *    实际卖出发生在 T 开盘。
- * 3. 历史序列按 `valid_mask` 剔除零量日（与 v5.2 一致）；有效点不足时向前扩窗（原版直接跳过，
- *    属有意偏离，见 `loadValidSeries`）；`asOf` 停牌仍走 `ctx.isPaused`。
+ * 3. 历史序列按 `valid_mask` 剔除零量日（与 v5.2 一致）；**有效点不足默认淘汰**（同 L913）。
+ *    仅显式 `expandLookback=true` 才向前扩窗（有意偏离，停牌密集标的会算出原版算不出的分数）。
+ *    无论开关是否打开，都记录 `lookbackInsufficient`（当日）/ `lookbackInsufficientTotal`（累计），
+ *    让影响面可见、不静默。`asOf` 停牌仍走 `ctx.isPaused`。
  * 4. 短期风控「跌幅 ≥ 3%」用 `<=` 判定（v5.2 是严格 `<`）。
  */
 import type { ParamField } from '../../../pluginEngine.js';
@@ -56,6 +60,13 @@ export interface WufuRotationParams extends FilterParams {
   maxWeakDays: number;
   stopLossThreshold: number;
   defensiveEtf: string;
+  /**
+   * 有效点不足时是否向前扩窗（**默认关闭**）。
+   *
+   * 关闭 = 与原版一致：固定 `safe_lookback` 内凑不够有效点即淘汰；
+   * 开启 = 有意偏离（停牌密集标的会算出原版算不出的分数），仅用于观察影响面。
+   */
+  expandLookback: boolean;
 }
 
 export const WUFU_ROTATION_DEFAULTS: WufuRotationParams = {
@@ -73,6 +84,7 @@ export const WUFU_ROTATION_DEFAULTS: WufuRotationParams = {
   maxWeakDays: 20,
   stopLossThreshold: 0.95,
   defensiveEtf: 'sh511880',
+  expandLookback: false,
 };
 
 /** 参数 schema（沿用 `pluginEngine.ParamField`） */
@@ -216,16 +228,31 @@ export const WUFU_ROTATION_PARAM_SCHEMA: ParamField[] = [
     default: WUFU_ROTATION_DEFAULTS.defensiveEtf,
     description: 'v5.2 `defensive_etf`；候选为空时持有（停牌则空仓）',
   },
+  {
+    key: 'expandLookback',
+    label: '有效点不足时向前扩窗',
+    type: 'boolean',
+    default: WUFU_ROTATION_DEFAULTS.expandLookback,
+    description:
+      '默认关闭（与原版一致：`safe_lookback` 内凑不够有效点即淘汰）；开启属有意偏离，仅用于观察影响面',
+  },
 ];
 
 /** 跨交易日状态（每个策略实例一份，`init()` 重置） */
 interface WufuRotationState extends WeakPeriodState {
   /** 上一次决策用到的池（`drop-from-pool` 归因需要） */
   lastPool: ReadonlySet<string>;
+  /** 累计「因有效点不足被淘汰」的标的数（让影响面可见，不静默） */
+  lookbackInsufficientTotal: number;
 }
 
 function createState(): WufuRotationState {
-  return { weak: false, startDayIndex: null, lastPool: new Set() };
+  return {
+    weak: false,
+    startDayIndex: null,
+    lastPool: new Set(),
+    lookbackInsufficientTotal: 0,
+  };
 }
 
 function toNumber(value: unknown, fallback: number): number {
@@ -251,6 +278,7 @@ export function resolveWufuRotationParams(raw: Readonly<Record<string, unknown>>
     maxWeakDays: Math.max(1, Math.trunc(toNumber(raw.maxWeakDays, d.maxWeakDays))),
     stopLossThreshold: toNumber(raw.stopLossThreshold, d.stopLossThreshold),
     defensiveEtf: String(raw.defensiveEtf ?? d.defensiveEtf),
+    expandLookback: raw.expandLookback === true || raw.expandLookback === 'true',
   };
 }
 
@@ -284,7 +312,9 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
   // v5.2 L890-L895：历史序列按 `valid_mask` 剔除零成交量日（停牌），由更早交易日补足。
   // 窗口由参数推导（不是常量）：safe_lookback = max(lookbackDays, volumeLookback, maLookback) + 40
   // （v5.2 L885：lookback = max(...) + 20；L888：safe_lookback = lookback + 20）。
-  // 停牌密集的标的（尤其跨境 ETF）在固定窗口内有效点可能不足 ⇒ 向前扩窗（见 `loadValidSeries`）。
+  // 停牌密集的标的（尤其跨境 ETF）在固定窗口内有效点可能不足：
+  // 默认按原版「不足即淘汰」；`expandLookback=true` 才向前扩窗（见 `loadValidSeries`，属有意偏离）。
+  // 无论开关与否，都记录「因有效点不足被淘汰」的标的数，让影响面可见。
   const rawWindow = momentumRawWindow(p);
   const keepWindow = momentumFilteredWindow(p);
   const required = momentumRequiredPoints(p);
@@ -293,8 +323,10 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
     pool,
     rawWindow,
     required,
+    p.expandLookback,
   );
   const passed: CandidateMetrics[] = [];
+  let lookbackInsufficient = 0;
   for (const symbol of pool) {
     const closes = rawClosesBySymbol.get(symbol) ?? [];
     const volumes = rawVolumesBySymbol.get(symbol) ?? [];
@@ -303,6 +335,11 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
       volumes.length === closes.length
         ? selectValidVolumeWindow(closes, volumes, keepWindow)
         : { closes, volumes };
+    // 有效点不足 ⇒ 与原版 L913 一致，直接淘汰（`evaluateCandidate` 也判不出来，这里先记账）
+    if (window.closes.length < required) {
+      lookbackInsufficient++;
+      continue;
+    }
     const evaluation = evaluateCandidate({
       symbol,
       closes: window.closes,
@@ -312,6 +349,11 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
       params: p,
     });
     if (evaluation.passed && evaluation.metrics) passed.push(evaluation.metrics);
+  }
+  if (lookbackInsufficient > 0) {
+    state.lookbackInsufficientTotal += lookbackInsufficient;
+    ctx.tag('lookbackInsufficient', lookbackInsufficient);
+    ctx.tag('lookbackInsufficientTotal', state.lookbackInsufficientTotal);
   }
 
   // 降序；同分按代码升序（决定论，v5.2 依赖 Python `sort` 的稳定性）
@@ -392,23 +434,24 @@ const MAX_WINDOW_ROUNDS = 2;
 /**
  * 批量取「有成交量」的历史序列。
  *
- * 起始窗口 = `momentumRawWindow`（v5.2 `safe_lookback` = `max(...) + 40`）。
- * 若某个标的**有效点不足**（停牌密集，尤其跨境 ETF），向前扩窗重取，直到：
- * - 有效点够用；或
- * - 已到面板起点（返回长度不再等于请求长度，说明没有更早的数据）。
+ * 起始窗口 = `momentumRawWindow`（v5.2 `safe_lookback` = `max(...) + 40`），过滤规则与 L908-L912 一致。
  *
- * 这是对原版有意偏离：v5.2 在 `safe_lookback` 内凑不够就 `continue`（L913），
- * 而 M4 网格会跑到 `lookbackDays=40`（需要 41 个有效点），固定窗口下会整片「算不出来」。
+ * **默认不扩窗**（`expand = false`），与原版一致：`safe_lookback` 内有效点不足的标的由调用方淘汰。
+ * 只有显式打开 `expandLookback` 才向前扩窗重取，直到有效点够用或已到面板起点——
+ * 这是有意偏离：停牌密集的标的（尤其跨境 ETF）会算出原版算不出的分数，所以默认关闭，
+ * 开关打开时调用方仍会记录「因有效点不足被淘汰」的标的数。
  */
 function loadValidSeries(
   ctx: StrategyContext,
   pool: readonly string[],
   initialWindow: number,
   required: number,
+  expand: boolean,
 ): { closesBySymbol: Map<string, number[]>; volumesBySymbol: Map<string, number[]> } {
   let windowSize = initialWindow;
   const closesBySymbol = ctx.seriesBatch(pool, windowSize, 'close');
   const volumesBySymbol = ctx.seriesBatch(pool, windowSize, 'volume');
+  if (!expand) return { closesBySymbol, volumesBySymbol };
 
   for (let round = 0; round < MAX_WINDOW_ROUNDS; round++) {
     const short = pool.filter((s) => {

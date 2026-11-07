@@ -220,7 +220,9 @@ function positionOf(symbol: string, avgCost: number, qty = 1000): PositionView {
 function decideWith(ctx: StrategyContext, params: Record<string, unknown> = {}): TargetSet {
   const strategy = createWufuRotationStrategy();
   strategy.init?.({ params });
-  const out = strategy.decide(ctx);
+  // 策略读的是 `ctx.params`（引擎侧由 `strategy.defaultParams + request.params` 填充），
+  // 只传给 `init()` 不会生效 —— 这里显式覆盖 `ctx.params`。
+  const out = strategy.decide({ ...ctx, params });
   expect(out).not.toBeNull();
   return out as TargetSet;
 }
@@ -706,38 +708,64 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     expect(ts.targets[0].score).toBeCloseTo(1.718282, 5);
   });
 
-  it('② 有效点不足时向前扩窗：65 根里全零量，扩到 130 根后凑够 26 个有效点', () => {
-    // 200 根日历 bar：前 135 根有量、后 65 根零量（模拟长期停牌）；固定 65 根窗口内有效点 = 0
+  it('② 扩窗默认关闭：有效点不足即淘汰，与原版一致，并记录淘汰数', () => {
     const closes = Array.from({ length: 200 }, (_, i) => 10 * Math.pow(1.004, i));
     const volumes = Array.from({ length: 200 }, (_, i) => (i < 135 ? 1_000_000 : 0));
+    const tags: Record<string, unknown> = {};
     const ctx = makeCtx({
       asOf: '2024-03-06',
       universe: { fixed: ['sh512880'] },
       closes: { sh512880: closes },
       volumes: { sh512880: volumes },
       indexCloses: risingIndex(),
+      tags,
     });
     const ts = decideWith(ctx);
+    // 默认路径固定取 65 根，里面全零量 ⇒ 有效点 0 < 26，直接淘汰（不向前扩）
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(tags.lookbackInsufficient).toBe(1);
+    expect(tags.lookbackInsufficientTotal).toBe(1);
+  });
+
+  it('② 有效点不足时向前扩窗（显式开关）：65 根里全零量，扩到 130 根后凑够 26 个有效点', () => {
+    // 200 根日历 bar：前 135 根有量、后 65 根零量（模拟长期停牌）；固定 65 根窗口内有效点 = 0
+    const closes = Array.from({ length: 200 }, (_, i) => 10 * Math.pow(1.004, i));
+    const volumes = Array.from({ length: 200 }, (_, i) => (i < 135 ? 1_000_000 : 0));
+    const tags: Record<string, unknown> = {};
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: closes },
+      volumes: { sh512880: volumes },
+      indexCloses: risingIndex(),
+      tags,
+    });
+    const ts = decideWith(ctx, { expandLookback: true });
     // 过滤后的有效点为 135 根里的最后 45 根（下标 90..134），动量取其中最后 26 根（109..134）
     const expected = calculateMomentumScore(closes.slice(109, 135), 25);
     expect(expected).not.toBeNull();
     expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
     expect(ts.targets[0].score).toBeCloseTo(expected!.score, 8);
+    // 扩窗后已够用 ⇒ 不记淘汰
+    expect(tags.lookbackInsufficient).toBeUndefined();
   });
 
   it('② 扩窗见底仍不足：数据不足淘汰，空仓期回退防御', () => {
     // 只有 65 根日历 bar，其中仅 20 根有量 → 无论怎么扩都凑不满 26 个有效点
     const closes = Array.from({ length: 65 }, (_, i) => 10 * Math.pow(1.004, i));
     const volumes = Array.from({ length: 65 }, (_, i) => (i < 20 ? 1_000_000 : 0));
+    const tags: Record<string, unknown> = {};
     const ctx = makeCtx({
       asOf: '2024-03-06',
       universe: { fixed: ['sh512880'] },
       closes: { sh512880: closes },
       volumes: { sh512880: volumes },
       indexCloses: risingIndex(),
+      tags,
     });
-    const ts = decideWith(ctx);
+    const ts = decideWith(ctx, { expandLookback: true });
     expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(tags.lookbackInsufficient).toBe(1);
   });
 
   it('defensive-fallback：防御 ETF 被换成股票', () => {
