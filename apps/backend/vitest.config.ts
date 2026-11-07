@@ -57,6 +57,16 @@ export default defineConfig({
     ],
     globals: true,
     testTimeout: 15000,
+    /**
+     * 🔒 **skip 显式允许清单审计**（2026-11-07 用户决策）：
+     *   环境型 skip（`cronSequence` ×4 / `restoreDrill` ×3 / `envelopeContract` ×1）
+     *   逐条登记在 `tests/skip-allowlist.json`（含「环境条件 + 原因」），**随代码一起审阅**。
+     *   清单之外的任何 skip（含 `skipIf` / `describe.skip` / `todo`）由 reporter 打印清单
+     *   并置退出码=1 ⇒ **不被静默忽略**。
+     *   ⚠️ CLI 追加 `--reporter=<名字>` 会**覆盖**本配置的 `reporters` ⇒ 审计不运行（实测）。
+     *   ⚠️ 只挂日常配置：anchors 是「环境不对就抛错」（不产生 skip），pe2/http 各有独立前提。
+     */
+    reporters: ['default', path.resolve(__dirname, 'tests/reporters/skipAllowlistReporter.ts')],
     setupFiles: [path.resolve(__dirname, 'tests/setup.ts')],
     /**
      * 🔴 `test.env` 是 vitest **官方**的 env 注入方式 —— 在任何模块被求值**之前**

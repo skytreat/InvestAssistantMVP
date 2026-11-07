@@ -100,6 +100,18 @@ function ensureJwtSecret(): void {
  * 必须在测试文件 import 之前跑完：auth.ts 读 JWT_SECRET 就是靠这一步。
  */
 function initProcessBaseline(): EnvBaseline {
+  // ── 方案 A（2026-11-07 用户决策）：日常套件默认就走迷你库档 ──
+  // 背景：`.env.local` 里有 `DUCKDB_PATH`（1.24 GB 真库）⇒ `_marketData.ts` 的
+  //   `auto` 档会解析成 `full` ⇒ 日常 `npm test` 要打开真库（内存峰值曾达 6.4 GB、
+  //   C1-C12 全库扫描导致 smoke-m2/m3 超时）。
+  // ⇒ 这里在**进程初始化时**（早于任何测试文件/`_marketData` 求值）默认 `ci`：
+  //   迷你库每次从 Parquet 夹具现生成，日常套件**绝不打开真库**。
+  // ⚠️ **只在未显式设置时兜底**：`MARKET_DATA_MODE=full npm test` 仍尊重调用方。
+  // ⚠️ anchors 套件由 `tests/anchors.setup.ts` **显式覆盖为 `full`**（它必须真库）。
+  // ⚠️ 必须放在 globalThis 早退**之前**：`--coverage` 下 `process.env` 不保证跨文件共享，
+  //   而 globalThis 守卫会让后续文件走早退路径 —— 放早退之后会让那些文件丢掉档位默认值。
+  if (!process.env.MARKET_DATA_MODE) process.env.MARKET_DATA_MODE = 'ci';
+
   const g = globalThis as unknown as Record<string, EnvBaseline | undefined>;
   const existing = g[GLOBAL_KEY];
   if (existing) {
