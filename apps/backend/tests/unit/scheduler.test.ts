@@ -75,8 +75,8 @@ describe('scheduler — registerCronJobs 有 scheduler', () => {
 
     expect(() => registerCronJobs(fakeApp)).not.toThrow();
 
-    // addCronJob 被调用了 4 次（C1-C12 / signal / dividend / backup）
-    expect(fakeApp.scheduler.addCronJob).toHaveBeenCalledTimes(4);
+    // addCronJob 被调用了 5 次（C1-C12 / signal / dividend / 纸面日更 / backup）
+    expect(fakeApp.scheduler.addCronJob).toHaveBeenCalledTimes(5);
 
     // 应该有一条 startup INFO 日志
     const startupCalls = logSpy.mock.calls.filter(

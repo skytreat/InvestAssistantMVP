@@ -383,8 +383,8 @@ export function makeContext(args: {
   };
 }
 
-/** 从 `UniverseSnapshot` 取策略需要的部分 */
-function universeViewOf(snapshot: ReturnType<UniverseResolver>): UniverseView {
+/** 从 `UniverseSnapshot` 取策略需要的部分（纸面账户决策复用同一口径） */
+export function universeViewOf(snapshot: ReturnType<UniverseResolver>): UniverseView {
   return {
     asOf: snapshot.asOf,
     marketLiquidityPassCount: snapshot.marketLiquidityPassCount,

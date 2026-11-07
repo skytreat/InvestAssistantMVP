@@ -1,0 +1,135 @@
+/**
+ * 纸面账户行情装载（PA-08）
+ *
+ * 口径与回测 CLI（`runCommand`）**逐条对齐**，避免纸面账户与回测结果漂移：
+ *   - 信号轨 `v_etf_qfq`、成交轨 `v_etf_bfq`（动态池走 `loadUniversePanel`，固定池走 `getBars`）；
+ *   - 装载区间 = `[回放起点 − warmup, 决策日 T]`，warmup 按**账户参数**推导；
+ *   - 时点名录 `loadUniverseProvider(replayStart, T)`（逐日 `snapshotAt`）。
+ *
+ * 回放（replay）是必须的：`wufu-rotation` 的走弱期状态跨日演进，而纸面日更每天是新进程，
+ * **不持久化策略内部状态**（`paper_account` 无 state 列，方案 §5.3 的 DDL 已定稿）。
+ * 故每个决策都把 `[start_date .. T]` 的策略决策重放一遍（影子期持仓恒为空），
+ * 只保留最后一天的目标。
+ *
+ * ⚠️ 只读 DuckDB；本文件不写任何库。
+ */
+import { loadTradingCalendar, type TradingCalendar } from '../backtest/calendar.js';
+import { getBars } from '../backtest/marketPanel.js';
+import { loadUniversePanel } from '../backtest/universe/dynamicPanel.js';
+import { loadUniverseProvider, type UniverseResolver } from '../backtest/universe/provider.js';
+import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from '../backtest/universe/fixedPool.js';
+import { WEAK_PERIOD_INDEXES } from '../backtest/universe/pointInTime.js';
+import { resolveWufuRotationParams } from '../backtest/strategies/wufuRotation/index.js';
+import { momentumRawWindow } from '../backtest/strategies/wufuRotation/filters.js';
+import { DEFAULT_DYNAMIC_TOP_N, DEFAULT_LIQUIDITY_DIVISOR } from '../backtest/universe/pointInTime.js';
+import type { Bar } from '../backtest/types.js';
+
+/** 纸面账户可用的池口径：由策略 id 推导（见 `universeModeForStrategy`） */
+export type PaperUniverseMode = 'fixed' | 'dynamic';
+
+export interface PaperMarketData {
+  calendar: TradingCalendar;
+  signalBars: ReadonlyMap<string, readonly Bar[]>;
+  execBars: ReadonlyMap<string, readonly Bar[]>;
+  indexBars: ReadonlyMap<string, readonly Bar[]>;
+  benchmarkBars: readonly Bar[];
+  universe: UniverseResolver;
+  /** 实际装载起点（诊断用） */
+  loadStart: string;
+  /** 实际装载终点（= 决策日 T） */
+  loadEnd: string;
+}
+
+export interface BuildPaperMarketDataInput {
+  strategyId: string;
+  /** 建户时冻结的参数（`paper_account.params_json`） */
+  params: Readonly<Record<string, unknown>>;
+  /** 回放起点（含）：影子期 = `start_date`（无则用决策日） */
+  replayStart: string;
+  /** 决策日 T（含） */
+  end: string;
+  benchmark: string;
+  /** 已持仓标的（落账期必须把它们的序列装进来） */
+  heldSymbols?: readonly string[];
+  divisor?: number;
+  topN?: number;
+}
+
+/**
+ * 池口径推导。
+ *
+ * `wufu-rotation` 的候选来自全市场 ETF ⇒ 必须 dynamic；其余内置策略走固定池。
+ * （`paper_account` 未持久化 universeMode，按策略 id 推导 —— 与 CLI 的硬约束一致：
+ * wufu 配固定池会漏掉候选。）
+ */
+export function universeModeForStrategy(strategyId: string): PaperUniverseMode {
+  return strategyId === 'wufu-rotation' ? 'dynamic' : 'fixed';
+}
+
+function strategyWarmup(strategyId: string, params: Readonly<Record<string, unknown>>): number {
+  if (strategyId === 'wufu-rotation') {
+    return momentumRawWindow(resolveWufuRotationParams({ ...params }));
+  }
+  return 1;
+}
+
+/** 装载纸面决策所需的全部行情（一次区间批量取数，禁止逐标的循环） */
+export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Promise<PaperMarketData> {
+  const calendar = await loadTradingCalendar();
+  const warmup = Math.max(5, strategyWarmup(input.strategyId, input.params) + 1);
+  const loadStart = calendar.lastN(input.replayStart, warmup)[0] ?? input.replayStart;
+  const end = input.end;
+
+  const mode = universeModeForStrategy(input.strategyId);
+  const userSymbol = typeof input.params.symbol === 'string' ? input.params.symbol : null;
+  const extraSymbols = [
+    ...new Set([
+      ...FIXED_ETF_POOL,
+      ...GLOBAL_ETF_POOL,
+      DEFENSIVE_ETF,
+      input.benchmark,
+      ...(userSymbol ? [userSymbol] : []),
+      ...(input.heldSymbols ?? []),
+    ]),
+  ];
+  const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
+
+  const providerPromise = loadUniverseProvider(input.replayStart, end, {
+    calendar,
+    divisor: input.divisor ?? DEFAULT_LIQUIDITY_DIVISOR,
+    topN: input.topN ?? DEFAULT_DYNAMIC_TOP_N,
+  });
+
+  if (mode === 'dynamic') {
+    const [panel, provider] = await Promise.all([
+      loadUniversePanel({ start: loadStart, end, extraSymbols, indexCodes: [...WEAK_PERIOD_INDEXES] }),
+      providerPromise,
+    ]);
+    return {
+      calendar,
+      signalBars: panel.signalBars,
+      execBars: panel.execBars,
+      indexBars: panel.indexBars,
+      benchmarkBars: panel.execBars.get(input.benchmark) ?? [],
+      universe: (asOf) => provider.snapshotAt(asOf),
+      loadStart,
+      loadEnd: end,
+    };
+  }
+
+  const [sig, exe, provider] = await Promise.all([
+    getBars(symbols, loadStart, end, { adjust: 'qfq' }),
+    getBars(symbols, loadStart, end, { adjust: 'bfq' }),
+    providerPromise,
+  ]);
+  return {
+    calendar,
+    signalBars: sig,
+    execBars: exe,
+    indexBars: new Map(WEAK_PERIOD_INDEXES.map((code) => [code, sig.get(code) ?? []])),
+    benchmarkBars: exe.get(input.benchmark) ?? [],
+    universe: (asOf) => provider.snapshotAt(asOf),
+    loadStart,
+    loadEnd: end,
+  };
+}

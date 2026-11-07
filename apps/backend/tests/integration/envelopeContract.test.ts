@@ -234,6 +234,11 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/paper/accounts/:id' },
   { method: 'POST', url: '/api/paper/accounts/:id/phase', payload: {} },
   { method: 'POST', url: '/api/paper/accounts/:id/close', payload: {} },
+  // PA-09 只读报告
+  { method: 'GET', url: '/api/paper/accounts/:id/orders' },
+  { method: 'GET', url: '/api/paper/accounts/:id/positions' },
+  { method: 'GET', url: '/api/paper/accounts/:id/equity' },
+  { method: 'GET', url: '/api/paper/accounts/:id/report' },
 
   // ── 管理员 ──
   { method: 'GET', url: '/api/admin/datacheck/result' },
