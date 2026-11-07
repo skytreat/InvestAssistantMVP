@@ -713,6 +713,7 @@ async function runCommand(argv: readonly string[]): Promise<void> {
       universeMode: args.universeMode,
       priceMode: args.priceMode,
       suspension: args.suspension,
+      universeParams: { divisor: args.divisor, topN: args.topN },
     },
   );
 
