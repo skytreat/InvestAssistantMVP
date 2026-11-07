@@ -591,4 +591,3 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
 // 🔴 2026-11-07：原「T60c —— /api/market/latest 的新实现与视图口径逐条一致」已移入手动线
 //   `t55-stockscan-filter.anchors.test.ts`（它需要真库：oracle 查询要物化 `v_stock_qfq`，
 //   真库实测 ≈11s；迷你库的视图子集不足以覆盖该口径）。
-

@@ -129,30 +129,26 @@ describe('T67-⑨ 真实行情库交叉验证（真库锚点）', () => {
 describe('T67-⑪ 真实行情库 —— name 的命中与缺失（真库锚点）', () => {
   // ⚠️ 真实库上 `/api/holding` 会触发 `v_stock_qfq` 的全量扫描（实测约 3s/次）
   //   → 合并成**一次**调用，避免多开 DuckDB 实例（文件锁 + page cache 驱逐）
-  it(
-    '真库上 sh600000 = 浦发银行、sh600001 无名（缺失是常态，不报错），且查名仍只 1 次 IN 查询',
-    async () => {
-      const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
-      spy.mockClear();
-      const res = await app.inject({ method: 'GET', url: '/api/holding' });
-      expect(res.statusCode).toBe(200);
-      const items = res.json().data as Array<Record<string, any>>;
+  it('真库上 sh600000 = 浦发银行、sh600001 无名（缺失是常态，不报错），且查名仍只 1 次 IN 查询', async () => {
+    const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
+    spy.mockClear();
+    const res = await app.inject({ method: 'GET', url: '/api/holding' });
+    expect(res.statusCode).toBe(200);
+    const items = res.json().data as Array<Record<string, any>>;
 
-      // 真库实测：`raw_symbol_name` 有 sh600000（浦发银行），**没有** sh600001
-      const named = items.find((i) => i.asset_code === 'sh600000');
-      expect(named).toBeDefined();
-      expect(named!.name).toBe('浦发银行');
+    // 真库实测：`raw_symbol_name` 有 sh600000（浦发银行），**没有** sh600001
+    const named = items.find((i) => i.asset_code === 'sh600000');
+    expect(named).toBeDefined();
+    expect(named!.name).toBe('浦发银行');
 
-      const unnamed = items.find((i) => i.asset_code === 'sh600001');
-      expect(unnamed).toBeDefined();
-      expect(unnamed!.name).toBeNull();
+    const unnamed = items.find((i) => i.asset_code === 'sh600001');
+    expect(unnamed).toBeDefined();
+    expect(unnamed!.name).toBeNull();
 
-      // 查名仍是 1 次 IN 查询（无 N+1）
-      const nameCalls = spy.mock.calls.filter((c) => String(c[0]).includes('FROM raw_symbol_name'));
-      expect(nameCalls.length).toBe(1);
-      const params = nameCalls[0][1] as unknown[];
-      expect(params.length).toBe(ALL_CODES.length);
-    },
-    120000,
-  );
+    // 查名仍是 1 次 IN 查询（无 N+1）
+    const nameCalls = spy.mock.calls.filter((c) => String(c[0]).includes('FROM raw_symbol_name'));
+    expect(nameCalls.length).toBe(1);
+    const params = nameCalls[0][1] as unknown[];
+    expect(params.length).toBe(ALL_CODES.length);
+  }, 120000);
 });

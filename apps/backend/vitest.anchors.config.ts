@@ -38,7 +38,10 @@ export default defineConfig({
       shuffle: false,
     },
     globals: true,
-    setupFiles: [path.resolve(__dirname, 'tests/setup.ts'), path.resolve(__dirname, 'tests/anchors.setup.ts')],
+    setupFiles: [
+      path.resolve(__dirname, 'tests/setup.ts'),
+      path.resolve(__dirname, 'tests/anchors.setup.ts'),
+    ],
     env: {
       JWT_SECRET: 'investassistant-mvp-test-secret-for-unit-tests-only',
     },

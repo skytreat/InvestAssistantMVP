@@ -19,10 +19,7 @@
  *   - `execBars` 的 `preclose > 0` 覆盖率 **100%**（1,017,704 / 1,017,704）。
  */
 import { beforeAll, describe, expect, it } from 'vitest';
-import {
-  loadUniversePanel,
-  type UniversePanel,
-} from '../../src/services/backtest/universe/dynamicPanel.js';
+import { loadUniversePanel, type UniversePanel } from '../../src/services/backtest/universe/dynamicPanel.js';
 import { DEFENSIVE_ETF, FIXED_ETF_POOL } from '../../src/services/backtest/universe/fixedPool.js';
 import { WEAK_PERIOD_INDEXES } from '../../src/services/backtest/universe/pointInTime.js';
 

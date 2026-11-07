@@ -77,21 +77,24 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
     expect(bfqGap(bfq, '2024-01-18')).toBeLessThan(-0.01);
   });
 
-  it.skipIf(!NUMERIC_READY)('sz159516 拆股：bfq 缺口落在 2026-03-30（非 03-31），qfq 两日均连续', async () => {
-    const start = '2026-03-26';
-    const end = '2026-04-02';
-    const qfq = await fetchOne('sz159516', start, end, 'qfq');
-    const bfq = await fetchOne('sz159516', start, end, 'bfq');
+  it.skipIf(!NUMERIC_READY)(
+    'sz159516 拆股：bfq 缺口落在 2026-03-30（非 03-31），qfq 两日均连续',
+    async () => {
+      const start = '2026-03-26';
+      const end = '2026-04-02';
+      const qfq = await fetchOne('sz159516', start, end, 'qfq');
+      const bfq = await fetchOne('sz159516', start, end, 'bfq');
 
-    // 实测：1:2 拆分生效日 = 2026-03-30（bfq preclose 0.83 vs 前一交易日 close 1.66）
-    // ⇒ 锚点里写的 2026-03-31 在该数据源上不是拆股日（当日 qfq/bfq 都连续）
-    expect(bfqGap(bfq, '2026-03-30')).toBeLessThan(-0.4);
-    for (const d of ['2026-03-30', '2026-03-31']) {
-      const i = qfq.findIndex((b) => b.date === d);
-      expect(i).toBeGreaterThan(0);
-      expect(qfq[i].preclose).toBeCloseTo(qfq[i - 1].close, 6);
-    }
-  });
+      // 实测：1:2 拆分生效日 = 2026-03-30（bfq preclose 0.83 vs 前一交易日 close 1.66）
+      // ⇒ 锚点里写的 2026-03-31 在该数据源上不是拆股日（当日 qfq/bfq 都连续）
+      expect(bfqGap(bfq, '2026-03-30')).toBeLessThan(-0.4);
+      for (const d of ['2026-03-30', '2026-03-31']) {
+        const i = qfq.findIndex((b) => b.date === d);
+        expect(i).toBeGreaterThan(0);
+        expect(qfq[i].preclose).toBeCloseTo(qfq[i - 1].close, 6);
+      }
+    },
+  );
 
   it.skipIf(!NUMERIC_READY)('sh515880 2026-07-06：qfq 连续、bfq 约 -50% 跳空', async () => {
     const start = '2026-07-02';
