@@ -40,7 +40,7 @@ import {
   type Plugin,
   type PluginContext,
 } from '../../src/services/pluginEngine.js';
-import type { DailyKline } from '@invest/core';
+import { calculateBoll, type DailyKline } from '@invest/core';
 
 // ---------------------------------------------------------------------------
 // 通用工具
@@ -999,5 +999,93 @@ describe('pluginEngine 覆盖 — S2 持仓视图', () => {
     } finally {
       builtinPlugins.splice(builtinPlugins.indexOf(plugin), 1);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. S3 —— boll_reversion（V3 六分类的 volatility 代表）
+// ---------------------------------------------------------------------------
+
+describe('pluginEngine 覆盖 — S3 boll_reversion', () => {
+  const plugin = builtinPlugins.find((p) => p.id === 'boll_reversion');
+  if (!plugin) throw new Error('内置插件 boll_reversion 不存在');
+
+  function ctxWithCloses(closes: number[]): PluginContext {
+    const klines: DailyKline[] = closes.map((close, i) => ({
+      date: `2026-01-${String((i % 28) + 1).padStart(2, '0')}`,
+      open: close,
+      high: close * 1.01,
+      low: close * 0.99,
+      close,
+      volume: 1_000_000,
+      amount: close * 1_000_000,
+    }));
+    const map = new Map([['sh600000', klines]]);
+    return {
+      getDailyKlines: async () => klines,
+      batchGetDailyKlines: async () => map,
+      calculateRSI: () => [],
+      calculateMACD: () => ({ dif: [], dea: [], macd: [] }),
+      calculateSMA: () => [],
+      calculateBoll,
+      positions: () => [],
+      cash: 0,
+      equity: 0,
+      positionsAvailable: false,
+    };
+  }
+
+  // 25 根在 100 附近小幅波动的收盘价（留出周期 20 的稳定带宽）
+  const baseCloses = Array.from({ length: 25 }, (_, i) => 100 + Math.sin(i / 3) * 2);
+
+  it('元数据：volatility + monitor，且不依赖持仓视图', () => {
+    expect(plugin.subCategory).toBe('volatility');
+    expect(plugin.category).toBe('monitor');
+    expect(plugin.requiresPositions).toBe(false);
+  });
+
+  it('跨字段校验：pbBuy >= pbSell → 参数校验失败（ERROR）', async () => {
+    const res = await executePlugin(plugin, { pbBuy: 0.5, pbSell: 0.5 }, ctxWithCloses(baseCloses));
+    expect(res.status).toBe('ERROR');
+    expect(res.error).toContain('pbBuy');
+  });
+
+  it('收盘跌破下轨 → BUY（带描述性 label 与 %B 指标）', async () => {
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses([...baseCloses, 80]));
+    expect(res.status).toBe('SUCCESS');
+    expect(res.signals).toHaveLength(1);
+    expect(res.signals[0].signalType).toBe('BUY');
+    expect(res.signals[0].label).toContain('布林下轨');
+    expect(res.signals[0].metrics?.pb).toBeLessThan(0);
+  });
+
+  it('收盘冲破上轨 → SELL', async () => {
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses([...baseCloses, 120]));
+    expect(res.status).toBe('SUCCESS');
+    expect(res.signals).toHaveLength(1);
+    expect(res.signals[0].signalType).toBe('SELL');
+  });
+
+  it('带内 → SKIP + NO_SIGNAL', async () => {
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses(baseCloses));
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('NO_SIGNAL');
+  });
+
+  it('带宽为 0（横盘）→ %B=NaN，不臆造信号', async () => {
+    const flat = Array.from({ length: 30 }, () => 100);
+    const res = await executePlugin(plugin, { days: 120 }, ctxWithCloses(flat));
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('NO_SIGNAL');
+  });
+
+  it('空日线 → SKIP + NO_DATA；样本不足（< period+1）→ 不产出信号', async () => {
+    const empty = await executePlugin(plugin, { days: 120 }, ctxWithCloses([]));
+    expect(empty.status).toBe('SKIP');
+    expect(empty.skipReason).toBe('NO_DATA');
+
+    const short = await executePlugin(plugin, { days: 120 }, ctxWithCloses(baseCloses.slice(0, 20)));
+    expect(short.status).toBe('SKIP');
+    expect(short.signals).toEqual([]);
   });
 });

@@ -25,7 +25,7 @@ import {
   type ParamField,
 } from '../../src/services/pluginEngine.js';
 import { calculateSMA } from '../../src/services/indicators.js';
-import { calculateRSI } from '@invest/core';
+import { calculateBoll, calculateRSI } from '@invest/core';
 import type { DailyKline } from '@invest/core';
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,11 @@ function makeMockContext(opts: MockCtxOptions = {}): PluginContext {
     },
     calculateMACD: () => ({ dif: [], dea: [], macd: [] }),
     calculateSMA,
+    calculateBoll,
+    positions: () => [],
+    cash: 0,
+    equity: 0,
+    positionsAvailable: false,
   };
 }
 

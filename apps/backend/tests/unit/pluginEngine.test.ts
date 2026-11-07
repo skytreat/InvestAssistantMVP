@@ -31,6 +31,11 @@ const mockContext: PluginContext = {
   calculateRSI: () => [],
   calculateMACD: () => ({ dif: [], dea: [], macd: [] }),
   calculateSMA: () => [],
+  calculateBoll: () => ({ upper: [], middle: [], lower: [], pb: [], width: [] }),
+  positions: () => [],
+  cash: 0,
+  equity: 0,
+  positionsAvailable: false,
 };
 
 // === 合法插件骨架（给手写 Plugin 对象用） ===

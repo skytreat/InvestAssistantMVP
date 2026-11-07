@@ -3,7 +3,7 @@
 // SDD §5.3 硬约束：沙盒禁止 global / process / require；
 //                  execute() 50ms 预算**只覆盖纯计算，行情 IO 不计入**（T88 / DEC-12 B-3）
 
-import { calculateRSI, calculateMACD, type MACDResult } from '@invest/core';
+import { calculateRSI, calculateMACD, calculateBoll, type MACDResult, type BollResult } from '@invest/core';
 import { calculateSMA } from './indicators.js';
 import { batchGetDailyRange, batchGetLatestClose } from './marketData.js';
 import { ConfigStore } from '../config/configStore.js';
@@ -125,6 +125,8 @@ export interface PluginContext {
   calculateRSI(prices: number[], period?: number): number[];
   calculateMACD(prices: number[]): MACDResult;
   calculateSMA(prices: number[], period: number): number[];
+  /** 布林带（波动率通道，S3：`volatility` 类的数据来源） */
+  calculateBoll(closes: number[], period?: number, stdDev?: number): BollResult;
 
   // ── 只读持仓视图（S2：风险类插件的数据来源） ──
   /** 持仓快照（构建期冻结，`execute()` 内零 IO） */
@@ -673,6 +675,113 @@ export const builtinPlugins: Plugin[] = [
     },
   }),
 
+  // ---------- 布林带回归（S3：V3 六分类的 volatility 代表） ----------
+  definePlugin({
+    id: 'boll_reversion',
+    name: '布林带均值回归',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'volatility',
+    complexity: 'simple',
+    description:
+      '收盘跌破布林下轨（%B < pbBuy）发出超跌回归买入信号；冲破上轨（%B > pbSell）发出超涨回归卖出信号',
+    chartOverlay: {
+      position: 'sub',
+      subChartHeightRatio: 0.3,
+      thresholdLines: [
+        { value: 0, color: '#2ecc71', label: '下轨 %B=0' },
+        { value: 1, color: '#e74c3c', label: '上轨 %B=1' },
+      ],
+    },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'period', label: '布林周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'stdDev', label: '标准差倍数', type: 'number', default: 2, min: 1, max: 4, step: 0.1 },
+      { key: 'pbBuy', label: '买入 %B 阈值', type: 'number', default: 0, min: -1, max: 0.5, step: 0.05 },
+      { key: 'pbSell', label: '卖出 %B 阈值', type: 'number', default: 1, min: 0.5, max: 2, step: 0.05 },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    // 跨字段约束：买入阈值必须低于卖出阈值，否则两条分支区间重叠、方向自相矛盾
+    validateCrossFields(params) {
+      const pbBuy = params.pbBuy;
+      const pbSell = params.pbSell;
+      if (typeof pbBuy === 'number' && typeof pbSell === 'number' && pbBuy >= pbSell) {
+        throw new PluginParamError(
+          'boll_reversion',
+          'pbSell',
+          `买入阈值 pbBuy(${pbBuy}) 必须小于卖出阈值 pbSell(${pbSell})`,
+        );
+      }
+    },
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const period = params.period as number;
+      const stdDev = params.stdDev as number;
+      const pbBuy = params.pbBuy as number;
+      const pbSell = params.pbSell as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      if (klines.length < period + 1) return [];
+
+      const closes = klines.map((k) => k.close);
+      const boll = ctx.calculateBoll(closes, period, stdDev);
+      const i = closes.length - 1;
+      const pb = boll.pb[i];
+      // 带宽为 0（横盘无波动）时 %B 为 NaN → 不臆造信号
+      if (pb === undefined || Number.isNaN(pb)) return [];
+
+      const close = closes[i];
+      const upper = boll.upper[i];
+      const middle = boll.middle[i];
+      const lower = boll.lower[i];
+
+      const base = {
+        symbol,
+        pluginId: 'boll_reversion',
+        timestamp: new Date().toISOString(),
+        metrics: { period, stdDev, pbBuy, pbSell, days, close, upper, middle, lower, pb },
+      };
+
+      // 跌破下轨 → 超跌回归买入
+      if (pb < pbBuy) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `布林下轨超跌买入（%B ${pb.toFixed(2)} < ${pbBuy}）`,
+            strength: Math.min(1, pbBuy - pb),
+            detail: `收盘 ${close.toFixed(2)} 低于布林下轨 ${lower.toFixed(2)}（%B=${pb.toFixed(2)}）`,
+          },
+        ];
+      }
+      // 冲破上轨 → 超涨回归卖出
+      if (pb > pbSell) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `布林上轨超涨卖出（%B ${pb.toFixed(2)} > ${pbSell}）`,
+            strength: Math.min(1, pb - pbSell),
+            detail: `收盘 ${close.toFixed(2)} 高于布林上轨 ${upper.toFixed(2)}（%B=${pb.toFixed(2)}）`,
+          },
+        ];
+      }
+      // 带内 → 无信号
+      return [];
+    },
+    requiresPositions: false,
+  }),
+
   // ---------- 放量突破（T83：filter 类） ----------
   definePlugin({
     id: 'volume_breakout',
@@ -1199,6 +1308,7 @@ export function buildPluginContext(
     calculateRSI: (prices: number[], period?: number) => calculateRSI(prices, period ?? 14),
     calculateMACD: (prices: number[]) => calculateMACD(prices),
     calculateSMA,
+    calculateBoll,
     positions: () => snapshot.positions,
     cash: snapshot.cash,
     equity: snapshot.equity,
@@ -1390,6 +1500,7 @@ export async function executePlugin(
     calculateRSI: ctx.calculateRSI,
     calculateMACD: ctx.calculateMACD,
     calculateSMA: ctx.calculateSMA,
+    calculateBoll: ctx.calculateBoll,
     // 🔴 显式拷贝（禁止 `...ctx` 展开：会绕过上面的 withIo 包装，把 IO 算进 50ms 预算）
     positions: ctx.positions,
     cash: ctx.cash,
