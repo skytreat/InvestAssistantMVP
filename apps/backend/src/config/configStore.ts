@@ -177,6 +177,11 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     asset_code TEXT NOT NULL,
     plugin_id TEXT NOT NULL,
     plugin_category TEXT NOT NULL CHECK (plugin_category IN ('monitor', 'filter')),
+    -- 插件子分类（V3 六分类：trend/momentum/volatility/volume/pattern/risk；custom = 未分类兜底）。
+    -- 读取侧按此做**稳定判据**过滤（风险提示不进 Top5 / 不抢持仓卡徽标），不依赖 plugin_id 字符串匹配。
+    -- ⚠️ 刻意不加 CHECK：子分类集合可能扩充（新增分类不该逼一次表重建）；写入方是插件引擎的
+    --    normalizeSubCategory 归一化出口，非法值在写入前就被降级为 'custom'。
+    sub_category TEXT,
     trade_date TEXT NOT NULL,
     direction TEXT NOT NULL CHECK (direction IN ('buy', 'sell', 'hold')),
     label TEXT NOT NULL,
@@ -504,6 +509,9 @@ export class ConfigStore {
       // F 域区间回放：来源标记。既有行必须落 'live'（回放能力上线前不存在 replay 信号），
       // 因此可安全地用 NOT NULL DEFAULT 'live' 做幂等补列（零行重写，见 AGENTS「DDL 变更判据」）。
       origin: "TEXT NOT NULL DEFAULT 'live' CHECK (origin IN ('live', 'replay'))",
+      // 风险类落地：插件子分类。存量行补列为 NULL（历史信号无子分类口径），
+      // 读取侧一律用 `(sub_category IS NULL OR sub_category <> 'risk')` 判定（NULL 视为非风险）。
+      sub_category: 'TEXT',
     };
     try {
       const table = this._db

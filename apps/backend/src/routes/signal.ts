@@ -26,6 +26,7 @@ const TOP_SIGNALS_LIMIT = 5;
  *   &asset_code=sh600000          单标的过滤
  *   &plugin_id=rsi_oversold
  *   &direction=buy
+ *   &exclude_risk=1               排除风险类信号（sub_category='risk'；Top5 用）
  *   &page=1&page_size=20
  *
  * T54：所有筛选值一律走预编译参数化绑定（`?` 占位），禁止把入参拼进 SQL 文本；
@@ -138,6 +139,20 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       const cooldownBars = Number.isFinite(requestedBars)
         ? Math.min(20, Math.max(1, requestedBars))
         : resolveSignalCooldownBars();
+
+      /**
+       * 🔴 风险类排除开关（Dashboard「今日最值得看的机会」Top5 专用）
+       *
+       * 判据用 `sub_category`（插件契约字段），**不用 plugin_id 字符串匹配** ——
+       * 插件 id 可改名，子分类是稳定口径。`NULL` 视为非风险（历史行无子分类）。
+       *
+       * ⚠️ 默认**不排除**：信号页要按六分类展示全部信号（含风险提示），
+       *    只有明确要看「交易机会」的场景（Top5）才传 `exclude_risk=1`。
+       *    与 F1 `grade` / F6 `dedupe` **正交叠加**：先按子分类过滤，再分级/合并。
+       */
+      if (q.exclude_risk === '1' || q.exclude_risk === 'true') {
+        where.push(`(sub_category IS NULL OR sub_category <> 'risk')`);
+      }
 
       const whereSql = 'WHERE ' + where.join(' AND ');
       const count = (
@@ -268,11 +283,23 @@ export async function registerSignalRoutes(app: FastifyInstance) {
    *
    * ⚠️ 未分级行（F1 尚未回填 `grade` 的存量数据）按 strength 排序，
    *    因此本端点**不依赖 F1 是否已落地**即可工作。
+   *
+   * 🔴 **风险类不参与 Top5**：本端点语义是「今日最值得看的机会」，
+   *    风险提示（`sub_category='risk'`：单票占比 / 浮亏止损 / 集中度）挤进来会稀释它，
+   *    故**默认排除**；`exclude_risk=0|false` 可显式放开（仅供排查/风险视角复用）。
+   *    判据是子分类列，**不按 plugin_id 字符串匹配**；`NULL`（存量行）视为非风险。
    */
   app.get('/api/signal/top5', async (request, reply) => {
     try {
       const user = (request as AuthedRequest).user;
       const q = request.query as Record<string, string | undefined>;
+      /**
+       * 风险类排除开关：缺省 = **排除**（见上方契约），只有显式 `0/false` 才放开。
+       * 与 `GET /api/signal` 的 `exclude_risk`（缺省 = 不排除）语义相反 ——
+       * 因为该端点的定位是「机会」，而通用列表的定位是「全部信号（含风险提示）」。
+       */
+      const excludeRisk =
+        q.exclude_risk === undefined || q.exclude_risk === '1' || q.exclude_risk === 'true';
       let tradeDate: string;
       let dateSource: 'explicit' | 'signal' | 'quote' | 'today' = 'explicit';
       let latestQuoteDate: string | null = null;
@@ -288,10 +315,14 @@ export async function registerSignalRoutes(app: FastifyInstance) {
         latestQuoteDate = resolved.latestQuoteDate;
       }
 
+      // 风险类排除条件（无用户输入，纯常量片段，不涉及拼接注入）
+      const riskFilter = excludeRisk
+        ? ` AND (sub_category IS NULL OR sub_category <> 'risk')`
+        : '';
       const rows = ConfigStore.getInstance()
         .db.prepare(
           `SELECT * FROM user_strategy_signal
-            WHERE user_id = ? AND is_deleted = 0 AND trade_date = ?
+            WHERE user_id = ? AND is_deleted = 0 AND trade_date = ?${riskFilter}
             ORDER BY CASE grade
                        WHEN 'strong' THEN 0
                        WHEN 'medium' THEN 1

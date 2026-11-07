@@ -316,6 +316,7 @@ export async function replaySignals(options: SignalReplayOptions = {}): Promise<
             tradeDate,
             userId,
             origin,
+            pluginResult.subCategory ?? null,
           );
           day.inserted += persist.inserted;
           day.skipped += persist.skipped;

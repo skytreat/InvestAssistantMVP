@@ -1185,6 +1185,11 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     asset_code TEXT NOT NULL,
     plugin_id TEXT NOT NULL,
     plugin_category TEXT NOT NULL CHECK (plugin_category IN ('monitor', 'filter')),
+    -- 插件子分类（V3 六分类 trend/momentum/volatility/volume/pattern/risk，`custom` 为未分类兜底）。
+    -- 读取侧按该列做**稳定判据**过滤（风险提示不进 Top5 / 不抢持仓卡徽标），不按 plugin_id 字符串匹配；
+    -- 刻意不加 CHECK（子分类集合可能扩充，避免为新增分类做一次表重建）。
+    -- 存量库由 `_ensureSignalLifecycleColumns()` 幂等 `ALTER TABLE ADD COLUMN` 补列，历史行落 NULL（视为非风险）。
+    sub_category TEXT,
     trade_date TEXT NOT NULL,
     direction TEXT NOT NULL CHECK (direction IN ('buy', 'sell', 'hold')),
     label TEXT NOT NULL,
@@ -1442,7 +1447,7 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
 | `/api/strategy/plugins/:id/toggle` | PUT | 是 | **启用 / 禁用**单个插件。body `{ enabled }`（接受 `true/false` / `1/0` / `'1'/'0'/'true'/'false'`，后端统一收口成 SQLite 的 `0/1`）；**无法识别的取值 → 400 `PARAM_INVALID`**（不是 500）。⚠️ **方法必须是 PUT** —— Fastify 不做方法回退，用 POST 会 404 |
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
-| `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
+| `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>**`exclude_risk=1/true`**：排除风险类信号（`WHERE (sub_category IS NULL OR sub_category <> 'risk')`，**按子分类列判定、不按 plugin_id 字符串匹配**）—— 供 Dashboard Top5「今日最值得看的机会」使用；不传则照常返回全部（信号页需要展示风险提示）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
 | `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |
 | `/api/stockscan` | POST | 是 | 筛选插件执行。返回 `{ totalCandidates, totalMatched, results, tradeDate, filters }`：`totalCandidates`=DuckDB 初筛候选池只数；`totalMatched`=**命中插件条件的总只数**（不是候选池、不是返回条数）；`results`=按 score 降序的**前 `max_results` 条（默认/上限 100）**。⚠️ **不支持分页**：`totalMatched > results.length` 时其余命中不可翻页获取 |
 | `/api/review/yield` | GET | 是 | 双口径收益统计；支持 date_range + granularity（monthly/quarterly/yearly）|
@@ -1852,7 +1857,7 @@ export interface StrategyPlugin {
 
 | 规则 | 说明 |
 |------|------|
-| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **7 个**（monitor 5 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
+| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **8 个**（monitor 6 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
 | 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
@@ -1888,6 +1893,17 @@ export interface StrategyPlugin {
 | `volume_breakout` | 放量突破 | filter | volume | lookback=20, volumeRatio=1.5, days=120, limit=50 | 收盘创前 lookback 日新高且成交量 ≥ lookback 日均量的 volumeRatio 倍 → 选股候选（BUY 方向） | 无指标依赖（直接读 K 线 high / volume） | ✅ 已实现（`builtinPlugins`），filter 类仅返回候选、不落 `user_strategy_signal` |
 | `engulfing_reversal` | 吞没反转形态 | monitor | pattern | maPeriod=20, volumePeriod=20, minVolumeRatio=1.2, days=120 | 下跌趋势（前收盘 < MA(maPeriod)）中出现放量看涨吞没 → buy；上涨趋势中出现放量看跌吞没 → sell；量比不足 / 无趋势背景不出信号 | `calculateSMA`（`@invest/core` 指标层）+ 前复权 OHLC 实体关系 | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
 | `volume_price_breakout` | 量价突破（信号版） | monitor | volume | lookback=20, volumeRatio=1.5, days=120 | 收盘放量突破前 lookback 日最高价 → buy；收盘放量跌破前 lookback 日最低价 → sell；均量为 0 / 量比不足不出信号 | 无指标依赖（直接读 K 线 high / low / volume） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
+| `position_risk_alert` | 持仓风险提示 | monitor | risk | maxPositionWeight=0.3, stopLossRatio=0.1, concentrationTopN=3, concentrationThreshold=0.6 | **只输出 HOLD、不带 strength**：单票市值占权益 > maxPositionWeight；浮亏（现价/成本-1）≤ -stopLossRatio；前 N 名市值合计占权益 > concentrationThreshold（仅标记前 N 名标的）。多规则命中**合并为一条**；`equity<=0` 或标的 `marketValue<=0` / `cash` 类持仓跳过；快照不可用 → SKIP `POSITION_UNAVAILABLE` | 持仓快照（`requiresPositions`，组合级插件，零行情 IO）；`asset_class` 分类 | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal`（`sub_category='risk'`、`strength=NULL`） |
+
+> **风险类边界（`position_risk_alert`）**：只承载**快照级**规则（单票占比 / 浮亏止损 / 仓位集中度）。
+> **行业集中度与最大回撤仍由 `portfolioRisk.ts` 的呈现承载** —— 前者需要行业分类、后者需要历史权益曲线，
+> 插件上下文（单日快照 + K 线）都没有，塞进插件会伪造数据来源。
+>
+> **读取侧契约（为什么风险 HOLD 不会污染交易信号）**：
+> 1. 风险 HOLD **不带 `strength`** ⇒ 分级候选集（`WHERE strength IS NOT NULL`）自动排除，强/中/弱分位分母不被稀释；
+> 2. 落库写 `sub_category='risk'` ⇒ 读取侧按该列（**不按 plugin_id 字符串匹配**）排除：
+>    `getLatestSignalsByAssets`（持仓卡徽标 / 候选徽标）内层过滤、`GET /api/signal` 的 `exclude_risk=1`（Dashboard Top5）；
+> 3. 信号页与持仓风险区不带该过滤，风险提示照常展示。
 
 > **子分类口径**：`sub_category` 一律取本节 `PluginSubCategory` 的 V3 六分类。旧值 `breakout` / `mean_reversion` 已由 `normalizeSubCategory()` 映射为 `volume` / `volatility`，上表不再出现旧值。
 

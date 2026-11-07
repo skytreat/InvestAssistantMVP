@@ -1,13 +1,12 @@
 /**
  * plugin-category-representatives.test.ts — V3 六分类代表插件
  *
- * 覆盖两个新增 monitor 插件：
+ * 覆盖三个新增 monitor 插件：
  *   - `engulfing_reversal`（pattern 代表）：趋势背景 + 放量确认的看涨 / 看跌吞没
  *   - `volume_price_breakout`（volume 代表）：放量突破 → buy / 放量破位 → sell
+ *   - `position_risk_alert`（risk 代表）：持仓快照级风险提示，**只输出 HOLD 且不带 strength**
  *
  * 用 mock context 隔离 DuckDB；SMA 复用 `src/services/indicators.ts` 真实实现。
- * ⚠️ 风险类（risk）**暂无独立实现**（只出方案），故本文件不为其造代表，
- *    六分类覆盖断言显式排除 risk 并注记待办，避免用假插件冒充。
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -91,13 +90,11 @@ describe('V3 六分类代表插件的登记信息', () => {
     expect(p.defaultParams).toMatchObject({ lookback: 20, volumeRatio: 1.5, days: 120 });
   });
 
-  it('趋势/动量/波动率/量价/形态 五类各自至少有一个内置代表（risk 待方案落地）', () => {
+  it('V3 六分类各自至少有一个内置代表（含 risk）', () => {
     const subs = new Set(builtinPlugins.map((p) => p.subCategory));
-    for (const s of ['trend', 'momentum', 'volatility', 'volume', 'pattern'] as const) {
+    for (const s of ['trend', 'momentum', 'volatility', 'volume', 'pattern', 'risk'] as const) {
       expect(subs.has(s), `六分类 ${s} 缺少代表插件`).toBe(true);
     }
-    // 风险类尚未落地独立插件（只出方案），此处不造假代表
-    expect(subs.has('risk')).toBe(false);
   });
 
   it('volume 类代表不再只有 filter：monitor 版存在且 filter 版保持原样', () => {

@@ -151,6 +151,14 @@ export interface PluginPositionView {
   avgCost: number;
   /** 按最新收盘价估算的市值（取不到价时为 0） */
   marketValue: number;
+  /**
+   * 资产分类（`asset_class` 表口径，无记录默认 `risk`）
+   *
+   * 风险类插件只对 `risk` 类持仓做占比 / 止损判断：
+   * 货币 ETF 等 `cash` 类持仓既不该有「浮亏止损」，也不该进「单票占比」分母之外的判断
+   * （现金类市值仍计入 `equity`，见 `loadPositionSnapshot`）。
+   */
+  assetClass: 'risk' | 'cash';
 }
 
 /**
@@ -1114,6 +1122,183 @@ export const builtinPlugins: Plugin[] = [
       return [];
     },
   }),
+
+  // ---------- 持仓风险提示（V3 六分类的 risk 代表） ----------
+  /*
+   * ## 边界：只做**快照级**规则，不复制组合风险呈现
+   *
+   * 本插件只判断三条能由「持仓快照 + 最新估值」直接得出、且可逐标的归因的规则：
+   *   ① 单票占比超限  weight = marketValue / equity > maxPositionWeight
+   *   ② 浮亏触及止损  unrealizedRatio = price / avgCost - 1 ≤ -stopLossRatio
+   *   ③ 仓位集中度    前 concentrationTopN 名市值合计 / equity > concentrationThreshold
+   * 行业集中度与最大回撤**仍由 `portfolioRisk.ts` 的呈现承载**：
+   *   前者需要行业分类（插件上下文没有），后者需要历史权益曲线（快照只有当日一帧），
+   *   塞进插件会伪造数据来源。
+   *
+   * ## 为什么只输出 HOLD
+   *
+   * 「占比超限 / 浮亏止损 / 集中度」是**风险提示**，不是交易指令。
+   * 用 SELL 冒充会让下游（信号页、纸面账户、持仓卡徽标）把它当成卖出建议，
+   * 风险提示必须与方向性交易信号在数据上可区分，故恒为 `HOLD`。
+   *
+   * ## 为什么**不设置 strength**
+   *
+   * 交易信号的分级（强/中/弱）按**当日全部带 strength 的信号**分位计算；
+   * 风险 HOLD 若带 strength 会稀释分母、把真实交易信号整体推档。
+   * 故这里刻意不写 `strength`（落库为 NULL），使分级候选集（`strength IS NOT NULL`）自动排除风险提示。
+   *
+   * ## 为什么一个标的只出**一条**信号
+   *
+   * `user_strategy_signal` 唯一键是 `(user_id, asset_code, plugin_id, trade_date)`，
+   * 同一插件同一标的一天只能落一条 ⇒ 三条规则命中时**合并**为一条，label 逐条列出、metrics 带各项实际值与阈值。
+   *
+   * ## 不臆造信号
+   *
+   * - 持仓快照不可用（无 userId / 回放 / 读取失败）：引擎按 `requiresPositions` 直接 SKIP（`POSITION_UNAVAILABLE`）；
+   * - `equity <= 0`：无法计算占比，**不用 0 做分母**，直接不出信号；
+   * - 标的 `marketValue <= 0`（取不到最新价）：跳过该标的，不把「无价」当成「零仓位风险」；
+   * - `cash` 类持仓（货币 ETF 等）：不参与占比 / 止损判断（现金类市值仍计入 equity 分母）。
+   */
+  definePlugin({
+    id: 'position_risk_alert',
+    name: '持仓风险提示',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'risk',
+    complexity: 'simple',
+    description:
+      '基于持仓快照的三条快照级规则（单票占比超限 / 浮亏触及止损 / 仓位集中度）输出 HOLD 风险提示',
+    // 风险类是**组合级**插件：读整份持仓快照，不接受 symbol 参数（标的域循环里只执行一次）
+    paramSchema: [
+      {
+        key: 'maxPositionWeight',
+        label: '单票占比上限',
+        type: 'number',
+        default: 0.3,
+        min: 0.05,
+        max: 1,
+        step: 0.05,
+        description: '单标的市值占权益比例超过该值 → 提示（0.3 = 30%）',
+      },
+      {
+        key: 'stopLossRatio',
+        label: '浮亏止损线',
+        type: 'number',
+        default: 0.1,
+        min: 0.01,
+        max: 0.5,
+        step: 0.01,
+        description: '浮亏比例达到该值 → 提示（0.1 = 回撤 10%）',
+      },
+      {
+        key: 'concentrationTopN',
+        label: '集中度前 N 名',
+        type: 'integer',
+        default: 3,
+        min: 1,
+        max: 10,
+        description: '取市值最大的 N 个标的计算合计占比',
+      },
+      {
+        key: 'concentrationThreshold',
+        label: '集中度上限',
+        type: 'number',
+        default: 0.6,
+        min: 0.1,
+        max: 1,
+        step: 0.05,
+        description: '前 N 名合计占比超过该值 → 提示（0.6 = 60%）',
+      },
+    ],
+    async execute(ctx, params) {
+      const positions = ctx.positions();
+      if (positions.length === 0) return [];
+
+      const equity = ctx.equity;
+      // 权益 ≤ 0 时占比无意义：不拿 0 做分母
+      if (!(equity > 0)) return [];
+
+      const maxPositionWeight = params.maxPositionWeight as number;
+      const stopLossRatio = params.stopLossRatio as number;
+      const concentrationTopN = params.concentrationTopN as number;
+      const concentrationThreshold = params.concentrationThreshold as number;
+
+      // 只判断风险类且有估值的持仓：cash 类无止损语义；marketValue=0 说明取不到价，跳过
+      const riskPositions = positions.filter(
+        (p) => p.assetClass === 'risk' && p.quantity > 0 && p.marketValue > 0,
+      );
+      if (riskPositions.length === 0) return [];
+
+      // 集中度是**组合级**判据：按市值降序取前 N 名，合计占比越高越集中
+      const topSlice = [...riskPositions]
+        .sort((a, b) => b.marketValue - a.marketValue)
+        .slice(0, concentrationTopN);
+      const topNWeight = topSlice.reduce((acc, p) => acc + p.marketValue, 0) / equity;
+      const concentrated = topNWeight > concentrationThreshold;
+      const topNSymbols = new Set(topSlice.map((p) => p.symbol));
+
+      const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
+      const signals: PluginSignal[] = [];
+
+      for (const p of riskPositions) {
+        const weight = p.marketValue / equity;
+        // 现价用市值反推，避免再取一次行情（execute() 内零 IO）
+        const price = p.marketValue / p.quantity;
+        // 浮亏比例（负数为亏）；成本为 0 时不判浮亏
+        const unrealizedRatio = p.avgCost > 0 ? price / p.avgCost - 1 : 0;
+
+        const labels: string[] = [];
+        const details: string[] = [];
+        const metrics: Record<string, number> = { weight, maxPositionWeight, unrealizedRatio, stopLossRatio };
+
+        // ① 浮亏触及止损（风险最高，放首位作为主标签）
+        if (p.avgCost > 0 && unrealizedRatio <= -stopLossRatio) {
+          labels.push(`浮亏触及止损（${pct(unrealizedRatio)} ≤ -${pct(stopLossRatio)}）`);
+          details.push(
+            `浮亏 ${pct(-unrealizedRatio)}（现价 ${price.toFixed(2)}，成本 ${p.avgCost.toFixed(2)}）已达止损线 ${pct(stopLossRatio)}`,
+          );
+        }
+        // ② 单票占比超限
+        if (weight > maxPositionWeight) {
+          labels.push(`单票占比超限（${pct(weight)} > ${pct(maxPositionWeight)}）`);
+          details.push(
+            `单票占比 ${pct(weight)}（市值 ${p.marketValue.toFixed(2)} / 权益 ${equity.toFixed(2)}）超过上限 ${pct(maxPositionWeight)}`,
+          );
+        }
+        // ③ 仓位集中度（只标记贡献集中度的前 N 名标的）
+        if (concentrated && topNSymbols.has(p.symbol)) {
+          labels.push(
+            `仓位集中度偏高（前 ${concentrationTopN} 名合计 ${pct(topNWeight)} > ${pct(concentrationThreshold)}）`,
+          );
+          details.push(
+            `前 ${concentrationTopN} 名标的合计占比 ${pct(topNWeight)} 超过上限 ${pct(concentrationThreshold)}`,
+          );
+          metrics.topNWeight = topNWeight;
+          metrics.concentrationThreshold = concentrationThreshold;
+          metrics.concentrationTopN = concentrationTopN;
+        }
+
+        if (labels.length === 0) continue;
+
+        metrics.ruleCount = labels.length;
+        signals.push({
+          symbol: p.symbol,
+          // 🔴 只用 HOLD：风险提示不是交易指令；且**不写 strength**（见上方注释）
+          signalType: 'HOLD',
+          label: labels.join(' + '),
+          pluginId: 'position_risk_alert',
+          timestamp: new Date().toISOString(),
+          metrics,
+          detail: details.join('；'),
+        });
+      }
+
+      return signals;
+    },
+    requiresPositions: true,
+  }),
 ];
 
 // ---------------------------------------------------------------------------
@@ -1594,6 +1779,15 @@ export type PluginExecutionStatus = 'SUCCESS' | 'TIMEOUT' | 'ERROR' | 'SKIP';
 
 export interface PluginExecutionResult {
   pluginId: string;
+  /**
+   * 本次执行插件的子分类（六分类 + `custom` 兜底）
+   *
+   * 由执行结果携带，供持久化写入 `user_strategy_signal.sub_category` ——
+   * 读取侧据此做**稳定判据**过滤（如「风险信号不进 Top5 / 不抢持仓卡徽标」），
+   * 不依赖 plugin_id 字符串匹配（插件 id 可改名，子分类是契约字段）。
+   * 仅 `status === 'SUCCESS'` 时写入；其余状态无信号可写，保持 undefined。
+   */
+  subCategory?: PluginSubCategory;
   status: PluginExecutionStatus;
   signals: PluginSignal[];
   /** execute() 的**纯计算**耗时（不含行情 IO，T88 口径） */
@@ -1795,7 +1989,10 @@ export async function executePlugin(
 
         if (signals.length === 0) {
           // 区分「没数据」与「没信号」：两者此前都只记一句「无信号」，计数上也分不开
-          const skipReason: 'NO_DATA' | 'NO_SIGNAL' = klinesRead > 0 ? 'NO_SIGNAL' : 'NO_DATA';
+          // ⚠️ 组合级插件（requiresPositions，如风险类）**按设计零行情 IO**，
+          //    klinesRead 恒为 0，不能据此判成 NO_DATA（否则「持仓无风险」会被记成「无行情」）。
+          const skipReason: 'NO_DATA' | 'NO_SIGNAL' =
+            plugin.requiresPositions || klinesRead > 0 ? 'NO_SIGNAL' : 'NO_DATA';
           writeSystemLog({
             logType: 'plugin_execute',
             level: 'SKIP',
@@ -1822,6 +2019,7 @@ export async function executePlugin(
           });
           settle({
             pluginId: plugin.id,
+            subCategory: plugin.subCategory,
             status: 'SUCCESS',
             signals,
             durationMs,
@@ -2005,13 +2203,16 @@ async function loadPositionSnapshot(userId: number, asOfDate?: string): Promise<
     let equity = 0;
     for (const p of positions) {
       const marketValue = (prices.get(p.asset_code)?.close ?? 0) * p.totalQuantity;
-      if (getAssetClass(db, p.asset_code) === 'cash') cash += marketValue;
+      // 分类只取一次：既用于现金累计，也写进插件视图（避免同标的重复查同一张表）
+      const assetClass = getAssetClass(db, p.asset_code);
+      if (assetClass === 'cash') cash += marketValue;
       equity += marketValue;
       views.push({
         symbol: p.asset_code,
         quantity: p.totalQuantity,
         avgCost: p.avgCost,
         marketValue,
+        assetClass,
       });
     }
     return { available: true, positions: views, cash, equity };
@@ -2083,7 +2284,8 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end }, snapshot);
 
     const stats: PluginBatchStats = {
-      total: monitorPlugins.length * symbols.length,
+      // 组合级插件（requiresPositions，如风险类）只执行 1 次，不按标的重数统计
+      total: monitorPlugins.reduce((acc, p) => acc + (p.requiresPositions ? 1 : symbols.length), 0),
       success: 0,
       timeout: 0,
       error: 0,
@@ -2094,28 +2296,41 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     const allSignals: PluginSignal[] = [];
     const results: PluginExecutionResult[] = [];
 
+    /**
+     * 一次执行 + 归并结果（两条路径共用，避免统计分支各写一份）
+     */
+    const runOnce = async (plugin: Plugin, params: Record<string, unknown>): Promise<void> => {
+      const res = await executePlugin(plugin, params, ctx);
+      results.push(res);
+      if (res.status === 'SUCCESS') {
+        stats.success += 1;
+        allSignals.push(...res.signals);
+      } else if (res.status === 'TIMEOUT') {
+        stats.timeout += 1;
+      } else if (res.status === 'ERROR') {
+        stats.error += 1;
+      } else {
+        stats.skip += 1;
+        if (res.skipReason === 'NO_DATA') stats.noData += 1;
+        else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
+      }
+    };
+
     for (const plugin of monitorPlugins) {
+      const userParams = { ...(options.userParams ?? {}), ...(userConfigs.get(plugin.id)?.params ?? {}) };
+      /**
+       * 🔴 组合级插件（`requiresPositions`）**只执行一次**：
+       *   它读的是整份持仓快照，与「逐标的」正交；按标的重复执行会产出 N 份相同信号
+       *   （落库虽被唯一键去重，但 stats / results / 日志会被放大 N 倍）。
+       *   这类插件也不接受注入的 `symbol`（其 paramSchema 无该字段，注入值会被校验丢弃）。
+       */
+      if (plugin.requiresPositions) {
+        await runOnce(plugin, userParams);
+        continue;
+      }
       for (const symbol of symbols) {
         // 参数优先级：调用方入参 < 用户配置 < 运行时注入的 symbol
-        const params = {
-          ...(options.userParams ?? {}),
-          ...(userConfigs.get(plugin.id)?.params ?? {}),
-          symbol,
-        };
-        const res = await executePlugin(plugin, params, ctx);
-        results.push(res);
-        if (res.status === 'SUCCESS') {
-          stats.success += 1;
-          allSignals.push(...res.signals);
-        } else if (res.status === 'TIMEOUT') {
-          stats.timeout += 1;
-        } else if (res.status === 'ERROR') {
-          stats.error += 1;
-        } else {
-          stats.skip += 1;
-          if (res.skipReason === 'NO_DATA') stats.noData += 1;
-          else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
-        }
+        await runOnce(plugin, { ...userParams, symbol });
       }
     }
 

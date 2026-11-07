@@ -301,6 +301,53 @@ describe('T54 · 分页窗口 = 最近 N 条（页内升序）', () => {
   });
 });
 
+/**
+ * 风险类读取过滤（Dashboard Top5）
+ *
+ * 判据是 `sub_category` 列（插件契约字段），**不是 plugin_id 字符串匹配**。
+ * 语义分工：信号页**不传**该参数 ⇒ 风险提示照常展示；Top5 传 `exclude_risk=1` ⇒ 只留交易信号。
+ */
+describe('T54 · exclude_risk 排除风险类', () => {
+  const RISK_ASSET = 'sz999997';
+
+  function seedRiskRows(): void {
+    const stmt = db.db.prepare(
+      `INSERT INTO user_strategy_signal
+         (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json, is_final, sub_category)
+       VALUES (?, ?, ?, 'monitor', ?, ?, 'L', ?, '{}', 1, ?)`,
+    );
+    // 交易信号（无子分类口径：NULL 视为非风险）
+    stmt.run(TEST_USER_ID, RISK_ASSET, 'rsi_oversold', '2026-11-06', 'buy', 0.5, null);
+    // 风险提示（sub_category='risk'）
+    stmt.run(TEST_USER_ID, RISK_ASSET, 'position_risk_alert', '2026-11-06', 'hold', null, 'risk');
+  }
+
+  afterEach(() => {
+    db.db.prepare('DELETE FROM user_strategy_signal WHERE asset_code = ?').run(RISK_ASSET);
+  });
+
+  it('不传 exclude_risk → 风险行照常返回（信号页语义）', async () => {
+    seedRiskRows();
+    const { rows, total } = await query(`asset_code=${RISK_ASSET}`);
+    expect(total).toBe(2);
+    expect(rows.map((r) => r.plugin_id).sort()).toEqual(['position_risk_alert', 'rsi_oversold']);
+  });
+
+  it('exclude_risk=1 → 只回交易信号；风险行被排除', async () => {
+    seedRiskRows();
+    const { rows, total } = await query(`asset_code=${RISK_ASSET}&exclude_risk=1`);
+    expect(total).toBe(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].plugin_id).toBe('rsi_oversold');
+  });
+
+  it('exclude_risk=true 与 =1 等价', async () => {
+    seedRiskRows();
+    const { total } = await query(`asset_code=${RISK_ASSET}&exclude_risk=true`);
+    expect(total).toBe(1);
+  });
+});
+
 describe('T54 · 参数化绑定（注入防护）', () => {
   it('asset_code 含引号/分号 → 按字面量匹配，不报 SQL 语法错', async () => {
     const qs = 'asset_code=' + encodeURIComponent("sh600000'; DROP TABLE user_strategy_signal;--");
