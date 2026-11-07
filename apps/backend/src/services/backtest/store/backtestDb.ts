@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS bt_run (
   decision_tags_json TEXT NOT NULL,
   /** M4：时点池名称兜底计数（无名称候选数 / 代码兜底池成员数，total+max） */
   universe_stats_json TEXT,
+  /** M4：本次实际生效的池子口径 {divisor, topN}（审计元数据，不是策略参数） */
+  universe_params_json TEXT,
   status TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT,
@@ -214,6 +216,8 @@ export class BacktestStore {
     this.ensureColumn('bt_equity', 'benchmark_stale', 'INTEGER NOT NULL DEFAULT 0');
     // M4：bt_run 增加时点池名称兜底计数
     this.ensureColumn('bt_run', 'universe_stats_json', 'TEXT');
+    // M4：bt_run 记录实际生效的池子口径（策略参数里已移除 divisor/topN）
+    this.ensureColumn('bt_run', 'universe_params_json', 'TEXT');
     // M4：bt_trial 从 M2 的旧形态（trial_id PK / param_json / 无 sweep_id）重建为寻优形态
     this.migrateTrialTable();
   }
@@ -278,9 +282,9 @@ export class BacktestStore {
     const insertRun = this.db.prepare(
       `INSERT INTO bt_run (run_id, strategy_id, strategy_version, strategy_name, params_json,
          start_date, end_date, initial_cash, universe_mode, price_mode, benchmark_symbol,
-         rules_json, suspension_json, decision_tags_json, universe_stats_json, status,
+         rules_json, suspension_json, decision_tags_json, universe_stats_json, universe_params_json, status,
          started_at, finished_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const insertEquity = this.db.prepare(
       `INSERT INTO bt_equity (run_id, date, equity, cash, risk_mv, cash_mv, benchmark_close,
@@ -339,6 +343,7 @@ export class BacktestStore {
         JSON.stringify(meta.suspension),
         JSON.stringify(decisionTags),
         meta.universeStats ? JSON.stringify(meta.universeStats) : null,
+        meta.universeParams ? JSON.stringify(meta.universeParams) : null,
         'success',
         options.startedAt ?? now,
         options.finishedAt ?? now,

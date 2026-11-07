@@ -9,7 +9,11 @@
  */
 import { loadTradingCalendar } from '../calendar.js';
 import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from '../universe/fixedPool.js';
-import { WEAK_PERIOD_INDEXES } from '../universe/pointInTime.js';
+import {
+  WEAK_PERIOD_INDEXES,
+  DEFAULT_LIQUIDITY_DIVISOR,
+  DEFAULT_DYNAMIC_TOP_N,
+} from '../universe/pointInTime.js';
 import { loadUniversePanel } from '../universe/dynamicPanel.js';
 import { loadUniverseProvider } from '../universe/provider.js';
 import { loadCorporateActions } from '../corporateActions.js';
@@ -27,6 +31,9 @@ export interface SweepDataBundle {
   panelBars: number;
   /** 预热天数（策略 warmupDays + 1） */
   warmup: number;
+  /** 本次实际生效的池子口径（审计元数据，写入 `bt_run.universe_params_json`） */
+  divisor: number;
+  topN: number;
 }
 
 export interface LoadSweepDataOptions {
@@ -43,8 +50,8 @@ export interface LoadSweepDataOptions {
  * @param options `start/end` 为评估区间（2023-01-01~2025-12-31）
  */
 export async function loadSweepData(options: LoadSweepDataOptions): Promise<SweepDataBundle> {
-  const divisor = options.divisor ?? 20000;
-  const topN = options.topN ?? 300;
+  const divisor = options.divisor ?? DEFAULT_LIQUIDITY_DIVISOR;
+  const topN = options.topN ?? DEFAULT_DYNAMIC_TOP_N;
   const benchmark = options.benchmark ?? 'sh510300';
   const strategy = createWufuRotationStrategy();
 
@@ -83,5 +90,7 @@ export async function loadSweepData(options: LoadSweepDataOptions): Promise<Swee
     panelSymbols: panel.symbols.length,
     panelBars: panel.barCount,
     warmup,
+    divisor,
+    topN,
   };
 }

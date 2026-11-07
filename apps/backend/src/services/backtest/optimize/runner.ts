@@ -118,6 +118,8 @@ async function runTrial(
     initialCash,
     universeMode: 'dynamic',
     priceMode: 'open',
+    // 池子口径归 universe 层：只作审计元数据落 bt_run，不进策略 params
+    universeParams: { divisor: bundle.divisor, topN: bundle.topN },
   });
 
   const folds = WALK_FORWARD_FOLDS.map((f) => foldMetrics(result, f, initialCash));
