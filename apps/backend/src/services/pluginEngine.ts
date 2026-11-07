@@ -856,6 +856,264 @@ export const builtinPlugins: Plugin[] = [
       return signals.slice(0, limit);
     },
   }),
+
+  // ---------- 吞没反转（V3 六分类的 pattern 代表） ----------
+  /*
+   * ## 为什么选「吞没」而不是锤子线 / 缺口
+   *
+   * 1. **判据稳定**：吞没由两根 K 线的**实体包含关系**定义，不依赖影线长度的经验阈值。
+   *    锤子线的「下影线 ≥ 实体 2 倍」在 10 元股与 300 元股、低波动与高波动行情下口径漂移，
+   *    很难写成可验收的硬断言；
+   * 2. **方向完整**：吞没能同时给出看涨 / 看跌两个方向，适合 monitor 类（可同时落 buy / sell）；
+   * 3. **必须有趋势背景**：脱离趋势的吞没只是随机噪声，故叠加 MA(maPeriod) 趋势过滤。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 看涨吞没：前一根为阴线（prev.close < prev.open）→ 当根为阳线（last.close > last.open），
+   *   且当根实体**完全覆盖**前一根实体（last.open ≤ prev.close 且 last.close ≥ prev.open），
+   *   同时前一根收盘价位于 MA(maPeriod) **下方**（下跌趋势背景）。
+   * - 看跌吞没：前一根为阳线 → 当根为阴线，实体反包，且前一根收盘价位于 MA 上方。
+   * - 量能确认：当根成交量 ≥ minVolumeRatio × 前 volumePeriod 根均量（默认 1.2 倍），
+   *   过滤掉缩量假形态。
+   *
+   * ## 不臆造信号
+   * 数据不足 / MA 为 NaN / 均量为 0 / 没有趋势背景 → 一律返回 `[]`。
+   */
+  definePlugin({
+    id: 'engulfing_reversal',
+    name: '吞没反转形态',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'pattern',
+    complexity: 'simple',
+    description:
+      '下跌趋势中出现放量看涨吞没 → 买入信号；上涨趋势中出现放量看跌吞没 → 卖出信号（前复权 OHLC 口径）',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'maPeriod', label: '趋势均线周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minVolumeRatio',
+        label: '放量确认倍数',
+        type: 'number',
+        default: 1.2,
+        min: 0.5,
+        max: 5,
+        step: 0.1,
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const maPeriod = params.maPeriod as number;
+      const volumePeriod = params.volumePeriod as number;
+      const minVolumeRatio = params.minVolumeRatio as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 需要前一根 + 均量窗口 + 当根，缺一根都不判形态
+      if (klines.length < Math.max(maPeriod, volumePeriod) + 2) return [];
+
+      const n = klines.length;
+      const last = klines[n - 1];
+      const prev = klines[n - 2];
+
+      const closes = klines.map((k) => k.close);
+      const ma = ctx.calculateSMA(closes, maPeriod)[n - 1];
+      if (ma === undefined || Number.isNaN(ma)) return [];
+
+      // 均量窗口必须**排除当根**，否则当根放量会自己抬高基准、稀释确认强度
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+
+      const volumeRatio = last.volume / avgVolume;
+      if (volumeRatio < minVolumeRatio) return [];
+
+      const prevBearish = prev.close < prev.open;
+      const prevBullish = prev.close > prev.open;
+      const lastBullish = last.close > last.open;
+      const lastBearish = last.close < last.open;
+
+      const bullishEngulf =
+        prevBearish && lastBullish && last.open <= prev.close && last.close >= prev.open;
+      const bearishEngulf =
+        prevBullish && lastBearish && last.open >= prev.close && last.close <= prev.open;
+
+      const prevBody = Math.abs(prev.close - prev.open);
+      const lastBody = Math.abs(last.close - last.open);
+      // 实体反包幅度（当根实体 / 前一根实体）；趋势背景成立时 prevBody 必 > 0
+      const engulfRatio = prevBody > 0 ? lastBody / prevBody : 0;
+      const strength = Math.min(
+        1,
+        0.5 * Math.min(1, engulfRatio) + 0.5 * Math.min(1, volumeRatio / (minVolumeRatio * 2)),
+      );
+
+      const base = {
+        symbol,
+        pluginId: 'engulfing_reversal',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          open: last.open,
+          high: last.high,
+          low: last.low,
+          close: last.close,
+          prevOpen: prev.open,
+          prevClose: prev.close,
+          ma,
+          volumeRatio,
+          maPeriod,
+          volumePeriod,
+        },
+      };
+
+      // 下跌趋势 + 看涨吞没 → 买入（反转向上）
+      if (bullishEngulf && prev.close < ma) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `看涨吞没（${last.close.toFixed(2)} 反包前阴线 ${prev.open.toFixed(2)}~${prev.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阴线 ${prev.open.toFixed(2)}→${prev.close.toFixed(2)} 且收盘低于 MA${maPeriod}=${ma.toFixed(2)}；当根阳线 ${last.open.toFixed(2)}→${last.close.toFixed(2)} 实体反包，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（看涨吞没反转）`,
+          },
+        ];
+      }
+      // 上涨趋势 + 看跌吞没 → 卖出（反转向下）
+      if (bearishEngulf && prev.close > ma) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `看跌吞没（${last.close.toFixed(2)} 反包前阳线 ${prev.open.toFixed(2)}~${prev.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阳线 ${prev.open.toFixed(2)}→${prev.close.toFixed(2)} 且收盘高于 MA${maPeriod}=${ma.toFixed(2)}；当根阴线 ${last.open.toFixed(2)}→${last.close.toFixed(2)} 实体反包，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（看跌吞没反转）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
+  // ---------- 量价突破（V3 六分类的 volume 代表，monitor 版） ----------
+  /*
+   * ## 为什么新增 monitor 版，而不是改造 filter 版 `volume_breakout`
+   *
+   * 1. **语义不同**：filter 是「全市场条件选股」，由 `/api/stockscan` 调用、只返回候选、
+   *    **不落 `user_strategy_signal`**；monitor 是「每日收盘对自选 ∪ 持仓逐标的跑信号并落库」。
+   *    两者触发范围与结果去向都不同，合并会改变现有 filter 的选股行为与性能。
+   * 2. **方向不同**：filter 只做 BUY 候选，而量价的风险一侧（放量下跌）只有 monitor 能承载。
+   * 3. **不改现有 5 个插件的行为**：本插件是独立新增，`volume_breakout` 保持原样。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 放量突破：当根收盘 > 前 lookback 日**最高价**，且成交量 ≥ volumeRatio × 前 lookback 日均量 → BUY
+   * - 放量破位：当根收盘 < 前 lookback 日**最低价**，且成交量 ≥ volumeRatio × 前 lookback 日均量 → SELL
+   * - ⚠️ 前 lookback 日**不含当根**，避免当根自己抬高 / 压低基准；均量为 0 时不臆造信号。
+   */
+  definePlugin({
+    id: 'volume_price_breakout',
+    name: '量价突破（信号版）',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'volume',
+    complexity: 'simple',
+    description:
+      '收盘放量突破前 lookback 日最高价 → 买入信号；收盘放量跌破前 lookback 日最低价 → 卖出信号（信号落 user_strategy_signal）',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'lookback', label: '突破回溯天数', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumeRatio', label: '放量倍数', type: 'number', default: 1.5, min: 1, max: 10 },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const lookback = params.lookback as number;
+      const volumeRatio = params.volumeRatio as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 需要前 lookback 根 + 当根
+      if (klines.length < lookback + 1) return [];
+
+      const n = klines.length;
+      const last = klines[n - 1];
+      const prev = klines.slice(n - 1 - lookback, n - 1);
+      if (prev.length < lookback) return [];
+
+      const prevHigh = Math.max(...prev.map((k) => k.high));
+      const prevLow = Math.min(...prev.map((k) => k.low));
+      const avgVolume = prev.reduce((acc, k) => acc + k.volume, 0) / prev.length;
+      if (!(avgVolume > 0)) return [];
+
+      const ratio = last.volume / avgVolume;
+      if (ratio < volumeRatio) return [];
+
+      const base = {
+        symbol,
+        pluginId: 'volume_price_breakout',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          close: last.close,
+          high: last.high,
+          low: last.low,
+          prevHigh,
+          prevLow,
+          volumeRatio: ratio,
+          lookback,
+          amount: last.amount,
+        },
+      };
+      const strength = Math.min(1, ratio / (volumeRatio * 2));
+
+      // 放量突破 → 买入
+      if (last.close > prevHigh) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `放量突破（${last.close.toFixed(2)} > 前 ${lookback} 日高 ${prevHigh.toFixed(2)}）`,
+            strength,
+            detail: `收盘 ${last.close.toFixed(2)} 突破前 ${lookback} 日最高 ${prevHigh.toFixed(2)}，量比 ${ratio.toFixed(2)} ≥ ${volumeRatio}（量价齐升）`,
+          },
+        ];
+      }
+      // 放量破位 → 卖出
+      if (last.close < prevLow) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `放量破位（${last.close.toFixed(2)} < 前 ${lookback} 日低 ${prevLow.toFixed(2)}）`,
+            strength,
+            detail: `收盘 ${last.close.toFixed(2)} 跌破前 ${lookback} 日最低 ${prevLow.toFixed(2)}，量比 ${ratio.toFixed(2)} ≥ ${volumeRatio}（放量下跌）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
 ];
 
 // ---------------------------------------------------------------------------
