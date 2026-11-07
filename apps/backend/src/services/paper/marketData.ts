@@ -13,10 +13,15 @@
  *
  * ⚠️ 只读 DuckDB；本文件不写任何库。
  */
+import { BacktestInvariantError } from '../backtest/engine.js';
 import { loadTradingCalendar, type TradingCalendar } from '../backtest/calendar.js';
 import { getBars } from '../backtest/marketPanel.js';
 import { loadUniversePanel } from '../backtest/universe/dynamicPanel.js';
-import { loadUniverseProvider, type UniverseResolver } from '../backtest/universe/provider.js';
+import {
+  loadUniverseProvider,
+  type InMemoryUniverseProvider,
+  type UniverseResolver,
+} from '../backtest/universe/provider.js';
 import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from '../backtest/universe/fixedPool.js';
 import { WEAK_PERIOD_INDEXES } from '../backtest/universe/pointInTime.js';
 import { resolveWufuRotationParams } from '../backtest/strategies/wufuRotation/index.js';
@@ -51,6 +56,12 @@ export interface BuildPaperMarketDataInput {
   benchmark: string;
   /** 已持仓标的（落账期必须把它们的序列装进来） */
   heldSymbols?: readonly string[];
+  /**
+   * 是否装载时点名录；默认 `true`。
+   * 落账期结算走 `targetsOverride`，**不会**调用 `universe` ⇒ 关掉可省掉一次全市场池查询。
+   * 关闭后误调 `universe()` 会直接抛错（不允许静默返回空名录）。
+   */
+  withUniverse?: boolean;
   divisor?: number;
   topN?: number;
 }
@@ -94,11 +105,22 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
 
-  const providerPromise = loadUniverseProvider(input.replayStart, end, {
-    calendar,
-    divisor: input.divisor ?? DEFAULT_LIQUIDITY_DIVISOR,
-    topN: input.topN ?? DEFAULT_DYNAMIC_TOP_N,
-  });
+  const providerPromise =
+    input.withUniverse === false
+      ? null
+      : loadUniverseProvider(input.replayStart, end, {
+          calendar,
+          divisor: input.divisor ?? DEFAULT_LIQUIDITY_DIVISOR,
+          topN: input.topN ?? DEFAULT_DYNAMIC_TOP_N,
+        });
+  const universeOf = (provider: InMemoryUniverseProvider | null): UniverseResolver =>
+    provider
+      ? (asOf) => provider.snapshotAt(asOf)
+      : () => {
+          throw new BacktestInvariantError(
+            'buildPaperMarketData: 本次装载未启用时点名录（withUniverse=false），不能调用 universe()',
+          );
+        };
 
   if (mode === 'dynamic') {
     const [panel, provider] = await Promise.all([
@@ -111,7 +133,7 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
       execBars: panel.execBars,
       indexBars: panel.indexBars,
       benchmarkBars: panel.execBars.get(input.benchmark) ?? [],
-      universe: (asOf) => provider.snapshotAt(asOf),
+      universe: universeOf(provider),
       loadStart,
       loadEnd: end,
     };
@@ -128,7 +150,7 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
     execBars: exe,
     indexBars: new Map(WEAK_PERIOD_INDEXES.map((code) => [code, sig.get(code) ?? []])),
     benchmarkBars: exe.get(input.benchmark) ?? [],
-    universe: (asOf) => provider.snapshotAt(asOf),
+    universe: universeOf(provider),
     loadStart,
     loadEnd: end,
   };

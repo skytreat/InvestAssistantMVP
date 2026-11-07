@@ -17,7 +17,7 @@ import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
 import { syncSymbolDict } from './symbolDict.js';
 import { PaperStore } from './paper/store.js';
-import { runPaperDecisionStage } from './paper/decision.js';
+import { runPaperDailyStage } from './paper/settle.js';
 
 /**
  * 全部收盘后 cron 的时区（T108）。
@@ -500,7 +500,7 @@ export function registerCronJobs(app: FastifyInstance): void {
     ),
   );
 
-  // === 17:04 纸面账户日更（结算 T → 决策 T+1；S2 只做影子决策）===
+  // === 17:04 纸面账户日更（落账期先结算 T，再决策 T+1；影子期只有决策）===
   app.scheduler.addCronJob(
     new CronJob(
       { cronExpression: '4 17 * * 1-5', timezone: CRON_TIMEZONE },
@@ -515,7 +515,7 @@ export function registerCronJobs(app: FastifyInstance): void {
               message: '纸面账户日更开始',
             });
             try {
-              await runPaperDecisionStage({ db: PaperStore.getInstance().db });
+              await runPaperDailyStage({ db: PaperStore.getInstance().db });
             } catch (err: any) {
               writeSystemLog({
                 logType: 'paper_account',

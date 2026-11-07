@@ -125,14 +125,22 @@ vi.mock('../../src/services/signalService.js', () => ({
 vi.mock('../../src/services/assetStat.js', () => ({
   insertAssetStatSnapshots: vi.fn(async () => ({ inserted: 0 })),
 }));
-// PA-08：17:04 纸面账户日更 —— 同样 mock 掉（本文件**不碰数据库**）
+// PA-08：纸面决策模块（`paper/strategies` 在加载期会调 `deriveDefaultParams`），这里一并 mock
 vi.mock('../../src/services/paper/store.js', () => ({
   PaperStore: { getInstance: vi.fn(() => ({ db: {} })) },
 }));
-vi.mock('../../src/services/paper/decision.js', () => ({
-  runPaperDecisionStage: vi.fn(async () => {
+// PA-10：17:04 纸面账户日更（结算 + 决策）—— 同样 mock 掉（本文件**不碰数据库**）
+vi.mock('../../src/services/paper/settle.js', () => ({
+  runPaperDailyStage: vi.fn(async () => {
     fired.push('paper');
-    return { accounts: 0, done: 0, skipped: 0, blocked: 0, failed: 0 };
+    return {
+      accounts: 0,
+      settled: 0,
+      decisions: 0,
+      failed: 0,
+      outcomes: [],
+      settleOutcomes: [],
+    };
   }),
 }));
 vi.mock('../../src/services/quoteRerun.js', () => ({
