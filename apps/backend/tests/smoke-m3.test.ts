@@ -264,7 +264,9 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
       .prepare("SELECT * FROM system_log WHERE log_type='trigger_manual' ORDER BY id DESC LIMIT 5")
       .all();
     expect((logs as any[]).length).toBeGreaterThanOrEqual(1);
-  });
+    // ⚠️ 60s：`datacheck/trigger` 跑 C1-C12 全量（迷你库 410 标的 × 729 交易日），
+    //   CI 的 `--coverage` 下实测超 15s（2026-11-07 Coverage Gate 红）。只放宽超时，断言不变。
+  }, 60000);
 
   it('admin run-signal → builtin 插件跑 → 有 plugin_execute 日志', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/admin/run-signal', headers: adminHeaders() });
