@@ -208,13 +208,11 @@ describe('M2 引擎 · ④ 目标集契约（hold / buyBudget）', () => {
   });
 
   it('buyBudget=remaining-cash-equal 与 maxTurnoverRatio 互斥 → 抛 BacktestInvariantError', () => {
-    const bad = holdStrategy(
-      [{ symbol: 'sh510300', targetWeight: 1, reason: 'candidate-top' }],
-      { buyBudget: 'remaining-cash-equal', maxTurnoverRatio: 0.5 },
-    );
-    expect(() => runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: bad })).toThrow(
-      /互斥/,
-    );
+    const bad = holdStrategy([{ symbol: 'sh510300', targetWeight: 1, reason: 'candidate-top' }], {
+      buyBudget: 'remaining-cash-equal',
+      maxTurnoverRatio: 0.5,
+    });
+    expect(() => runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: bad })).toThrow(/互斥/);
   });
 
   it('hold 不计入换手上限：已持有标的不产生 Δ，不会因 hold 触发 turnover-capped', () => {

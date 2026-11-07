@@ -30,10 +30,7 @@ import { loadUniverseProvider, type UniverseResolver } from './universe/provider
 import { loadUniversePanel } from './universe/dynamicPanel.js';
 import { runBacktest } from './engine.js';
 import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
-import {
-  createWufuRotationStrategy,
-  resolveWufuRotationParams,
-} from './strategies/wufuRotation/index.js';
+import { createWufuRotationStrategy, resolveWufuRotationParams } from './strategies/wufuRotation/index.js';
 import { momentumRawWindow } from './strategies/wufuRotation/filters.js';
 import { computeAttribution, toAttributionRows } from './attribution/index.js';
 import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';

@@ -269,9 +269,7 @@ function assertTargetSetValid(targets: TargetSet, date: string, qtyOf: (symbol: 
   for (const t of targets.targets) {
     if (!t.hold) continue;
     if (t.targetWeight !== undefined || t.targetNotional !== undefined) {
-      throw new BacktestInvariantError(
-        `hold 与目标权重/金额互斥：${t.symbol}（${date}，策略错误）`,
-      );
+      throw new BacktestInvariantError(`hold 与目标权重/金额互斥：${t.symbol}（${date}，策略错误）`);
     }
     if (qtyOf(t.symbol) <= 0) {
       throw new BacktestInvariantError(`hold 无持仓：${t.symbol}（${date}，策略错误，不静默跳过）`);
