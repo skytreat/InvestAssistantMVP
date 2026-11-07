@@ -11,7 +11,9 @@
  *   视图 6 张：v_stock_{qfq,hfq,bfq} / v_etf_{qfq,hfq,bfq}
  *
  * ⚠️ 已知数据前提（实测，写进断言以免后人误判）：
- *   1. raw_tdx_blocks_info / raw_tdx_blocks_member **均为 0 行** → 任何 industry_code 都返回 0 条
+ *   1. raw_tdx_blocks_info / raw_tdx_blocks_member **数据量会变**（2026-11-06 实测
+ *      member 已有 90,988 行真实板块成分）→ 涉及 industry_code 的断言一律**不写死行数**，
+ *      只验证「不存在的板块码恒 0 条」+「命中行都确实是该板块成分」这两种与数据量无关的性质
  *   2. raw_holidays 最近一个交易日是 2026-10-07，但行情数据只到 2026-10-12 且**不含 10-07**
  *      → 路由自动取到的 tradeDate 当天无行情，totalCandidates 恒为 0（属 C1/C2 校验域，不在本任务范围）
  *      故依赖真实行情的断言一律直接打 buildPoolQuery + 指定 tradeDate，不依赖路由自动取日期
@@ -31,16 +33,14 @@ import Fastify from 'fastify';
  *
  * 🔴 2026-10-21 **两层开关**：本文件用例分两类 ——
  *   · **数值型**（numeric）：迷你库**可信**（它是真库的逐位一致子集）→ 可在 CI 跑
- *   · **规模型**（scale）：「5000 候选」「池子 >3000」这类**数量**门槛 → **必须真库**
- *   ⇒ 用 `itNumeric` / `itScale` 分别守卫，**不能**统一用一个开关
- *     （统一开关会让迷你库上的规模断言**假装通过**）。
+ *   · **规模型**（scale）：**已移入手动线** `t55-stockscan-filter.anchors.test.ts`
+ *     （2026-11-07；日常套件默认迷你库，规模断言在迷你库上必然假红）
+ *   ⇒ 本文件只保留 numeric 守卫，**不能**把规模断言塞回日常全量。
  */
-import { marketDataUsableFor, marketDataTier } from '../_marketData.js';
+import { marketDataUsableFor } from '../_marketData.js';
 
 /** 数值型用例可跑？（迷你库即可） */
 const MARKET_DATA_NUMERIC_AVAILABLE = await marketDataUsableFor('numeric');
-/** 规模型用例可跑？（**必须真库**） */
-const MARKET_DATA_SCALE_AVAILABLE = await marketDataUsableFor('scale');
 
 // ── SQLite 隔离：选股路由会经 writeSystemLog 打开 ConfigStore，
 //    不隔离就会写到开发库 data/business.db（AGENTS.md / T60 隔离范式）──
@@ -50,8 +50,7 @@ process.env.SQLITE_DB_PATH = path.join(TMP_DIR, 't55.db');
 
 const { ConfigStore } = await import('../../src/config/configStore.js');
 const { queryDuckDB, closeDuckDBInstance } = await import('../../src/db/duckdb.js');
-const { batchGetDailyRangeByView, getLatestMarketSnapshot } =
-  await import('../../src/services/marketData.js');
+const { batchGetDailyRangeByView } = await import('../../src/services/marketData.js');
 const { buildPoolQuery, loadCandidateDaily, parseScanFilters, registerStockScanRoutes } =
   await import('../../src/routes/stockscan.js');
 type AppliedScanFilters = import('../../src/routes/stockscan.js').AppliedScanFilters;
@@ -238,16 +237,19 @@ describe('T55 — buildPoolQuery SQL 形状（纯函数）', () => {
 });
 
 describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
-  // 🔴 两层开关：数值型（迷你库即可）vs 规模型（必须真库）
+  // 🔴 只保留数值型守卫（规模型用例已移入手动线 anchors 文件）
   const itNumeric = MARKET_DATA_NUMERIC_AVAILABLE ? it : it.skip;
-  const itScale = MARKET_DATA_SCALE_AVAILABLE ? it : it.skip;
   beforeAll(async () => {
     // ⚠️ 探针只在**有可用行情库**时跑 —— 否则 `queryDuckDB` 抛错会让 beforeAll 失败，
     //   把整组用例从「skip」变成「fail」（CI 空壳库时代的隐性坑）。
     if (!MARKET_DATA_NUMERIC_AVAILABLE) return;
     // 探针：确认本测试所依赖的数据前提仍成立（前提变了就报错，而不是让断言静默变绿）
-    const blocks = await queryDuckDB<{ n: number }>('SELECT COUNT(*) AS n FROM raw_tdx_blocks_member');
-    expect(Number(blocks[0].n)).toBe(0); // 板块表为空 → industry 过滤必然 0 条
+    // ⚠️ 2026-11-06：这里原先断言 `raw_tdx_blocks_member` 为 0 行，但库里已导入 90,988 行
+    //   真实板块成分 ⇒ 改为**只看 schema（列名）**，与行数无关。
+    const blockCols = await queryDuckDB<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'raw_tdx_blocks_member'`,
+    );
+    expect(blockCols.map((c) => c.column_name).sort()).toEqual(['block_code', 'stock_symbol']);
     const cols = await queryDuckDB<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns WHERE table_name = 'raw_symbol_class'`,
     );
@@ -261,12 +263,6 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
   itNumeric('基础候选池非空且带出 name（数值型口径）', async () => {
     const pool = await runPool(NO_FILTER);
     expect(pool.length).toBeGreaterThan(0);
-    expect(pool.some((r) => r.name !== null)).toBe(true);
-  });
-
-  itScale('基础候选池 > 3000（实测 5561）—— **规模型**，必须真库', async () => {
-    const pool = await runPool(NO_FILTER);
-    expect(pool.length).toBeGreaterThan(3000);
     expect(pool.some((r) => r.name !== null)).toBe(true);
   });
 
@@ -301,11 +297,6 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
     expect(classes).toEqual([{ cls: 'etf', n: pool.length }]);
     // src_view 标记决定后续日线从哪张视图取
     expect(new Set(pool.map((r) => r.src_view))).toEqual(new Set(['v_etf_qfq']));
-  });
-
-  itScale('asset_type=etf：候选数 > 100（实测 2074）—— **规模型**，必须真库', async () => {
-    const pool = await runPool(withFilter({ assetType: 'etf' }));
-    expect(pool.length).toBeGreaterThan(100);
   });
 
   itNumeric(
@@ -349,10 +340,48 @@ describe('T55 — 真实 DuckDB 数据上的过滤行为', () => {
   );
 
   itNumeric(
-    'industry_code：板块成分表为 0 行 → 返回 0 条（数据缺失，不是 SQL 错）',
+    'industry_code：按板块成分过滤（成分表有无数据都成立，不写死行数）',
     async () => {
-      const pool = await runPool(withFilter({ industryCode: 'BK0001' }));
-      expect(pool).toHaveLength(0);
+      // ① 不存在的板块码 ⇒ 恒 0 条（不依赖成分表数据量）
+      const none = await runPool(withFilter({ industryCode: 'BK9999' }));
+      expect(none).toHaveLength(0);
+
+      // ② 取一个真实存在的板块（成分最多者）；成分表为空时只保留 ① 的结论
+      const pick = await queryDuckDB<{ block_code: string | null; n: number }>(
+        `SELECT block_code, COUNT(*) AS n
+           FROM raw_tdx_blocks_member
+          WHERE block_code IS NOT NULL
+          GROUP BY block_code
+          ORDER BY n DESC
+          LIMIT 1`,
+      );
+      if (pick.length === 0 || pick[0].block_code === null) return;
+
+      const code = pick[0].block_code;
+      const pool = await runPool(withFilter({ industryCode: code }));
+      // 命中行必须**确实是该板块成分**（EXISTS 子查询语义）
+      const members = await queryDuckDB<{ stock_symbol: string }>(
+        `SELECT stock_symbol FROM raw_tdx_blocks_member WHERE block_code = ?`,
+        [code],
+      );
+      const allow = new Set(members.map((m) => m.stock_symbol));
+      for (const row of pool) expect(allow.has(row.symbol)).toBe(true);
+
+      // 该板块当日在池中有候选 ⇒ 过滤后必须真命中；否则必须为空
+      const hit = await queryDuckDB<{ n: number }>(
+        `SELECT COUNT(*) AS n
+           FROM raw_kline_daily k
+           JOIN raw_tdx_blocks_member bm ON bm.stock_symbol = k.symbol
+          WHERE bm.block_code = ? AND k.date = ?`,
+        [code, TRADE_DATE],
+      );
+      if (Number(hit[0].n) > 0) {
+        expect(pool.length).toBeGreaterThan(0);
+        // 候选池有 LIMIT，故只断言「不超过当日命中数」
+        expect(pool.length).toBeLessThanOrEqual(Number(hit[0].n));
+      } else {
+        expect(pool).toHaveLength(0);
+      }
     },
     60000,
   );
@@ -559,65 +588,6 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
   });
 });
 
-/**
- * 🔴 **T60c 口径守卫**：`getLatestMarketSnapshot`（`/api/market/latest` 的新实现）
- * 与旧实现（`SELECT … FROM v_stock_qfq ORDER BY date DESC LIMIT 5`）**逐条一致**。
- *
- * 背景：新实现不再物化复权视图（实测 **11.46s → 0.66s**），
- * 但它手写了前复权公式 ⇒ **必须用视图查询逐行比对**，否则前复权数值会悄悄漂移。
- *
- * ⚠️ 比对口径：两者都返回「最新交易日的 5 只 stock」，但**同日期下的 tie-break 是任意的**
- * （旧写法的 `ORDER BY date DESC LIMIT 5` 在同日期下顺序同样不确定）
- * ⇒ 比对的是「**逐行的 (date, close) 集合**」而非「同一 symbol 的值」：
- *   ① 两条查询的 `date` 集合相同，且都等于最大交易日
- *   ② 每个 symbol 的 `close` 值在**两条查询里相等**（用 symbol 关联，不是按行号）
- *   ③ 全部 symbol 的 class 都是 `stock`（与视图的 `INNER JOIN … class='stock'` 一致）
- */
-describe('T60c —— /api/market/latest 的新实现与视图口径逐条一致', () => {
-  const itFull = marketDataTier() === 'full' ? it : it.skip;
-
-  // ⚠️ 显式 timeout：oracle 查询要物化复权视图（真库实测 ≈11s）+ 另两次查询 ⇒ 默认 15s 不够
-  itFull(
-    '新实现与视图查询逐行一致（date / close / class）',
-    async () => {
-      const { queryDuckDB } = await import('../../src/db/duckdb.js');
-      const { toDateString } = await import('../../src/services/marketData.js');
-      const newRows = await getLatestMarketSnapshot(5);
-      expect(newRows.length).toBe(5);
-
-      // ⚠️ **不能假设新旧两条查询返回同一批 symbol**：
-      //   旧写法 `ORDER BY date DESC LIMIT 5` 在**同一日期**下的 tie-break 是任意的
-      //   （DuckDB 不保证同日期的行序）⇒ 新旧会各取到「最大交易日的 5 只」中的**不同**子集。
-      //   ⇒ 正确口径是：**用视图作 oracle，对新实现选出的那些 symbol 逐个比对 close 值**。
-      const symbols = newRows.map((r) => r.symbol);
-      const oracle = await queryDuckDB<{ symbol: string; date: unknown; close: number }>(
-        `SELECT symbol, date, close FROM v_stock_qfq
-        WHERE symbol IN (${symbols.map(() => '?').join(',')})
-          AND date = (SELECT MAX(date) FROM v_stock_qfq)`,
-        symbols,
-      );
-      const oracleBySymbol = new Map(oracle.map((r) => [r.symbol, r.close]));
-
-      // ① 逐 symbol：close 值与视图**完全相等**（零容差）
-      for (const r of newRows) {
-        expect(oracleBySymbol.has(r.symbol)).toBe(true);
-        expect(r.close).toBe(oracleBySymbol.get(r.symbol));
-      }
-
-      // ② 全部 date 等于最大交易日
-      const maxDate = String(
-        (await queryDuckDB<{ d: unknown }>('SELECT MAX(date) AS d FROM v_stock_qfq'))[0].d,
-      );
-      for (const r of newRows) expect(r.date).toBe(toDateString(new Date(maxDate)));
-
-      // ③ 全部是 class='stock'（与视图的 INNER JOIN 一致）
-      const classes = await queryDuckDB<{ symbol: string; class: string }>(
-        `SELECT symbol, "class" FROM raw_symbol_class WHERE symbol IN (${symbols.map(() => '?').join(',')})`,
-        symbols,
-      );
-      expect(classes.length).toBe(symbols.length);
-      for (const c of classes) expect(c.class).toBe('stock');
-    },
-    120000,
-  );
-});
+// 🔴 2026-11-07：原「T60c —— /api/market/latest 的新实现与视图口径逐条一致」已移入手动线
+//   `t55-stockscan-filter.anchors.test.ts`（它需要真库：oracle 查询要物化 `v_stock_qfq`，
+//   真库实测 ≈11s；迷你库的视图子集不足以覆盖该口径）。

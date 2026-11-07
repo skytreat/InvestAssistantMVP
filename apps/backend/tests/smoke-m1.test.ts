@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import fs from 'node:fs';
 import path from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
@@ -33,16 +32,24 @@ export function cleanupSmoke1(): void {
 /**
  * smoke-m1.test.ts — Phase 1 M1 里程碑冒烟测试
  *
- * 顶层用 fs.existsSync 快速检测 DuckDB 文件是否存在（不打开连接，不拿锁）
- * 真实 DuckDB 查询留给 test 内部执行（有独立 timeout）
+ * 行情库可用性统一走 `tests/_marketData.ts`（见下方 MARKET_DATA_NUMERIC 的说明），
+ * 不打开连接、不拿锁。
  */
 const HOST = '127.0.0.1';
 const PORT = 51100;
 
-// 顶层快速检测：只看文件存不存在，不打开 DuckDB 连接（避免文件锁泄漏）
-const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
-const DUCKDB_FILE_EXISTS = fs.existsSync(DUCKDB_PATH);
-console.log(`[smoke-m1] DuckDB path: ${DUCKDB_PATH}, exists=${DUCKDB_FILE_EXISTS}`);
+// ── 行情库可用性（2026-11-07 接线修复）──
+// 原来这里在模块顶层快照 `process.env.DUCKDB_PATH` + `fs.existsSync`：
+//   · 档位解析发生在 setup.ts 的 beforeAll（**晚于**本模块顶层）⇒ 日志打印的是**真库**路径，
+//     而实际查询已是迷你库 —— 造成「看着像真库、其实没开」的假象；
+//   · 空壳库（12KB，无 `v_stock_qfq` 表）文件存在 ⇒ `existsSync` 误判为可用。
+// ⇒ 统一走 `tests/_marketData.ts`：它会按档位解析路径并**探测表里有数据**才判可用。
+const MARKET_DATA = await import('./_marketData.js');
+const MARKET_DATA_NUMERIC = await MARKET_DATA.marketDataUsableFor('numeric');
+const RESOLVED_DUCKDB_PATH = MARKET_DATA.resolveMarketData().path ?? '(none)';
+console.log(
+  `[smoke-m1] market data tier=${MARKET_DATA.marketDataTier()} path=${RESOLVED_DUCKDB_PATH} usable=${MARKET_DATA_NUMERIC}`,
+);
 
 let app: Awaited<ReturnType<typeof Fastify>>;
 let db: ReturnType<typeof ConfigStore>;
@@ -158,8 +165,8 @@ describe('M1 Fastify', () => {
 // === DuckDB 可选（真实文件存在时才跑） ===
 describe('M1 DuckDB（部署后启用）', () => {
   it('健康检查 OR 优雅跳过', async () => {
-    // 顶层已检测：文件不存在 → 直接跳过（不打开 DuckDB，不拿锁）
-    if (!DUCKDB_FILE_EXISTS) {
+    // 统一入口探测：没行情库（空壳/无表）→ 空通过（不打开 DuckDB，不拿锁）
+    if (!MARKET_DATA_NUMERIC) {
       console.log('  ⚠️  SKIP DuckDB: 文件不存在');
       console.log('     部署后 export DUCKDB_PATH=/opt/invol/quotes.duckdb 启用');
       return; // 空通过（无断言）

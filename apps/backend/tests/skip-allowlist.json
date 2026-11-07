@@ -1,0 +1,69 @@
+{
+  "$comment": [
+    "🔒 允许跳过的用例白名单（2026-11-07 用户决策）。",
+    "规则：日常套件（vitest.config.ts）跑完后由 tests/reporters/skipAllowlistReporter.ts 审计 ——",
+    "  · 清单**之外**的任何 skip（it.skip / skipIf / describe.skip / todo）⇒ 打印并让整轮退出码=1；",
+    "  · 清单条目只在**环境条件确实不满足**时才会命中（条件写在各条的 condition 字段）。",
+    "为什么不用 `git grep 跳过` 式的口头清单：skip 是静默的，只有机器可读的白名单才能被 CI 与 review 同时约束。",
+    "新增 skip 前先问：能不能改成「环境不对就抛错」？只有确实是**环境型**（平台/真机/CI）才允许登记。",
+    "字段：file = 相对 apps/backend 的路径；suites = describe 标题链；test = 用例标题。"
+  ],
+  "entries": [
+    {
+      "file": "tests/integration/cronSequence.test.ts",
+      "suites": ["cron_sequence_trigger — 运行层（仅真机，CI 跳过）"],
+      "test": "cron_sequence_trigger (run): timer 已安装且 enabled",
+      "condition": "CI 环境（process.env.CI 有值），或本机无 systemd（!CI_SYSTEMD_AVAILABLE && !fs.existsSync('/run/systemd/system')）",
+      "reason": "该用例真机执行 `systemctl is-enabled tdx2db-update.timer`；CI/Windows 开发机没有 systemd，无法也不应真跑。"
+    },
+    {
+      "file": "tests/integration/cronSequence.test.ts",
+      "suites": ["cron_sequence_trigger — 运行层（仅真机，CI 跳过）"],
+      "test": "cron_sequence_trigger (run): list-timers 显示下次触发",
+      "condition": "同上（CI 或无 systemd）",
+      "reason": "真机执行 `systemctl list-timers`；无 systemd 时命令不存在。"
+    },
+    {
+      "file": "tests/integration/cronSequence.test.ts",
+      "suites": ["cron_sequence_trigger — 运行层（仅真机，CI 跳过）"],
+      "test": "cron_sequence_trigger (run): journalctl 有成功触发记录",
+      "condition": "同上（CI 或无 systemd）",
+      "reason": "真机执行 `journalctl -u tdx2db.service`；日志只存在于部署机。"
+    },
+    {
+      "file": "tests/integration/cronSequence.test.ts",
+      "suites": ["cron_sequence_trigger — 运行层（仅真机，CI 跳过）"],
+      "test": "cron_sequence_trigger (run): 反向验证 —— 停掉 timer 后本 describe 全 FAIL",
+      "condition": "同上（CI 或无 systemd）",
+      "reason": "反向验证依赖真机停/启 timer，单测内无法执行（契约由 T102 gate 文档手工验证）。"
+    },
+    {
+      "file": "tests/unit/restoreDrill.test.ts",
+      "suites": ["restore-drill.sh — 无 parquet 时跳过行情段"],
+      "test": "仅 SQLite 备份（无 parquet）→ 行情段 SKIP，SQLite 段通过，EXIT=0",
+      "condition": "宿主平台是 Windows（process.platform === 'win32'）",
+      "reason": "`scripts/restore-drill.sh` 是 bash 脚本；Windows 无 bash/系统脚本语义，整块 describe 跳过。"
+    },
+    {
+      "file": "tests/unit/restoreDrill.test.ts",
+      "suites": ["restore-drill.sh — 无 parquet 时跳过行情段"],
+      "test": "缺 SQLite 备份 → EXIT≠0（即使也没有 parquet）",
+      "condition": "同上（Windows）",
+      "reason": "同上：依赖 bash。"
+    },
+    {
+      "file": "tests/unit/restoreDrill.test.ts",
+      "suites": ["restore-drill.sh — 无 parquet 时跳过行情段"],
+      "test": "无 parquet 时 SQLite 校验失败仍必须 EXIT≠0（跳过行情段不得放过业务库）",
+      "condition": "同上（Windows）",
+      "reason": "同上：依赖 bash。"
+    },
+    {
+      "file": "tests/integration/envelopeContract.test.ts",
+      "suites": ["T89b · envelope 契约（**响应体不得有 `success` 键**）"],
+      "test": "POST /api/admin/backup → 响应体无 `success` 键，且符合统一 envelope",
+      "condition": "备份路由是重操作：① 真库可用（HAS_MARKET，会把整个行情视图 COPY 成 parquet >100s）；或 ② `BACKUP_DIR` 未被隔离到本测试临时目录（避免把备份写进仓库 data/backup）",
+      "reason": "该路由的 envelope 形状已由 smoke-m4 覆盖；日常套件里跑它会超时或污染仓库，故只在环境不满足时跳过。"
+    }
+  ]
+}

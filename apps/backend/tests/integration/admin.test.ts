@@ -18,8 +18,15 @@ import type { TestAppBundle } from './_helpers.js';
 let bundle: TestAppBundle;
 let userToken: string; // role=user（非 admin）—— 用来断言 admin 端点对普通用户 403
 let normalUserId = 0; // 普通用户 id —— 用于 PATCH /api/admin/role/:userId 的越权探测
-const DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
-const DUCKDB_EXISTS = fs.existsSync(DUCKDB_PATH);
+// ── 行情库可用性（2026-11-07 接线修复）— 统一走 `tests/_marketData.ts` ──
+// 原来的顶层 `process.env.DUCKDB_PATH` 快照 + `fs.existsSync` 有两个问题：
+//   ① setup.ts 解析档位在 beforeAll（**晚于**本模块顶层）⇒ 日志打印真库路径、查询却走迷你库；
+//   ② 空壳库（12KB，无 `v_stock_qfq` 表）文件存在 ⇒ `existsSync` 误判可用。
+const MARKET_DATA = await import('../_marketData.js');
+const MARKET_DATA_NUMERIC = await MARKET_DATA.marketDataUsableFor('numeric');
+console.log(
+  `[admin] market data tier=${MARKET_DATA.marketDataTier()} path=${MARKET_DATA.resolveMarketData().path ?? '(none)'} usable=${MARKET_DATA_NUMERIC}`,
+);
 
 beforeAll(async () => {
   bundle = await createTestApp();
@@ -47,7 +54,7 @@ function adminHeaders() {
 
 describe('Admin · run-datacheck', () => {
   it('admin 触发 → 200 + summaries 数组', async () => {
-    if (!DUCKDB_EXISTS) return;
+    if (!MARKET_DATA_NUMERIC) return;
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/admin/datacheck/trigger',
@@ -65,7 +72,7 @@ describe('Admin · run-datacheck', () => {
   }, 90_000);
 
   it('指定 trade_date → summaries 用该日期', async () => {
-    if (!DUCKDB_EXISTS) return;
+    if (!MARKET_DATA_NUMERIC) return;
     const res = await bundle.app.inject({
       method: 'POST',
       url: '/api/admin/datacheck/trigger',

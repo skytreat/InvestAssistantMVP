@@ -1,13 +1,19 @@
 /**
- * M1 锚点实测（集成：真 DuckDB 只读）
+ * M1 锚点 —— 除权日复权连续性 / 停牌两形态（**数值型，迷你库即可**）
  *
- * 逐条对应 `docs/audit/proposal-strategy-backtest-framework.md` §10 的 M1 验收锚点：
- *   1. T=2026-10-12 流动性阈值 ≈ 2172.6 万/日、全市场通过 673、固定池 112/114、动态池 140 组、固定池命中 115/115
+ * 逐条对应 `docs/audit/proposal-strategy-backtest-framework.md` §10 的 M1 验收锚点 2、3：
  *   2. 除权日复权连续性：qfq 无跳空 / bfq 有跳空（sh510300 / sz159516 / sh515880 三例）
  *   3. 停牌两形态各 1 例（缺 bar / volume=0），且 `zeroVolumeSeries='drop'` 不自造 0 收益
  *
- * 🔒 这些数字是**规模 / 口径**断言 ⇒ 只有真库能过（迷你库仅 250 只标的），
- *   故用 `marketDataUsableFor('scale')` 守卫：CI 无真库时整组 skip 而不是假红。
+ * 🔴 **为什么这 6 条从真库降到迷你库**（2026-11-06 测试基建改造）：
+ *   它们只断言**单只标的、具体日期上的一两个数值事实**（qfq 的 preclose == 前一日 close、
+ *   bfq 的跳空幅度、某日 volume=0），**不含任何市场规模门槛** ⇒ 迷你库（真库的逐位一致子集）
+ *   就够用。原先把它们与「673 只通过 / 140 组动态池」一起挂在 `scale` 守卫下，
+ *   结果这 6 条也被迫读 1.24 GB 真库，白白贡献内存峰值。
+ *
+ * ⚠️ 断言**未做任何放宽** —— 与真库版逐条同值（数量、方向、阈值全部原样）。
+ *   迷你夹具（`tests/fixtures/mini-market/`）已补齐这 5 只标的，且 window 前推到 2024-01
+ *   以覆盖 sh510300 的 2024-01-18 除权日。
  *
  * ⚠️ 实测口径提醒（2026-11-06）：流动性窗口是 **截至 asOf 含当天** 的 3 个交易日
  *   （v5.2 的 `previous_date` 是运行时口径；回测引擎在 T 开盘前决策须传 `asOf = T-1`）。
@@ -17,30 +23,20 @@ import { marketDataUsableFor } from '../_marketData.js';
 
 import type { Bar } from '../../src/services/backtest/types.js';
 import type { TradingCalendar } from '../../src/services/backtest/calendar.js';
-import type { UniverseSnapshot } from '../../src/services/backtest/universe/pointInTime.js';
 
 type PanelModule = typeof import('../../src/services/backtest/marketPanel.js');
-type UniverseModule = typeof import('../../src/services/backtest/universe/pointInTime.js');
 type CalendarModule = typeof import('../../src/services/backtest/calendar.js');
 
 let panel: PanelModule;
-let universe: UniverseModule;
-let calendarModule: CalendarModule;
 let calendar: TradingCalendar;
 
-/**
- * ⚠️ 本文件所有锚点都锚定在**具体历史日期 + 具体标的**上，只有真库能满足：
- *   迷你库只有 104 只标的、时间区间更短 —— 2026-11-06 PR #91 CI 实测，用 `numeric` 守卫时
- *   6 个用例红（`calendar.has('2026-09-07')` 为 false、窗口内 0 行触发列向量缺失）。
- *   ⇒ 统一用 `scale` 守卫：CI 无真库时整组 skip（不假红，也不假绿）。
- */
-const SCALE_READY = await marketDataUsableFor('scale');
+/** 数值型断言可跑？（迷你库即可 —— 迷你库是真库的逐位一致子集） */
+const NUMERIC_READY = await marketDataUsableFor('numeric');
 
 beforeAll(async () => {
-  if (!SCALE_READY) return;
+  if (!NUMERIC_READY) return;
   panel = await import('../../src/services/backtest/marketPanel.js');
-  universe = await import('../../src/services/backtest/universe/pointInTime.js');
-  calendarModule = await import('../../src/services/backtest/calendar.js');
+  const calendarModule: CalendarModule = await import('../../src/services/backtest/calendar.js');
   calendar = await calendarModule.loadTradingCalendar();
 });
 
@@ -50,51 +46,7 @@ function seriesOf(bars: Map<string, Bar[]>, symbol: string): Bar[] {
   return s;
 }
 
-/* ─────────────────────────── 1. 数字锚点（T=2026-10-12） ─────────────────────────── */
-
-describe('M1 锚点 · 时点名录（T=2026-10-12）', () => {
-  let snap: UniverseSnapshot;
-
-  beforeAll(async () => {
-    if (!SCALE_READY) return;
-    snap = await universe.resolveUniverseAt('2026-10-12');
-  }, 120_000);
-
-  it.skipIf(!SCALE_READY)('流动性阈值 ≈ 2172.6 万/日（近 3 日全市场 ETF 总额 / 20000）', () => {
-    expect(snap.liquidity.fallback).toBe(false);
-    expect(snap.liquidityDates).toEqual(['2026-10-08', '2026-10-09', '2026-10-12']);
-    // 实测总额 4345.24 亿 → 2172.62 万
-    expect(snap.liquidity.threshold / 1e4).toBeCloseTo(2172.6, 0);
-    expect(snap.liquidity.avgTotal / 1e8).toBeCloseTo(4345.24, 1);
-  });
-
-  it.skipIf(!SCALE_READY)('全市场通过流动性阈值 673 只', () => {
-    expect(snap.marketLiquidityPassCount).toBe(673);
-    // Universe(T) 同日有 bar 的 ETF（实测 2074），与「通过 673」是两个不同口径
-    expect(snap.universeCount).toBe(2074);
-  });
-
-  it.skipIf(!SCALE_READY)('固定池 112/114（流动性通过数，剔除 sh520830 / sh516190）', () => {
-    expect(snap.fixedPoolSize).toBe(114);
-    expect(snap.fixed.length).toBe(112);
-    const passed = snap.fixed.map((p) => p.symbol);
-    expect(passed).not.toContain('sh520830');
-    expect(passed).not.toContain('sh516190');
-  });
-
-  it.skipIf(!SCALE_READY)('固定池命中 115/115（114 只 + 防御标的 sh511880 全都有数据）', () => {
-    expect(snap.fixedCoverageCount).toBe(115);
-  });
-
-  it.skipIf(!SCALE_READY)('动态池 140 组（每组取成交额第一）', () => {
-    const groups = new Map(snap.dynamic.groups.map((g) => [g.groupKey, g]));
-    expect(groups.size).toBe(140);
-    expect(snap.dynamic.pool.length).toBe(140);
-    expect(snap.dynamic.pool.length).toBeLessThanOrEqual(300);
-  });
-});
-
-/* ─────────────────────────── 2. 除权日复权连续性 ─────────────────────────── */
+/* ─────────────────────────── 除权日复权连续性 ─────────────────────────── */
 
 describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', () => {
   /** 取某只票某窗口的序列 */
@@ -110,7 +62,7 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
     return bars[i].preclose / bars[i - 1].close - 1;
   }
 
-  it.skipIf(!SCALE_READY)('sh510300 2024-01-18：qfq 连续、bfq 约 -2.1% 跳空', async () => {
+  it.skipIf(!NUMERIC_READY)('sh510300 2024-01-18：qfq 连续、bfq 约 -2.1% 跳空', async () => {
     const start = '2024-01-16';
     const end = '2024-01-22';
     const qfq = await fetchOne('sh510300', start, end, 'qfq');
@@ -125,23 +77,26 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
     expect(bfqGap(bfq, '2024-01-18')).toBeLessThan(-0.01);
   });
 
-  it.skipIf(!SCALE_READY)('sz159516 拆股：bfq 缺口落在 2026-03-30（非 03-31），qfq 两日均连续', async () => {
-    const start = '2026-03-26';
-    const end = '2026-04-02';
-    const qfq = await fetchOne('sz159516', start, end, 'qfq');
-    const bfq = await fetchOne('sz159516', start, end, 'bfq');
+  it.skipIf(!NUMERIC_READY)(
+    'sz159516 拆股：bfq 缺口落在 2026-03-30（非 03-31），qfq 两日均连续',
+    async () => {
+      const start = '2026-03-26';
+      const end = '2026-04-02';
+      const qfq = await fetchOne('sz159516', start, end, 'qfq');
+      const bfq = await fetchOne('sz159516', start, end, 'bfq');
 
-    // 实测：1:2 拆分生效日 = 2026-03-30（bfq preclose 0.83 vs 前一交易日 close 1.66）
-    // ⇒ 锚点里写的 2026-03-31 在该数据源上不是拆股日（当日 qfq/bfq 都连续）
-    expect(bfqGap(bfq, '2026-03-30')).toBeLessThan(-0.4);
-    for (const d of ['2026-03-30', '2026-03-31']) {
-      const i = qfq.findIndex((b) => b.date === d);
-      expect(i).toBeGreaterThan(0);
-      expect(qfq[i].preclose).toBeCloseTo(qfq[i - 1].close, 6);
-    }
-  });
+      // 实测：1:2 拆分生效日 = 2026-03-30（bfq preclose 0.83 vs 前一交易日 close 1.66）
+      // ⇒ 锚点里写的 2026-03-31 在该数据源上不是拆股日（当日 qfq/bfq 都连续）
+      expect(bfqGap(bfq, '2026-03-30')).toBeLessThan(-0.4);
+      for (const d of ['2026-03-30', '2026-03-31']) {
+        const i = qfq.findIndex((b) => b.date === d);
+        expect(i).toBeGreaterThan(0);
+        expect(qfq[i].preclose).toBeCloseTo(qfq[i - 1].close, 6);
+      }
+    },
+  );
 
-  it.skipIf(!SCALE_READY)('sh515880 2026-07-06：qfq 连续、bfq 约 -50% 跳空', async () => {
+  it.skipIf(!NUMERIC_READY)('sh515880 2026-07-06：qfq 连续、bfq 约 -50% 跳空', async () => {
     const start = '2026-07-02';
     const end = '2026-07-08';
     const qfq = await fetchOne('sh515880', start, end, 'qfq');
@@ -154,10 +109,10 @@ describe('M1 锚点 · 除权日复权连续性（qfq 连续 / bfq 跳空）', (
   });
 });
 
-/* ─────────────────────────── 3. 停牌两形态 ─────────────────────────── */
+/* ─────────────────────────── 停牌两形态 ─────────────────────────── */
 
 describe('M1 锚点 · 停牌两形态', () => {
-  it.skipIf(!SCALE_READY)('形态① 缺 bar：sz159972 在 2026-09-28 无 bar（当日是交易日）', async () => {
+  it.skipIf(!NUMERIC_READY)('形态① 缺 bar：sz159972 在 2026-09-28 无 bar（当日是交易日）', async () => {
     expect(calendar.has('2026-09-28')).toBe(true);
     const bars = seriesOf(await panel.getBars(['sz159972'], '2026-09-21', '2026-10-08'), 'sz159972');
     expect(bars.map((b) => b.date)).not.toContain('2026-09-28');
@@ -170,7 +125,7 @@ describe('M1 锚点 · 停牌两形态', () => {
     });
   });
 
-  it.skipIf(!SCALE_READY)('形态② volume=0：sh512390 在 2026-09-07 有 bar 但零成交', async () => {
+  it.skipIf(!NUMERIC_READY)('形态② volume=0：sh512390 在 2026-09-07 有 bar 但零成交', async () => {
     expect(calendar.has('2026-09-07')).toBe(true);
     const bars = seriesOf(await panel.getBars(['sh512390'], '2026-09-01', '2026-09-30'), 'sh512390');
 
@@ -187,7 +142,7 @@ describe('M1 锚点 · 停牌两形态', () => {
     });
   });
 
-  it.skipIf(!SCALE_READY)("zeroVolumeSeries='drop' 剔除停牌日并缩短窗口 ⇒ 不自造 0% 收益", async () => {
+  it.skipIf(!NUMERIC_READY)("zeroVolumeSeries='drop' 剔除停牌日并缩短窗口 ⇒ 不自造 0% 收益", async () => {
     const keepMap = await panel.getBars(['sh512390'], '2026-09-01', '2026-09-30');
     const dropMap = await panel.getBars(['sh512390'], '2026-09-01', '2026-09-30', {
       zeroVolumeSeries: 'drop',

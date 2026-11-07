@@ -38,6 +38,12 @@ export default defineConfig({
      *   混进主套件会：① 抢 51200‑51999 端口 ② 抢 DuckDB 文件锁
      *   ③ 让「性能门槛」在受污染的进程里测 ⇒ 数字不可信。
      *   ⇒ 判据方式：**`npm run test:http -w @invest/backend`**（见 `vitest.http.config.ts`）。
+     *
+     * 🔒 **排除 `*.anchors.test.ts`**（2026-11-06，测试基建改造）：
+     *   这些用例断言的是**真库规模 / 具体历史日期上的数值事实**，必须读 1.24 GB 真库，
+     *   与日常套件混跑会把进程内存峰值推到 ~3.65 GB。
+     *   ⇒ 判据方式：**`npm run test:anchors -w @invest/backend`**（见 `vitest.anchors.config.ts`），
+     *     该配置下环境不是真库会**直接抛错**（不是 skip），避免手跑假绿。
      */
     exclude: [
       '**/node_modules/**',
@@ -47,9 +53,20 @@ export default defineConfig({
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,eslint,prettier}.config.*',
       'tests/integration/scan5000.test.ts',
       'tests/http/**',
+      'tests/**/*.anchors.test.ts',
     ],
     globals: true,
     testTimeout: 15000,
+    /**
+     * 🔒 **skip 显式允许清单审计**（2026-11-07 用户决策）：
+     *   环境型 skip（`cronSequence` ×4 / `restoreDrill` ×3 / `envelopeContract` ×1）
+     *   逐条登记在 `tests/skip-allowlist.json`（含「环境条件 + 原因」），**随代码一起审阅**。
+     *   清单之外的任何 skip（含 `skipIf` / `describe.skip` / `todo`）由 reporter 打印清单
+     *   并置退出码=1 ⇒ **不被静默忽略**。
+     *   ⚠️ CLI 追加 `--reporter=<名字>` 会**覆盖**本配置的 `reporters` ⇒ 审计不运行（实测）。
+     *   ⚠️ 只挂日常配置：anchors 是「环境不对就抛错」（不产生 skip），pe2/http 各有独立前提。
+     */
+    reporters: ['default', path.resolve(__dirname, 'tests/reporters/skipAllowlistReporter.ts')],
     setupFiles: [path.resolve(__dirname, 'tests/setup.ts')],
     /**
      * 🔴 `test.env` 是 vitest **官方**的 env 注入方式 —— 在任何模块被求值**之前**
