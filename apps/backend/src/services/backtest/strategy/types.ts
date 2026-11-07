@@ -61,6 +61,16 @@ export interface TargetPosition {
   targetWeight?: number;
   /** 目标金额（元）；优先于 `targetWeight` */
   targetNotional?: number;
+  /**
+   * **保持现有持仓：不买不卖、不参与换手计算与资金分配**（与 `targetWeight` / `targetNotional` 互斥）。
+   *
+   * 用于 v5.2 的持仓保留语义：已持有且仍在候选 ⇒ 不动，**不按目标权重再平衡**，
+   * 也不把该标的算进「待买只数」（v5.2 L1055-L1062 只卖不在 targets 里的，L1077-L1078 只买未持有的）。
+   *
+   * 契约：`hold: true` 当日却无该标的持仓 ⇒ 引擎抛 `BacktestInvariantError`
+   * （这是策略写错，不允许静默跳过 —— 静默会让「保留」看起来生效但实际什么也没发生）。
+   */
+  hold?: boolean;
   reason: EntryReason;
   score?: number;
 }
@@ -71,11 +81,21 @@ export interface TargetSet {
   /** `replace`：不在 targets 里的持仓清仓；`incremental`：只按 targets 调整，其余保持 */
   mode: 'replace' | 'incremental';
   /**
+   * 买入资金分配方式（默认 `'equity-weight'`）。
+   *
+   * - `'equity-weight'`：按 `targetWeight × 权益` / `targetNotional` 买；M2 的既有行为不变。
+   * - `'remaining-cash-equal'`：v5.2 L1091-L1105 —— 每笔按「当前可用现金 ÷ 剩余待买只数」均分，
+   *   最后一笔可取走剩余全部现金；现金 < `minNotional` 即停止买入。已有持仓靠 `hold` 不动。
+   *   与 `maxTurnoverRatio` 互斥（前者按现金分配，后者按权益缩放，同时出现属策略错误）。
+   */
+  buyBudget?: 'equity-weight' | 'remaining-cash-equal';
+  /**
    * 换手上限（占权益比例，M3 起生效）。
    *
    * 契约（引擎实现，见 `engine.ts` 的 `capTurnover`）：
    * - **卖出强制**：`replace` 模式下不在 targets 里的持仓必须清掉，卖出额先计入换手；
    * - **买入等比缩放**：`Σ|Δ| / equity > ratio` 时，只按剩余额度等比缩放**增仓部分**；
+   * - `hold: true` 的标的不计入 `Σ|Δ|`（它本来就不动）；
    * - 被缩放到不足一手的标的记 `turnover-capped`（`SkippedOrder`），不静默丢弃。
    */
   maxTurnoverRatio?: number;

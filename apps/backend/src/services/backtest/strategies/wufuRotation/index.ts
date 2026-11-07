@@ -13,10 +13,13 @@
  * 时点：决策发生在 T-1 收盘后（`ctx.asOf`），成交在 T 开盘（`priceMode: 'open'`）。
  *
  * 与 v5.2 字面不同（有意为之，均已登记）：
- * 1. 正常目标 `targetWeight = 1/holdingsNum`。`holdingsNum=1` 与 v5.2「全部可用现金」等价；
- *    `>1` 时 v5.2 按**剩余现金逐笔均分**（L1091-L1099），这里按**总权益等权**，是近似。
+ * 1. `targetWeight = 1/holdingsNum` 只用于**决策留痕**；实际买入金额由引擎
+ *    `buyBudget: 'remaining-cash-equal'` 决定 —— 按「剩余现金 ÷ 剩余待买只数」逐笔均分
+ *    （v5.2 L1091-L1105），与原版一致。
+ *    **保留仓不再平衡**：已持有且仍在候选 ⇒ `hold`（不买不卖、不参与资金分配），
+ *    只买「未持有的目标」（v5.2 L1055-L1062 / L1077-L1078）。
  *    **空仓期防御标的吃满可用现金（⑤）**：100% 指**首次进防御时吃满可用现金**，之后不再调整
- *    （v5.2 L1041-L1048 → L1077-L1105，已持有即 `etfs_to_buy` 为空）。
+ *    （v5.2 L1041-L1048 → L1077-L1105，已持有即 `etfs_to_buy` 为空，由 `hold` 表达）。
  * 2. 止损由「分钟级每 bar 检查 + 立即市价卖」改为「决策时按 `asOf` 收盘判定 + 当日不进 targets」，
  *    实际卖出发生在 T 开盘。
  * 3. 历史序列按 `valid_mask` 剔除零量日（与 v5.2 一致）；**有效点不足默认淘汰**（同 L913）。
@@ -389,18 +392,22 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
     defensivePaused: ctx.isPaused(p.defensiveEtf),
   });
 
-  // 正常目标按 1/holdingsNum 等权；**空仓期防御标的吃满可用现金**（v5.2 L1044-L1052）
+  // 正常目标按 1/holdingsNum 留痕；**保留仓不动**、**空仓期防御吃满可用现金**（v5.2 L1055-L1105）
   const targetWeight = 1 / p.holdingsNum;
+  const holdsDefensive = positions.some((pos) => pos.symbol === p.defensiveEtf);
   let targets: TargetPosition[];
   if (selection.defensive) {
-    targets = [{ symbol: p.defensiveEtf, targetWeight: 1, reason: 'defensive-fallback' }];
+    targets = [
+      holdsDefensive
+        ? { symbol: p.defensiveEtf, hold: true, reason: 'defensive-fallback' }
+        : { symbol: p.defensiveEtf, targetWeight: 1, reason: 'defensive-fallback' },
+    ];
   } else {
-    targets = selection.picks.map((m) => ({
-      symbol: m.symbol,
-      targetWeight,
-      reason: selection.retained.has(m.symbol) ? ('holding-retained' as const) : ('candidate-top' as const),
-      score: m.score,
-    }));
+    targets = selection.picks.map((m) =>
+      selection.retained.has(m.symbol)
+        ? { symbol: m.symbol, hold: true, reason: 'holding-retained' as const, score: m.score }
+        : { symbol: m.symbol, targetWeight, reason: 'candidate-top' as const, score: m.score },
+    );
   }
 
   // ── 7) 退出原因（M3 归因依赖） ──
@@ -425,7 +432,7 @@ function decideWufuRotation(ctx: StrategyContext, state: WufuRotationState): Tar
   }
 
   state.lastPool = poolSet;
-  return { targets, mode: 'replace', exitReasons };
+  return { targets, mode: 'replace', buyBudget: 'remaining-cash-equal', exitReasons };
 }
 
 /** 扩窗最多再取 2 轮（65 → 130 → 260 根日历 bar）；再不够视为长期停牌，按数据不足淘汰 */

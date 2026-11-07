@@ -15,7 +15,12 @@ import {
   type BacktestData,
 } from '../../src/services/backtest/engine.js';
 import { buyAndHoldStrategy } from '../../src/services/backtest/strategies/buyAndHold.js';
-import { defineStrategy, type StrategyContext } from '../../src/services/backtest/strategy/types.js';
+import {
+  defineStrategy,
+  type StrategyContext,
+  type TargetPosition,
+  type TargetSet,
+} from '../../src/services/backtest/strategy/types.js';
 import type { UniverseSnapshot } from '../../src/services/backtest/universe/pointInTime.js';
 import type { Bar } from '../../src/services/backtest/types.js';
 
@@ -171,6 +176,76 @@ describe('M2 引擎 · 决策时点（T-1 无前视）', () => {
 
     expect(res.trades).toHaveLength(0);
     expect(res.skipped.some((s) => s.reason === 'turnover-capped')).toBe(true);
+  });
+});
+
+describe('M2 引擎 · ④ 目标集契约（hold / buyBudget）', () => {
+  const holdStrategy = (targets: TargetPosition[], extra: Partial<TargetSet> = {}) =>
+    defineStrategy({
+      id: 'test-hold-contract',
+      version: '0.0.1',
+      name: 'hold 契约测试',
+      paramSchema: [],
+      warmupDays: 0,
+      priceMode: 'open',
+      decide: () => ({ targets, mode: 'replace' as const, ...extra }),
+    });
+
+  it('hold 无持仓 → 抛 BacktestInvariantError（策略写错，不静默跳过）', () => {
+    const bad = holdStrategy([{ symbol: 'sh510300', hold: true, reason: 'holding-retained' }]);
+    expect(() => runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: bad })).toThrow(
+      /hold 无持仓/,
+    );
+  });
+
+  it('hold 与目标权重/金额互斥 → 抛 BacktestInvariantError', () => {
+    const bad = holdStrategy([
+      { symbol: 'sh510300', hold: true, targetWeight: 0.5, reason: 'holding-retained' },
+    ]);
+    expect(() => runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: bad })).toThrow(
+      /hold 与目标权重\/金额互斥/,
+    );
+  });
+
+  it('buyBudget=remaining-cash-equal 与 maxTurnoverRatio 互斥 → 抛 BacktestInvariantError', () => {
+    const bad = holdStrategy(
+      [{ symbol: 'sh510300', targetWeight: 1, reason: 'candidate-top' }],
+      { buyBudget: 'remaining-cash-equal', maxTurnoverRatio: 0.5 },
+    );
+    expect(() => runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: bad })).toThrow(
+      /互斥/,
+    );
+  });
+
+  it('hold 不计入换手上限：已持有标的不产生 Δ，不会因 hold 触发 turnover-capped', () => {
+    let day = 0;
+    const holdish = defineStrategy({
+      id: 'test-hold-turnover',
+      version: '0.0.1',
+      name: 'hold 不占换手',
+      paramSchema: [],
+      warmupDays: 0,
+      priceMode: 'open',
+      decide: () => {
+        day += 1;
+        // 第一天买 50%（受上限 0.5 约束），之后 hold 不动
+        return day === 1
+          ? {
+              targets: [{ symbol: 'sh510300', targetWeight: 0.5, reason: 'candidate-top' as const }],
+              mode: 'replace' as const,
+              maxTurnoverRatio: 0.5,
+            }
+          : {
+              targets: [{ symbol: 'sh510300', hold: true, reason: 'holding-retained' as const }],
+              mode: 'replace' as const,
+              maxTurnoverRatio: 0.5,
+            };
+      },
+    });
+    const res = runBacktest(makeData(BASE_PRICES), { ...baseRequest, strategy: holdish });
+    expect(res.skipped.some((s) => s.reason === 'turnover-capped')).toBe(false);
+    // 只有首日那一笔成交，之后 hold 完全不产生成交
+    expect(res.trades).toHaveLength(1);
   });
 });
 

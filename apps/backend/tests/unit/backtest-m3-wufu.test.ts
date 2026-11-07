@@ -307,7 +307,15 @@ describe('M3 wufu · golden（Python oracle 逐位）', () => {
           ? 'holding-retained'
           : 'candidate-top';
       expect(ts.targets[0].reason).toBe(expectedReason);
-      expect(ts.targets[0].targetWeight).toBeCloseTo(1 / 1, 12);
+      if (c.inputs.holds.includes(c.expectedSymbols[0])) {
+        // ④ 保留仓不再平衡：已持有 ⇒ hold，不再给目标权重（防御已持有同理）
+        expect(ts.targets[0].hold).toBe(true);
+        expect(ts.targets[0].targetWeight).toBeUndefined();
+      } else {
+        expect(ts.targets[0].hold).toBeUndefined();
+        expect(ts.targets[0].targetWeight).toBeCloseTo(1 / 1, 12);
+      }
+      expect(ts.buyBudget).toBe('remaining-cash-equal');
     },
   );
 });
@@ -630,6 +638,39 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     const ts = decideWith(ctx, { holdingsNum: 3 });
     expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
     expect(ts.targets[0].targetWeight).toBeCloseTo(1, 12);
+    expect(ts.targets[0].hold).toBeUndefined();
+  });
+
+  it('④ 保留仓不再平衡：已持有且仍在候选 ⇒ hold（不买不卖、不给目标权重）', () => {
+    const ctx = makeCtx({
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: UP_26 },
+      volumes: { sh512880: FLAT_VOLUME },
+      indexCloses: risingIndex(),
+      positions: [positionOf('sh512880', 10)],
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
+    expect(ts.targets[0].hold).toBe(true);
+    expect(ts.targets[0].reason).toBe('holding-retained');
+    expect(ts.targets[0].targetWeight).toBeUndefined();
+    expect(ts.targets[0].targetNotional).toBeUndefined();
+    // 买入资金分配交给引擎（v5.2 剩余现金逐笔均分）
+    expect(ts.buyBudget).toBe('remaining-cash-equal');
+  });
+
+  it('④ 防御已持有 ⇒ hold（不补仓，与原版一致）', () => {
+    const ctx = makeCtx({
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: LOSS_26 },
+      volumes: { sh512880: FLAT_VOLUME },
+      indexCloses: risingIndex(),
+      positions: [positionOf(DEFENSIVE, 100)],
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(ts.targets[0].hold).toBe(true);
+    expect(ts.targets[0].targetWeight).toBeUndefined();
   });
 
   it('drop-from-pool：上一日在池、今日不在池', () => {

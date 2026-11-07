@@ -32,6 +32,7 @@ interface CaseOptions {
   suspended?: Record<string, { suspended: boolean; reason: 'missing-bar' | 'zero-volume' | null }>;
   barMissing?: string[];
   rules?: Partial<typeof DEFAULT_TRADE_RULES>;
+  buyBudget?: 'equity-weight' | 'remaining-cash-equal';
 }
 
 function runCase(opts: CaseOptions) {
@@ -47,6 +48,7 @@ function runCase(opts: CaseOptions) {
     positionOf: (symbol) => opts.positions?.[symbol] ?? { qty: 0, closeableQty: 0 },
     barOf: (symbol) => (missing.has(symbol) ? undefined : bars[symbol]),
     suspensionOf: (symbol) => opts.suspended?.[symbol] ?? OK,
+    buyBudget: opts.buyBudget,
     rules: opts.rules,
   };
   return executeTargets(req);
@@ -275,5 +277,71 @@ describe('M2 成交模拟器 · 现金与顺序', () => {
     });
     expect(sell.fills[0].price).toBeCloseTo(9.999, 8);
     expect(sell.fills[0].slippageCost).toBeCloseTo(100 * 0.001, 8);
+  });
+});
+
+describe('M2 成交模拟器 · ④ hold（保留仓不动）与 remaining-cash-equal', () => {
+  it('hold：已持有的标的不买不卖，且在 replace 模式下不被清仓', () => {
+    const r = runCase({
+      targets: [{ symbol: 'sh510300', hold: true, reason: 'holding-retained' }],
+      heldSymbols: ['sh510300'],
+      positions: { sh510300: { qty: 1000, closeableQty: 1000 } },
+      cash: 50_000,
+      // 若按权重配平，会卖出/买入；hold 必须完全不产生成交
+      equityAtCutoff: 500_000,
+    });
+    expect(r.fills).toHaveLength(0);
+    expect(r.skipped).toHaveLength(0);
+    expect(r.cashDelta).toBe(0);
+  });
+
+  it('hold 的标的不占「待买只数」：剩余现金只分给未持有的目标', () => {
+    const r = runCase({
+      buyBudget: 'remaining-cash-equal',
+      targets: [
+        { symbol: 'sh510300', hold: true, reason: 'holding-retained' },
+        { symbol: 'sh510500', targetWeight: 1 / 2, reason: 'candidate-top' },
+      ],
+      heldSymbols: ['sh510300'],
+      positions: { sh510300: { qty: 1000, closeableQty: 1000 } },
+      cash: 50_000,
+      bars: { sh510300: makeBar(10), sh510500: makeBar(10) },
+    });
+    expect(r.fills).toHaveLength(1);
+    expect(r.fills[0].symbol).toBe('sh510500');
+    // 50,000 // 1 → 全部可用现金（不是 //2）
+    expect(r.fills[0].qty).toBe(4900);
+  });
+
+  it('remaining-cash-equal：逐笔按「剩余现金 ÷ 剩余待买只数」均分', () => {
+    const r = runCase({
+      buyBudget: 'remaining-cash-equal',
+      targets: [
+        { symbol: 'sh510300', targetWeight: 1 / 2, reason: 'candidate-top' },
+        { symbol: 'sh510500', targetWeight: 1 / 2, reason: 'candidate-top' },
+      ],
+      bars: { sh510300: makeBar(10), sh510500: makeBar(10) },
+      cash: 100_000,
+    });
+    expect(r.fills.map((f) => f.symbol)).toEqual(['sh510300', 'sh510500']);
+    // 第一笔 100,000//2 = 50,000 → 4900 份；第二笔拿走剩余全部 ≈ 50,990 → 5000 份
+    expect(r.fills[0].qty).toBe(4900);
+    expect(r.fills[1].qty).toBe(5000);
+    expect(100_000 + r.cashDelta).toBeLessThan(1000);
+  });
+
+  it('remaining-cash-equal：现金 < 最小交易额即停止买入（不记 skipped）', () => {
+    const r = runCase({
+      buyBudget: 'remaining-cash-equal',
+      targets: [
+        { symbol: 'sh510300', targetWeight: 1, reason: 'candidate-top' },
+        { symbol: 'sh510500', targetWeight: 1, reason: 'candidate-top' },
+      ],
+      bars: { sh510300: makeBar(10), sh510500: makeBar(10) },
+      cash: 9,
+    });
+    expect(r.fills).toHaveLength(0);
+    expect(r.skipped).toHaveLength(0);
+    expect(r.cashDelta).toBe(0);
   });
 });
