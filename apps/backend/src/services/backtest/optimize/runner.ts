@@ -37,9 +37,12 @@ import {
   fineTrials,
   stabilityTrials,
   totalCombinations,
+  SEARCH_GRID,
   type TrialSpec,
 } from './searchSpace.js';
 import { loadSweepData, type SweepDataBundle } from './marketData.js';
+import { WUFU_ROTATION_DEFAULTS } from '../strategies/wufuRotation/index.js';
+import { momentumRawWindow } from '../strategies/wufuRotation/filters.js';
 import { buildStabilitySurface, summarizeSweep, type SweepSummary, type StabilityCell } from './aggregate.js';
 
 export interface SweepOptions {
@@ -177,6 +180,26 @@ function topK(trials: readonly TrialOutcome[], k: number): TrialOutcome[] {
     .slice(0, k);
 }
 
+/**
+ * 网格里三个窗口参数的最大取值 ⇒ 面板必须预热的最大窗口。
+ *
+ * `lookbackDays=40` 要 41 个有效点；若仍按默认参数预热（65 根），起点附近会成片「数据不足」，
+ * 所以 sweep 的装载窗口必须按网格上界推导，而不是策略默认值。
+ */
+function gridMaxWarmupDays(): number {
+  const maxOf = (key: string): number => {
+    const spec = SEARCH_GRID.find((p) => p.key === key);
+    const fallback = (WUFU_ROTATION_DEFAULTS as unknown as Record<string, number>)[key];
+    return spec ? Math.max(...spec.values) : fallback;
+  };
+  return momentumRawWindow({
+    ...WUFU_ROTATION_DEFAULTS,
+    lookbackDays: maxOf('lookbackDays'),
+    volumeLookback: maxOf('volumeLookback'),
+    maLookback: maxOf('maLookback'),
+  });
+}
+
 /** 执行完整 sweep（baseline → coarse → fine → stability） */
 export async function runSweep(options: SweepOptions, store: BacktestStore): Promise<SweepResult> {
   assertFoldsIsolated();
@@ -189,7 +212,11 @@ export async function runSweep(options: SweepOptions, store: BacktestStore): Pro
       `coarse=${options.coarseCount} fine=${options.fineCount} 全网格=${totalCombinations()}`,
   );
 
-  const bundle = await loadSweepData({ start: SWEEP_START, end: SWEEP_END });
+  const bundle = await loadSweepData({
+    start: SWEEP_START,
+    end: SWEEP_END,
+    warmupDays: gridMaxWarmupDays(),
+  });
   log(
     `行情基座：面板 ${bundle.panelSymbols} 只 / ${bundle.panelBars} 根 bar（装载起点 ${bundle.loadStart}，warmup=${bundle.warmup}）`,
   );

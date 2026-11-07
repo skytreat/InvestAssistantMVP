@@ -215,6 +215,8 @@ function capTurnover(args: {
   }
   let buyNotional = 0;
   for (const t of args.targets.targets) {
+    // `hold` 的目标是不动：不产生任何 Δ，不能计入换手
+    if (t.hold) continue;
     const cur = args.currentValue(t.symbol);
     const delta = sideNotional(t) - cur;
     if (delta > 0) buyNotional += delta;
@@ -230,6 +232,7 @@ function capTurnover(args: {
   const scale = allowedBuy / buyNotional;
   const skipped: SkippedOrder[] = [];
   const next = args.targets.targets.map((t) => {
+    if (t.hold) return t;
     const cur = args.currentValue(t.symbol);
     const delta = sideNotional(t) - cur;
     if (delta <= 0) return t;
@@ -248,6 +251,30 @@ function capTurnover(args: {
     return { ...t, targetNotional: cur + scaled, targetWeight: undefined };
   });
   return { targets: { ...args.targets, targets: next }, skipped };
+}
+
+/**
+ * 目标集契约校验 —— 策略写错就抛，不静默。
+ *
+ * - `hold` 与 `targetWeight` / `targetNotional` 互斥（一个说「不动」，一个说「调到多少」）；
+ * - `hold` 必须当日有持仓：没持仓却声明 hold，等于「保留」什么也没保留住；
+ * - `buyBudget='remaining-cash-equal'` 与 `maxTurnoverRatio` 互斥（前者按现金分，后者按权益缩放）。
+ */
+function assertTargetSetValid(targets: TargetSet, date: string, qtyOf: (symbol: string) => number): void {
+  if (targets.buyBudget === 'remaining-cash-equal' && targets.maxTurnoverRatio !== undefined) {
+    throw new BacktestInvariantError(
+      `buyBudget='remaining-cash-equal' 与 maxTurnoverRatio 互斥（${date}，策略错误）`,
+    );
+  }
+  for (const t of targets.targets) {
+    if (!t.hold) continue;
+    if (t.targetWeight !== undefined || t.targetNotional !== undefined) {
+      throw new BacktestInvariantError(`hold 与目标权重/金额互斥：${t.symbol}（${date}，策略错误）`);
+    }
+    if (qtyOf(t.symbol) <= 0) {
+      throw new BacktestInvariantError(`hold 无持仓：${t.symbol}（${date}，策略错误，不静默跳过）`);
+    }
+  }
 }
 
 /** 构造某一时点的策略上下文（所有读取都截止到 asOf） */
@@ -460,6 +487,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     let targets = strategy.decide(ctx);
     const capSkipped: SkippedOrder[] = [];
     if (targets) {
+      assertTargetSetValid(targets, execDate, (symbol) => portfolio.position(symbol).qty);
       const capped = capTurnover({
         date: execDate,
         targets,
@@ -502,6 +530,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
             : undefined;
         },
         suspensionOf: (symbol: string) => isSuspended(data.execBars.get(symbol), execDate, suspension),
+        buyBudget: targets?.buyBudget,
         exitReasons: targets?.exitReasons,
       };
 

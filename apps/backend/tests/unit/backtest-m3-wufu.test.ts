@@ -18,7 +18,11 @@ import { createWufuRotationStrategy } from '../../src/services/backtest/strategi
 import { calculateMomentumScore } from '../../src/services/backtest/strategies/wufuRotation/momentum.js';
 import {
   evaluateCandidate,
+  momentumFilteredWindow,
+  momentumRawWindow,
+  momentumRequiredPoints,
   movingAverageOfLast,
+  selectValidVolumeWindow,
   volumeRatioFromSeries,
   type FilterParams,
 } from '../../src/services/backtest/strategies/wufuRotation/filters.js';
@@ -216,7 +220,9 @@ function positionOf(symbol: string, avgCost: number, qty = 1000): PositionView {
 function decideWith(ctx: StrategyContext, params: Record<string, unknown> = {}): TargetSet {
   const strategy = createWufuRotationStrategy();
   strategy.init?.({ params });
-  const out = strategy.decide(ctx);
+  // 策略读的是 `ctx.params`（引擎侧由 `strategy.defaultParams + request.params` 填充），
+  // 只传给 `init()` 不会生效 —— 这里显式覆盖 `ctx.params`。
+  const out = strategy.decide({ ...ctx, params });
   expect(out).not.toBeNull();
   return out as TargetSet;
 }
@@ -301,7 +307,15 @@ describe('M3 wufu · golden（Python oracle 逐位）', () => {
           ? 'holding-retained'
           : 'candidate-top';
       expect(ts.targets[0].reason).toBe(expectedReason);
-      expect(ts.targets[0].targetWeight).toBeCloseTo(1 / 1, 12);
+      if (c.inputs.holds.includes(c.expectedSymbols[0])) {
+        // ④ 保留仓不再平衡：已持有 ⇒ hold，不再给目标权重（防御已持有同理）
+        expect(ts.targets[0].hold).toBe(true);
+        expect(ts.targets[0].targetWeight).toBeUndefined();
+      } else {
+        expect(ts.targets[0].hold).toBeUndefined();
+        expect(ts.targets[0].targetWeight).toBeCloseTo(1 / 1, 12);
+      }
+      expect(ts.buyBudget).toBe('remaining-cash-equal');
     },
   );
 });
@@ -612,6 +626,53 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     expect(ts.exitReasons?.['sh512880']).toBe('stop-loss');
   });
 
+  it('⑤ 空仓期防御标的吃满可用现金：holdingsNum>1 时目标权重仍是 100%', () => {
+    // 场景复用止损用例（唯一候选被止损剔除 → 空仓期）
+    const ctx = makeCtx({
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: [...UP_26.slice(0, 25), 11.19] },
+      volumes: { sh512880: FLAT_VOLUME },
+      indexCloses: risingIndex(),
+      positions: [positionOf('sh512880', 12)],
+    });
+    const ts = decideWith(ctx, { holdingsNum: 3 });
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(ts.targets[0].targetWeight).toBeCloseTo(1, 12);
+    expect(ts.targets[0].hold).toBeUndefined();
+  });
+
+  it('④ 保留仓不再平衡：已持有且仍在候选 ⇒ hold（不买不卖、不给目标权重）', () => {
+    const ctx = makeCtx({
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: UP_26 },
+      volumes: { sh512880: FLAT_VOLUME },
+      indexCloses: risingIndex(),
+      positions: [positionOf('sh512880', 10)],
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
+    expect(ts.targets[0].hold).toBe(true);
+    expect(ts.targets[0].reason).toBe('holding-retained');
+    expect(ts.targets[0].targetWeight).toBeUndefined();
+    expect(ts.targets[0].targetNotional).toBeUndefined();
+    // 买入资金分配交给引擎（v5.2 剩余现金逐笔均分）
+    expect(ts.buyBudget).toBe('remaining-cash-equal');
+  });
+
+  it('④ 防御已持有 ⇒ hold（不补仓，与原版一致）', () => {
+    const ctx = makeCtx({
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: LOSS_26 },
+      volumes: { sh512880: FLAT_VOLUME },
+      indexCloses: risingIndex(),
+      positions: [positionOf(DEFENSIVE, 100)],
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(ts.targets[0].hold).toBe(true);
+    expect(ts.targets[0].targetWeight).toBeUndefined();
+  });
+
   it('drop-from-pool：上一日在池、今日不在池', () => {
     const strategy = createWufuRotationStrategy();
     strategy.init?.({ params: {} });
@@ -672,6 +733,82 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     expect(ts.exitReasons?.['sh512880']).toBe('weak-period-exit');
   });
 
+  it('② 历史零量日剔除：停牌日由更早交易日补足，打分与无停牌序列一致', () => {
+    // 27 根原始 bar：首日 volume=0（模拟停牌），过滤后恰好还原 UP_26
+    const rawCloses = [UP_26[0], ...UP_26];
+    const rawVolumes = [0, ...Array<number>(UP_26.length).fill(1_000_000)];
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: rawCloses },
+      volumes: { sh512880: rawVolumes },
+      indexCloses: risingIndex(),
+    });
+    const ts = decideWith(ctx);
+    expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
+    expect(ts.targets[0].score).toBeCloseTo(1.718282, 5);
+  });
+
+  it('② 扩窗默认关闭：有效点不足即淘汰，与原版一致，并记录淘汰数', () => {
+    const closes = Array.from({ length: 200 }, (_, i) => 10 * Math.pow(1.004, i));
+    const volumes = Array.from({ length: 200 }, (_, i) => (i < 135 ? 1_000_000 : 0));
+    const tags: Record<string, unknown> = {};
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: closes },
+      volumes: { sh512880: volumes },
+      indexCloses: risingIndex(),
+      tags,
+    });
+    const ts = decideWith(ctx);
+    // 默认路径固定取 65 根，里面全零量 ⇒ 有效点 0 < 26，直接淘汰（不向前扩）
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(tags.lookbackInsufficient).toBe(1);
+    expect(tags.lookbackInsufficientTotal).toBe(1);
+  });
+
+  it('② 有效点不足时向前扩窗（显式开关）：65 根里全零量，扩到 130 根后凑够 26 个有效点', () => {
+    // 200 根日历 bar：前 135 根有量、后 65 根零量（模拟长期停牌）；固定 65 根窗口内有效点 = 0
+    const closes = Array.from({ length: 200 }, (_, i) => 10 * Math.pow(1.004, i));
+    const volumes = Array.from({ length: 200 }, (_, i) => (i < 135 ? 1_000_000 : 0));
+    const tags: Record<string, unknown> = {};
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: closes },
+      volumes: { sh512880: volumes },
+      indexCloses: risingIndex(),
+      tags,
+    });
+    const ts = decideWith(ctx, { expandLookback: true });
+    // 过滤后的有效点为 135 根里的最后 45 根（下标 90..134），动量取其中最后 26 根（109..134）
+    const expected = calculateMomentumScore(closes.slice(109, 135), 25);
+    expect(expected).not.toBeNull();
+    expect(ts.targets.map((t) => t.symbol)).toEqual(['sh512880']);
+    expect(ts.targets[0].score).toBeCloseTo(expected!.score, 8);
+    // 扩窗后已够用 ⇒ 不记淘汰
+    expect(tags.lookbackInsufficient).toBeUndefined();
+  });
+
+  it('② 扩窗见底仍不足：数据不足淘汰，空仓期回退防御', () => {
+    // 只有 65 根日历 bar，其中仅 20 根有量 → 无论怎么扩都凑不满 26 个有效点
+    const closes = Array.from({ length: 65 }, (_, i) => 10 * Math.pow(1.004, i));
+    const volumes = Array.from({ length: 65 }, (_, i) => (i < 20 ? 1_000_000 : 0));
+    const tags: Record<string, unknown> = {};
+    const ctx = makeCtx({
+      asOf: '2024-03-06',
+      universe: { fixed: ['sh512880'] },
+      closes: { sh512880: closes },
+      volumes: { sh512880: volumes },
+      indexCloses: risingIndex(),
+      tags,
+    });
+    const ts = decideWith(ctx, { expandLookback: true });
+    expect(ts.targets.map((t) => t.symbol)).toEqual([DEFENSIVE]);
+    expect(tags.lookbackInsufficient).toBe(1);
+  });
+
   it('defensive-fallback：防御 ETF 被换成股票', () => {
     const ctx = makeCtx({
       universe: { fixed: ['sh510300'] },
@@ -689,6 +826,34 @@ describe('M3 wufu · TargetSet.exitReasons 归因', () => {
     const ts = decideWith(ctx);
     expect(ts.targets.map((t) => t.symbol)).toEqual(['sh510300']);
     expect(ts.exitReasons?.[DEFENSIVE]).toBe('defensive-fallback');
+  });
+});
+
+describe('M3 wufu · ② valid_mask 与窗口常量', () => {
+  it('剔除 volume=0 / NaN 的 bar，并保留最后 keep 个有效点', () => {
+    const closes = [1, 2, 3, 4, 5, 6];
+    const volumes = [1, 0, 1, Number.NaN, 1, 1];
+    expect(selectValidVolumeWindow(closes, volumes, 3)).toEqual({
+      closes: [3, 5, 6],
+      volumes: [1, 1, 1],
+    });
+  });
+
+  it('窗口常量与 v5.2 safe_lookback / lookback 一致（默认 65 / 45）', () => {
+    expect(momentumRawWindow(DEFAULT_FILTER_PARAMS)).toBe(65);
+    expect(momentumFilteredWindow(DEFAULT_FILTER_PARAMS)).toBe(45);
+  });
+
+  it('所需有效点由参数推导：默认 26；lookbackDays=40 → 41', () => {
+    expect(momentumRequiredPoints(DEFAULT_FILTER_PARAMS)).toBe(26);
+    expect(momentumRequiredPoints({ ...DEFAULT_FILTER_PARAMS, lookbackDays: 40 })).toBe(41);
+    expect(momentumRequiredPoints({ ...DEFAULT_FILTER_PARAMS, volumeLookback: 30 })).toBe(31);
+  });
+
+  it('扩窗窗口同样由参数推导：lookbackDays=40 → raw 80 / keep 60', () => {
+    const p = { ...DEFAULT_FILTER_PARAMS, lookbackDays: 40 };
+    expect(momentumRawWindow(p)).toBe(80);
+    expect(momentumFilteredWindow(p)).toBe(60);
   });
 });
 

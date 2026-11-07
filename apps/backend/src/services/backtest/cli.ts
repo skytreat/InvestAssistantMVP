@@ -30,7 +30,8 @@ import { loadUniverseProvider, type UniverseResolver } from './universe/provider
 import { loadUniversePanel } from './universe/dynamicPanel.js';
 import { runBacktest } from './engine.js';
 import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
-import { createWufuRotationStrategy } from './strategies/wufuRotation/index.js';
+import { createWufuRotationStrategy, resolveWufuRotationParams } from './strategies/wufuRotation/index.js';
+import { momentumRawWindow } from './strategies/wufuRotation/filters.js';
 import { computeAttribution, toAttributionRows } from './attribution/index.js';
 import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';
 import { loadCorporateActions } from './corporateActions.js';
@@ -623,9 +624,15 @@ async function runCommand(argv: readonly string[]): Promise<void> {
         ? [...WEAK_PERIOD_INDEXES]
         : [];
 
-  // 装载区间：向前多取几根 bar，保证决策上下文/估值在起点前有价可依
+  // 装载区间：向前多取几根 bar，保证决策上下文/估值在起点前有价可依。
+  // warmup 必须按**本次实际参数**推导（`--params` 的 lookbackDays 可能大于默认 25），
+  // 否则停牌密集标的在起点附近的有效点会不够，整片算不出来。
   const calendar = await loadTradingCalendar();
-  const warmup = Math.max(5, strategy.warmupDays + 1);
+  const strategyWarmup =
+    args.strategy === 'wufu-rotation'
+      ? momentumRawWindow(resolveWufuRotationParams(args.params))
+      : strategy.warmupDays;
+  const warmup = Math.max(5, strategyWarmup + 1);
   const loadStart = calendar.lastN(args.start, warmup)[0] ?? args.start;
 
   // 固定池 / 防御 ETF / 用户标的 / 基准 —— 动态模式下必须仍在面板里（见 dynamicPanel 的 extraSymbols）

@@ -112,6 +112,11 @@ export interface ExecutionRequest {
   barOf(symbol: string): ExecutionBar | undefined;
   suspensionOf(symbol: string): SuspensionVerdict;
   /**
+   * 买入资金分配方式（见 `TargetSet.buyBudget`）。
+   * 缺省 `'equity-weight'`（M2 既有行为）。
+   */
+  buyBudget?: 'equity-weight' | 'remaining-cash-equal';
+  /**
    * `replace` 模式清仓的逐标的退出原因（M3 归因用）。
    * 缺省回退 `rebalance-replace`；减仓（未清仓）仍记 `rebalance-replace`。
    */
@@ -154,8 +159,9 @@ function commissionOf(notional: number, rules: TradeRules): number {
   return round2(Math.max(rules.minCommission, notional * rules.commissionRate));
 }
 
-/** 目标仓位 → 目标金额（targetNotional 优先） */
+/** 目标仓位 → 目标金额（targetNotional 优先；`hold` 不动 ⇒ 没有目标金额） */
 function targetNotionalOf(t: TargetPosition, equityAtCutoff: number): number | null {
+  if (t.hold) return null;
   if (t.targetNotional !== undefined) return t.targetNotional;
   if (t.targetWeight !== undefined) return t.targetWeight * equityAtCutoff;
   return null;
@@ -307,13 +313,27 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
     pushSell(t.symbol, pos.qty - targetQty, 'rebalance-replace');
   }
 
-  // ── 2) 买入 ──
-  for (const t of req.targets) {
-    const targetNotional = targetNotionalOf(t, req.equityAtCutoff);
+  // ── 2) 买入（`hold` 的标的不买不卖，直接跳过） ──
+  const buyBudget = req.buyBudget ?? 'equity-weight';
+  const buyTargets = req.targets.filter((t) => !t.hold);
+  for (let i = 0; i < buyTargets.length; i++) {
+    const t = buyTargets[i];
     const baseOrder = { date: req.date, symbol: t.symbol, side: 'buy' as const, qty: 0 };
-    if (targetNotional === null) {
-      skipped.push({ ...baseOrder, reason: 'no-target-value' });
-      continue;
+    let targetNotional: number;
+    if (buyBudget === 'remaining-cash-equal') {
+      // v5.2 L1093-L1103：现金 < 最小交易额即停止；每笔 = 剩余现金 // 剩余待买只数，
+      // 分不到最小交易额时最后一笔直接取走剩余全部现金。
+      if (cash < rules.minNotional) break;
+      const remainingToBuy = buyTargets.length - i;
+      targetNotional = Math.floor(cash / remainingToBuy);
+      if (targetNotional < rules.minNotional && cash >= rules.minNotional) targetNotional = cash;
+    } else {
+      const declared = targetNotionalOf(t, req.equityAtCutoff);
+      if (declared === null) {
+        skipped.push({ ...baseOrder, reason: 'no-target-value' });
+        continue;
+      }
+      targetNotional = declared;
     }
     const verdict = req.suspensionOf(t.symbol);
     const bar = req.barOf(t.symbol);
