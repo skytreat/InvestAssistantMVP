@@ -38,6 +38,12 @@ export default defineConfig({
      *   混进主套件会：① 抢 51200‑51999 端口 ② 抢 DuckDB 文件锁
      *   ③ 让「性能门槛」在受污染的进程里测 ⇒ 数字不可信。
      *   ⇒ 判据方式：**`npm run test:http -w @invest/backend`**（见 `vitest.http.config.ts`）。
+     *
+     * 🔒 **排除 `*.anchors.test.ts`**（2026-11-06，测试基建改造）：
+     *   这些用例断言的是**真库规模 / 具体历史日期上的数值事实**，必须读 1.24 GB 真库，
+     *   与日常套件混跑会把进程内存峰值推到 ~3.65 GB。
+     *   ⇒ 判据方式：**`npm run test:anchors -w @invest/backend`**（见 `vitest.anchors.config.ts`），
+     *     该配置下环境不是真库会**直接抛错**（不是 skip），避免手跑假绿。
      */
     exclude: [
       '**/node_modules/**',
@@ -47,6 +53,7 @@ export default defineConfig({
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,eslint,prettier}.config.*',
       'tests/integration/scan5000.test.ts',
       'tests/http/**',
+      'tests/**/*.anchors.test.ts',
     ],
     globals: true,
     testTimeout: 15000,
