@@ -1852,7 +1852,7 @@ export interface StrategyPlugin {
 
 | 规则 | 说明 |
 |------|------|
-| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **5 个**（monitor 3 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
+| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **7 个**（monitor 5 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
 | 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
@@ -1886,6 +1886,8 @@ export interface StrategyPlugin {
 | `ma_bullish_alignment` | 均线多头排列 | filter | trend | periodShort=5, periodMid=10, periodLong=20, days=120, limit=50 | MA(short) > MA(mid) > MA(long) 且收盘价站上长期均线 → 选股候选（BUY 方向） | `calculateSMA`（`@invest/core` 指标层） | ✅ 已实现（`builtinPlugins`），filter 类仅返回候选、不落 `user_strategy_signal` |
 | `boll_reversion` | 布林带均值回归 | monitor | volatility | period=20, stdDev=2, pbBuy=0, pbSell=1, days=120 | %B 跌破下轨（%B < pbBuy）→ buy；冲破上轨（%B > pbSell）→ sell；**带宽为 0（%B 为 NaN）时不出信号** | `calculateBoll`（`@invest/core`，底层 `fast-technical-indicators`） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
 | `volume_breakout` | 放量突破 | filter | volume | lookback=20, volumeRatio=1.5, days=120, limit=50 | 收盘创前 lookback 日新高且成交量 ≥ lookback 日均量的 volumeRatio 倍 → 选股候选（BUY 方向） | 无指标依赖（直接读 K 线 high / volume） | ✅ 已实现（`builtinPlugins`），filter 类仅返回候选、不落 `user_strategy_signal` |
+| `engulfing_reversal` | 吞没反转形态 | monitor | pattern | maPeriod=20, volumePeriod=20, minVolumeRatio=1.2, days=120 | 下跌趋势（前收盘 < MA(maPeriod)）中出现放量看涨吞没 → buy；上涨趋势中出现放量看跌吞没 → sell；量比不足 / 无趋势背景不出信号 | `calculateSMA`（`@invest/core` 指标层）+ 前复权 OHLC 实体关系 | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
+| `volume_price_breakout` | 量价突破（信号版） | monitor | volume | lookback=20, volumeRatio=1.5, days=120 | 收盘放量突破前 lookback 日最高价 → buy；收盘放量跌破前 lookback 日最低价 → sell；均量为 0 / 量比不足不出信号 | 无指标依赖（直接读 K 线 high / low / volume） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
 
 > **子分类口径**：`sub_category` 一律取本节 `PluginSubCategory` 的 V3 六分类。旧值 `breakout` / `mean_reversion` 已由 `normalizeSubCategory()` 映射为 `volume` / `volatility`，上表不再出现旧值。
 
