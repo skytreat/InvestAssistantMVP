@@ -5,14 +5,16 @@
  * 1. 停牌 → 跳过（L899-L903 `current_data[etf].paused`）
  * 2. 数据不足 / 动量为 null → 跳过（L717-L721）
  * 3. `minScore ≤ score ≤ maxScore`（L722）
- * 4. 近 4 个收盘任一 `p[i]/p[i-1] ≤ lossThreshold` → 淘汰（L725-L733，对应「近 3 日单日跌幅 >3%」）
+ * 4. 近 4 个收盘任一 `p[i]/p[i-1] < lossThreshold` → 淘汰（L725-L733，对应「近 3 日单日跌幅 >3%」）
  * 5. 量比 `null` 或 `≥ volumeRatioThreshold` → 淘汰（L757：`passed_volume = ratio is not None and ratio < threshold`）
  * 6. 正常期 `r2 > r2Threshold`（L735，`enable_r2_filter and not is_weak`）
  * 7. 走弱期 `close > MA(maLookback) * maThreshold`（L737-L743，`enable_ma_filter and is_weak`）
  *
- * 与 v5.2 字面不同的两处（已登记在 M3 报告）：
- * - 短期风控用 `<=` 淘汰（v5.2 是 `min(day_ratios) < g.loss`），即「恰好 -3.00%」也算触发；
+ * 与 v5.2 的已知差异（已登记在 M3 报告）：
  * - 历史序列**不做**零量日剔除（v5.2 用 `valid_mask` 过滤历史零量 bar；日线档只有 `asOf` 的停牌判定）。
+ *
+ * ⚠️ 短期风控已于「第一批」修正为 `<`，与 v5.2 L732 `min(day_ratios) < g.loss` 一致
+ * （恰好等于阈值的涨跌幅**保留**，不再淘汰）。
  */
 import { calculateMomentumScore } from './momentum.js';
 
@@ -123,7 +125,7 @@ export function evaluateCandidate(input: EvaluateCandidateInput): FilterEvaluati
   if (closes.length >= 4) {
     for (let i = closes.length - 1; i >= closes.length - 3; i--) {
       const ratio = closes[i] / closes[i - 1];
-      if (ratio <= params.lossThreshold) {
+      if (ratio < params.lossThreshold) {
         return { passed: false, reason: 'short-term-loss', metrics: null };
       }
     }

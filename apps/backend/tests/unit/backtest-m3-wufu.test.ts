@@ -343,6 +343,21 @@ describe('M3 wufu · 过滤链逐条淘汰', () => {
     expect(r.reason).toBe('short-term-loss');
   });
 
+  it('恰好等于阈值（ratio === lossThreshold）→ 保留（v5.2 L732 是 `<` 而非 `<=`）', () => {
+    // 阈值直接取「实际算出的 ratio」，避免 0.97 浮点表示带来的近似差
+    const closes = [...UP_26];
+    closes[closes.length - 1] = closes[closes.length - 2] * 0.96999;
+    const exactRatio = closes[closes.length - 1] / closes[closes.length - 2];
+    const r = evaluateCandidate({
+      ...base,
+      closes,
+      volumes: FLAT_VOLUME,
+      params: { ...DEFAULT_FILTER_PARAMS, lossThreshold: exactRatio },
+    });
+    expect(r.passed).toBe(true);
+    expect(r.metrics!.symbol).toBe('sh512880');
+  });
+
   it('量比 1.9 ≥ 1.8 → 淘汰', () => {
     const volumes = [1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_900_000];
     const r = evaluateCandidate({ ...base, closes: UP_26, volumes });
