@@ -1852,7 +1852,7 @@ export interface StrategyPlugin {
 
 | 规则 | 说明 |
 |------|------|
-| 内置插件库 | 打包在 `@invest/core` 包内；MVP 仅 `rsi_oversold` + `macd_cross`（默认启用） |
+| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **5 个**（monitor 3 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
 | 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
@@ -1879,10 +1879,15 @@ export interface StrategyPlugin {
 
 #### MVP 内置插件清单
 
-| plugin.id | name | category | sub_category | 默认参数 | 信号触发逻辑 |
-|-----------|------|----------|-------------|---------|------------|
-| `rsi_oversold` | RSI(14) 超买超卖 | monitor | momentum | period=14, oversold=30, overbought=70 | RSI < oversold → buy；RSI > overbought → sell |
-| `macd_cross` | MACD 金叉死叉 | monitor | trend | fast=12, slow=26, signal=9 | DIF 上穿 DEA → buy；下穿 → sell |
+| plugin.id | name | category | sub_category | 默认参数 | 信号触发逻辑 | 依赖 | 实现状态 |
+|-----------|------|----------|-------------|---------|------------|------|---------|
+| `rsi_oversold` | RSI(14) 超买超卖 | monitor | momentum | period=14, oversold=30, overbought=70, days=120 | RSI < oversold → buy；RSI > overbought → sell | `calculateRSI`（`@invest/core` 指标层） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
+| `macd_cross` | MACD 金叉死叉 | monitor | trend | fast=12, slow=26, signal=9, days=120 | DIF 上穿 DEA → buy；下穿 → sell | `calculateMACD`（`@invest/core` 指标层） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
+| `ma_bullish_alignment` | 均线多头排列 | filter | trend | periodShort=5, periodMid=10, periodLong=20, days=120, limit=50 | MA(short) > MA(mid) > MA(long) 且收盘价站上长期均线 → 选股候选（BUY 方向） | `calculateSMA`（`@invest/core` 指标层） | ✅ 已实现（`builtinPlugins`），filter 类仅返回候选、不落 `user_strategy_signal` |
+| `boll_reversion` | 布林带均值回归 | monitor | volatility | period=20, stdDev=2, pbBuy=0, pbSell=1, days=120 | %B 跌破下轨（%B < pbBuy）→ buy；冲破上轨（%B > pbSell）→ sell；**带宽为 0（%B 为 NaN）时不出信号** | `calculateBoll`（`@invest/core`，底层 `fast-technical-indicators`） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
+| `volume_breakout` | 放量突破 | filter | volume | lookback=20, volumeRatio=1.5, days=120, limit=50 | 收盘创前 lookback 日新高且成交量 ≥ lookback 日均量的 volumeRatio 倍 → 选股候选（BUY 方向） | 无指标依赖（直接读 K 线 high / volume） | ✅ 已实现（`builtinPlugins`），filter 类仅返回候选、不落 `user_strategy_signal` |
+
+> **子分类口径**：`sub_category` 一律取本节 `PluginSubCategory` 的 V3 六分类。旧值 `breakout` / `mean_reversion` 已由 `normalizeSubCategory()` 映射为 `volume` / `volatility`，上表不再出现旧值。
 
 ### 5.4 策略插件引擎执行流程（含故障隔离）
 
