@@ -300,9 +300,7 @@ describe('M2 引擎 · preclose 缺失事件透出', () => {
 
     // 事件可见：顶层汇总 + 当日决策
     expect(broken.warnings.length).toBeGreaterThan(0);
-    expect(broken.warnings.every((w) => w.code === 'PRECLOSE_MISSING' && w.symbol === 'sh510300')).toBe(
-      true,
-    );
+    expect(broken.warnings.every((w) => w.code === 'PRECLOSE_MISSING' && w.symbol === 'sh510300')).toBe(true);
     const day = broken.decisions.find((d) => d.warnings.length > 0)!;
     expect(day.warnings[0]).toMatchObject({ code: 'PRECLOSE_MISSING', date: day.execDate });
 
