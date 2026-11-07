@@ -331,5 +331,8 @@ describe('Auth · admin 路由权限', () => {
     expect(res.statusCode).not.toBe(403);
     // 更严格：期望 200 或 500（DuckDB 不存在），但不能是 403
     expect([200, 500]).toContain(res.statusCode);
-  }, 30000);
+    // ⚠️ 90s：datacheck 会跑 C1-C12 全量（迷你库 410 标的 × 729 交易日），
+    //   CI 实测 >30s（2026-11-07 build-and-test 红）；与 admin.test.ts 的 90s 口径一致。
+    //   只放宽超时，权限断言不变。
+  }, 90_000);
 });
