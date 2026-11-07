@@ -175,6 +175,18 @@ export const EMPTY_POSITION_SNAPSHOT: PluginPositionSnapshot = {
 };
 
 /**
+ * 「无用户语义」的快照（如全市场选股）：显式空持仓 + `NO_USER` 归因。
+ *
+ * 调用点必须**显式传入**，不要依赖 `buildPluginContext` 的默认值 ——
+ * 默认值只是兜底，写出来才能让「这里没有用户」这件事在代码里可见：
+ * 风险类插件据此 SKIP（`POSITION_UNAVAILABLE`），而不是按某个真实用户的持仓出结果。
+ */
+export const NO_USER_POSITION_SNAPSHOT: PluginPositionSnapshot = {
+  ...EMPTY_POSITION_SNAPSHOT,
+  unavailableReason: 'NO_USER',
+};
+
+/**
  * 插件信号输出
  *
  * T93 契约对齐（SDD §5.3 StrategySignal）：
