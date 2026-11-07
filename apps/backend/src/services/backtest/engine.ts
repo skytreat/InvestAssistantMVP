@@ -103,6 +103,19 @@ export interface BacktestResult {
     benchmarkSymbol: string;
     rules: TradeRules;
     suspension: SuspensionOptions;
+    /**
+     * M4 可观测性：时点池名称兜底计数（逐日累计 + 峰值）。
+     *
+     * 动态池分组用的是 `raw_symbol_name` 当前快照；无名称标的按代码兜底参与分组。
+     * 这里只统计，不改变策略行为（口径不变）。
+     */
+    universeStats?: {
+      days: number;
+      noNameCandidateTotal: number;
+      noNameCandidateMax: number;
+      fallbackPoolMemberTotal: number;
+      fallbackPoolMemberMax: number;
+    };
   };
   equity: EquityPoint[];
   trades: Fill[];
@@ -372,6 +385,13 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
   }
 
   const roundTripNotified = new Set<number>();
+  const universeStats = {
+    days: 0,
+    noNameCandidateTotal: 0,
+    noNameCandidateMax: 0,
+    fallbackPoolMemberTotal: 0,
+    fallbackPoolMemberMax: 0,
+  };
 
   for (let dayIndex = 0; dayIndex < dates.length; dayIndex++) {
     const execDate = dates[dayIndex];
@@ -384,6 +404,18 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       throw new BacktestInvariantError(
         `时点池对齐错误：请求 asOf=${asOf}，实际 asOf=${snapshot.asOf}（回测决策必须用 T-1）`,
       );
+    }
+
+    if (snapshot.noNameCandidateCount !== undefined) {
+      universeStats.days++;
+      universeStats.noNameCandidateTotal += snapshot.noNameCandidateCount;
+      universeStats.noNameCandidateMax = Math.max(
+        universeStats.noNameCandidateMax,
+        snapshot.noNameCandidateCount,
+      );
+      const fb = snapshot.fallbackPoolMemberCount ?? 0;
+      universeStats.fallbackPoolMemberTotal += fb;
+      universeStats.fallbackPoolMemberMax = Math.max(universeStats.fallbackPoolMemberMax, fb);
     }
 
     const pricesAtAsOf = new Map<string, number>();
@@ -556,6 +588,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       benchmarkSymbol,
       rules,
       suspension,
+      universeStats: universeStats.days > 0 ? universeStats : undefined,
     },
     equity,
     trades,

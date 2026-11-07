@@ -69,11 +69,16 @@ export function assembleSnapshot(
   const weak = pickPoolByLiquidity(GLOBAL_ETF_POOL, metaBySymbol, perSymbol, aligned, liquidity.threshold);
 
   const candidates: DynamicPoolCandidate[] = [];
+  let noNameCandidateCount = 0;
   for (const m of universe) {
     const avg = avgDailyAmount(perSymbol.get(m.symbol) ?? 0);
     if (!passesLiquidity(avg, liquidity.threshold)) continue;
+    if (m.name === null || m.name.trim() === '') noNameCandidateCount++;
     candidates.push({ symbol: m.symbol, name: m.name, avgAmount: avg });
   }
+
+  const dynamic = buildDynamicPool(candidates, options.topN ?? DEFAULT_DYNAMIC_TOP_N);
+  const fallbackPoolMemberCount = dynamic.pool.filter((m) => m.name === null || m.name.trim() === '').length;
 
   return {
     requestedAsOf,
@@ -88,7 +93,9 @@ export function assembleSnapshot(
     fixedCoverageCount: countCovered([...FIXED_ETF_POOL, DEFENSIVE_ETF], metaBySymbol),
     fixed,
     weak,
-    dynamic: buildDynamicPool(candidates, options.topN ?? DEFAULT_DYNAMIC_TOP_N),
+    dynamic,
+    noNameCandidateCount,
+    fallbackPoolMemberCount,
   };
 }
 

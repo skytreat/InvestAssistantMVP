@@ -215,6 +215,14 @@ export interface UniverseSnapshot {
   /** 全球池 ∩ Universe(T) ∩ 流动性（走弱期用池） */
   weak: PoolPick[];
   dynamic: DynamicPoolResult;
+  /**
+   * M4 可观测性：通过流动性阈值但**名称为空**的候选数（按代码兜底参与分组）。
+   * 动态池分组用的是 `raw_symbol_name` 当前快照，无名称标的会以代码当名称 —— 计数用于
+   * 量化"名称快照偏差"的影响面（bt_run.universe_stats_json）。
+   */
+  noNameCandidateCount?: number;
+  /** M4 可观测性：进入动态池且**名称为空**（走代码兜底）的成员数 */
+  fallbackPoolMemberCount?: number;
 }
 
 /** 读近 3 日「逐标的成交额合计」+「逐日全市场合计」 */
