@@ -423,7 +423,7 @@ describe('T93 — 插件契约字段完备性（内置与自定义同一断言�
       expect(p.author, `${p.id}.author 非空`).not.toBe('');
       expect(p.period, `${p.id}.period`).toBe('daily');
       expect(typeof p.subCategory, `${p.id}.subCategory`).toBe('string');
-      expect(['momentum', 'trend', 'volume', 'breakout', 'mean_reversion', 'pattern', 'custom']).toContain(
+      expect(['trend', 'momentum', 'volatility', 'volume', 'pattern', 'risk', 'custom']).toContain(
         p.subCategory,
       );
       expect(['simple', 'medium', 'complex'], `${p.id}.complexity`).toContain(p.complexity);

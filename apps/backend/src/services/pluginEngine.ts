@@ -51,14 +51,24 @@ const round3 = (ms: number): number => Math.round(ms * 1000) / 1000;
 export type PluginId = string;
 export type Period = 'daily'; // MVP 固定日线
 export type PluginCategory = 'monitor' | 'filter';
+/**
+ * 插件归属子分类
+ *
+ * 🔴 对外口径 = V3 §4.1 **六分类**（趋势 / 动量 / 波动率 / 量价 / 形态 / 风险）。
+ * `custom` 是**内部兜底值**（未分类）：仅用于契约字段缺失或旧插件值无法识别，
+ * **不对外展示、不计入六类**，API 与 UI 必须显式过滤。
+ *
+ * 旧值迁移（2026-11-07 裁决）：`breakout → volume`、`mean_reversion → volatility`。
+ * 映射只允许存在于 `normalizeSubCategory()` 一个入口，禁止在调用点各写一份。
+ */
 export type PluginSubCategory =
-  | 'momentum' // 动量类：RSI、KDJ
-  | 'trend' // 趋势类：MACD、均线
-  | 'volume' // 量能类：OBV、量比
-  | 'breakout' // 突破类
-  | 'mean_reversion' // 均值回归类
-  | 'pattern' // 形态类
-  | 'custom'; // 自定义
+  | 'trend' // 趋势：MACD、均线排列
+  | 'momentum' // 动量：RSI、KDJ
+  | 'volatility' // 波动率：布林带、ATR 通道
+  | 'volume' // 量价：放量突破、缩量回调、量价背离
+  | 'pattern' // 形态：锤子线、吞没、缺口
+  | 'risk' // 风险：ATR 止损、回撤、组合暴露
+  | 'custom'; // 未分类（内部兜底，不对外展示）
 export type PluginComplexity = 'simple' | 'medium' | 'complex';
 
 /** 图表渲染元数据（前端 KLineChart 副图 / 叠加层渲染用） */
@@ -187,6 +197,63 @@ export function definePlugin(spec: PluginSpec): Plugin {
   };
 }
 
+/** 合法子分类集合（六类 + 内部兜底 `custom`） */
+const SUB_CATEGORY_VALUES: ReadonlySet<string> = new Set<PluginSubCategory>([
+  'trend',
+  'momentum',
+  'volatility',
+  'volume',
+  'pattern',
+  'risk',
+  'custom',
+]);
+
+/**
+ * 旧子分类字面值 → 新口径（**唯一映射入口的映射表**）
+ *
+ * - `breakout → volume`：突破必须由量价确认，V3 六分类无独立「突破类」
+ * - `mean_reversion → volatility`：均值回归在本项目只由波动率通道（布林带）承载
+ */
+const LEGACY_SUB_CATEGORY_MAP: Readonly<Record<string, PluginSubCategory>> = {
+  breakout: 'volume',
+  mean_reversion: 'volatility',
+};
+
+/**
+ * 子分类归一化（**唯一入口**）—— 磁盘插件、契约兜底、内置插件都必须走这里
+ *
+ * | 输入 | 输出 | 是否告警 |
+ * |---|---|---|
+ * | 六类 + `custom` | 原值 | 否 |
+ * | `breakout` / `mean_reversion` | 映射后的新值 | WARN（旧值需迁移） |
+ * | 其它任意字符串 | `custom` | WARN（无法识别） |
+ * | 非字符串 / 空串 | `custom` | 否（由契约缺失告警覆盖） |
+ */
+export function normalizeSubCategory(raw: unknown, pluginId = '<unknown>'): PluginSubCategory {
+  if (typeof raw === 'string' && SUB_CATEGORY_VALUES.has(raw)) {
+    return raw as PluginSubCategory;
+  }
+  if (typeof raw === 'string' && Object.prototype.hasOwnProperty.call(LEGACY_SUB_CATEGORY_MAP, raw)) {
+    const mapped = LEGACY_SUB_CATEGORY_MAP[raw];
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: `插件 ${pluginId} 的 sub_category '${raw}' 为旧口径，已迁移为 '${mapped}'`,
+      checkItem: pluginId,
+    });
+    return mapped;
+  }
+  if (typeof raw === 'string' && raw) {
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: `插件 ${pluginId} 的 sub_category '${raw}' 无法识别，已降级为 'custom'`,
+      checkItem: pluginId,
+    });
+  }
+  return 'custom';
+}
+
 /** 自定义（磁盘）插件的契约字段兜底值 —— 缺失时填这里并记 WARN，不静默填 undefined */
 const CONTRACT_FALLBACK = {
   version: '0.0.0',
@@ -223,10 +290,7 @@ export function normalizePlugin(plugin: Plugin): Plugin {
       typeof plugin.version === 'string' && plugin.version ? plugin.version : CONTRACT_FALLBACK.version,
     author: typeof plugin.author === 'string' && plugin.author ? plugin.author : CONTRACT_FALLBACK.author,
     period: plugin.period === 'daily' ? 'daily' : CONTRACT_FALLBACK.period,
-    subCategory:
-      typeof plugin.subCategory === 'string' && plugin.subCategory
-        ? plugin.subCategory
-        : CONTRACT_FALLBACK.subCategory,
+    subCategory: normalizeSubCategory(plugin.subCategory, plugin.id),
     complexity:
       typeof plugin.complexity === 'string' && plugin.complexity
         ? plugin.complexity
@@ -564,7 +628,7 @@ export const builtinPlugins: Plugin[] = [
     author: 'invest-core',
     period: 'daily',
     category: 'filter',
-    subCategory: 'breakout',
+    subCategory: 'volume',
     complexity: 'simple',
     description: '筛选出收盘价创 N 日新高且成交量放大到 N 日均量指定倍数的标的',
     paramSchema: [
@@ -831,12 +895,8 @@ export function createPluginSandbox(source: string): Plugin {
     author: typeof p.author === 'string' ? (p.author as string) : CONTRACT_FALLBACK.author,
     period: p.period === 'daily' ? 'daily' : CONTRACT_FALLBACK.period,
     category: p.category as 'monitor' | 'filter',
-    subCategory:
-      typeof p.sub_category === 'string'
-        ? (p.sub_category as PluginSubCategory)
-        : typeof p.subCategory === 'string'
-          ? (p.subCategory as PluginSubCategory)
-          : CONTRACT_FALLBACK.subCategory,
+    // 磁盘插件旧值（breakout / mean_reversion）在这里收口，映射表不外泄到调用点
+    subCategory: normalizeSubCategory(p.sub_category ?? p.subCategory, p.id as string),
     complexity:
       typeof p.complexity === 'string' ? (p.complexity as PluginComplexity) : CONTRACT_FALLBACK.complexity,
     description: typeof p.description === 'string' ? (p.description as string) : undefined,

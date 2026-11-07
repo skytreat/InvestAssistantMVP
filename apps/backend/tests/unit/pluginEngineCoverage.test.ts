@@ -35,6 +35,7 @@ import {
   executePlugin,
   loadPluginsFromDir,
   normalizePlugin,
+  normalizeSubCategory,
   validatePluginParams,
   type Plugin,
   type PluginContext,
@@ -271,6 +272,41 @@ describe('pluginEngine 覆盖 — normalizePlugin 契约兜底', () => {
     } as unknown as Plugin);
 
     expect(p.defaultParams).toEqual({ x: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. normalizeSubCategory —— 旧值映射的唯一入口（V3 §4.1 六分类）
+// ---------------------------------------------------------------------------
+
+describe('pluginEngine 覆盖 — normalizeSubCategory 旧值映射', () => {
+  it('六类原值直通，不改写', () => {
+    for (const v of ['trend', 'momentum', 'volatility', 'volume', 'pattern', 'risk', 'custom'] as const) {
+      expect(normalizeSubCategory(v, 'p')).toBe(v);
+    }
+  });
+
+  it('breakout（旧口径）→ volume', () => {
+    expect(normalizeSubCategory('breakout', 'legacy-breakout')).toBe('volume');
+  });
+
+  it('mean_reversion（旧口径）→ volatility', () => {
+    expect(normalizeSubCategory('mean_reversion', 'legacy-mr')).toBe('volatility');
+  });
+
+  it('无法识别的字符串 → custom（降级不抛错）', () => {
+    expect(normalizeSubCategory('unknown-class', 'weird')).toBe('custom');
+  });
+
+  it('非字符串 / 空串 → custom', () => {
+    expect(normalizeSubCategory(undefined, 'no-field')).toBe('custom');
+    expect(normalizeSubCategory(null, 'null-field')).toBe('custom');
+    expect(normalizeSubCategory('', 'empty')).toBe('custom');
+  });
+
+  it('内置 volume_breakout 已迁移到 volume（无 breakout 残留）', () => {
+    const p = builtinPlugins.find((x) => x.id === 'volume_breakout');
+    expect(p?.subCategory).toBe('volume');
   });
 });
 
