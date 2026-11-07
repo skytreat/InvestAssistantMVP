@@ -5,9 +5,11 @@
 
 import { calculateRSI, calculateMACD, type MACDResult } from '@invest/core';
 import { calculateSMA } from './indicators.js';
-import { batchGetDailyRange } from './marketData.js';
+import { batchGetDailyRange, batchGetLatestClose } from './marketData.js';
 import { ConfigStore } from '../config/configStore.js';
 import { SIGNAL_USER_ID } from './signalService.js';
+import { calcAllPositions } from './positionCalculator.js';
+import { getAssetClass } from './assetClass.js';
 import type { DailyKline } from '@invest/core';
 import { writeSystemLog } from './logger.js';
 import fs from 'node:fs';
@@ -123,7 +125,52 @@ export interface PluginContext {
   calculateRSI(prices: number[], period?: number): number[];
   calculateMACD(prices: number[]): MACDResult;
   calculateSMA(prices: number[], period: number): number[];
+
+  // ── 只读持仓视图（S2：风险类插件的数据来源） ──
+  /** 持仓快照（构建期冻结，`execute()` 内零 IO） */
+  positions(): readonly PluginPositionView[];
+  /**
+   * 现金类资产市值（`asset_class = 'cash'` 的持仓市值合计）。
+   * 🔴 **不是「可用现金余额」** —— 本系统不建模现金余额，禁止拿它当加仓额度用。
+   */
+  readonly cash: number;
+  /** 权益 = 现金类资产市值 + 全部风险资产市值 */
+  readonly equity: number;
+  /** 持仓快照是否可用：无 userId / 回放（asOfDate）/ 读取失败 → false */
+  readonly positionsAvailable: boolean;
 }
+
+/** 插件侧只读持仓视图（不直接暴露业务层 DTO，避免插件依赖内部字段） */
+export interface PluginPositionView {
+  symbol: string;
+  /** 持仓数量（已夹到 ≥ 0） */
+  quantity: number;
+  /** 移动加权平均成本（含手续费） */
+  avgCost: number;
+  /** 按最新收盘价估算的市值（取不到价时为 0） */
+  marketValue: number;
+}
+
+/**
+ * 持仓快照（构建期算一次，`execute()` 内零 IO）
+ * 不可用时 `positions = []`、`cash/equity = 0`。
+ */
+export interface PluginPositionSnapshot {
+  available: boolean;
+  /** 不可用原因，仅用于日志与 SKIP 归因（`NO_USER` / `REPLAY` / `READ_FAILED`） */
+  unavailableReason?: string;
+  positions: readonly PluginPositionView[];
+  cash: number;
+  equity: number;
+}
+
+/** 空快照：无 userId / 回放 / 读取失败时的降级值 */
+export const EMPTY_POSITION_SNAPSHOT: PluginPositionSnapshot = {
+  available: false,
+  positions: [],
+  cash: 0,
+  equity: 0,
+};
 
 /**
  * 插件信号输出
@@ -171,6 +218,12 @@ export interface Plugin {
    * 单字段的 min/max 走 paramSchema，这里只管字段之间的关系。
    */
   validateCrossFields?(params: Record<string, unknown>): void;
+  /**
+   * 需要持仓视图才能工作（风险类插件）。
+   * 持仓快照不可用（无 userId / 回放）时，引擎直接 SKIP 并标记 `POSITION_UNAVAILABLE`，
+   * **不静默返回空信号** —— 否则「风险类在回放中不出信号」会变成查不出来的空洞。
+   */
+  readonly requiresPositions?: boolean;
   execute(context: PluginContext, params: Record<string, unknown>): Promise<PluginSignal[] | PluginSignal>;
 }
 
@@ -910,6 +963,13 @@ export function createPluginSandbox(source: string): Plugin {
       typeof p.validateCrossFields === 'function'
         ? (p.validateCrossFields as Plugin['validateCrossFields'])
         : undefined,
+    // 风险类插件声明：仅接受显式 boolean，缺失 = false（与内置插件语义一致）
+    requiresPositions:
+      typeof p.requires_positions === 'boolean'
+        ? (p.requires_positions as boolean)
+        : typeof p.requiresPositions === 'boolean'
+          ? (p.requiresPositions as boolean)
+          : undefined,
     execute: p.execute as Plugin['execute'],
   });
 }
@@ -1098,7 +1158,10 @@ export function shiftTradeDate(anchor: string, deltaDays: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContext {
+export function buildPluginContext(
+  prefetch?: PluginKlinePrefetch,
+  snapshot: PluginPositionSnapshot = EMPTY_POSITION_SNAPSHOT,
+): PluginContext {
   /** 取数窗口的终点：回放时锁在基准交易日，日常链路仍是今天 */
   const endDate = prefetch?.endDate ?? new Date().toISOString().slice(0, 10);
   /** 预取窗口：days 天之前的日期（与原单查口径一致） */
@@ -1136,6 +1199,10 @@ export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContex
     calculateRSI: (prices: number[], period?: number) => calculateRSI(prices, period ?? 14),
     calculateMACD: (prices: number[]) => calculateMACD(prices),
     calculateSMA,
+    positions: () => snapshot.positions,
+    cash: snapshot.cash,
+    equity: snapshot.equity,
+    positionsAvailable: snapshot.available,
   };
 }
 
@@ -1159,12 +1226,14 @@ export interface PluginExecutionResult {
    */
   klines?: number;
   /**
-   * SKIP 的两种成因（F 域缺陷修复）：
+   * SKIP 的三种成因（F 域缺陷修复 / S2 持仓视图）：
    *   - `NO_DATA`   —— 取不到日线（行情缺失 / 标的不在该品种视图 / 数据不足到无法计算）
    *   - `NO_SIGNAL` —— 有日线，但指标条件未触发
+   *   - `POSITION_UNAVAILABLE` —— 插件声明 `requiresPositions`，但持仓快照不可用
+   *     （无 userId / 回放 asOfDate / 持仓读取失败）。**显式归因，不静默返回空信号**
    * 仅 `status === 'SKIP'` 时有值；SUCCESS / TIMEOUT / ERROR 为 undefined。
    */
-  skipReason?: 'NO_DATA' | 'NO_SIGNAL';
+  skipReason?: 'NO_DATA' | 'NO_SIGNAL' | 'POSITION_UNAVAILABLE';
   error?: string;
 }
 
@@ -1213,6 +1282,24 @@ export async function executePlugin(
 
   // 2. 构建上下文（如果调用方没传）
   const ctx = context ?? buildPluginContext();
+
+  // 2.5 风险类插件必须有持仓视图：不可用时显式 SKIP（不得静默返回空信号）
+  if (plugin.requiresPositions && !ctx.positionsAvailable) {
+    const duration = performance.now() - validateStart;
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'SKIP',
+      message: `插件 ${plugin.id} 需要持仓视图，但快照不可用（无 userId / 回放 / 读取失败），已跳过`,
+      checkItem: plugin.id,
+    });
+    return {
+      pluginId: plugin.id,
+      status: 'SKIP',
+      signals: [],
+      durationMs: round3(duration),
+      skipReason: 'POSITION_UNAVAILABLE',
+    };
+  }
 
   // === 3. T88：IO 感知的 50ms 预算窗口 ===
   let computeStart = performance.now(); // 计时起点（每次 IO 结束后重置）
@@ -1303,6 +1390,11 @@ export async function executePlugin(
     calculateRSI: ctx.calculateRSI,
     calculateMACD: ctx.calculateMACD,
     calculateSMA: ctx.calculateSMA,
+    // 🔴 显式拷贝（禁止 `...ctx` 展开：会绕过上面的 withIo 包装，把 IO 算进 50ms 预算）
+    positions: ctx.positions,
+    cash: ctx.cash,
+    equity: ctx.equity,
+    positionsAvailable: ctx.positionsAvailable,
   };
 
   // 4. 计时开始 → 执行插件（IO 不计入，见上方 withIo）
@@ -1393,10 +1485,12 @@ export interface PluginBatchStats {
   success: number;
   timeout: number;
   error: number;
-  /** SKIP 总数 = noData + noSignal（保留既有字段语义，不拆两半） */
+  /** SKIP 总数 = noData + noSignal + positionUnavailable（保留既有字段语义，不拆多份） */
   skip: number;
-  /** SKIP 中「取不到行情」的次数（`skipReason === 'NO_DATA'`），其余为「指标未触发」 */
+  /** SKIP 中「取不到行情」的次数（`skipReason === 'NO_DATA'`），其余按 `skipReason` 细分 */
   noData: number;
+  /** SKIP 中「需要持仓但快照不可用」的次数（`skipReason === 'POSITION_UNAVAILABLE'`） */
+  positionUnavailable: number;
 }
 
 export interface PluginBatchResult {
@@ -1425,6 +1519,11 @@ export interface ExecuteAllPluginsOptions {
    *    故第 T 天的计算不可能读到 T 之后的行情。
    */
   asOfDate?: string;
+  /**
+   * 持仓快照的用户（S2）。缺省 = `SIGNAL_USER_ID`（与 `user_plugin_config` 读取口径一致）。
+   * 回放（传了 `asOfDate`）时快照统一不可用：`POSITION_UNAVAILABLE`。
+   */
+  userId?: number;
 }
 
 /** 用户级插件配置（`user_plugin_config` 的一行解析结果） */
@@ -1496,6 +1595,57 @@ function loadUserPluginConfigs(userId: number): Map<string, UserPluginConfig> {
 }
 
 /**
+ * 构建持仓快照（S2）—— 只读、**在构建期算一次**，`execute()` 内零 IO。
+ *
+ * 口径：
+ * - `cash` = `asset_class = 'cash'` 的持仓**市值**合计。🔴 不是「可用现金余额」，
+ *   本系统不建模现金余额，禁止把它当加仓额度；
+ * - `equity` = 现金类 + 全部风险资产市值；
+ * - 市值按最新收盘价估算，取不到价记 0（不阻断快照可用性）。
+ *
+ * 不可用（降级为 `EMPTY_POSITION_SNAPSHOT`）：
+ * - 回放（`asOfDate`）：业务层没有历史持仓快照，无法重建当日持仓 → `REPLAY`；
+ * - 读取失败 → `READ_FAILED`（记 WARN，不静默）。
+ */
+async function loadPositionSnapshot(userId: number, asOfDate?: string): Promise<PluginPositionSnapshot> {
+  if (asOfDate) {
+    return { ...EMPTY_POSITION_SNAPSHOT, unavailableReason: 'REPLAY' };
+  }
+  try {
+    const positions = calcAllPositions(userId).filter((p) => p.totalQuantity > 0);
+    if (positions.length === 0) {
+      return { available: true, positions: [], cash: 0, equity: 0 };
+    }
+
+    const prices = await batchGetLatestClose(positions.map((p) => p.asset_code));
+    const db = ConfigStore.getInstance().db;
+    const views: PluginPositionView[] = [];
+    let cash = 0;
+    let equity = 0;
+    for (const p of positions) {
+      const marketValue = (prices.get(p.asset_code)?.close ?? 0) * p.totalQuantity;
+      if (getAssetClass(db, p.asset_code) === 'cash') cash += marketValue;
+      equity += marketValue;
+      views.push({
+        symbol: p.asset_code,
+        quantity: p.totalQuantity,
+        avgCost: p.avgCost,
+        marketValue,
+      });
+    }
+    return { available: true, positions: views, cash, equity };
+  } catch (err) {
+    writeSystemLog({
+      logType: 'plugin_execute',
+      level: 'WARN',
+      message: '读取持仓快照失败，需要持仓视图的插件将跳过（POSITION_UNAVAILABLE）',
+      detail: String(err),
+    });
+    return { ...EMPTY_POSITION_SNAPSHOT, unavailableReason: 'READ_FAILED' };
+  }
+}
+
+/**
  * 依次执行所有内置 monitor 类插件（MVP 暂不并发，避免同时打 DuckDB）。
  * 自定义插件将来从 PLUGIN_ALLOWED_PATH 加载后追加执行。
  *
@@ -1511,7 +1661,8 @@ function loadUserPluginConfigs(userId: number): Map<string, UserPluginConfig> {
  */
 export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}): Promise<PluginBatchResult> {
   // 用户配置（enabled 过滤 + params 合并）
-  const userConfigs = loadUserPluginConfigs(SIGNAL_USER_ID);
+  const userId = options.userId ?? SIGNAL_USER_ID;
+  const userConfigs = loadUserPluginConfigs(userId);
   // 合并内置 + 磁盘加载（SDD §5.3 磁盘热加载）
   // 只有**显式 enabled=0** 才停用；配置里没有记录的插件保持启用（默认行为不变）
   const monitorPlugins = getAllPlugins()
@@ -1531,6 +1682,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
         error: 0,
         skip: 0,
         noData: 0,
+        positionUnavailable: 0,
       };
       writeSystemLog({
         logType: 'plugin_execute',
@@ -1546,7 +1698,8 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     const start = shiftTradeDate(end, -days);
     // 1 次 IN 查询拿回整个标的域的日线（N 个插件共享）
     const prefetchKlines = await batchGetDailyRange(symbols, start, end);
-    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end });
+    const snapshot = await loadPositionSnapshot(userId, options.asOfDate);
+    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end }, snapshot);
 
     const stats: PluginBatchStats = {
       total: monitorPlugins.length * symbols.length,
@@ -1555,6 +1708,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
       error: 0,
       skip: 0,
       noData: 0,
+      positionUnavailable: 0,
     };
     const allSignals: PluginSignal[] = [];
     const results: PluginExecutionResult[] = [];
@@ -1579,6 +1733,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
         } else {
           stats.skip += 1;
           if (res.skipReason === 'NO_DATA') stats.noData += 1;
+          else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
         }
       }
     }
@@ -1586,7 +1741,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     writeSystemLog({
       logType: 'plugin_execute',
       level: 'INFO',
-      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData}`,
+      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData} positionUnavailable=${stats.positionUnavailable}`,
       detail: JSON.stringify({ ...stats, symbolCount: symbols.length, pluginCount: monitorPlugins.length }),
     });
 
@@ -1595,8 +1750,10 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
 
   // ── 旧行为（未传标的域）：每个插件跑 1 次 ──
   // 回放给了 asOfDate 时同样锁住取数终点（空预取 → 每次取数都走回落，但终点仍受控）
+  const snapshot = await loadPositionSnapshot(userId, options.asOfDate);
   const ctx = buildPluginContext(
     options.asOfDate ? { klines: new Map(), windowDays: 0, endDate: options.asOfDate } : undefined,
+    snapshot,
   );
 
   const stats: PluginBatchStats = {
@@ -1606,6 +1763,7 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     error: 0,
     skip: 0,
     noData: 0,
+    positionUnavailable: 0,
   };
   const allSignals: PluginSignal[] = [];
   const results: PluginExecutionResult[] = [];
@@ -1625,13 +1783,14 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     } else {
       stats.skip += 1;
       if (res.skipReason === 'NO_DATA') stats.noData += 1;
+      else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
     }
   }
 
   writeSystemLog({
     logType: 'plugin_execute',
     level: 'INFO',
-    message: `批量执行完成 total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData}`,
+    message: `批量执行完成 total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData} positionUnavailable=${stats.positionUnavailable}`,
     detail: JSON.stringify(stats),
   });
 

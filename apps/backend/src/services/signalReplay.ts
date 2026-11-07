@@ -278,7 +278,7 @@ export async function replaySignals(options: SignalReplayOptions = {}): Promise<
     if (symbols.length === 0) break;
     const day: ReplayDayResult = {
       trade_date: tradeDate,
-      stats: { total: 0, success: 0, timeout: 0, error: 0, skip: 0, noData: 0 },
+      stats: { total: 0, success: 0, timeout: 0, error: 0, skip: 0, noData: 0, positionUnavailable: 0 },
       signals: 0,
       inserted: 0,
       skipped: 0,

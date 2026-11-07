@@ -852,11 +852,12 @@ describe('pluginEngine 覆盖 — executePlugin 参数与 context', () => {
 // ---------------------------------------------------------------------------
 
 describe('pluginEngine 覆盖 — executeAllPlugins 统计分支', () => {
-  /** 隔离 DuckDB：行情查询一律 mock 成空结果 */
+  /** 隔离 DuckDB：行情查询一律 mock 成空结果（含 S2 持仓快照的取价） */
   async function mockMarketData(): Promise<void> {
     const md = await import('../../src/services/marketData.js');
     vi.spyOn(md, 'batchGetDailyRange').mockResolvedValue(new Map());
     vi.spyOn(md, 'getDailyRange').mockResolvedValue([]);
+    vi.spyOn(md, 'batchGetLatestClose').mockResolvedValue(new Map());
   }
 
   it('标的域模式：SUCCESS 被统计（probe 插件产出信号）', async () => {
@@ -902,5 +903,101 @@ describe('pluginEngine 覆盖 — executeAllPlugins 统计分支', () => {
 
     const to = await executeAllPlugins({ userParams: { mode: 'timeout' } });
     expect(to.stats.timeout).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. S2 —— 只读持仓视图（positions / cash / equity / POSITION_UNAVAILABLE）
+// ---------------------------------------------------------------------------
+
+describe('pluginEngine 覆盖 — S2 持仓视图', () => {
+  const snapshot = {
+    available: true,
+    positions: [{ symbol: 'sh600000', quantity: 100, avgCost: 10, marketValue: 1200 }],
+    cash: 500,
+    equity: 1700,
+  };
+
+  /** 需要持仓视图的插件 */
+  function makeRiskPlugin(execute: Plugin['execute']): Plugin {
+    return {
+      id: 'risk-probe',
+      name: '风险探针',
+      version: '1.0.0',
+      author: 'test',
+      period: 'daily',
+      category: 'monitor',
+      subCategory: 'risk',
+      complexity: 'simple',
+      defaultParams: {},
+      requiresPositions: true,
+      execute,
+    };
+  }
+
+  it('buildPluginContext 注入快照：positions() / cash / equity / positionsAvailable', () => {
+    const ctx = buildPluginContext(undefined, snapshot);
+    expect(ctx.positionsAvailable).toBe(true);
+    expect(ctx.positions()).toEqual(snapshot.positions);
+    expect(ctx.cash).toBe(500);
+    expect(ctx.equity).toBe(1700);
+  });
+
+  it('不传快照 → 空快照（positions 为空、cash/equity=0、不可用）', () => {
+    const ctx = buildPluginContext();
+    expect(ctx.positionsAvailable).toBe(false);
+    expect(ctx.positions()).toEqual([]);
+    expect(ctx.cash).toBe(0);
+    expect(ctx.equity).toBe(0);
+  });
+
+  it('requiresPositions 且快照不可用 → SKIP + POSITION_UNAVAILABLE，execute 不被调用', async () => {
+    let called = false;
+    const plugin = makeRiskPlugin(async () => {
+      called = true;
+      return [];
+    });
+
+    const res = await executePlugin(plugin);
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('POSITION_UNAVAILABLE');
+    expect(res.signals).toEqual([]);
+    expect(called).toBe(false);
+  });
+
+  it('timedCtx 显式拷贝快照字段（execute 内读到 cash / equity / positions）', async () => {
+    let seen: Record<string, unknown> | undefined;
+    const plugin = makeRiskPlugin(async (ctx) => {
+      seen = {
+        cash: ctx.cash,
+        equity: ctx.equity,
+        available: ctx.positionsAvailable,
+        count: ctx.positions().length,
+      };
+      return [];
+    });
+
+    const res = await executePlugin(plugin, {}, buildPluginContext(undefined, snapshot));
+    // 返回空信号 → 有快照但无行情，归为 NO_DATA（不是 POSITION_UNAVAILABLE）
+    expect(res.status).toBe('SKIP');
+    expect(res.skipReason).toBe('NO_DATA');
+    expect(seen).toEqual({ cash: 500, equity: 1700, available: true, count: 1 });
+  });
+
+  it('executeAllPlugins：回放（asOfDate）→ positionUnavailable 被统计', async () => {
+    const md = await import('../../src/services/marketData.js');
+    vi.spyOn(md, 'batchGetDailyRange').mockResolvedValue(new Map());
+    vi.spyOn(md, 'getDailyRange').mockResolvedValue([]);
+    vi.spyOn(md, 'batchGetLatestClose').mockResolvedValue(new Map());
+
+    const plugin = makeRiskPlugin(async () => []);
+    builtinPlugins.push(plugin);
+    try {
+      const res = await executeAllPlugins({ symbols: ['sh600000'], asOfDate: '2026-01-05' });
+      expect(res.stats.positionUnavailable).toBe(1);
+      expect(res.results.find((r) => r.pluginId === 'risk-probe')?.skipReason).toBe('POSITION_UNAVAILABLE');
+    } finally {
+      builtinPlugins.splice(builtinPlugins.indexOf(plugin), 1);
+    }
   });
 });
