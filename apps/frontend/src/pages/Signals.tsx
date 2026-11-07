@@ -143,6 +143,16 @@ export default function Signals() {
   /** 行情最新日（仅在后端走「最近行情日」兜底时下发，用于空态文案）*/
   const [latestQuoteDate, setLatestQuoteDate] = useState<string | null>(null);
 
+  /**
+   * 行情最新日（独立取一次，仅用于「当前展示日 vs 行情最新日」旁注）
+   *
+   * ⚠️ `resolveDefaultSignalTradeDate()` 在「最近有信号日」口径下把
+   *    `latest_quote_date` 置 null（见 `signalService.ts`），故 `/api/signal`
+   *    响应里拿不到行情最新日。这里复用只读接口 `/api/market/latest-date`
+   *    （与 Dashboard / Admin 同款），只做展示，不参与任何筛选或默认日期解析。
+   */
+  const [marketQuoteDate, setMarketQuoteDate] = useState<string | null>(null);
+
   // ── V3.8 T149：信号生命周期操作（采纳/忽略/关联交易）────────────────
   const [actMsg, setActMsg] = useState<string | null>(null);
 
@@ -233,6 +243,24 @@ export default function Signals() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 行情最新日只取一次（只用于旁注；失败就降级为不显示该段）*/
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/market/latest-date');
+        if (cancelled || !isOkEnvelope(res.data)) return;
+        const raw = (res.data.data as { date?: string | null } | null)?.date ?? null;
+        setMarketQuoteDate(typeof raw === 'string' ? raw : null);
+      } catch {
+        // 旁注是辅助信息，取不到就不显示，不影响主流程
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   /**
    * 筛选即时生效（T72 ④）：改完筛选条件 300ms 后自动重查，**回到第 1 页**
    *
@@ -286,6 +314,15 @@ export default function Signals() {
     : resolvedDate
       ? `交易日 ${resolvedDate} 暂无符合条件的策略信号`
       : '暂无符合条件的策略信号';
+
+  /** 默认日期来源的中文标签（与筛选栏旁注、列表态旁注共用同一口径）*/
+  const dateSourceLabel =
+    resolvedSource === 'signal' ? '最近有信号日' : resolvedSource === 'quote' ? '行情最新日' : '兜底交易日';
+
+  /** 列表里是否有「非当前展示日」的行（决定是否显示灰显说明）*/
+  const hasOtherDayRows =
+    resolvedDate !== null &&
+    rows.some((r) => typeof r.trade_date === 'string' && r.trade_date !== resolvedDate);
 
   const filterLabelStyle: React.CSSProperties = {
     fontSize: TYPO.bodySize,
@@ -456,15 +493,52 @@ export default function Signals() {
           </div>
         ) : (
           <>
-            <div
-              style={{
-                fontSize: TYPO.smallSize,
-                color: COLORS.neutral,
-                marginBottom: SPACING.gapBase,
-              }}
-            >
-              按交易日升序排列
-            </div>
+            {/*
+              当前展示日旁注（F 域 P0-1 的可见性补齐）
+              ⚠️ 只做展示：`resolvedDate` 由后端解析，前端不参与默认日期口径；
+                 行情最新日走只读 `/api/market/latest-date`，取不到时该段自动省略。
+            */}
+            {resolvedDate ? (
+              <div
+                data-testid="signals-display-date-note"
+                style={{
+                  fontSize: TYPO.smallSize,
+                  color: COLORS.neutral,
+                  marginBottom: SPACING.gapTight,
+                }}
+              >
+                当前展示日 <b>{resolvedDate}</b>（{dateSourceLabel}）
+                {marketQuoteDate && marketQuoteDate !== resolvedDate
+                  ? ` · 行情最新 ${marketQuoteDate}（默认优先取「最近有信号日」，可能早于行情最新日）`
+                  : resolvedSource === 'quote'
+                    ? ' · 尚无策略信号，取行情最新日'
+                    : resolvedSource === 'today'
+                      ? ' · 行情库暂不可用'
+                      : ''}
+              </div>
+            ) : (
+              <div
+                style={{
+                  fontSize: TYPO.smallSize,
+                  color: COLORS.neutral,
+                  marginBottom: SPACING.gapTight,
+                }}
+              >
+                按交易日升序排列
+              </div>
+            )}
+            {hasOtherDayRows ? (
+              <div
+                data-testid="signals-gray-legend"
+                style={{
+                  fontSize: TYPO.smallSize,
+                  color: COLORS.textMuted,
+                  marginBottom: SPACING.gapBase,
+                }}
+              >
+                {`灰显行 = 其它交易日的信号（非当前展示日 ${resolvedDate ?? '--'}）；按「交易日期」筛选可只看单日`}
+              </div>
+            ) : null}
             {/*
               表格用 `ScrollableTable` 包一层 —— 表格在**自己内部**横向滚动，
               不会把文档撑宽（G3.5 / G4.6 的 375px 无横向溢出判据）。
@@ -504,8 +578,26 @@ export default function Signals() {
                       typeof row.plugin_category === 'string'
                         ? PLUGIN_CATEGORY_LABEL[row.plugin_category]
                         : undefined;
+                    /**
+                     * 非当前展示日 → 灰显（见列表上方 `signals-gray-legend`）
+                     *
+                     * ⚠️ 仅在后端已解析出展示日（默认视角）时生效；显式筛选下
+                     *    `resolvedDate` 为 null，不做任何灰显。
+                     */
+                    const isOtherDay =
+                      resolvedDate !== null &&
+                      typeof row.trade_date === 'string' &&
+                      row.trade_date !== resolvedDate;
                     return (
-                      <tr key={typeof row.id === 'number' ? row.id : i}>
+                      <tr
+                        key={typeof row.id === 'number' ? row.id : i}
+                        style={isOtherDay ? { color: COLORS.textMuted } : undefined}
+                        title={
+                          isOtherDay
+                            ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
+                            : undefined
+                        }
+                      >
                         <td style={thTdStyle}>
                           <code>{code}</code>
                         </td>
