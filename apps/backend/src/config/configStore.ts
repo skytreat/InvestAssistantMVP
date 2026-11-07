@@ -193,6 +193,9 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     cooldown_until TEXT,
     linked_trade_id INTEGER REFERENCES user_trade_record(id),
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+    -- F 域区间回放：信号来源标记（live = 日常链路实时生成 / replay = 区间回放补算）。
+    -- 存量行在补列时统一落 'live'（引入回放能力前所有信号都来自日常链路）。
+    origin TEXT NOT NULL DEFAULT 'live' CHECK (origin IN ('live', 'replay')),
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(user_id, asset_code, plugin_id, trade_date),
     FOREIGN KEY (user_id) REFERENCES user_account(id)
@@ -498,6 +501,9 @@ export class ConfigStore {
       adopted_at: 'TEXT',
       cooldown_until: 'TEXT',
       linked_trade_id: 'INTEGER REFERENCES user_trade_record(id)',
+      // F 域区间回放：来源标记。既有行必须落 'live'（回放能力上线前不存在 replay 信号），
+      // 因此可安全地用 NOT NULL DEFAULT 'live' 做幂等补列（零行重写，见 AGENTS「DDL 变更判据」）。
+      origin: "TEXT NOT NULL DEFAULT 'live' CHECK (origin IN ('live', 'replay'))",
     };
     try {
       const table = this._db

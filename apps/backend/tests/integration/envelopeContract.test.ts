@@ -225,6 +225,8 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/admin/datacheck/result' },
   { method: 'POST', url: '/api/admin/datacheck/trigger', timeout: 60_000 },
   { method: 'POST', url: '/api/admin/run-signal', timeout: 60_000 },
+  // 回放默认 dry_run=true（只算不写）；测试库里无自选/持仓 ⇒ 标的域为空、快速返回
+  { method: 'POST', url: '/api/admin/signal-replay', payload: { dry_run: true }, timeout: 60_000 },
   { method: 'GET', url: '/api/admin/system-log' },
   { method: 'GET', url: '/api/admin/system-log/fallback' },
   { method: 'GET', url: '/api/admin/users' },

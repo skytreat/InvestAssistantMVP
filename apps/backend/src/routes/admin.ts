@@ -10,6 +10,7 @@ import {
   SIGNAL_USER_ID,
 } from '../services/signalService.js';
 import { writeSystemLog, readFallbackLogTail } from '../services/logger.js';
+import { replaySignals, ReplayRangeTooLargeError } from '../services/signalReplay.js';
 import { forceRefreshSymbolDict } from '../services/symbolDict.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
@@ -18,6 +19,7 @@ import { defaultMessage } from '../lib/errorMessages.js';
  * 管理员 API（T29）——需要 role=admin
  * - POST /api/admin/run-datacheck   手动触发 C1-C12
  * - POST /api/admin/run-signal      手动触发插件信号生成（含持久化）
+ * - POST /api/admin/signal-replay   区间回放补算信号（dry_run 默认 true，F 域）
  * - GET  /api/admin/system-log      分页查询 system_log
  * - GET  /api/admin/system-log/fallback  读取降级日志文件尾部（I-13）
  * - POST /api/admin/rerun-quotes    手动触发行情更新补跑（Requirements §5.1）
@@ -95,6 +97,51 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         }),
       );
     } catch (err) {
+      reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
+    }
+  });
+
+  // 区间回放：按 [上次成功日, 最新行情日] 逐日补算信号（F 域）
+  // body: { from?: 'YYYY-MM-DD', to?: 'YYYY-MM-DD', symbols?: string[], dry_run?: boolean }
+  // 🔴 dry_run 默认 true（只算不写）；只影响**信号落库**，日常 17:02 / run-signal 两条链路行为不变。
+  app.post('/api/admin/signal-replay', async (request, reply) => {
+    const user = (request as any).user;
+    if (user.role !== 'admin')
+      return reply.code(403).send(fail(403, 'FORBIDDEN', defaultMessage('FORBIDDEN')));
+    const body = (request.body ?? {}) as {
+      from?: unknown;
+      to?: unknown;
+      symbols?: unknown;
+      dry_run?: unknown;
+    };
+    try {
+      if (body.from !== undefined && typeof body.from !== 'string')
+        return reply.code(400).send(fail(400, 'INVALID_PARAM', 'from 必须为 YYYY-MM-DD 字符串'));
+      if (body.to !== undefined && typeof body.to !== 'string')
+        return reply.code(400).send(fail(400, 'INVALID_PARAM', 'to 必须为 YYYY-MM-DD 字符串'));
+      if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean')
+        return reply.code(400).send(fail(400, 'INVALID_PARAM', 'dry_run 必须为布尔值'));
+
+      writeSystemLog({
+        logType: 'trigger_manual',
+        level: 'INFO',
+        message: `${user.username} 手动触发信号区间回放（dry_run=${body.dry_run ?? true}）`,
+      });
+
+      const result = await replaySignals({
+        fromDate: body.from,
+        toDate: body.to,
+        symbols: Array.isArray(body.symbols)
+          ? body.symbols.filter((s): s is string => typeof s === 'string')
+          : undefined,
+        dryRun: typeof body.dry_run === 'boolean' ? body.dry_run : true,
+      });
+      reply.send(ok(result));
+    } catch (err) {
+      if (err instanceof ReplayRangeTooLargeError)
+        return reply.code(400).send(fail(400, 'RANGE_TOO_LARGE', err.message));
+      if (err instanceof Error && /必须为 YYYY-MM-DD/.test(err.message))
+        return reply.code(400).send(fail(400, 'INVALID_PARAM', err.message));
       reply.code(500).send(fail(500, 'INTERNAL_ERROR', String(err)));
     }
   });
