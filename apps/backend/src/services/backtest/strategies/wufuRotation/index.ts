@@ -73,7 +73,9 @@ export const WUFU_ROTATION_PARAM_SCHEMA: ParamField[] = [
     type: 'integer',
     default: WUFU_ROTATION_DEFAULTS.holdingsNum,
     min: 1,
-    max: 10,
+    // 候选阈值取候选池第 holdingsNum 名（candidate.ts: `top10[holdingsNum - 1]`），
+    // 故持仓数不能超过候选行数；由常量推导，避免两处字面量各自漂移。
+    max: CANDIDATE_TOP_ROWS,
     step: 1,
     description: 'v5.2 `holdings_num`；1 = 全仓单只',
   },

@@ -12,7 +12,12 @@
  */
 import type { CandidateMetrics } from './filters.js';
 
-/** v5.2 L954：只取前 10 名参与阈值计算 */
+/**
+ * v5.2 L954：只取前 10 名参与阈值计算。
+ *
+ * 阈值参考分取第 `holdingsNum` 名（`top10[holdingsNum - 1]`），故**持仓数不能超过本行数**。
+ * 策略 schema 的 `holdingsNum.max` 直接由本常量推导（`index.ts`），两者结构上无法分叉。
+ */
 export const CANDIDATE_TOP_ROWS = 10;
 
 export interface CandidatePoolOptions {
