@@ -221,6 +221,20 @@ const ROUTE_CASES: RouteCase[] = [
   },
   { method: 'POST', url: '/api/broker-reconcile/diff/:id/match', payload: {} },
 
+  // ── 纸面账户（PA-05~07 / S1）──
+  // 全是「空 body → 4xx 错误 envelope」路径：不建户、不写 paper_* 数据，
+  // 只为确认 envelope 形状（`error` 为字符串、`code` 为字符串、`data=null`）。
+  { method: 'GET', url: '/api/paper/strategies' },
+  { method: 'GET', url: '/api/paper/fee-configs' },
+  { method: 'POST', url: '/api/paper/fee-configs', payload: {} },
+  { method: 'PATCH', url: '/api/paper/fee-configs/:id', payload: {} },
+  { method: 'DELETE', url: '/api/paper/fee-configs/:id' },
+  { method: 'GET', url: '/api/paper/accounts' },
+  { method: 'POST', url: '/api/paper/accounts', payload: {} },
+  { method: 'GET', url: '/api/paper/accounts/:id' },
+  { method: 'POST', url: '/api/paper/accounts/:id/phase', payload: {} },
+  { method: 'POST', url: '/api/paper/accounts/:id/close', payload: {} },
+
   // ── 管理员 ──
   { method: 'GET', url: '/api/admin/datacheck/result' },
   { method: 'POST', url: '/api/admin/datacheck/trigger', timeout: 60_000 },

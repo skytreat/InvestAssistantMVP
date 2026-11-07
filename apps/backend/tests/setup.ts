@@ -52,6 +52,7 @@ const GUARDED_ENV_KEYS = [
   'TUSHARE_TOKEN',
   'SQLITE_DB_PATH',
   'DUCKDB_PATH',
+  'BACKTEST_DB_PATH',
   'ENABLE_OCI_BACKUP',
   'ENABLE_QUOTE_BACKUP',
   'BACKUP_DIR',
@@ -153,9 +154,14 @@ function initProcessBaseline(): EnvBaseline {
 
   // 兜底：SQLITE_DB_PATH 指向一个安全临时库，而不是回落到 data/business.db。
   // 没有它设 SQLITE_DB_PATH 的测试文件会写到开发库。
+  // 同理：BACKTEST_DB_PATH（纸面账户与回测同库，D1）也必须落到临时目录，
+  // 否则纸面路由一被遍历就会在仓库 data/backtest.db 里建表/播种。
+  const safeDir = mkdtempSync(path.join(os.tmpdir(), 'invest-vitest-'));
   if (!process.env.SQLITE_DB_PATH) {
-    const safeDir = mkdtempSync(path.join(os.tmpdir(), 'invest-vitest-'));
     process.env.SQLITE_DB_PATH = path.join(safeDir, 'business.db');
+  }
+  if (!process.env.BACKTEST_DB_PATH) {
+    process.env.BACKTEST_DB_PATH = path.join(safeDir, 'backtest.db');
   }
 
   const baseline = captureEnv();
