@@ -16,6 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { loadTradingCalendar } from './calendar.js';
 import { getBars, isSuspended, summarizePanel, type SymbolPanelSummary } from './marketPanel.js';
 import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from './universe/fixedPool.js';
@@ -966,6 +967,38 @@ function printSweepSummary(result: SweepResult): void {
   }
 }
 
+const GC_FLAG = '--expose-gc';
+const REEXEC_ENV = 'IA_SWEEP_GC_REEXEC';
+
+/**
+ * 确保 sweep 进程带 `--expose-gc`：缺失时用**同一套 execArgv**（含 tsx loader）重开自己。
+ *
+ * 为什么在入口自举而不是只加 npm script：sweep 的常规调用是
+ * `tsx apps/backend/src/services/backtest/cli.ts sweep …`，不经过 npm script；
+ * 只在入口处理才能覆盖所有调用方式，也不必要求使用者记得设 `NODE_OPTIONS`。
+ *
+ * @returns true = 已重开子进程并透传退出码，调用方应立即返回
+ */
+function reexecWithExposeGc(argv: readonly string[]): boolean {
+  if (typeof (globalThis as { gc?: () => void }).gc === 'function') return false;
+  // 已重开过仍未生效 → 不再递归，交给 runner 打 WARN 兜底
+  if (process.env[REEXEC_ENV] === '1') return false;
+  const entry = process.argv[1];
+  if (!entry) return false;
+
+  console.error(`[sweep] 未检测到 ${GC_FLAG}，正在以 node ${GC_FLAG} 重开进程…`);
+  const child = spawnSync(process.execPath, [...process.execArgv, GC_FLAG, entry, ...argv], {
+    stdio: 'inherit',
+    env: { ...process.env, [REEXEC_ENV]: '1' },
+  });
+  if (child.error) {
+    console.error(`[sweep] 以 ${GC_FLAG} 重开失败：${child.error.message}（继续无 GC 运行）`);
+    return false;
+  }
+  process.exitCode = child.status ?? 1;
+  return true;
+}
+
 async function sweepCommand(argv: readonly string[]): Promise<void> {
   const args = parseSweepArgs(argv);
   const { runSweep } = await import('./optimize/runner.js');
@@ -999,6 +1032,7 @@ async function main(): Promise<void> {
     return;
   }
   if (argv[0] === 'sweep') {
+    if (reexecWithExposeGc(argv)) return;
     await sweepCommand(argv.slice(1));
     return;
   }
