@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
 import { getTodaySignalStats } from '../services/todaySignals.js';
-import { resolveDefaultSignalTradeDate } from '../services/signalService.js';
+import { getTradeDate, resolveDefaultSignalTradeDate } from '../services/signalService.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
@@ -92,6 +92,28 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       if (q.direction) {
         where.push('direction = ?');
         params.push(q.direction);
+      }
+      /**
+       * F1：分级筛选（PRD_v3 §4.2 顶部 tab：全部 / 强 / 中 / 弱 / 已过期）
+       *
+       * - `grade=strong|medium|weak` → 只看该档，并**排除已过期**（过期在「已过期」tab 单独展示）
+       * - `grade=expired` → `expires_at < 今天`（未写过 expires_at 的历史行不算过期）
+       * - 不传 → 保持既有「全部」语义（含过期），供 Dashboard / 其他调用方兼容
+       */
+      if (q.grade) {
+        if (q.grade === 'expired') {
+          where.push('(expires_at IS NOT NULL AND expires_at < ?)');
+          params.push(getTradeDate());
+        } else if (q.grade === 'strong' || q.grade === 'medium' || q.grade === 'weak') {
+          where.push('grade = ?');
+          params.push(q.grade);
+          where.push('(expires_at IS NULL OR expires_at >= ?)');
+          params.push(getTradeDate());
+        } else {
+          return reply
+            .code(400)
+            .send(fail(400, 'PARAM_INVALID', 'grade 只能是 strong / medium / weak / expired'));
+        }
       }
 
       const whereSql = 'WHERE ' + where.join(' AND ');

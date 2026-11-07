@@ -6,7 +6,7 @@ import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
-import { SignalDirectionPill, SignalLabelTag } from '../components/SignalPills';
+import { SignalDirectionPill, SignalGradeTag, SignalLabelTag } from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
 import { useUserStore } from '../store/user';
 import {
@@ -89,8 +89,36 @@ interface SignalRow {
   label?: string;
   /** 信号强度（**0~1 的小数**，可空 —— 见 `components/SignalStrength.tsx`）*/
   strength?: number | null;
+  /** F1：分级（strong / medium / weak；历史行/无强度行为 null）*/
+  grade?: string | null;
+  /** F1：有效期（YYYY-MM-DD；过期信号置灰不删）*/
+  expires_at?: string | null;
   trade_date?: string;
   [key: string]: unknown;
+}
+
+/** F1：分级 tab（PRD_v3 §4.2「全部 / 强 / 中 / 弱 / 已过期」）*/
+type GradeTab = 'all' | 'strong' | 'medium' | 'weak' | 'expired';
+
+/** tab 文案（顺序即渲染顺序）*/
+const GRADE_TABS: Array<{ key: GradeTab; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'strong', label: '强' },
+  { key: 'medium', label: '中' },
+  { key: 'weak', label: '弱' },
+  { key: 'expired', label: '已过期' },
+];
+
+/** 东八区今天（YYYY-MM-DD）—— 与后端 `getTradeDate()` 同口径，用于过期判断 */
+function todayInShanghai(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** `date` 距今天的天数（仅用于「生成于 X 天前」文案，非法日期返回 null）*/
+function daysSince(date: string, today: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const diff = Date.parse(`${today}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(diff) ? Math.floor(diff / 86_400_000) : null;
 }
 
 /** 插件类别 → 中文（`monitor` = 监控类 / `filter` = 筛选类，Requirements §5.5）*/
@@ -127,6 +155,10 @@ export default function Signals() {
   const [assetCode, setAssetCode] = useState<string>('');
   const [pluginId, setPluginId] = useState<string>('');
   const [direction, setDirection] = useState<string>('');
+  /**
+   * F1：分级 tab，**默认只看强**（用户口径：默认只显强；全部/中/弱/已过期按需切换）
+   */
+  const [gradeTab, setGradeTab] = useState<GradeTab>('strong');
 
   // ── 数据与分页 ──────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
@@ -251,6 +283,8 @@ export default function Signals() {
       const plugin = pluginId.trim();
       if (plugin) params.plugin_id = plugin;
       if (direction) params.direction = direction;
+      // F1：分级 tab 直接下推后端（避免前端只过滤当前页导致分页错乱）
+      if (gradeTab !== 'all') params.grade = gradeTab;
 
       const res = await api.get('/signal', { params });
       if (isOkEnvelope(res.data)) {
@@ -316,7 +350,15 @@ export default function Signals() {
    * ⚠️ 指纹比对放在 **timer 回调内** —— 这样「点【查询】按钮」先把指纹写进去，
    *    300ms 后到期的防抖就会自己跳过，**不会重复发两次请求**。
    */
-  const filterKey = JSON.stringify([tradeDate, startDate, endDate, assetCode, pluginId, direction]);
+  const filterKey = JSON.stringify([
+    tradeDate,
+    startDate,
+    endDate,
+    assetCode,
+    pluginId,
+    direction,
+    gradeTab,
+  ]);
   const lastQueriedFilterKey = useRef<string>(filterKey);
 
   useEffect(() => {
@@ -380,6 +422,9 @@ export default function Signals() {
   const hasOtherDayRows =
     resolvedDate !== null &&
     rows.some((r) => typeof r.trade_date === 'string' && r.trade_date !== resolvedDate);
+
+  /** F1：东八区今天，用于判断 `expires_at` 是否已过期（过期置灰不删）*/
+  const today = todayInShanghai();
 
   const filterLabelStyle: React.CSSProperties = {
     fontSize: TYPO.bodySize,
@@ -503,6 +548,38 @@ export default function Signals() {
         </button>
       </div>
 
+      {/*
+        F1：分级 tab（PRD_v3 §4.2）
+        ⚠️ **默认只看强**（用户口径）；切 tab 走防抖即时重查，并回到第 1 页。
+      */}
+      <div
+        role="group"
+        aria-label="信号分级筛选"
+        data-testid="signals-grade-tabs"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+      >
+        <span style={filterLabelStyle}>分级</span>
+        {GRADE_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            aria-pressed={gradeTab === tab.key}
+            data-testid={`signals-grade-tab-${tab.key}`}
+            onClick={() => setGradeTab(tab.key)}
+            style={{
+              ...buttonStyle,
+              background: gradeTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
+              color: gradeTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
+          默认只看强信号；过期信号置灰不删
+        </span>
+      </div>
+
       {error && <div style={errorStyle}>{error}</div>}
 
       {/* F3：今日 Top 5 摘要区（与主列表同屏，先回答「哪几条最值得看」） */}
@@ -550,6 +627,9 @@ export default function Signals() {
                     方向
                   </th>
                   <th scope="col" style={thStyle}>
+                    分级
+                  </th>
+                  <th scope="col" style={thStyle}>
                     强度
                   </th>
                   <th scope="col" style={thStyle}>
@@ -573,6 +653,10 @@ export default function Signals() {
                         <SignalDirectionPill
                           direction={typeof row.direction === 'string' ? row.direction : 'hold'}
                         />
+                      </td>
+                      <td style={thTdStyle}>
+                        {/* F1：Top 5 可含中/弱，用分级 tag 保证「一眼看出不是强档」 */}
+                        <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
                       </td>
                       <td style={thTdStyle}>
                         <SignalStrength
@@ -702,6 +786,9 @@ export default function Signals() {
                       方向
                     </th>
                     <th scope="col" style={thStyle}>
+                      分级
+                    </th>
+                    <th scope="col" style={thStyle}>
                       强度
                     </th>
                     <th scope="col" style={thStyle}>
@@ -733,14 +820,30 @@ export default function Signals() {
                       resolvedDate !== null &&
                       typeof row.trade_date === 'string' &&
                       row.trade_date !== resolvedDate;
+                    /**
+                     * F1：过期判断 —— `expires_at < 今天` 即过期。
+                     * **置灰不删**：行照常渲染，标注「生成于 X 天前」，让用户知道它失效了。
+                     */
+                    const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null;
+                    const isExpired = expiresAt !== null && expiresAt < today;
+                    const generatedDaysAgo =
+                      isExpired && typeof row.trade_date === 'string'
+                        ? daysSince(row.trade_date, today)
+                        : null;
+                    const muted = isOtherDay || isExpired;
                     return (
                       <tr
                         key={typeof row.id === 'number' ? row.id : i}
-                        style={isOtherDay ? { color: COLORS.textMuted } : undefined}
+                        data-testid={isExpired ? 'signals-row-expired' : undefined}
+                        style={
+                          muted ? { color: COLORS.textMuted, opacity: isExpired ? 0.6 : 1 } : undefined
+                        }
                         title={
-                          isOtherDay
-                            ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
-                            : undefined
+                          isExpired
+                            ? `已过期（有效期至 ${expiresAt}）`
+                            : isOtherDay
+                              ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
+                              : undefined
                         }
                       >
                         <td style={thTdStyle}>
@@ -761,6 +864,9 @@ export default function Signals() {
                           />
                         </td>
                         <td style={thTdStyle}>
+                          <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
+                        </td>
+                        <td style={thTdStyle}>
                           <SignalStrength
                             value={typeof row.strength === 'number' ? row.strength : null}
                             label={`${code} 信号强度`}
@@ -771,6 +877,19 @@ export default function Signals() {
                         </td>
                         <td style={thTdStyle}>
                           {typeof row.trade_date === 'string' ? row.trade_date : '--'}
+                          {/* F1：过期行标注「生成于 X 天前」（置灰不删，信息不丢） */}
+                          {generatedDaysAgo !== null ? (
+                            <span
+                              data-testid="signals-expired-age"
+                              style={{
+                                display: 'block',
+                                fontSize: TYPO.captionSize,
+                                color: COLORS.textMuted,
+                              }}
+                            >
+                              生成于 {generatedDaysAgo} 天前
+                            </span>
+                          ) : null}
                         </td>
                         {/* V3.8 T149：采纳/忽略/关联交易（过期信号仍可标注，标灰由后端 T134 的 expires_at 承担） */}
                         <td style={thTdStyle}>

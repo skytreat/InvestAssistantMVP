@@ -8,7 +8,13 @@ import { runAllChecks, hasQuoteDataOn } from './validator.js';
 import { executeAllPlugins } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
-import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from './signalService.js';
+import {
+  persistSignals,
+  getTradeDate,
+  resolveSignalSymbols,
+  SIGNAL_USER_ID,
+  assignSignalGrades,
+} from './signalService.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
 import { isDuckDBWriteSentinelPresent } from '../db/duckdb.js';
 import { runFullBackup } from './backup.js';
@@ -416,6 +422,23 @@ export function registerCronJobs(app: FastifyInstance): void {
                 totalInserted += persist.inserted;
                 totalSkipped += persist.skipped;
                 totalErrors += persist.errors;
+              }
+              // F1：回填 grade / expires_at（**只写这两列**，不增删信号）
+              try {
+                const graded = await assignSignalGrades(tradeDate, SIGNAL_USER_ID);
+                writeSystemLog({
+                  logType: 'signal_generate',
+                  level: 'INFO',
+                  message: `信号分级完成: graded=${graded.graded} 强=${graded.strong} 中=${graded.medium} 弱=${graded.weak}`,
+                  detail: JSON.stringify({ tradeDate }),
+                });
+              } catch (gradeErr: unknown) {
+                writeSystemLog({
+                  logType: 'signal_generate',
+                  level: 'WARN',
+                  message: '信号分级失败（不影响信号生成主流程）',
+                  detail: String(gradeErr),
+                });
               }
               writeSystemLog({
                 logType: 'signal_generate',

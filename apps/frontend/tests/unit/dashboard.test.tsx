@@ -392,6 +392,7 @@ describe('F3 · 今日 Top 5 摘要卡', () => {
           label: '金叉',
           trade_date: '2026-11-06',
           strength: 0.92,
+          grade: 'strong',
         },
         {
           id: 8,
@@ -401,6 +402,8 @@ describe('F3 · 今日 Top 5 摘要卡', () => {
           label: '观望',
           trade_date: '2026-11-06',
           strength: 0.41,
+          // F1：Top 5 允许带中/弱 —— 分级 tag 必须让「不是强档」一眼可辨
+          grade: 'weak',
         },
       ],
       top5Meta: {
@@ -428,6 +431,12 @@ describe('F3 · 今日 Top 5 摘要卡', () => {
     expect(within(rows[1]).getByText('92%')).toBeInTheDocument();
     // 后端已按优先级排序，前端原样展示（不重排）
     expect(within(rows[2]).getByText('sz159915')).toBeInTheDocument();
+
+    // F1：分级 tag —— 第 1 行「强」，第 2 行「弱」（一眼看出不是强档）
+    const grades = within(table)
+      .getAllByTestId('signal-grade-tag')
+      .map((t) => t.textContent);
+    expect(grades).toEqual(['强', '弱']);
   });
 });
 

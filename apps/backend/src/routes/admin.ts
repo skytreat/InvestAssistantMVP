@@ -8,6 +8,7 @@ import {
   getTradeDate,
   resolveSignalSymbols,
   SIGNAL_USER_ID,
+  assignSignalGrades,
 } from '../services/signalService.js';
 import { writeSystemLog, readFallbackLogTail } from '../services/logger.js';
 import { replaySignals, ReplayRangeTooLargeError } from '../services/signalReplay.js';
@@ -87,6 +88,17 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         const persist = persistSignals(p.signals, p.pluginId, 'monitor', tradeDate);
         totalInserted += persist.inserted;
         totalSkipped += persist.skipped;
+      }
+      // F1：手动触发与 17:02 定时链路同一口径（只回填 grade / expires_at）
+      try {
+        await assignSignalGrades(tradeDate, SIGNAL_USER_ID);
+      } catch (gradeErr: unknown) {
+        writeSystemLog({
+          logType: 'trigger_manual',
+          level: 'WARN',
+          message: '信号分级失败（不影响信号生成主流程）',
+          detail: String(gradeErr),
+        });
       }
       reply.send(
         ok({

@@ -12,6 +12,7 @@ import PositionToolbar from '../components/PositionToolbar';
 import PositionDetailModal from '../components/PositionDetailModal';
 import ScrollableTable from '../components/ScrollableTable';
 import { SignalStrength } from '../components/SignalStrength';
+import { SignalGradeTag } from '../components/SignalPills';
 import TodayActivityCard from '../components/TodayActivityCard';
 import TradeFormModal from '../components/TradeFormModal';
 import type { SignalTradeDraft } from '../components/SignalMiniMenu';
@@ -76,6 +77,8 @@ interface Signal {
   trade_date: string;
   /** 信号强度（0~1 小数，可空 —— 口径见 `components/SignalStrength.tsx`）*/
   strength?: number | null;
+  /** F1：分级（strong / medium / weak；未分级为 null）*/
+  grade?: string | null;
 }
 
 /** 后端下发的默认日期口径来源（F 域 P0-1，与 `Signals.tsx` 同款口径）*/
@@ -1017,7 +1020,7 @@ export default function Dashboard() {
             {!sigLoading && !sigError && (
               /*
                * ⚠️ **表格必须套在可横向滚动的容器里**（G3.5）：
-               *    `table` 的 `width:100%` 只是最小宽度，6 列（排名/代码/策略/方向/强度/标签）
+               *    `table` 的 `width:100%` 只是最小宽度，7 列（排名/代码/策略/方向/分级/强度/标签）
                *    在 375px 窄屏下最小内容宽度超过卡片宽度 → 表格溢出卡片 →
                *    溢出向上冒泡 → **文档级**横向溢出。
                *    套上 `overflow-x:auto` 的容器后，表格在自己内部横向滚动，文档不再被撑宽。
@@ -1039,6 +1042,9 @@ export default function Dashboard() {
                         方向
                       </th>
                       <th scope="col" style={thStyle}>
+                        分级
+                      </th>
+                      <th scope="col" style={thStyle}>
                         强度
                       </th>
                       <th scope="col" style={thStyle}>
@@ -1049,7 +1055,7 @@ export default function Dashboard() {
                   <tbody>
                     {signals.length === 0 ? (
                       <tr>
-                        <td style={thTdStyle} colSpan={6}>
+                        <td style={thTdStyle} colSpan={7}>
                           今日暂无信号
                         </td>
                       </tr>
@@ -1073,6 +1079,10 @@ export default function Dashboard() {
                             >
                               {DIRECTION_LABEL[s.direction] ?? s.direction}
                             </span>
+                          </td>
+                          <td style={thTdStyle}>
+                            {/* F1：Top 5 允许带中/弱，分级 tag 必须一眼可辨 */}
+                            <SignalGradeTag grade={typeof s.grade === 'string' ? s.grade : null} />
                           </td>
                           <td style={thTdStyle}>
                             <SignalStrength

@@ -1,6 +1,6 @@
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from './logger.js';
-import { resolveLatestQuoteDate } from './marketData.js';
+import { isTradingDay, resolveLatestQuoteDate } from './marketData.js';
 import type { PluginSignal } from './pluginEngine.js';
 
 /**
@@ -268,4 +268,154 @@ export async function resolveDefaultSignalTradeDate(
     return { tradeDate: latestQuoteDate, source: 'quote', latestQuoteDate };
   }
   return { tradeDate: getTradeDate(), source: 'today', latestQuoteDate: null };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// F1：信号分级（PRD_v3 §4.2「强 / 中 / 弱，默认只显示强」）
+// ─────────────────────────────────────────────────────────────────
+
+/** 信号分级枚举（与 DDL `grade` 的 CHECK 约束一一对应）*/
+export type SignalGrade = 'strong' | 'medium' | 'weak';
+
+/**
+ * 候选充足时的**纯分数分位**边界（用户口径，不可改）
+ *
+ * 强 = 当日候选前 20%；中 = 20%–50%；弱 = 后 50%。
+ */
+const GRADE_STRONG_RATIO = 0.2;
+const GRADE_MEDIUM_RATIO = 0.5;
+
+/**
+ * 候选不足时的**绝对分值兜底**阈值
+ *
+ * 当日可分级信号 < {@link GRADE_MIN_CANDIDATES} 只时，百分位没有统计意义，
+ * 退回按强度绝对分值定档：≥0.6 强 / ≥0.3 中 / 其余弱。
+ *
+ * ⚠️ 这两个常量是**兜底口径的唯一来源**（插件 `strength` 均归一化到 0~1，
+ * 但各插件分布差异大，故阈值只做「保守的绝对判断」，主路径永远是分位）。
+ */
+const GRADE_MIN_CANDIDATES = 10;
+const GRADE_ABS_STRONG_MIN = 0.6;
+const GRADE_ABS_MEDIUM_MIN = 0.3;
+
+/**
+ * 有效期（交易日）：强 3 / 中 2 / 弱 1
+ *
+ * 到期日写入 `expires_at`，过期信号**置灰不删**（前端标注「生成于 X 天前」）。
+ */
+const GRADE_TTL_TRADING_DAYS: Record<SignalGrade, number> = {
+  strong: 3,
+  medium: 2,
+  weak: 1,
+};
+
+/** `YYYY-MM-DD` + n 天（UTC 日历运算，不做时区偏移）*/
+function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * 求 `tradeDate` 之后第 n 个交易日
+ *
+ * 主路径：逐日 `isTradingDay()`（工作日 + `raw_holidays` 休市黑名单，见 marketData.ts）。
+ * 兜底：行情日历不可用（`isTradingDay()` 恒 false）时按**纯工作日**推算 ——
+ * 这样离线/空壳库环境下 `expires_at` 仍有确定值，而不是 NULL。
+ */
+async function nthTradingDayAfter(tradeDate: string, n: number): Promise<string> {
+  const dates: string[] = [];
+  let cursor = tradeDate;
+  // 45 天窗口足够覆盖国庆/春节长假（最长约 9 个休市日）
+  for (let i = 0; i < 45 && dates.length < n; i++) {
+    cursor = addDays(cursor, 1);
+    if (await isTradingDay(cursor)) dates.push(cursor);
+  }
+  if (dates.length >= n) return dates[n - 1];
+
+  // 兜底：纯工作日推算（节假日不准，但不会因行情层不可用而卡住）
+  let fallback = tradeDate;
+  let count = 0;
+  while (count < n) {
+    fallback = addDays(fallback, 1);
+    const dow = new Date(`${fallback}T00:00:00Z`).getUTCDay();
+    if (dow >= 1 && dow <= 5) count++;
+  }
+  return fallback;
+}
+
+/** 按规则给「当日各信号强度」定档（纯函数，便于单测）*/
+export function gradeSignalStrengths(strengths: number[]): SignalGrade[] {
+  if (strengths.length === 0) return [];
+  if (strengths.length < GRADE_MIN_CANDIDATES) {
+    return strengths.map((s) =>
+      s >= GRADE_ABS_STRONG_MIN ? 'strong' : s >= GRADE_ABS_MEDIUM_MIN ? 'medium' : 'weak',
+    );
+  }
+  const strongEnd = Math.ceil(strengths.length * GRADE_STRONG_RATIO);
+  const mediumEnd = Math.ceil(strengths.length * GRADE_MEDIUM_RATIO);
+  return strengths.map((_, i) => (i < strongEnd ? 'strong' : i < mediumEnd ? 'medium' : 'weak'));
+}
+
+export interface GradeResult {
+  graded: number;
+  strong: number;
+  medium: number;
+  weak: number;
+}
+
+/**
+ * 给某一交易日的全部信号回填 `grade` + `expires_at`（F1）
+ *
+ * 口径：
+ * - **纯分数分位**（按 `strength` 降序排名，`id` 升序做确定性 tie-break）；
+ * - 只处理 `strength` 非空的行 —— 无强度的信号保持 `grade = NULL`（未分级）；
+ * - `expires_at` = 交易日之后第 强3 / 中2 / 弱1 个交易日；
+ * - **幂等**：重复调用只会覆盖同样的定档结果（当天信号集合不变时）。
+ *
+ * ⚠️ 本函数**只改 `grade` / `expires_at` 两列**，不新增/删除任何信号行，
+ *    因此对信号生成链路（scheduler / admin 手动触发 / 区间回放）无副作用。
+ */
+export async function assignSignalGrades(
+  tradeDate: string,
+  userId: number = SIGNAL_USER_ID,
+): Promise<GradeResult> {
+  const db = ConfigStore.getInstance().db;
+  const rows = db
+    .prepare(
+      `SELECT id, strength FROM user_strategy_signal
+       WHERE user_id = ? AND trade_date = ? AND is_deleted = 0 AND strength IS NOT NULL
+       ORDER BY strength DESC, id ASC`,
+    )
+    .all(userId, tradeDate) as Array<{ id: number; strength: number }>;
+
+  const result: GradeResult = { graded: 0, strong: 0, medium: 0, weak: 0 };
+  if (rows.length === 0) return result;
+
+  const grades = gradeSignalStrengths(
+    rows.map((r) => {
+      const n = Number(r.strength);
+      return Number.isFinite(n) ? n : 0;
+    }),
+  );
+
+  const expiryByGrade: Record<SignalGrade, string> = {
+    strong: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.strong),
+    medium: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.medium),
+    weak: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.weak),
+  };
+
+  const stmt = db.prepare(
+    'UPDATE user_strategy_signal SET grade = ?, expires_at = ? WHERE id = ? AND user_id = ?',
+  );
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const grade = grades[i];
+      stmt.run(grade, expiryByGrade[grade], row.id, userId);
+      result.graded += 1;
+      result[grade] += 1;
+    });
+  });
+  tx();
+  return result;
 }

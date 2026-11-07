@@ -53,6 +53,8 @@ interface SignalFixture {
   direction: string;
   label: string;
   strength?: number | null;
+  grade?: string | null;
+  expires_at?: string | null;
   trade_date: string;
 }
 
@@ -143,9 +145,10 @@ describe('T72 ① · 进页自动加载', () => {
     expect(signalCalls()[0]?.[0]).toBe('/signal');
     const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
-    expect(params).toEqual({ page: 1, page_size: 50 });
+    // F1：分级 tab 默认「强」→ 参数里固定带 grade=strong（用户口径：默认只显强）
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong' });
     expect(params).not.toHaveProperty('trade_date');
-    // 「全部策略 / 全部方向」⇒ 不预设任何过滤条件
+    // 「全部策略 / 全部方向」⇒ 不预设这些过滤条件
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
     expect(params).not.toHaveProperty('asset_code');
@@ -362,7 +365,8 @@ describe('G5.5 · asset_code / start_date / end_date 筛选 + 升序', () => {
 
     await screen.findByRole('table');
     const dataRows = screen.getAllByRole('row').slice(1);
-    const dates = dataRows.map((r) => within(r).getAllByRole('cell')[5].textContent);
+    // 列序：代码(0) 策略(1) 方向(2) 分级(3) 强度(4) 标签(5) 交易日期(6) 操作(7)
+    const dates = dataRows.map((r) => within(r).getAllByRole('cell')[6].textContent);
     expect(dates).toEqual(['2026-10-01', '2026-10-12', '2026-10-20']);
 
     // 前端**没有**按方向重排（后端给什么顺序就渲染什么顺序）
@@ -533,5 +537,60 @@ describe('F3 · 今日 Top 5 摘要区', () => {
     expect(await screen.findByTestId('signals-top5-empty')).toHaveTextContent('该交易日暂无信号');
     // 主列表仍然正常渲染
     expect(screen.getByRole('table', { name: '策略信号列表' })).toBeInTheDocument();
+  });
+});
+
+/** F1 · 信号分级（PRD_v3 §4.2：默认只显强 / 过期置灰不删 / 标注生成于 X 天前） */
+describe('F1 · 信号分级', () => {
+  it('默认只显强：进页请求带 grade=strong；切「全部」后不再带', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    const user = userEvent.setup();
+    renderWithRouter(<Signals />);
+
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
+    expect(screen.getByTestId('signals-grade-tab-strong')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(signalCalls()[0]?.[1]?.params).toMatchObject({ grade: 'strong' });
+
+    await user.click(screen.getByTestId('signals-grade-tab-all'));
+
+    await waitFor(() => expect(signalCalls().length).toBeGreaterThanOrEqual(2));
+    const params = lastParams();
+    expect(params).not.toHaveProperty('grade');
+    expect(screen.getByTestId('signals-grade-tab-all')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('分级 tag 按 grade 着色（强 / 中 / 弱 三档可辨）', async () => {
+    installPagedMock([
+      {
+        rows: [
+          { ...BUY_ROW, id: 1, grade: 'strong', expires_at: '2999-01-01' },
+          { ...BUY_ROW, id: 2, grade: 'medium', expires_at: '2999-01-01' },
+          { ...BUY_ROW, id: 3, grade: 'weak', expires_at: '2999-01-01' },
+        ],
+        totalPages: 1,
+        total: 3,
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    const tags = await screen.findAllByTestId('signal-grade-tag');
+    expect(tags.map((t) => t.textContent)).toEqual(['强', '中', '弱']);
+    expect(tags[0]).toHaveAttribute('data-grade', 'strong');
+    expect(tags[1]).toHaveAttribute('data-grade', 'medium');
+    expect(tags[2]).toHaveAttribute('data-grade', 'weak');
+  });
+
+  it('过期信号置灰不删，并标注「生成于 X 天前」', async () => {
+    const expired = { ...BUY_ROW, trade_date: '2026-01-02', expires_at: '2026-01-05' };
+    installPagedMock([{ rows: [expired], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    const row = await screen.findByTestId('signals-row-expired');
+    expect(row).toHaveStyle({ opacity: '0.6' });
+    // 行仍在表内（不删），并给出「生成于 N 天前」
+    expect(within(row).getByTestId('signals-expired-age')).toHaveTextContent(/生成于 \d+ 天前/);
   });
 });
