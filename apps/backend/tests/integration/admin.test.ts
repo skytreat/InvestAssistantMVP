@@ -304,7 +304,7 @@ describe('Admin · 系统日志降级记录（Wave 7 · 卡 1 · I-13）', () =>
 // 通过标准：「逐端点参数化 → 普通用户 token → 403 + code=FORBIDDEN + 零副作用」
 //
 // ⚠️ **端点清单是实测枚举**（2026-10-21），不是照抄旧文档：
-//   `src/routes/admin.ts` 10 个 + `src/routes/dataCheck.ts` 1 个 = 11 个 `/api/admin/**`。
+//   `src/routes/admin.ts` 12 个 + `src/routes/dataCheck.ts` 1 个 = 13 个 `/api/admin/**`。
 //   ⚠️ 端点清单与源码漂移 ⇒ 本用例会漏检 ⇒ **改 admin 路由时必须同步改这里**。
 //
 // ⚠️ **为什么要断言「零副作用」**：
@@ -356,6 +356,13 @@ const ADMIN_ENDPOINTS: AdminEndpointCase[] = [
     payload: { confirm: true },
   },
   { method: 'POST', path: '/api/admin/run-signal', url: '/api/admin/run-signal', payload: {} },
+  {
+    method: 'POST',
+    path: '/api/admin/signal-replay',
+    url: '/api/admin/signal-replay',
+    // dry_run:false ⇒ 若鉴权在副作用之后，会真的落库 replay 信号 ⇒ 强探测
+    payload: { dry_run: false },
+  },
   {
     method: 'POST',
     path: '/api/admin/datacheck/trigger',
@@ -436,8 +443,8 @@ describe('G7.4 · admin 端点逐端点 403（普通用户 · 管理员二次鉴
       expect(declared.has(c), `G7.4 清单里的 ${c} 在源码中已不存在`).toBe(true);
     }
     // ③ 数量兜底（源码新增端点时这两条会先红）
-    expect(declared.size).toBe(12);
-    expect(covered.size).toBe(12);
+    expect(declared.size).toBe(13);
+    expect(covered.size).toBe(13);
   });
 
   it.each(ADMIN_ENDPOINTS)('$method $path → 普通用户 403 FORBIDDEN 且零副作用', async (ep) => {
