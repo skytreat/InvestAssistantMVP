@@ -78,6 +78,25 @@ describe('M2 成交模拟器 · 佣金（含最低 5 元）', () => {
     expect(r.cashDelta).toBeCloseTo(-29_007.9, 6);
     expect(r.skipped).toHaveLength(0);
   });
+
+  it('零股清仓：成交额小于最低佣金时，佣金不得超过成交额（现金不得变负）', () => {
+    // 送转零股：2 份 × 1.13 ≈ 2.26 元 < 最低佣金 5 元。
+    // 若照收 5 元，现金 1.49 → −1.24，会触发引擎「现金为负」不变量（实测 c-0156）。
+    const r = runCase({
+      mode: 'replace',
+      heldSymbols: ['sh510300'],
+      targets: [],
+      cash: 1.49,
+      positions: { sh510300: { qty: 2, closeableQty: 2 } },
+      bars: { sh510300: makeBar(1.13) },
+    });
+    expect(r.fills).toHaveLength(1);
+    const f = r.fills[0];
+    const notional = f.qty * f.price;
+    expect(f.fee).toBeLessThanOrEqual(notional);
+    expect(f.fee).toBeCloseTo(Math.floor(notional * 100) / 100, 10);
+    expect(1.49 + r.cashDelta).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('M2 成交模拟器 · 整手与最小成交额', () => {

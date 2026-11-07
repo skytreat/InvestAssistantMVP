@@ -207,7 +207,11 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
       return;
     }
     const notional = qty * checked.price;
-    const fee = commissionOf(notional, rules);
+    // 🔒 卖出净额必须 ≥ 0：送转产生的极小零股清仓，成交额可能小于最低佣金 5 元。
+    //    若照收 5 元，现金会被扣成负数（实测：卖出 2 份 × 1.1328 = 2.27 元、佣金 5 元
+    //    ⇒ 现金 1.49 → −1.24，触发引擎「现金为负」不变量）。
+    //    口径：佣金不超过成交额（向下取到分），即券商不会倒扣现金。
+    const fee = Math.min(commissionOf(notional, rules), Math.floor(notional * 100) / 100);
     cash += notional - fee;
     fills.push({
       date: req.date,
