@@ -118,3 +118,140 @@ export async function loadTradingCalendar(): Promise<TradingCalendar> {
   );
   return new TradingCalendar(rows.map((r) => r.date));
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// 前向交易日历（PA-04）
+//
+// 🔴 **为什么不能用 `TradingCalendar`**：它只含**历史**日期（由 `sh000001` 的 bar 派生），
+// 「明天」没有 bar，`has/next` 无从判断。纸面决策要算 `nextTradingDay(T)`，
+// 口径只能是「工作日（周一~周五）− `raw_holidays`（休市日黑名单）」。
+//
+// ⚠️ 这只是**日历**口径，不等于「当天一定有行情」：
+//    临时休市 / 数据缺失日不在 `raw_holidays` 里，仍会判成交易日 ——
+//    那一类由「全市场未更新」的阻塞逻辑处理（方案 §7.3），不在这里猜。
+// ════════════════════════════════════════════════════════════════════════
+
+/** 前向日历越界（超出 `raw_holidays` 覆盖范围，或扫描安全上限） */
+export class CalendarOutOfRangeError extends Error {
+  readonly code = 'CALENDAR_OUT_OF_RANGE';
+  constructor(message: string) {
+    super(message);
+    this.name = 'CalendarOutOfRangeError';
+  }
+}
+
+const ISO_DATE_RE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
+/** 扫描安全上限（约两年）；正常情况下由 `coverageEnd` 先拦住 */
+const MAX_SCAN_DAYS = 800;
+
+/** 严格校验 `YYYY-MM-DD`（并用 UTC 往返排除 2024-02-31 这类假日期） */
+function assertIsoDate(date: string, who: string): void {
+  const m = ISO_DATE_RE.exec(date);
+  if (!m) throw new Error(`${who}: 日期必须是 YYYY-MM-DD（收到 ${date}）`);
+  const [, y, mo, d] = m;
+  const probe = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  if (
+    probe.getUTCFullYear() !== Number(y) ||
+    probe.getUTCMonth() !== Number(mo) - 1 ||
+    probe.getUTCDate() !== Number(d)
+  ) {
+    throw new Error(`${who}: 非法日期 ${date}`);
+  }
+}
+
+/** 日历上加减天数（`Date.UTC` 运算，不经过本地时区） */
+function addDays(date: string, days: number): string {
+  const [y, mo, d] = date.split('-').map(Number);
+  const t = new Date(Date.UTC(y, mo - 1, d));
+  t.setUTCDate(t.getUTCDate() + days);
+  return t.toISOString().slice(0, 10);
+}
+
+/** 周一~周五（不含周末；节假日另外排除） */
+export function isWeekday(date: string): boolean {
+  assertIsoDate(date, 'isWeekday');
+  const [y, mo, d] = date.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  return dow >= 1 && dow <= 5;
+}
+
+/**
+ * 前向交易日历：`工作日 && 不在 raw_holidays`
+ *
+ * `coverageEnd` 缺省 = 休市日黑名单里的最大日期（`raw_holidays` 覆盖到该日）；
+ * 越过它**一律抛 `CALENDAR_OUT_OF_RANGE`，不猜**（方案 §7.3）。
+ */
+export class ForwardCalendar {
+  private readonly holidays: ReadonlySet<string>;
+  private readonly coverageEnd: string | null;
+
+  constructor(holidays: Iterable<string>, coverageEnd?: string | null) {
+    this.holidays = new Set(holidays);
+    if (coverageEnd !== undefined) {
+      this.coverageEnd = coverageEnd;
+    } else {
+      const sorted = [...this.holidays].sort();
+      this.coverageEnd = sorted.length > 0 ? sorted[sorted.length - 1] : null;
+    }
+  }
+
+  /** 是否交易日（超出覆盖范围抛错，而不是默默返回 false） */
+  isTradingDay(date: string): boolean {
+    assertIsoDate(date, 'ForwardCalendar.isTradingDay');
+    this.assertInCoverage(date);
+    return isWeekday(date) && !this.holidays.has(date);
+  }
+
+  /**
+   * `date` 之后（**严格晚于**）的第 n 个交易日
+   * @throws CalendarOutOfRangeError 越过 `coverageEnd` / 扫描超上限
+   */
+  next(date: string, n = 1): string {
+    assertIsoDate(date, 'ForwardCalendar.next');
+    if (n < 1) throw new Error(`ForwardCalendar.next: n 必须 ≥ 1（收到 ${n}）`);
+    this.assertInCoverage(date);
+
+    let cursor = date;
+    let found = 0;
+    for (let scanned = 0; scanned < MAX_SCAN_DAYS; scanned++) {
+      cursor = addDays(cursor, 1);
+      this.assertInCoverage(cursor);
+      if (!isWeekday(cursor) || this.holidays.has(cursor)) continue;
+      found++;
+      if (found === n) return cursor;
+    }
+    throw new CalendarOutOfRangeError(
+      `ForwardCalendar.next: 从 ${date} 起 ${MAX_SCAN_DAYS} 天内找不到第 ${n} 个交易日（休市日数据可能异常）`,
+    );
+  }
+
+  private assertInCoverage(date: string): void {
+    if (this.coverageEnd !== null && date > this.coverageEnd) {
+      throw new CalendarOutOfRangeError(
+        `ForwardCalendar: ${date} 超出 raw_holidays 覆盖范围（${this.coverageEnd}），不猜`,
+      );
+    }
+  }
+}
+
+/**
+ * 便捷函数：`工作日 − holidays` 口径下严格晚于 `date` 的第 n 个交易日
+ *
+ * @example nextTradingDay('2024-01-05', new Set()) === '2024-01-08'（周五 → 周一）
+ */
+export function nextTradingDay(
+  date: string,
+  holidays: Iterable<string>,
+  n = 1,
+  coverageEnd: string | null = null,
+): string {
+  return new ForwardCalendar(holidays, coverageEnd).next(date, n);
+}
+
+/** 从 DuckDB 读取前向日历（只读；`raw_holidays` = 休市日黑名单） */
+export async function loadForwardCalendar(): Promise<ForwardCalendar> {
+  const rows = await queryDuckDB<{ date: string }>(
+    `SELECT CAST(date AS VARCHAR) AS date FROM raw_holidays ORDER BY date ASC`,
+  );
+  return new ForwardCalendar(rows.map((r) => r.date));
+}

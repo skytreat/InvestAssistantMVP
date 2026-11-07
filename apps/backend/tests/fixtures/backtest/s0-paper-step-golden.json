@@ -1,0 +1,583 @@
+{
+  "meta": {
+    "strategyId": "s0-probe",
+    "strategyVersion": "0.0.9",
+    "strategyName": "S0 逐位基线探针",
+    "params": {},
+    "start": "2024-01-02",
+    "end": "2024-01-11",
+    "initialCash": 100000,
+    "universeMode": "fixed",
+    "priceMode": "open",
+    "benchmarkSymbol": "sh510300",
+    "rules": {
+      "commissionRate": 0.0001,
+      "minCommission": 5,
+      "slippageRate": 0.0001,
+      "lotSize": 100,
+      "minNotional": 10,
+      "priceLimit": 0.1
+    },
+    "suspension": {},
+    "universeStats": {
+      "days": 7,
+      "noNameCandidateTotal": 7,
+      "noNameCandidateMax": 1,
+      "fallbackPoolMemberTotal": 7,
+      "fallbackPoolMemberMax": 1
+    },
+    "universeParams": {
+      "divisor": 1,
+      "topN": 2
+    }
+  },
+  "equity": [
+    {
+      "date": "2024-01-03",
+      "equity": 100000,
+      "cash": 100000,
+      "riskMv": 0,
+      "cashMv": 0,
+      "benchmarkClose": 10.2,
+      "benchmarkStale": false,
+      "exposure": 0,
+      "drawdownRatio": 0
+    },
+    {
+      "date": "2024-01-04",
+      "equity": 100000,
+      "cash": 100000,
+      "riskMv": 0,
+      "cashMv": 0,
+      "benchmarkClose": 10.5,
+      "benchmarkStale": false,
+      "exposure": 0,
+      "drawdownRatio": 0
+    },
+    {
+      "date": "2024-01-05",
+      "equity": 100000,
+      "cash": 100000,
+      "riskMv": 0,
+      "cashMv": 0,
+      "benchmarkClose": 10.4,
+      "benchmarkStale": false,
+      "exposure": 0,
+      "drawdownRatio": 0
+    },
+    {
+      "date": "2024-01-08",
+      "equity": 99992.03,
+      "cash": 70292.03,
+      "riskMv": 29700,
+      "cashMv": 0,
+      "benchmarkClose": 11,
+      "benchmarkStale": false,
+      "exposure": 0.2970236727867211,
+      "drawdownRatio": 0.00007970000000001164
+    },
+    {
+      "date": "2024-01-09",
+      "equity": 105184.0838,
+      "cash": 75491.0838,
+      "riskMv": 29693,
+      "cashMv": 0,
+      "benchmarkClose": 11,
+      "benchmarkStale": true,
+      "exposure": 0.2822955615267716,
+      "drawdownRatio": 0
+    },
+    {
+      "date": "2024-01-10",
+      "equity": 100789.29179999999,
+      "cash": 71565.69179999999,
+      "riskMv": 29223.600000000002,
+      "cashMv": 0,
+      "benchmarkClose": 9.8,
+      "benchmarkStale": false,
+      "exposure": 0.28994746840755165,
+      "drawdownRatio": 0.04178191073429307
+    },
+    {
+      "date": "2024-01-11",
+      "equity": 101670.37779999999,
+      "cash": 36412.17779999998,
+      "riskMv": 35168.2,
+      "cashMv": 30090,
+      "benchmarkClose": 10.1,
+      "benchmarkStale": false,
+      "exposure": 0.34590409479131495,
+      "drawdownRatio": 0.03340530119253656
+    }
+  ],
+  "trades": [
+    {
+      "date": "2024-01-08",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 2700,
+      "price": 11.0011,
+      "fee": 5,
+      "slippageCost": 2.9699999999978743,
+      "reason": "rebalance"
+    },
+    {
+      "date": "2024-01-09",
+      "symbol": "sh510300",
+      "side": "sell",
+      "qty": 388,
+      "price": 11.498850000000001,
+      "fee": 5,
+      "slippageCost": 0.4461999999996493,
+      "reason": "rebalance-replace"
+    },
+    {
+      "date": "2024-01-10",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 400,
+      "price": 9.800980000000001,
+      "fee": 5,
+      "slippageCost": 0.3920000000000812,
+      "reason": "rebalance"
+    },
+    {
+      "date": "2024-01-11",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 500,
+      "price": 10.101009999999999,
+      "fee": 5,
+      "slippageCost": 0.5049999999995336,
+      "reason": "candidate-top"
+    },
+    {
+      "date": "2024-01-11",
+      "symbol": "sh511880",
+      "side": "buy",
+      "qty": 300,
+      "price": 100.31003,
+      "fee": 5,
+      "slippageCost": 3.0090000000001282,
+      "reason": "defensive-fallback"
+    }
+  ],
+  "roundTrips": [
+    {
+      "symbol": "sh510300",
+      "openDate": "2024-01-08",
+      "closeDate": "2024-01-09",
+      "qty": 388,
+      "pnl": 575.5126013468021,
+      "returnPct": 0.14828819687523978,
+      "exitReason": "rebalance-replace",
+      "proceeds": 4461.553800000001
+    }
+  ],
+  "dividends": [
+    {
+      "date": "2024-01-09",
+      "symbol": "sh510300",
+      "amount": 742.5
+    }
+  ],
+  "metrics": {
+    "startDate": "2024-01-03",
+    "endDate": "2024-01-11",
+    "calendarDays": 8,
+    "tradingDays": 7,
+    "initialEquity": 100000,
+    "finalEquity": 101670.37779999999,
+    "cumulativeReturn": 0.01670377799999989,
+    "cagr": 1.1304484546323295,
+    "annualizedVolatility": 0.47408143495675864,
+    "sharpeRatio": 1.6659731224434042,
+    "maxDrawdownRatio": 0.04178191073429307,
+    "maxDrawdownAmount": 4394.792000000001,
+    "peakDate": "2024-01-09",
+    "troughDate": "2024-01-10",
+    "maxDrawdownDays": 1,
+    "calmarRatio": 27.055930060769064,
+    "turnoverAnnualized": 33.07259049838737,
+    "averageExposure": 0.17359582821605132,
+    "closedRoundTrips": 1,
+    "winRate": 1,
+    "profitLossRatio": null,
+    "averageHoldingDays": 1,
+    "alphaAnnualized": -1.6565017480057576,
+    "beta": 0.28122326628705024,
+    "monthlyReturns": [
+      {
+        "month": "2024-01",
+        "returnPct": 0.01670377799999989
+      }
+    ]
+  },
+  "decisions": [
+    {
+      "execDate": "2024-01-03",
+      "asOf": "2024-01-02",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "reason": "candidate-top",
+            "targetNotional": 0
+          },
+          {
+            "symbol": "sh511880",
+            "reason": "defensive-fallback",
+            "targetNotional": 0
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 1e-9
+      },
+      "fills": [],
+      "skipped": [
+        {
+          "date": "2024-01-03",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 0,
+          "reason": "turnover-capped",
+          "detail": "计划增仓 60000.00 元，缩放后 0.00 元"
+        },
+        {
+          "date": "2024-01-03",
+          "symbol": "sh511880",
+          "side": "buy",
+          "qty": 0,
+          "reason": "turnover-capped",
+          "detail": "计划增仓 30000.00 元，缩放后 0.00 元"
+        }
+      ],
+      "warnings": [],
+      "tags": {
+        "seenA": 11,
+        "seenD": 110,
+        "cash": 100000,
+        "turnoverCapped": 2
+      },
+      "logs": []
+    },
+    {
+      "execDate": "2024-01-04",
+      "asOf": "2024-01-03",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "targetNotional": 30000,
+            "reason": "rebalance"
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 0.5
+      },
+      "fills": [],
+      "skipped": [
+        {
+          "date": "2024-01-04",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 0,
+          "reason": "suspended",
+          "detail": "zero-volume"
+        }
+      ],
+      "warnings": [],
+      "tags": {
+        "seenA": 11.2,
+        "seenD": 110,
+        "cash": 100000
+      },
+      "logs": []
+    },
+    {
+      "execDate": "2024-01-05",
+      "asOf": "2024-01-04",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "reason": "candidate-top",
+            "targetNotional": 0
+          },
+          {
+            "symbol": "sh511880",
+            "reason": "defensive-fallback",
+            "targetNotional": 0
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 1e-9
+      },
+      "fills": [],
+      "skipped": [
+        {
+          "date": "2024-01-05",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 0,
+          "reason": "turnover-capped",
+          "detail": "计划增仓 60000.00 元，缩放后 0.00 元"
+        },
+        {
+          "date": "2024-01-05",
+          "symbol": "sh511880",
+          "side": "buy",
+          "qty": 0,
+          "reason": "turnover-capped",
+          "detail": "计划增仓 30000.00 元，缩放后 0.00 元"
+        }
+      ],
+      "warnings": [],
+      "tags": {
+        "seenA": 11.5,
+        "seenD": 110.1,
+        "cash": 100000,
+        "turnoverCapped": 2
+      },
+      "logs": []
+    },
+    {
+      "execDate": "2024-01-08",
+      "asOf": "2024-01-05",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "targetNotional": 30000,
+            "reason": "rebalance"
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 0.5
+      },
+      "fills": [
+        {
+          "date": "2024-01-08",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 2700,
+          "price": 11.0011,
+          "fee": 5,
+          "slippageCost": 2.9699999999978743,
+          "reason": "rebalance"
+        }
+      ],
+      "skipped": [],
+      "warnings": [],
+      "tags": {
+        "seenA": 11.4,
+        "seenD": 110.1,
+        "cash": 100000
+      },
+      "logs": []
+    },
+    {
+      "execDate": "2024-01-09",
+      "asOf": "2024-01-08",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "reason": "candidate-top",
+            "targetNotional": 29700
+          },
+          {
+            "symbol": "sh511880",
+            "reason": "defensive-fallback",
+            "targetNotional": 0
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 1e-9
+      },
+      "fills": [
+        {
+          "date": "2024-01-09",
+          "symbol": "sh510300",
+          "side": "sell",
+          "qty": 388,
+          "price": 11.498850000000001,
+          "fee": 5,
+          "slippageCost": 0.4461999999996493,
+          "reason": "rebalance-replace"
+        }
+      ],
+      "skipped": [
+        {
+          "date": "2024-01-09",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 0,
+          "reason": "turnover-capped",
+          "detail": "计划增仓 30295.22 元，缩放后 0.00 元"
+        },
+        {
+          "date": "2024-01-09",
+          "symbol": "sh511880",
+          "side": "buy",
+          "qty": 0,
+          "reason": "turnover-capped",
+          "detail": "计划增仓 29997.61 元，缩放后 0.00 元"
+        }
+      ],
+      "warnings": [],
+      "tags": {
+        "seenA": 12,
+        "seenD": 110.2,
+        "cash": 70292.03,
+        "turnoverCapped": 2
+      },
+      "logs": []
+    },
+    {
+      "execDate": "2024-01-10",
+      "asOf": "2024-01-09",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "targetNotional": 30000,
+            "reason": "rebalance"
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 0.5
+      },
+      "fills": [
+        {
+          "date": "2024-01-10",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 400,
+          "price": 9.800980000000001,
+          "fee": 5,
+          "slippageCost": 0.3920000000000812,
+          "reason": "rebalance"
+        }
+      ],
+      "skipped": [],
+      "warnings": [],
+      "tags": {
+        "seenA": 12.5,
+        "seenD": 110.2,
+        "cash": 75491.0838
+      },
+      "logs": []
+    },
+    {
+      "execDate": "2024-01-11",
+      "asOf": "2024-01-10",
+      "targets": {
+        "targets": [
+          {
+            "symbol": "sh510300",
+            "targetWeight": 0.35,
+            "reason": "candidate-top"
+          },
+          {
+            "symbol": "sh511880",
+            "targetWeight": 0.3,
+            "reason": "defensive-fallback"
+          }
+        ],
+        "mode": "replace",
+        "maxTurnoverRatio": 0.5
+      },
+      "fills": [
+        {
+          "date": "2024-01-11",
+          "symbol": "sh510300",
+          "side": "buy",
+          "qty": 500,
+          "price": 10.101009999999999,
+          "fee": 5,
+          "slippageCost": 0.5049999999995336,
+          "reason": "candidate-top"
+        },
+        {
+          "date": "2024-01-11",
+          "symbol": "sh511880",
+          "side": "buy",
+          "qty": 300,
+          "price": 100.31003,
+          "fee": 5,
+          "slippageCost": 3.0090000000001282,
+          "reason": "defensive-fallback"
+        }
+      ],
+      "skipped": [],
+      "warnings": [],
+      "tags": {
+        "seenA": 10.8,
+        "seenD": 110.3,
+        "cash": 71565.69179999999
+      },
+      "logs": []
+    }
+  ],
+  "skipped": [
+    {
+      "date": "2024-01-03",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 0,
+      "reason": "turnover-capped",
+      "detail": "计划增仓 60000.00 元，缩放后 0.00 元"
+    },
+    {
+      "date": "2024-01-03",
+      "symbol": "sh511880",
+      "side": "buy",
+      "qty": 0,
+      "reason": "turnover-capped",
+      "detail": "计划增仓 30000.00 元，缩放后 0.00 元"
+    },
+    {
+      "date": "2024-01-04",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 0,
+      "reason": "suspended",
+      "detail": "zero-volume"
+    },
+    {
+      "date": "2024-01-05",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 0,
+      "reason": "turnover-capped",
+      "detail": "计划增仓 60000.00 元，缩放后 0.00 元"
+    },
+    {
+      "date": "2024-01-05",
+      "symbol": "sh511880",
+      "side": "buy",
+      "qty": 0,
+      "reason": "turnover-capped",
+      "detail": "计划增仓 30000.00 元，缩放后 0.00 元"
+    },
+    {
+      "date": "2024-01-09",
+      "symbol": "sh510300",
+      "side": "buy",
+      "qty": 0,
+      "reason": "turnover-capped",
+      "detail": "计划增仓 30295.22 元，缩放后 0.00 元"
+    },
+    {
+      "date": "2024-01-09",
+      "symbol": "sh511880",
+      "side": "buy",
+      "qty": 0,
+      "reason": "turnover-capped",
+      "detail": "计划增仓 29997.61 元，缩放后 0.00 元"
+    }
+  ],
+  "warnings": [],
+  "tradedNotional": 73228.42979999998
+}

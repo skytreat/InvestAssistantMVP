@@ -215,3 +215,93 @@ describe('M2 账户 · 估值', () => {
     expect(p.equity(new Map())).toBeCloseTo(p.cash, 8);
   });
 });
+
+describe('M2 账户 · 从检查点恢复（纸面账户 §5.6）', () => {
+  it('均价/成本基/现金逐位还原，T+1 冻结量 = qty − closeableQty', () => {
+    const p = new Portfolio(1); // 初始值随即被 restore 覆盖
+    p.restore(
+      [
+        { symbol: 'sh510300', qty: 1000, avgCost: 10.05, closeableQty: 800 },
+        { symbol: 'sh511880', qty: 500, avgCost: 100.2, closeableQty: 500 },
+      ],
+      50_000,
+      D2,
+    );
+
+    const a = p.position('sh510300');
+    expect(a.qty).toBe(1000);
+    expect(a.avgCost).toBeCloseTo(10.05, 10);
+    expect(a.costBasis).toBeCloseTo(10_050, 8);
+    // 今日买入的 200 份不可卖
+    expect(a.closeableQty).toBe(800);
+    expect(p.position('sh511880').closeableQty).toBe(500);
+    expect(p.cash).toBe(50_000);
+    expect(p.positions()).toHaveLength(2);
+
+    // 结算阶段：startDay 清空「当日买入」冻结 → 全部可卖
+    p.startDay();
+    expect(p.position('sh510300').closeableQty).toBe(1000);
+
+    // 估值仍走同一口径
+    expect(
+      p.equity(
+        new Map([
+          ['sh510300', 11],
+          ['sh511880', 101],
+        ]),
+      ),
+    ).toBeCloseTo(50_000 + 11_000 + 50_500, 8);
+  });
+
+  it('恢复后卖出：成本基沿用检查点均价，回合建仓日 = 恢复日', () => {
+    const p = new Portfolio(1);
+    p.restore([{ symbol: 'sh510300', qty: 1000, avgCost: 10.05, closeableQty: 0 }], 50_000, D2);
+    p.startDay();
+    p.applyFill({ ...sell(1000, 12), fee: 5, date: D2 });
+
+    expect(p.positions()).toHaveLength(0);
+    expect(p.roundTrips).toHaveLength(1);
+    const rt = p.roundTrips[0];
+    expect(rt.openDate).toBe(D2); // 恢复日（回合报告须走全量回放）
+    // 卖出收入 1000×12 − 5 = 11 995；成本 1000×10.05 = 10 050 → +1945
+    expect(rt.pnl).toBeCloseTo(1945, 8);
+    expect(p.cash).toBeCloseTo(50_000 + 11_995, 8);
+  });
+
+  it('非法检查点必须拒绝（不允许带着脏状态继续结算）', () => {
+    const base = new Portfolio(1);
+    expect(() =>
+      base.restore(
+        [
+          { symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 100 },
+          { symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 100 },
+        ],
+        100_000,
+        D2,
+      ),
+    ).toThrow(/重复持仓/);
+
+    expect(() =>
+      new Portfolio(1).restore([{ symbol: 'sh510300', qty: 0, avgCost: 10, closeableQty: 0 }], 100_000, D2),
+    ).toThrow(/持仓份数/);
+
+    expect(() =>
+      new Portfolio(1).restore(
+        [{ symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 200 }],
+        100_000,
+        D2,
+      ),
+    ).toThrow(/可用份数/);
+
+    expect(() =>
+      new Portfolio(1).restore([{ symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 100 }], -1, D2),
+    ).toThrow(/现金/);
+
+    const used = new Portfolio(100_000);
+    used.startDay();
+    used.applyFill(buy(100, 10));
+    expect(() =>
+      used.restore([{ symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 100 }], 100_000, D2),
+    ).toThrow(/空账户/);
+  });
+});
