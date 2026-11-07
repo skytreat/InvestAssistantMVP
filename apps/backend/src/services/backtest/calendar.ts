@@ -248,10 +248,21 @@ export function nextTradingDay(
   return new ForwardCalendar(holidays, coverageEnd).next(date, n);
 }
 
-/** 从 DuckDB 读取前向日历（只读；`raw_holidays` = 休市日黑名单） */
-export async function loadForwardCalendar(): Promise<ForwardCalendar> {
+/**
+ * 从 DuckDB 读取休市日黑名单（只读；`raw_holidays`）
+ *
+ * 单独导出是为了**黑名单完整性对账**（`backtest-m1-calendar.test.ts` 用它重建
+ * `ForwardCalendar` 并逐日与 `sh000001` 的 bar 集比对）—— 只从 `loadForwardCalendar()`
+ * 拿不到原始清单。
+ */
+export async function loadHolidayList(): Promise<string[]> {
   const rows = await queryDuckDB<{ date: string }>(
     `SELECT CAST(date AS VARCHAR) AS date FROM raw_holidays ORDER BY date ASC`,
   );
-  return new ForwardCalendar(rows.map((r) => r.date));
+  return rows.map((r) => r.date);
+}
+
+/** 从 DuckDB 读取前向日历（只读；`raw_holidays` = 休市日黑名单） */
+export async function loadForwardCalendar(): Promise<ForwardCalendar> {
+  return new ForwardCalendar(await loadHolidayList());
 }

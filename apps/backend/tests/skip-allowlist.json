@@ -71,6 +71,13 @@
       "test": "历史日期上 nextTradingDay 等于下一根 sh000001 bar",
       "condition": "行情库不可用（`marketDataAvailable()` 为 false：迷你库 Parquet 构建失败或临时目录不可写）",
       "reason": "该用例要把前向日历（工作日 − raw_holidays）与真实历史日历（sh000001 的 bar）对齐；没有行情库就没有历史 side 可比。日常套件由 setup.ts 强制 `MARKET_DATA_MODE=ci` 现生成迷你库，正常不会命中。"
+    },
+    {
+      "file": "tests/unit/backtest-m1-calendar.test.ts",
+      "suites": ["ForwardCalendar —— 黑名单完整性对账（全区间）"],
+      "test": "sh000001 bar 集与「工作日 − raw_holidays」逐日一致",
+      "condition": "行情库不可用（`marketDataAvailable()` 为 false：迷你库 Parquet 构建失败或临时目录不可写）",
+      "reason": "对账的唯一证据源就是 sh000001 的 bar 集（`raw_kline_daily`）；没有行情库就无法判定黑名单完整性，属于环境型跳过而非掩盖缺陷——有库时该断言是硬性的（差异必 FAIL）。"
     }
   ]
 }

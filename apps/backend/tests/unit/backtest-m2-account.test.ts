@@ -294,7 +294,31 @@ describe('M2 账户 · 从检查点恢复（纸面账户 §5.6）', () => {
     ).toThrow(/可用份数/);
 
     expect(() =>
+      new Portfolio(1).restore(
+        [{ symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: -1 }],
+        100_000,
+        D2,
+      ),
+    ).toThrow(/可用份数/);
+
+    expect(() =>
+      new Portfolio(1).restore(
+        [{ symbol: 'sh510300', qty: 100, avgCost: -5, closeableQty: 100 }],
+        100_000,
+        D2,
+      ),
+    ).toThrow(/均价/);
+
+    expect(() =>
       new Portfolio(1).restore([{ symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 100 }], -1, D2),
+    ).toThrow(/现金/);
+
+    expect(() =>
+      new Portfolio(1).restore(
+        [{ symbol: 'sh510300', qty: 100, avgCost: 10, closeableQty: 100 }],
+        Number.NaN,
+        D2,
+      ),
     ).toThrow(/现金/);
 
     const used = new Portfolio(100_000);

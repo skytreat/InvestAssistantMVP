@@ -415,18 +415,35 @@ export interface BacktestRunState {
   tradedNotional: number;
 }
 
-export interface StepBacktestDayArgs {
+/**
+ * `stepBacktestDay` 的入参
+ *
+ * 🔴 `targetsOverride` 用**可辨识联合**表达三态（而不是「可选字段 + 注释」）：
+ * - 不传 → 按策略现算：时点池 / `strategy.decide` / `capTurnover` 全走；
+ * - `null` → 当日**无目标**（跳过策略，目标为空集，走正常清仓链路）；
+ * - `TargetSet` → 外部给定目标，**必须**同时声明 `targetsTruncatedByCaller: true`，
+ *   即「调用方已按当日可承受换手截断，并已在落账侧留痕」；漏声明时运行时会抛错。
+ *
+ * ⚠️ 引擎在 override 模式下**不做** `capTurnover`（对已截断的目标再截是空操作）。
+ * 判断一律用严格 `!== undefined`，**不要**改成真值判断或 `??`（`null` 是合法语义值）。
+ */
+export type StepBacktestDayArgs = {
   dayIndex: number;
   execDate: string;
-  /**
-   * 传入时**跳过时点池与策略决策**，只执行「除权 → 成交 → 收盘估值」。
-   * `null` 表示当日无目标（等价于策略返回 null）；不传表示按策略现算。
-   * ⚠️ override 模式下**不做换手截断**（调用方负责截断并自行留痕）。
-   */
-  targetsOverride?: TargetSet | null;
-  /** 与 `targetsOverride` 配套的决策时点权益（缺省 = 持仓在 `asOf` 收盘的估值） */
+  /** 与 override 配套的决策时点权益（缺省 = 持仓在 `asOf` 收盘的估值）；`0` 是合法值 */
   equityAtCutoffOverride?: number;
-}
+} & (
+  | { targetsOverride?: undefined }
+  | { targetsOverride: null }
+  | {
+      targetsOverride: TargetSet;
+      /**
+       * 🔴 硬约束（类型 + 运行时双保险）：调用方必须自己截断换手并留下事件。
+       * 引擎只做 `assertTargetSetValid`，不替调用方截断。
+       */
+      targetsTruncatedByCaller: true;
+    }
+);
 
 /**
  * 推进一个交易日（T）：决策（可选）→ `startDay` → 除权 → 成交 → 收盘估值。
@@ -456,6 +473,11 @@ export function stepBacktestDay(state: BacktestRunState, args: StepBacktestDayAr
 
   if (args.targetsOverride !== undefined) {
     // 纸面落账路径：目标由调用方给定，只复用除权/成交/估值，不跑时点池与策略
+    if (args.targetsOverride !== null && !('targetsTruncatedByCaller' in args)) {
+      throw new BacktestInvariantError(
+        'stepBacktestDay: 传入 targetsOverride 时必须声明 targetsTruncatedByCaller=true（调用方负责截断换手并留痕）',
+      );
+    }
     targets = args.targetsOverride;
     equityAtCutoff = args.equityAtCutoffOverride ?? portfolio.equity(pricesAtAsOf);
   } else {
@@ -546,6 +568,13 @@ export function stepBacktestDay(state: BacktestRunState, args: StepBacktestDayAr
           ? { open: bar.open, close: bar.close, preclose: bar.preclose, volume: bar.volume }
           : undefined;
       },
+      /**
+       * 🔴 「日历判为交易日、但当日**实际无 bar**」按**停牌**处理（方案 §6.4）：
+       * - 当日订单作废：成交侧返回 `SkippedOrder.reason='suspended'`（`missing-bar`），
+       *   **不跨日顺延**（次日只来自新决策，不重试同一笔）；
+       * - 持仓维持（`qty/avgCost/cash` 不变），收盘估值走下方 `closeAtOrBefore` 的最近有效价。
+       * 判据由 `isSuspended()` 的 `missingBar`（默认开）负责，故这里不重复判断。
+       */
       suspensionOf: (symbol: string) => isSuspended(data.execBars.get(symbol), execDate, state.suspension),
       buyBudget: targets?.buyBudget,
       exitReasons: targets?.exitReasons,

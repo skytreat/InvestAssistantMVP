@@ -583,6 +583,27 @@ pending ──结算成功──► filled
 - 次日策略重新决策：如果仍要卖，会生成新的 `signal_id`；如果不要卖，持仓继续保留；
 - 停牌不是「信号失效」：不删除目标、不标记策略失败、不触发风控降级；只在报告里计一次停牌事件。
 
+> 🔴 **「日历判为交易日，但当日无 bar」= 按本节停牌处理**（2026-11-08 明确，随 PA-04 前向日历落地）
+>
+> 前向日历（工作日 − `raw_holidays`）只能说明「日历上开市」，**不等于行情源当天真有一根 bar**
+> （数据断档、`tdx2db` 当日未落库、某标的停牌/退市、指数 bar 缺失）。两种粒度的处置不同：
+>
+> | 情形 | 处置 | 原因码 |
+> |---|---|---|
+> | **某一标的**当日无 bar | 按**停牌**：当日订单作废、持仓维持、按最近有效收盘价估值 | `suspended` / `missing-bar` |
+> | **全市场**当日无 bar（基准与日历都无数据） | **阻塞**当日结算，**不按停牌**（附录 A「全市场未更新」） | `PAPER_QUOTE_DB_BUSY`（PA-12） |
+>
+> 单标的无 bar 的具体口径：
+> - **当日订单作废**：`executeTargets` 返回 `SkippedOrder.reason='suspended'`、`detail='missing-bar'`
+>   （判据是 `isSuspended()` 的 `missingBar`，默认开，与 `volume=0` 的 `zero-volume` 分开记）；
+> - **不跨日顺延**：次日只来自新决策的新 `signal_id`（§6.1「不跨日顺延」）；
+> - **持仓维持**：`qty / avg_cost / cash` 不变；
+> - **估值沿用最近有效收盘价**（`closeAtOrBefore`），并计入 `stale_symbol_count`；
+> - **记事件**：`paper_order.status='unfilled'` 一行，报告按停牌类统计。
+>
+> 代码口径写在 `apps/backend/src/services/backtest/engine.ts` 的 `suspensionOf` 注释里；
+> 回归证据是 `backtest-m2-step.test.ts` 的 golden 场景（含 `missing-bar` 与 `zero-volume` 两例）。
+
 ### 6.5 未成交事件与金额
 
 事件就是 `paper_order` 的 `status='unfilled'` 行，字段直接可用：
@@ -1066,7 +1087,7 @@ S4 前端与验收
 | **PA-02** | S0 | 同上：导出 `makeContext()` / `capTurnover()`（命名按仓库风格） | PA-01 | 回测全量测试全绿；纸面可直接调用且不复制逻辑（导出函数被回测自身复用即证明） |
 | **PA-03** | S0 | `apps/backend/src/services/backtest/account/portfolio.ts`：新增 `restore(positions, cash)` | 无 | 单测：恢复后 `equity/avgCost/costBasis/closeableQty` 与原 `Portfolio` 完全一致；`boughtToday = qty − closeable_qty` 可复现 T+1 冻结 |
 | **PA-04** | S0 | `apps/backend/src/services/backtest/calendar.ts` + `raw_holidays`：新增 `nextTradingDay()` | 无 | 单测：周五→周一、节假日前夕、长假、跨年；与历史日历交叉验证（历史日期上 `nextTradingDay` 必须等于下一根 bar） |
-| **PA-05** | S1 | `apps/backend/src/services/backtest/store/backtestDb.ts`（或新增同库 `paperSchema.ts`）：建 `paper_account/position/order/equity/fee_config` + 索引 + 触发器 | PA-03（restore 的字段要求） | 临时库连续执行两次 schema 无差异；`ux_paper_account_live_user` 与 `initial_cash` 触发器各有单测；`paper_*` 与 `bt_*` 同文件共存 |
+| **PA-05** | S1 | `apps/backend/src/services/backtest/store/backtestDb.ts`（或新增同库 `paperSchema.ts`）：建 `paper_account/position/order/equity/fee_config` + 索引 + 触发器 | PA-03（restore 的字段要求） | 临时库连续执行两次 schema 无差异；`ux_paper_account_live_user` 与 `initial_cash` 触发器各有单测；`paper_*` 与 `bt_*` 同文件共存；**建表后立刻跑跨前缀隔离校验（§13.4：无跨前缀外键/触发器/视图、`idx_paper_`/`trg_paper_` 命名、清理守卫 abort 有测试）** |
 | **PA-06** | S1 | 新增 `apps/backend/src/services/paper/fees.ts`：配置 CRUD + 校验 + `feeSnapshotToTradeRules()` + 回退链 | PA-05 | 四层回退链单测；非法值拒绝；`stamp/transfer != 0` → `FEE_RULE_UNSUPPORTED`；快照冻结测试（A14） |
 | **PA-07** | S1 | 新增 `apps/backend/src/services/paper/accountService.ts` + `apps/backend/src/routes/paper.ts`：建户、查询、关闭、手动切阶段 | PA-05、PA-06 | A15（409 `PAPER_ACCOUNT_EXISTS`）；跨库用户校验；切阶段冷启动断言（cash/position/水位重置） |
 | **PA-08** | S2 | `apps/backend/src/services/scheduler.ts` 新增 17:04 段 + 新增 `services/paper/decision.ts`：影子决策，写 `paper_order(status='shadow')` | PA-02、PA-04、PA-07 | A11（影子不写 `paper_position`/`paper_equity`）；`waitForQuoteUpdate=true`；同日重跑行数不增；17:00–17:10 回测禁跑校验 |
@@ -1083,13 +1104,57 @@ S4 前端与验收
 | 阶段 | Gate | 硬指标 |
 |---|---|---|
 | S0 | 回测行为不变 | golden 逐位一致；后端全量测试绿 |
-| S1 | 表与配置只增不改行为 | schema 幂等；费用回退/校验/冻结全绿；现有回测与业务接口零回归 |
+| S1 | 表与配置只增不改行为 | schema 幂等；费用回退/校验/冻结全绿；现有回测与业务接口零回归；**§13.4 跨前缀隔离校验全绿（含清理守卫 abort 测试）** |
 | S2 | 影子不落账 | 影子期 `paper_position`/`paper_equity` 行数为 0；同日重跑幂等 |
 | S3 | 账本正确 | A1–A8、A10、A12、A17；`equity` 恒等式零漂移 |
 | S4 | 可用与可解释 | A14–A16；前端提示到位；备份/清理守卫有测试 |
 
 > 与 `AGENTS.md` 的关系：本文是**提案**；采纳后 D1–D6 进 `SDD_v3.md`，任务映射进 `code_implementation_plan_v3.md`，
 > 关键取舍（同库、费用可配置、版本锁定）进 `docs/adr/`。
+
+### 13.4 PA-05 硬验收项：建表后立即执行的跨前缀隔离校验（2026-11-08 追加）
+
+> **定位**：这是 **PA-05 建表步骤的一部分**，不是事后排查。`createPaperSchema(db)` 在建完表/索引/触发器之后，
+> **同一函数内立刻**执行下面的 1–3，任一不通过即 `throw`（schema 创建整体失败，不留半成品）。
+> **理由**：`paper_*` 与 `bt_*` 同库（§5.5 D1），之后所有「清理 / 重建 / 导出」脚本都可能误伤纸面账本，
+> 隔离性必须由**代码断言 + 测试**保证，不能靠 review 纪律。
+
+**1）结构断言：`paper_*` 与 `bt_*` 之间零交叉引用**
+
+| 断言 | 判据（只读 `sqlite_master` / `PRAGMA`） | 失败 |
+|---|---|---|
+| 无跨前缀**外键** | 对每张 `paper_*` 表执行 `PRAGMA foreign_key_list(<t>)`，`table` 不得以 `bt_` 开头；反向对 `bt_*` 执行，不得指向 `paper_*` | `PAPER_SCHEMA_CROSS_PREFIX_REF` |
+| 无跨前缀**触发器** | `SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger'`：`tbl_name` 以 `paper_` 开头时 `sql` 不得出现 `bt_`；反之亦然 | 同上 |
+| 无跨前缀**视图** | `SELECT name, sql FROM sqlite_master WHERE type='view'`：视图名或 `sql` 不得同时含 `paper_` 与 `bt_` | 同上 |
+| 无跨前缀**表级引用**（触发器/视图体里的 `SELECT ... FROM bt_run`） | 同上，对 `sql` 文本做**前缀定向扫描**：只在 `paper_*` 对象的定义里查 `bt_`，只在 `bt_*` 对象的定义里查 `paper_` | 同上 |
+
+> 说明：SQLite 无「跨表引用」系统视图，判据是 `sqlite_master.sql` 文本扫描 + `PRAGMA foreign_key_list` 双路；
+> 扫描必须**定向**（不是全库 `LIKE '%bt_%'`），否则会把自己这段校验的 SQL 文本误报。
+
+**2）命名断言：新建对象前缀唯一**
+
+- 表名白名单（不多不少）：`paper_account` / `paper_position` / `paper_order` / `paper_equity` / `paper_fee_config`；
+- 索引：必须匹配 `^idx_paper_`；
+  ⚠️ §5.2 现写作 `ix_paper_equity_account_date`，**PA-05 落地时统一改成 `idx_paper_equity_account_date`**，不要留两套前缀；
+- 触发器：必须匹配 `^trg_paper_`（如 `trg_paper_account_initial_cash_immutable`）；
+- 断言实现：遍历 `SELECT name, type FROM sqlite_master WHERE name LIKE 'paper_%'`，
+  `type='index'` 不匹配 `^idx_paper_` 或 `type='trigger'` 不匹配 `^trg_paper_` ⇒ 抛 `PAPER_SCHEMA_BAD_PREFIX`。
+  （SQLite 为 UNIQUE 约束自动创建的 `sqlite_autoindex_*` 不受此约束，按 `sql IS NULL` 跳过。）
+
+**3）清理 / 重置脚本守卫：探测命中即 abort，且禁止删库文件**
+
+```text
+1) 目标库固定为 data/backtest.db —— 不得由参数/env 指到其它路径
+2) SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'paper_%'  → >0 立即 abort（退出码≠0，并打印命中的对象清单）
+3) 只允许删除白名单：bt_run / bt_trial 及其索引；出现任何其它前缀（尤其是 paper_*）一律 abort
+4) 脚本内禁止 rm / unlink / fs.unlink / DBI->unlink / `rm -rf` 目标库文件；出现即视为实现缺陷（review + grep 双查）
+```
+
+- **必须有一条测试证明 abort 真的发生**（不是只写在注释里）：
+  临时库建一个空的 `paper_position` → 跑清理脚本 → 断言**退出码 ≠ 0**、`paper_position` **仍存在**、`bt_run` **未被删**；
+- 反向用例：只有 `bt_*` 的临时库 → 脚本退出码 0，且 `bt_run` 被清空。
+
+**4）收口判定**：`createPaperSchema` 连续执行两次无差异（幂等）+ 上述 1–3 全绿 + 清理守卫正向/反向各一条测试 —— 才算 PA-05 完成。
 
 ---
 

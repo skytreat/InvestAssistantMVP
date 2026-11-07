@@ -244,6 +244,7 @@ describe('S0 · 纸面落账复用回测路径', () => {
         dayIndex,
         execDate,
         targetsOverride: decision!.targets,
+        targetsTruncatedByCaller: true,
         equityAtCutoffOverride: equityAtCutoff,
       });
     }
@@ -292,6 +293,19 @@ describe('S0 · 纸面落账复用回测路径', () => {
     });
     expect(stepBacktestDay(state, { dayIndex: 1, execDate: DATES[1], targetsOverride: null })).not.toBeNull();
   });
+
+  it('传 TargetSet 却未声明 targetsTruncatedByCaller → 抛错（硬约束不只写在注释里）', () => {
+    const state = freshState();
+    // @ts-expect-error 故意漏声明：类型层已禁止，运行时再兜一层
+    expect(() =>
+      stepBacktestDay(state, {
+        dayIndex: 1,
+        execDate: DATES[1],
+        targetsOverride: { targets: [{ symbol: 'sh510300', targetWeight: 1 }], mode: 'replace' },
+        equityAtCutoffOverride: 100_000,
+      }),
+    ).toThrow(/targetsTruncatedByCaller/);
+  });
 });
 
 describe('S0 · 单日顺序：除权 → 成交 → 收盘估值', () => {
@@ -319,6 +333,7 @@ describe('S0 · 单日顺序：除权 → 成交 → 收盘估值', () => {
       dayIndex: 1,
       execDate: dates[1],
       targetsOverride: { targets: [{ symbol: 'sh510300', targetWeight: 1 }], mode: 'replace' },
+      targetsTruncatedByCaller: true,
       equityAtCutoffOverride: 100_000,
     });
     const qty1 = state.portfolio.position('sh510300').qty;
@@ -329,6 +344,7 @@ describe('S0 · 单日顺序：除权 → 成交 → 收盘估值', () => {
       dayIndex: 2,
       execDate: dates[2],
       targetsOverride: { targets: [], mode: 'replace' },
+      targetsTruncatedByCaller: true,
       equityAtCutoffOverride: state.equity[state.equity.length - 1].equity,
     });
 

@@ -6,10 +6,12 @@ import {
   ForwardCalendar,
   isWeekday,
   loadForwardCalendar,
+  loadHolidayList,
   loadTradingCalendar,
   nextTradingDay,
   TradingCalendar,
 } from '../../src/services/backtest/calendar.js';
+import { queryDuckDB } from '../../src/db/duckdb.js';
 
 /** 故意乱序 + 含重复，验证构造时会去重排序 */
 const RAW_DAYS = ['2026-10-09', '2026-10-12', '2026-10-08', '2026-10-07', '2026-10-09'];
@@ -175,5 +177,78 @@ describe('ForwardCalendar —— 与历史交易日历交叉验证', () => {
       checked++;
     }
     expect(checked).toBeGreaterThan(15);
+  });
+});
+
+/**
+ * 黑名单完整性对账（一次性自查，2026-11-08 用户要求「只验不改」）
+ *
+ * 口径：`sh000001` 的**每一根 bar** 就是那一天真实开过市；`raw_holidays` 是休市日黑名单。
+ * 故在 bar 覆盖区间内，`工作日 − raw_holidays` 必须与 bar 集**逐日相等**。
+ *
+ * 实测基线（2026-11-08，真库 `data/quotes.duckdb` 只读）：
+ * bar 8758 根（1990-12-19 → 2026-11-06），`raw_holidays` 680 行（1991-01-01 → 2030-10-07，
+ * 无周末条目）⇒ 三类差异均为 0 ⇒ **`raw_holidays` 完整，无需改用 bar 日历做前向判定**。
+ * 迷你库（`MARKET_DATA_MODE=ci`，729 根 bar / 2023-11-03 → 2026-11-06）同为零差异。
+ */
+describe('ForwardCalendar —— 黑名单完整性对账（全区间）', () => {
+  const addOneDay = (date: string): string => {
+    const [y, m, d] = date.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  };
+
+  /** 某日全市场是否有任何一根日线 —— 用来区分「黑名单漏登记」与「指数缺 bar」 */
+  const marketHasAnyBar = async (date: string): Promise<boolean> => {
+    const rows = await queryDuckDB<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM raw_kline_daily WHERE CAST(date AS VARCHAR) = ?`,
+      [date],
+    );
+    return Number(rows[0]?.c ?? 0) > 0;
+  };
+
+  it.skipIf(!hasMarket)('sh000001 bar 集与「工作日 − raw_holidays」逐日一致', async () => {
+    const history = await loadTradingCalendar();
+    const holidays = await loadHolidayList();
+    expect(history.length).toBeGreaterThan(100);
+
+    const start = history.all[0];
+    const end = history.all[history.all.length - 1];
+    // 覆盖终点对齐到 bar 区间末端：对账要判「黑名单是否完整」，不能被黑名单自身的覆盖终点截断
+    const forward = new ForwardCalendar(holidays, end);
+    const barDates = new Set(history.all);
+    const holidayDates = new Set(holidays);
+
+    const missingBar: string[] = []; // 日历判交易日、却无 bar
+    const barOnHoliday: string[] = []; // 黑名单日却有 bar
+    const barOnWeekend: string[] = []; // 周末却有 bar
+
+    for (let cursor = start; cursor <= end; cursor = addOneDay(cursor)) {
+      const hasBar = barDates.has(cursor);
+      if (forward.isTradingDay(cursor)) {
+        if (!hasBar) missingBar.push(cursor);
+        continue;
+      }
+      if (!hasBar) continue;
+      if (isWeekday(cursor) && holidayDates.has(cursor)) barOnHoliday.push(cursor);
+      else barOnWeekend.push(cursor);
+    }
+
+    // 差异必须自解释：同日全市场有 bar ⇒ 是 sh000001 缺 bar；全市场都无 bar ⇒ 是黑名单漏登记
+    const classified: { date: string; kind: string }[] = [];
+    for (const d of missingBar) {
+      const kind = (await marketHasAnyBar(d)) ? 'bar 缺失（市场有交易）' : '黑名单漏登记（全市场无 bar）';
+      classified.push({ date: d, kind });
+    }
+
+    const range = `${start} → ${end}（${history.all.length} 根 bar，黑名单 ${holidays.length} 行）`;
+    expect(classified, `对账区间 ${range}：日历判交易日但无 bar`).toEqual([]);
+    expect(
+      barOnHoliday.map((d) => ({ date: d, kind: '黑名单误登记（登记为休市但当天开市）' })),
+      `对账区间 ${range}`,
+    ).toEqual([]);
+    expect(
+      barOnWeekend.map((d) => ({ date: d, kind: 'bar 异常（周末出现 bar）' })),
+      `对账区间 ${range}`,
+    ).toEqual([]);
   });
 });
