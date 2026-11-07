@@ -19,7 +19,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import schedule from '@fastify/schedule';
-import fs from 'node:fs';
 import path from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
@@ -51,13 +50,19 @@ export function cleanupSmoke2(): void {
   }
 }
 
-// 顶层快速检测：只看文件存不存在（避免 DuckDB Neo API 文件锁泄漏）
-const _DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
-const DUCKDB_FILE_EXISTS = fs.existsSync(_DUCKDB_PATH);
-console.log(`[smoke-m2] DuckDB path: ${_DUCKDB_PATH}, exists=${DUCKDB_FILE_EXISTS}`);
+// ── 行情库可用性（2026-11-07 接线修复）— 统一走 `tests/_marketData.ts` ──
+// 原来的顶层 `process.env.DUCKDB_PATH` 快照 + `fs.existsSync` 有两个问题：
+//   ① setup.ts 解析档位在 beforeAll（**晚于**本模块顶层）⇒ 日志打印真库路径、查询却走迷你库；
+//   ② 空壳库（12KB，无 `v_stock_qfq` 表）文件存在 ⇒ `existsSync` 误判可用。
+const MARKET_DATA = await import('./_marketData.js');
+const MARKET_DATA_NUMERIC = await MARKET_DATA.marketDataUsableFor('numeric');
+const RESOLVED_DUCKDB_PATH = MARKET_DATA.resolveMarketData().path ?? '(none)';
+console.log(
+  `[smoke-m2] market data tier=${MARKET_DATA.marketDataTier()} path=${RESOLVED_DUCKDB_PATH} usable=${MARKET_DATA_NUMERIC}`,
+);
 
 // 真实 DuckDB 可用性延后到 test 内部检测（有独立 timeout + try-catch）
-const _duckdbWorks = DUCKDB_FILE_EXISTS;
+const _duckdbWorks = MARKET_DATA_NUMERIC;
 
 let app: Awaited<ReturnType<typeof Fastify>>;
 let db: ReturnType<typeof ConfigStore>;
@@ -234,14 +239,14 @@ describe('M2 全链路日志验证', () => {
 
 // ========================================================================
 // M2 真实 DuckDB 路径（条件执行）
-// - Windows 开发机: DUCKDB_FILE_EXISTS=false → 3 个 test 空通过（无断言）
+// - 行情库不可用（空壳/无表）: `_duckdbWorks=false` → 3 个 test 空通过（无断言）
 // - OCI 服务器: DuckDB 文件存在 → 每个 test 内部独立 duckdbHealthCheck 验证后跑真实断言
 // ========================================================================
 
 describe('M2 真实 DuckDB 路径', () => {
   // 每个 test 内部独立验证 DuckDB 真能用（有独立 timeout + try-catch，不泄漏文件锁）
   async function _ensureDuckdbWorks(): Promise<boolean> {
-    if (!_duckdbWorks) return false; // fs 检测文件就不存在
+    if (!_duckdbWorks) return false; // 统一入口探测：空壳/无表 → 不可用
     const MAX_RETRIES = 3;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {

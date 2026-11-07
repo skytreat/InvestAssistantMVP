@@ -68,7 +68,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { ConfigStore } from '../src/config/configStore.js';
 import { registerRoutes } from '../src/routes/index.js';
-import { marketDataUsableFor, SKIP_REASON_NO_SCALE_DATA } from './_marketData.js';
+import { marketDataUsableFor } from './_marketData.js';
 
 // ════════════════════════════════════════════════════════════════════════
 // 隔离环境：SQLite 库 + 备份目录都指临时目录
@@ -105,17 +105,14 @@ const { resolveLatestQuoteDate } = marketDataMod;
 // ════════════════════════════════════════════════════════════════════════
 /** 数值型用例可跑？（迷你库即可 —— 它是真库的逐位一致子集） */
 const MARKET_DATA_NUMERIC_AVAILABLE = await marketDataUsableFor('numeric');
-/** 规模型用例可跑？（**必须真库** —— 迷你库只有 250 只标的） */
-const MARKET_DATA_SCALE_AVAILABLE = await marketDataUsableFor('scale');
 
 if (!MARKET_DATA_NUMERIC_AVAILABLE) {
   console.warn(
     '[smoke-m5] ⚠️ 行情库不可用：K 线 / 选股 / 双口径 的数值型断言将被**跳过**（CI 只有 12KB 空壳库）。',
   );
 }
-if (!MARKET_DATA_SCALE_AVAILABLE) {
-  console.warn('[smoke-m5] ⚠️ 规模型断言（选股候选池 > 3000）将被**跳过**：' + SKIP_REASON_NO_SCALE_DATA);
-}
+// 🔴 2026-11-07：规模型断言（选股候选池 > 3000）已移入手动线
+//   `tests/smoke-m5.anchors.test.ts`（日常套件默认迷你库，规模断言在迷你库上必然假红）。
 
 // ════════════════════════════════════════════════════════════════════════
 // 常量
@@ -145,8 +142,6 @@ const PLUGIN_ID = 'rsi_oversold';
 
 /** 候选池上限（routes/stockscan.ts 的 POOL_LIMIT）*/
 const POOL_LIMIT = 5000;
-/** 规模门槛：股票池 > 3000（实测真库 5561 只）*/
-const SCALE_THRESHOLD = 3000;
 
 // ════════════════════════════════════════════════════════════════════════
 // 运行时状态
@@ -1068,7 +1063,6 @@ describe('M5 · 第 5 步 signals symbol 过滤', () => {
 // ════════════════════════════════════════════════════════════════════════
 describe('M5 · 第 6 步 选股公共过滤', () => {
   const itNumeric = MARKET_DATA_NUMERIC_AVAILABLE ? it : it.skip;
-  const itScale = MARKET_DATA_SCALE_AVAILABLE ? it : it.skip;
 
   it('非法 asset_type / market_cap_max / 插件 id → 400（不静默兜底）', () => {
     for (const key of ['scanBadType', 'scanBadCap', 'scanBadPlugin']) {
@@ -1116,10 +1110,8 @@ describe('M5 · 第 6 步 选股公共过滤', () => {
     }
   });
 
-  itScale('候选池规模 > 3000（**规模型**，必须真库）', () => {
-    const d = body(snap.scanAll as Inject).data;
-    expect(d.totalCandidates).toBeGreaterThan(SCALE_THRESHOLD);
-  });
+  // 🔴 2026-11-07：原「候选池规模 > 3000（规模型，必须真库）」已移入手动线
+  //   `tests/smoke-m5.anchors.test.ts`。
 });
 
 // ════════════════════════════════════════════════════════════════════════

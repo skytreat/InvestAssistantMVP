@@ -15,13 +15,12 @@
  *     ② 可以**计数** DuckDB 往返次数 → 断言「批量取数确实是一批」；
  *     ③ CI 环境只有 12KB 空壳行情库 → 本文件**不需要** `MARKET_DATA_AVAILABLE` 守卫，
  *        全部用例在 CI 也能跑（不产生「本地绿 / CI 红」的假象）。
- *   另有一个 **真实行情库交叉验证**用例（`MARKET_DATA_AVAILABLE` 守卫），
- *   把假数据的结论在真库上再验一遍（实测口径，AGENTS.md「权威来源只有实测」）。
+ *   原「真实行情库交叉验证」两个 describe 需要真库（迷你库上口径不成立）
+ *   ⇒ 2026-11-07 已移入手动线 `tests/unit/t67-dashboard-enrich.anchors.test.ts`。
  *
  * ── SQLite 隔离 ──
  *   `mkdtempSync` 临时库 + 覆盖 `SQLITE_DB_PATH`（必须在 import ConfigStore 之前）。
  *   ⚠️ **不覆盖 `DUCKDB_PATH`**：本文件 mock 掉了 duckdb 模块（应用代码不会真开库），
- *     而真实行情交叉验证用例要用环境里的真库路径；覆盖它会让本地也误判为「无行情库」。
  *
  * ── 日期一律**运行时派生** ──
  *   写死 '2026-10-20' 会造出定时炸弹（跑测当天恰好相等才通过，过了那天永久红）。
@@ -35,7 +34,6 @@ import os from 'node:os';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { JwtPayload } from '../../src/services/auth.js';
-import { marketDataTier } from '../_marketData.js';
 
 /** 真实行情库是否可用（顶层 await 判定一次） */
 // 🔴 2026-10-21 **两层开关**：本文件用例全是**数值型**断言（价格 / 昨收 / 落库口径），
@@ -91,8 +89,6 @@ const H = vi.hoisted(() => {
   return {
     bars,
     names,
-    /** 切到真实 DuckDB（真实行情交叉验证用例用） */
-    useReal: { value: false },
     /** 让 queryDuckDB 直接抛错（DuckDB 不可用的降级用例） */
     failDuckDb: { value: false },
     /** 让信号查询直接抛错（SQLite 侧降级用例） */
@@ -156,7 +152,6 @@ vi.mock('../../src/db/duckdb.js', async (importOriginal) => {
     ...actual,
     queryDuckDB: vi.fn(async (sql: string, params?: unknown[]) => {
       if (H.failDuckDb.value) throw new Error('t67 测试：模拟 DuckDB 不可用');
-      if (H.useReal.value) return actual.queryDuckDB(sql, params);
       return fakeQuery(sql, params);
     }),
   };
@@ -395,9 +390,8 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  // ⚠️ 三个开关都要复位 —— 用例内若抛错，开关会残留 → 污染后续用例
+  // ⚠️ 两个开关都要复位 —— 用例内若抛错，开关会残留 → 污染后续用例
   //   （vitest 会打乱用例顺序，这种残留会变成随机失败）
-  H.useReal.value = false;
   H.failDuckDb.value = false;
   H.failSignalDb.value = false;
   (queryDuckDB as unknown as { mockClear: () => void }).mockClear();
@@ -759,35 +753,9 @@ describe('T67-⑧ 信号查询降级', () => {
 });
 
 // ══════════════════════════════════════════════════════════
-// ⑨ 真实行情库交叉验证（本地有真库时才跑；CI 无行情库 → 跳过）
+// ⑨ 真实行情库交叉验证 —— 2026-11-07 已移入手动线：
+//    `tests/unit/t67-dashboard-enrich.anchors.test.ts`（迷你库上该口径不成立）
 // ══════════════════════════════════════════════════════════
-
-describe('T67-⑨ 真实行情库交叉验证', () => {
-  // 🔴 **必须是 full 档专属**（2026-10-20 实测修正）：
-  //   这两个 describe 验的是「**真实行情库**上的行为」（prevClose 与 latest 差一根 K 线、
-  //   `sh600001` 无名是常态）—— 迷你库是**真库的子集**，历史深度与标的覆盖都不同
-  //   ⇒ 在迷你库上跑这些断言没有意义（实测 mini 档下「倒数第二条」断言红）。
-  const itReal = marketDataTier() === 'full' ? it : it.skip;
-
-  itReal('真库上 prevClose 仍是「倒数第二条」且与 latest 差一根 K 线', async () => {
-    H.useReal.value = true;
-    const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
-    spy.mockClear();
-    const res = await app.inject({ method: 'GET', url: '/api/holding' });
-    H.useReal.value = false;
-    expect(res.statusCode).toBe(200);
-    const items = res.json().data as Array<Record<string, any>>;
-
-    // 假数据里 sh600001 有行情；真库上 sh600001 是真实股票 → 应能取到现价与昨收
-    const p = items.find((i) => i.asset_code === 'sh600001');
-    expect(p).toBeDefined();
-    expect(typeof p!.currentPrice).toBe('number');
-    expect(typeof p!.prevClose).toBe('number');
-    expect(p!.prevClose).not.toBe(p!.currentPrice);
-    // 仍是常数次的批量查询（品种 1 + 行情 1 + 名称 1）
-    expect(spy.mock.calls.length).toBe(3);
-  });
-});
 
 // ══════════════════════════════════════════════════════════
 // ⑩ T67 卡 1 —— `/api/holding` 补 `name`（中文名）+ `industry`（契约预留）
@@ -911,43 +879,6 @@ describe('T67-⑩ /api/holding enrich —— name（中文名）+ industry（契
 });
 
 // ══════════════════════════════════════════════════════════
-// ⑪ 卡 1 · 真实行情库交叉验证（本地有真库时才跑；CI 无行情库 → 跳过）
+// ⑪ 卡 1 · 真实行情库交叉验证 —— 2026-11-07 已移入手动线：
+//    `tests/unit/t67-dashboard-enrich.anchors.test.ts`
 // ══════════════════════════════════════════════════════════
-
-describe('T67-⑪ 真实行情库 —— name 的命中与缺失', () => {
-  // 🔴 **必须是 full 档专属**（2026-10-20 实测修正）：
-  //   这两个 describe 验的是「**真实行情库**上的行为」（prevClose 与 latest 差一根 K 线、
-  //   `sh600001` 无名是常态）—— 迷你库是**真库的子集**，历史深度与标的覆盖都不同
-  //   ⇒ 在迷你库上跑这些断言没有意义（实测 mini 档下「倒数第二条」断言红）。
-  const itReal = marketDataTier() === 'full' ? it : it.skip;
-
-  // ⚠️ 真实库上 `/api/holding` 会触发 `v_stock_qfq` 的全量扫描（实测约 3s/次）
-  //   → 合并成**一次**调用，避免多开 DuckDB 实例（文件锁 + page cache 驱逐）
-  itReal(
-    '真库上 sh600000 = 浦发银行、sh600001 无名（缺失是常态，不报错），且查名仍只 1 次 IN 查询',
-    async () => {
-      H.useReal.value = true;
-      const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
-      spy.mockClear();
-      const res = await app.inject({ method: 'GET', url: '/api/holding' });
-      H.useReal.value = false;
-      expect(res.statusCode).toBe(200);
-      const items = res.json().data as Array<Record<string, any>>;
-
-      // 真库实测：`raw_symbol_name` 有 sh600000（浦发银行），**没有** sh600001
-      const named = items.find((i) => i.asset_code === 'sh600000');
-      expect(named).toBeDefined();
-      expect(named!.name).toBe('浦发银行');
-
-      const unnamed = items.find((i) => i.asset_code === 'sh600001');
-      expect(unnamed).toBeDefined();
-      expect(unnamed!.name).toBeNull();
-
-      // 查名仍是 1 次 IN 查询（无 N+1）
-      const nameCalls = spy.mock.calls.filter((c) => String(c[0]).includes('FROM raw_symbol_name'));
-      expect(nameCalls.length).toBe(1);
-      const params = nameCalls[0][1] as unknown[];
-      expect(params.length).toBe(ALL_CODES.length);
-    },
-  );
-});

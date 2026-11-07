@@ -53,10 +53,16 @@ const HOST = '127.0.0.1';
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'admin123';
 
-// 顶层 fs.existsSync 粗筛
-const _DUCKDB_PATH = process.env.DUCKDB_PATH ?? path.resolve('data', 'quotes.duckdb');
-const DUCKDB_FILE_EXISTS = fs.existsSync(_DUCKDB_PATH);
-console.log(`[smoke-m3] DuckDB path: ${_DUCKDB_PATH}, exists=${DUCKDB_FILE_EXISTS}`);
+// ── 行情库可用性（2026-11-07 接线修复）— 统一走 `tests/_marketData.ts` ──
+// 原来的顶层 `process.env.DUCKDB_PATH` 快照 + `fs.existsSync` 有两个问题：
+//   ① setup.ts 解析档位在 beforeAll（**晚于**本模块顶层）⇒ 日志打印真库路径、查询却走迷你库；
+//   ② 空壳库（12KB，无 `v_stock_qfq` 表）文件存在 ⇒ `existsSync` 误判可用。
+const MARKET_DATA = await import('./_marketData.js');
+const MARKET_DATA_NUMERIC = await MARKET_DATA.marketDataUsableFor('numeric');
+const RESOLVED_DUCKDB_PATH = MARKET_DATA.resolveMarketData().path ?? '(none)';
+console.log(
+  `[smoke-m3] market data tier=${MARKET_DATA.marketDataTier()} path=${RESOLVED_DUCKDB_PATH} usable=${MARKET_DATA_NUMERIC}`,
+);
 
 let app: Awaited<ReturnType<typeof Fastify>>;
 let db: ReturnType<typeof ConfigStore>;
@@ -305,7 +311,7 @@ describe.sequential('M3 Scheduler + Backup', () => {
       console.log('DEBUG backup result=', JSON.stringify(result));
       expect(result.sqlite.success).toBe(true);
       // DuckDB 部分：文件太大时跳过（避免 800MB+ 备份超时）
-      if (DUCKDB_FILE_EXISTS && result.duckdb.success) {
+      if (MARKET_DATA_NUMERIC && result.duckdb.success) {
         const duckdbSizeMb = Math.round((result.duckdb.size ?? 0) / 1024 / 1024);
         if (duckdbSizeMb < 500) {
           console.log('  DuckDB backup OK size=', result.duckdb.size);
