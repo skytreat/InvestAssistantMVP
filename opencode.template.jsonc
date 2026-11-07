@@ -54,7 +54,10 @@
         "build/**",
         ".git/**",
         "*.db",
-        "*.duckdb"
+        "*.duckdb",
+        // ADR-018 D1：证据层默认不加载，仅在 5 触发情形下按任务卡 audit_refs 显式检索
+        "docs/audit/**",
+        "docs/archive/**"
       ]
     }
   },

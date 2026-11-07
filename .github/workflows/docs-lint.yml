@@ -1,0 +1,26 @@
+name: Docs Lint
+
+# ADR-018 D6：docs-lint 起步为 **report-only**（不阻断合并），先收集误报率，再考虑升级为 required check。
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+jobs:
+  docs-lint:
+    runs-on: ubuntu-latest
+    name: docs-lint (report-only)
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 生成物与事实源是否同步 + 卡 front-matter/引用完整性 + 开放项是否上浮
+      - name: Run docs-lint
+        run: node scripts/docs-lint.mjs --check
