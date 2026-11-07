@@ -217,7 +217,7 @@
 
 | 插件标识 | 分类 | 子分类 | 名称 | 默认参数 | 信号触发逻辑 |
 |---------|------|--------|------|---------|------------|
-| rsi | 监控 | 动量 | RSI(14) 超买超卖 | period=14, oversold=30, overbought=70 | RSI < oversold → 买入；RSI > overbought → 卖出 |
+| rsi_oversold | 监控 | 动量 | RSI(14) 超买超卖 | period=14, oversold=30, overbought=70 | RSI < oversold → 买入；RSI > overbought → 卖出 |
 | macd_cross | 监控 | 趋势 | MACD 金叉死叉 | fast=12, slow=26, signal=9 | DIF 上穿 DEA → 买入；下穿 → 卖出 |
 
 > ⚠️ **分类为单值（monitor / filter 二选一）**，与 SDD §3.2 的
