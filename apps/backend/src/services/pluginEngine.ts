@@ -1022,21 +1022,40 @@ export interface PluginKlinePrefetch {
    * 行情停更时窗口内有 120 天但只有 85 根 K 线，按行数判会永远 miss 而退化成逐只查库。
    */
   windowDays: number;
+  /**
+   * 取数窗口的**截止日**（`YYYY-MM-DD`）；缺省 = 今天。
+   *
+   * 🔴 无前视（区间回放）：回放第 T 天时必须传 T。缓存未命中的回落查询也以此日为终点，
+   *    否则插件会读到 T 之后的行情 → 用未来数据算历史信号。
+   */
+  endDate?: string;
+}
+
+/** 以给定基准日（YYYY-MM-DD）前后平移 N 天（UTC 计算，避免本地时区把日期推错） */
+export function shiftTradeDate(anchor: string, deltaDays: number): string {
+  const d = new Date(`${anchor}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
 }
 
 export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContext {
+  /** 取数窗口的终点：回放时锁在基准交易日，日常链路仍是今天 */
+  const endDate = prefetch?.endDate ?? new Date().toISOString().slice(0, 10);
   /** 预取窗口：days 天之前的日期（与原单查口径一致） */
-  const windowStart = (days: number): string =>
-    new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const windowStart = (days: number): string => shiftTradeDate(endDate, -days);
 
   return {
     async getDailyKlines(symbol: string, days: number): Promise<DailyKline[]> {
       // 命中预取 → 内存返回（窗口覆盖不足时回落查库，保证序列长度语义不变）
-      const cached = prefetch?.klines.get(symbol);
+      let cached = prefetch?.klines.get(symbol);
+      // 🔴 无前视兜底：即使调用方传入了含未来行的预取缓存，也不让基准日之后的行进入插件
+      if (cached && prefetch?.endDate) {
+        const end = prefetch.endDate;
+        cached = cached.filter((r) => r.date <= end);
+      }
       if (cached && prefetch && days <= prefetch.windowDays) {
         return days > 0 ? cached.slice(-days) : cached;
       }
-      const end = new Date().toISOString().slice(0, 10);
       const start = windowStart(days);
       /**
        * 🔴 必须走**批量入口**（F 域缺陷修复）：
@@ -1044,14 +1063,13 @@ export function buildPluginContext(prefetch?: PluginKlinePrefetch): PluginContex
        *   预取缓存未命中时会**静默变成「无数据」→ SKIP**（信号凭空消失）。
        *   `batchGetDailyRange` 内部按品种分流（stock / etf），单标的也复用同一条 IN 查询。
        */
-      const rows = await batchGetDailyRange([symbol], start, end);
+      const rows = await batchGetDailyRange([symbol], start, endDate);
       return rows.get(symbol) ?? [];
     },
 
     async batchGetDailyKlines(symbols: string[], days: number): Promise<Map<string, DailyKline[]>> {
-      const end = new Date().toISOString().slice(0, 10);
       const start = windowStart(days);
-      return await batchGetDailyRange(symbols, start, end);
+      return await batchGetDailyRange(symbols, start, endDate);
     },
 
     // 直接透传（calculateMACD 带 fast/slow/signal 默认值，ctx 签名只暴露 prices）
@@ -1340,6 +1358,13 @@ export interface ExecuteAllPluginsOptions {
   userParams?: Record<string, unknown>;
   /** 预取窗口天数（默认 120，与内置插件 paramSchema 的 days 默认值一致） */
   prefetchDays?: number;
+  /**
+   * 计算基准交易日（`YYYY-MM-DD`），**仅区间回放使用**；缺省 = 今天（日常链路行为不变）。
+   *
+   * 🔴 无前视：预取窗口的终点 + 缓存未命中回落查询的终点都锁在这一天，
+   *    故第 T 天的计算不可能读到 T 之后的行情。
+   */
+  asOfDate?: string;
 }
 
 /** 用户级插件配置（`user_plugin_config` 的一行解析结果） */
@@ -1456,11 +1481,12 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
       return { signals: [], stats: emptyStats, results: [] };
     }
     const days = options.prefetchDays ?? 120;
-    const end = new Date().toISOString().slice(0, 10);
-    const start = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    // 回放时窗口终点锁在 asOfDate（无前视）；日常链路仍是今天
+    const end = options.asOfDate ?? new Date().toISOString().slice(0, 10);
+    const start = shiftTradeDate(end, -days);
     // 1 次 IN 查询拿回整个标的域的日线（N 个插件共享）
     const prefetchKlines = await batchGetDailyRange(symbols, start, end);
-    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days });
+    const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end });
 
     const stats: PluginBatchStats = {
       total: monitorPlugins.length * symbols.length,
@@ -1508,7 +1534,10 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
   }
 
   // ── 旧行为（未传标的域）：每个插件跑 1 次 ──
-  const ctx = buildPluginContext();
+  // 回放给了 asOfDate 时同样锁住取数终点（空预取 → 每次取数都走回落，但终点仍受控）
+  const ctx = buildPluginContext(
+    options.asOfDate ? { klines: new Map(), windowDays: 0, endDate: options.asOfDate } : undefined,
+  );
 
   const stats: PluginBatchStats = {
     total: monitorPlugins.length,

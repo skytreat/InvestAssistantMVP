@@ -829,6 +829,48 @@ export async function resolveLatestQuoteDate(referenceDate?: string): Promise<st
 }
 
 /**
+ * 列出 `[from, to]` 区间内**确有行情数据**的交易日（升序）
+ *
+ * F 域区间回放用：回放日期必须来自真实行情，不能用自然日/工作日推算
+ * （否则节假日、停市、行情停更的日子都会跑空，还会让「回放 19 个交易日」的口径失真）。
+ *
+ * 与 `resolveLatestQuoteDate()` 同款取数策略：主路径走底层 `raw_kline_daily`（毫秒级），
+ * 表不可用时回退到 `v_stock_qfq` / `v_etf_qfq` 视图（慢但正确）。
+ *
+ * @returns 升序的 `YYYY-MM-DD` 列表；区间内没有任何行情时返回空数组（不抛）
+ */
+export async function listTradeDatesBetween(from: string, to: string): Promise<string[]> {
+  const collect = (rows: Array<{ d: unknown }>): string[] => {
+    const dates = rows.map((r) => toDateString(r.d)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    return [...new Set(dates)].sort();
+  };
+
+  try {
+    const rows = await queryDuckDB<{ d: unknown }>(
+      `SELECT DISTINCT date AS d FROM raw_kline_daily WHERE date >= ? AND date <= ? ORDER BY d`,
+      [from, to],
+    );
+    if (rows.length > 0) return collect(rows);
+  } catch {
+    // 快速路径不可用（表缺失 / 空壳库）→ 走视图兜底
+  }
+
+  try {
+    const rows = await queryDuckDB<{ d: unknown }>(
+      `SELECT DISTINCT d FROM (
+         SELECT date AS d FROM v_stock_qfq WHERE date >= ? AND date <= ?
+         UNION ALL
+         SELECT date AS d FROM v_etf_qfq WHERE date >= ? AND date <= ?
+       ) s ORDER BY d`,
+      [from, to, from, to],
+    );
+    return collect(rows);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * @deprecated 旧名，语义已修正为「最近有行情的交易日」。
  * 保留是为了不打断既有 import；新代码请用 {@link resolveTargetTradeDate}
  * （日历口径）或 {@link resolveLatestQuoteDate}（数据口径），别再用这个含糊的名字。
