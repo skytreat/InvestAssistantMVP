@@ -755,6 +755,18 @@ async function runCommand(argv: readonly string[]): Promise<void> {
   );
   console.log(`换手（年化）=${m.turnoverAnnualized.toFixed(2)} / 平均风险暴露=${pct(m.averageExposure)}`);
 
+  // 数据缺陷事件（不改变成交结果）：`preclose` 缺失时涨跌停判定被跳过，这里显式提示
+  const precloseMissing = result.warnings.filter((w) => w.code === 'PRECLOSE_MISSING');
+  if (precloseMissing.length > 0) {
+    const symbols = [...new Set(precloseMissing.map((w) => w.symbol))];
+    const shown = symbols.slice(0, 5).join(', ');
+    console.log(
+      `⚠️ PRECLOSE_MISSING ${precloseMissing.length} 次（${symbols.length} 只：${shown}${
+        symbols.length > 5 ? ' …' : ''
+      }）；涨跌停判定已跳过，成交未受影响`,
+    );
+  }
+
   // 归因（§6.3 输出纪律：毛额恒等式 + 分年/分段 + 跨维 Top10 + 「其它」告警）
   const money = (x: number): string => (x >= 0 ? `+${x.toFixed(2)}` : x.toFixed(2));
   console.log(

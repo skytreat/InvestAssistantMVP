@@ -284,6 +284,33 @@ describe('M2 引擎 · 停牌标的跳过', () => {
   });
 });
 
+describe('M2 引擎 · preclose 缺失事件透出', () => {
+  it('缺失只记录事件：成交与净值逐值不变，warnings 可按标的/日期查看', () => {
+    const normal = runBacktest(makeData(BASE_PRICES), baseRequest);
+
+    const data = makeData(BASE_PRICES);
+    for (const bar of data.execBars.get('sh510300')!) {
+      (bar as unknown as { preclose: number | null }).preclose = null;
+    }
+    const broken = runBacktest(data, baseRequest);
+
+    // 成交结果不变（用户要求：不新增拦截）
+    expect(broken.trades).toEqual(normal.trades);
+    expect(broken.equity).toEqual(normal.equity);
+
+    // 事件可见：顶层汇总 + 当日决策
+    expect(broken.warnings.length).toBeGreaterThan(0);
+    expect(broken.warnings.every((w) => w.code === 'PRECLOSE_MISSING' && w.symbol === 'sh510300')).toBe(
+      true,
+    );
+    const day = broken.decisions.find((d) => d.warnings.length > 0)!;
+    expect(day.warnings[0]).toMatchObject({ code: 'PRECLOSE_MISSING', date: day.execDate });
+
+    // 正常数据不产生事件
+    expect(normal.warnings).toHaveLength(0);
+  });
+});
+
 describe('M2 引擎 · 买入持有参考策略', () => {
   it('weight=1 / 不复平衡：只买一次，后续不再产生成交', () => {
     const res = runBacktest(makeData(BASE_PRICES), {

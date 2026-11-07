@@ -172,6 +172,56 @@ describe('M2 成交模拟器 · 涨跌停', () => {
   });
 });
 
+describe('M2 成交模拟器 · preclose 缺失（只记录，不拦截）', () => {
+  /**
+   * `preclose` 运行时来自 LEFT JOIN，可能为 NULL（类型声明是 number，实际列存不归一）。
+   * 这里用 `null` 直接构造运行时形态。
+   */
+  const barWithPreclose = (preclose: number | null): ExecutionBar => ({
+    open: 10,
+    close: 10,
+    preclose: preclose as unknown as number,
+    volume: 1000,
+  });
+
+  const baseline = runCase({ targets: [buyTarget(10_000)] });
+
+  const cases: { name: string; preclose: number | null }[] = [
+    { name: 'null', preclose: null },
+    { name: 'NaN', preclose: Number.NaN },
+    { name: '0（<= 0）', preclose: 0 },
+    { name: '-1（<= 0）', preclose: -1 },
+  ];
+
+  for (const c of cases) {
+    it(`preclose=${c.name}：仍放行（成交与正常数据逐值一致），并记录 PRECLOSE_MISSING`, () => {
+      const r = runCase({
+        targets: [buyTarget(10_000)],
+        bars: { sh510300: barWithPreclose(c.preclose) },
+      });
+
+      // 行为一致：不被判成 limit-up / limit-down，成交逐值等于基准
+      expect(r.skipped).toHaveLength(0);
+      expect(r.fills).toHaveLength(1);
+      expect(r.fills[0]).toEqual(baseline.fills[0]);
+      expect(r.cashDelta).toBeCloseTo(baseline.cashDelta, 8);
+
+      // 事件可见：代码 / 日期 / 标的 / 原始值（非有限数记 null）
+      expect(r.warnings).toHaveLength(1);
+      expect(r.warnings[0]).toMatchObject({
+        code: 'PRECLOSE_MISSING',
+        date: '2024-01-03',
+        symbol: 'sh510300',
+      });
+      expect(r.warnings[0].preclose).toBe(Number.isFinite(c.preclose) ? c.preclose : null);
+    });
+  }
+
+  it('preclose 有效 → 不产生 PRECLOSE_MISSING', () => {
+    expect(baseline.warnings).toHaveLength(0);
+  });
+});
+
 describe('M2 成交模拟器 · 现金与顺序', () => {
   it('手工算例 3：现金不足 → insufficient-cash，且现金不会变负', () => {
     const r = runCase({ targets: [buyTarget(100_000)], cash: 500 });

@@ -9,6 +9,7 @@
  * - 最小成交额：< 10 元不下单（避免 1 股噪声成交）
  * - T+1：当日买入不可卖，卖出量按**可用持仓**封顶
  * - 涨跌停（ETF ±10%，可用参数覆盖）：开盘价 >= 涨停 → 买不进；<= 跌停 → 卖不出
+ *   （`preclose` 缺失时放行该项判定，但记 `PRECLOSE_MISSING` 事件，不改成交结果）
  * - 停牌：缺 bar 或 volume=0（M1 两形态）→ 当日该标的跳过
  * - 顺序：**先卖后买**（卖出释放现金后再买，避免「差一分钱买不进」）
  *
@@ -117,11 +118,31 @@ export interface ExecutionRequest {
   exitReasons?: Readonly<Record<string, string>>;
 }
 
+/**
+ * 成交模拟器的数据缺陷事件（**不改变成交结果**）。
+ *
+ * `preclose` 来自 `v_etf_bfq` 对 `raw_basic_daily` 的 LEFT JOIN，缺行时运行时是 `null`
+ * （类型声明是 `number`，但列存查询不做 null→number 归一）。旧实现用 `preclose > 0`
+ * 作守卫：`null > 0 === false` ⇒ 涨跌停检查被静默跳过。现在仍然放行（成交结果不变），
+ * 但记一条事件，使缺陷在回测结果里可见（次数 / 标的 / 日期）。
+ */
+export type ExecutionWarningCode = 'PRECLOSE_MISSING';
+
+export interface ExecutionWarning {
+  date: string;
+  symbol: string;
+  code: ExecutionWarningCode;
+  /** 原始 preclose；非有限数（null / NaN / Infinity）统一记 null */
+  preclose: number | null;
+}
+
 export interface ExecutionResult {
   fills: Fill[];
   skipped: SkippedOrder[];
   /** 现金变动（= 卖出净额 - 买入总额 - 费用；引擎据此核对恒等式） */
   cashDelta: number;
+  /** 数据缺陷事件（不影响成交；引擎汇总后透出到回测结果） */
+  warnings: ExecutionWarning[];
 }
 
 /** 金额四舍五入到分（佣金最小 5 元，必须落到分） */
@@ -161,18 +182,51 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
   const priceMode = req.priceMode ?? 'open';
   const fills: Fill[] = [];
   const skipped: SkippedOrder[] = [];
+  const warnings: ExecutionWarning[] = [];
+  /** 同一标的同一次调用只记一条 `PRECLOSE_MISSING`（买卖两侧各查一次，避免重复计数） */
+  const warnedPrecloseSymbols = new Set<string>();
   let cash = req.cash;
 
   const targetBySymbol = new Map(req.targets.map((t) => [t.symbol, t]));
 
-  /** 涨跌停判定：用**未含滑点**的开/收盘价与 preclose 比 */
-  const isLimitUp = (bar: ExecutionBar): boolean => {
-    const p = priceMode === 'close' ? bar.close : bar.open;
-    return bar.preclose > 0 && p >= bar.preclose * (1 + rules.priceLimit);
+  /** preclose 是否可用于涨跌停判定；null / NaN / Infinity / <= 0 一律不可用 */
+  const usablePreclose = (bar: ExecutionBar): number | null => {
+    const v = bar.preclose;
+    return Number.isFinite(v) && v > 0 ? v : null;
   };
-  const isLimitDown = (bar: ExecutionBar): boolean => {
+
+  const notePrecloseMissing = (symbol: string, bar: ExecutionBar): void => {
+    if (warnedPrecloseSymbols.has(symbol)) return;
+    warnedPrecloseSymbols.add(symbol);
+    warnings.push({
+      date: req.date,
+      symbol,
+      code: 'PRECLOSE_MISSING',
+      preclose: Number.isFinite(bar.preclose) ? bar.preclose : null,
+    });
+  };
+
+  /**
+   * 涨跌停判定：用**未含滑点**的开/收盘价与 preclose 比。
+   * preclose 不可用时**放行**（与旧实现 `preclose > 0 && ...` 完全一致），但记录事件。
+   */
+  const isLimitUp = (symbol: string, bar: ExecutionBar): boolean => {
     const p = priceMode === 'close' ? bar.close : bar.open;
-    return bar.preclose > 0 && p <= bar.preclose * (1 - rules.priceLimit);
+    const preclose = usablePreclose(bar);
+    if (preclose === null) {
+      notePrecloseMissing(symbol, bar);
+      return false;
+    }
+    return p >= preclose * (1 + rules.priceLimit);
+  };
+  const isLimitDown = (symbol: string, bar: ExecutionBar): boolean => {
+    const p = priceMode === 'close' ? bar.close : bar.open;
+    const preclose = usablePreclose(bar);
+    if (preclose === null) {
+      notePrecloseMissing(symbol, bar);
+      return false;
+    }
+    return p <= preclose * (1 - rules.priceLimit);
   };
 
   /** 卖出可执行性检查（返回 null 表示可卖，否则写 skipped） */
@@ -186,7 +240,7 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
     if (verdict.suspended || !bar) {
       return { ...base, reason: 'suspended', detail: verdict.reason ?? 'missing-bar' };
     }
-    if (isLimitDown(bar)) return { ...base, reason: 'limit-down' };
+    if (isLimitDown(symbol, bar)) return { ...base, reason: 'limit-down' };
     const pos = req.positionOf(symbol);
     if (qtyWanted <= 0 || pos.qty <= 0) return { ...base, reason: 'no-position' };
     if (pos.closeableQty <= 0) return { ...base, reason: 't-plus-1' };
@@ -263,7 +317,7 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
       skipped.push({ ...baseOrder, reason: 'suspended', detail: verdict.reason ?? 'missing-bar' });
       continue;
     }
-    if (isLimitUp(bar)) {
+    if (isLimitUp(t.symbol, bar)) {
       skipped.push({ ...baseOrder, reason: 'limit-up' });
       continue;
     }
@@ -314,7 +368,7 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
     });
   }
 
-  return { fills, skipped, cashDelta: cash - req.cash };
+  return { fills, skipped, cashDelta: cash - req.cash, warnings };
 }
 
 /** 佣金口径（单测直接断言） */

@@ -21,6 +21,7 @@ import {
   DEFAULT_TRADE_RULES,
   executeTargets,
   type ExecutionBar,
+  type ExecutionWarning,
   type Fill,
   type SkippedOrder,
   type TradeRules,
@@ -85,6 +86,8 @@ export interface DecisionRecord {
   targets: TargetSet | null;
   fills: Fill[];
   skipped: SkippedOrder[];
+  /** 当日成交模拟的数据缺陷事件（如 `PRECLOSE_MISSING`；**不影响成交**） */
+  warnings: ExecutionWarning[];
   tags: Record<string, unknown>;
   logs: { level: 'info' | 'warn'; message: string }[];
 }
@@ -112,6 +115,8 @@ export interface BacktestResult {
   metrics: BacktestMetrics;
   decisions: DecisionRecord[];
   skipped: SkippedOrder[];
+  /** 全区间成交模拟的数据缺陷事件（按日期/标的聚合；`length` 即发生次数） */
+  warnings: ExecutionWarning[];
   tradedNotional: number;
 }
 
@@ -361,6 +366,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
   const equity: EquityPoint[] = [];
   const trades: Fill[] = [];
   const skippedAll: SkippedOrder[] = [];
+  const warningsAll: ExecutionWarning[] = [];
   const decisions: DecisionRecord[] = [];
   let tradedNotional = 0;
 
@@ -434,6 +440,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     // ── 3) 成交（T 开盘/收盘价 + 摩擦） ──
     const fills: Fill[] = [];
     const daySkipped: SkippedOrder[] = [];
+    const dayWarnings: ExecutionWarning[] = [];
     if (targets) {
       const execRequest = {
         date: execDate,
@@ -459,6 +466,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       fills.push(...result.fills);
       daySkipped.push(...result.skipped);
       daySkipped.push(...capSkipped);
+      dayWarnings.push(...result.warnings);
 
       for (const fill of fills) {
         portfolio.applyFill(fill);
@@ -529,8 +537,18 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       throw new BacktestInvariantError(`现金为负：${execDate} cash=${cash}（成交模拟器应已拦截）`);
     }
 
-    decisions.push({ execDate, asOf, targets, fills: [...fills], skipped: [...daySkipped], tags, logs });
+    decisions.push({
+      execDate,
+      asOf,
+      targets,
+      fills: [...fills],
+      skipped: [...daySkipped],
+      warnings: [...dayWarnings],
+      tags,
+      logs,
+    });
     skippedAll.push(...daySkipped);
+    warningsAll.push(...dayWarnings);
   }
 
   // 回撤序列补齐
@@ -564,6 +582,7 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
     metrics,
     decisions,
     skipped: skippedAll,
+    warnings: warningsAll,
     tradedNotional,
   };
 }
