@@ -292,4 +292,36 @@ describe('F6 · GET /api/signal?dedupe=1', () => {
     expect(narrowBody.cooldown_bars).toBe(1);
     expect(narrowBody.data).toHaveLength(2);
   });
+
+  it('跨页场景：合并在分页前完成，单条链不会跨页被重复展示（page_size=1）', async () => {
+    // 链 A：周一~周四连续 4 天（历史行，按 3 个工作日兜底窗口自然成链）
+    insertSignal('sh600001', MON);
+    insertSignal('sh600001', TUE);
+    insertSignal('sh600001', WED);
+    insertSignal('sh600001', THU);
+    // 链 B：周五单独一条
+    insertSignal('sh600002', '2026-11-06');
+
+    const page1 = await app.inject({ method: 'GET', url: '/api/signal?page=1&page_size=1&dedupe=1' });
+    const p1 = page1.json() as {
+      data: Array<{ asset_code: string; consecutive_days: number }>;
+      pagination: { total: number; totalPages: number };
+    };
+    // 合并后共 2 条 ⇒ 分页 total/totalPages 按合并后计
+    expect(p1.pagination.total).toBe(2);
+    expect(p1.pagination.totalPages).toBe(2);
+    // 第 1 页 = 最新一条（链 B）
+    expect(p1.data).toHaveLength(1);
+    expect(p1.data[0].asset_code).toBe('sh600002');
+
+    const page2 = await app.inject({ method: 'GET', url: '/api/signal?page=2&page_size=1&dedupe=1' });
+    const p2 = page2.json() as {
+      data: Array<{ asset_code: string; trade_date: string; consecutive_days: number }>;
+    };
+    // 第 2 页拿到链 A 的**完整**连续计数（4），且不会出现第 3 天被当成新链的重复行
+    expect(p2.data).toHaveLength(1);
+    expect(p2.data[0].asset_code).toBe('sh600001');
+    expect(p2.data[0].trade_date).toBe(THU);
+    expect(p2.data[0].consecutive_days).toBe(4);
+  });
 });
