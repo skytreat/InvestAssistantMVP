@@ -78,6 +78,20 @@
       "test": "sh000001 bar 集与「工作日 − raw_holidays」逐日一致",
       "condition": "行情库不可用（`marketDataAvailable()` 为 false：迷你库 Parquet 构建失败或临时目录不可写）",
       "reason": "对账的唯一证据源就是 sh000001 的 bar 集（`raw_kline_daily`）；没有行情库就无法判定黑名单完整性，属于环境型跳过而非掩盖缺陷——有库时该断言是硬性的（差异必 FAIL）。"
+    },
+    {
+      "file": "tests/integration/strategyEffectiveness.test.ts",
+      "suites": ["F4 Step B · 策略有效性接口"],
+      "test": "21 条合成信号：返回 meta 费率口径、样本充足时输出统计，明细带费率",
+      "condition": "行情库不可用（`marketDataAvailable()` 为 false：迷你库 Parquet 构建失败或临时目录不可写）",
+      "reason": "接口需要真实行情 bar 才能算出 T+5 收益；没有行情库时属环境型跳过。日常套件由 setup.ts 强制 `MARKET_DATA_MODE=ci`，正常不会命中。"
+    },
+    {
+      "file": "tests/integration/strategyEffectiveness.test.ts",
+      "suites": ["F4 Step B · 策略有效性接口"],
+      "test": "CSV 导出：BOM + CRLF + 每行费率列",
+      "condition": "同上（行情库不可用）",
+      "reason": "导出内容依赖行情数据装配；无库时无法生成有效的汇总行，属环境型跳过。"
     }
   ]
 }

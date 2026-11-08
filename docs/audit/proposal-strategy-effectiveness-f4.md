@@ -42,9 +42,9 @@
 
 ### 1.2 五条判断（均已取证）
 
-1. **扣费**：回测收益**扣了**——佣金（含最低 5 元）与滑点都已进现金/已实现盈亏（[portfolio.ts:183-222](file:///d:/workspace/InvestAssistantMVP/apps/backend/src/services/backtest/account/portfolio.ts#L183-L222)、[movingWeightedCost.ts:100-170](file:///d:/workspace/InvestAssistantMVP/packages/core/src/movingWeightedCost.ts#L100-L170)）；但 `TradeRules` **没有印花税/过户费字段**（[simulator.ts:23-45](file:///d:/workspace/InvestAssistantMVP/apps/backend/src/services/backtest/execution/simulator.ts#L23-L45)），纸面账户也**显式拒绝**非 0 印花税/过户费（[fees.ts:121-137](file:///d:/workspace/InvestAssistantMVP/apps/backend/src/services/paper/fees.ts#L121-L137)）。⇒ **ETF 口径正确，股票口径不完整**；已拍板扩展 `TradeRules`。
+1. **扣费**：回测收益**扣了**——佣金（含最低 5 元）与滑点都已进现金/已实现盈亏（[portfolio.ts:183-222](file:///d:/workspace/InvestAssistantMVP/apps/backend/src/services/backtest/account/portfolio.ts#L183-L222)、[movingWeightedCost.ts:100-170](file:///d:/workspace/InvestAssistantMVP/packages/core/src/movingWeightedCost.ts#L100-L170)）；修复前 `TradeRules` **没有印花税/过户费字段**，纸面账户也**显式拒绝**非 0 值。⇒ **ETF 口径正确，股票口径不完整**；**F4 Step A 已补齐（2026-11-08，见 §7.1 实施记录）**。
 2. **基准**：库里**同时有指数与 ETF 序列**（hs300/hs905/hs852/hs016/hs001、510300/510500/512760 等），数据能做「每策略配指数」；**但插件契约没有 `benchmark` 字段**（[pluginEngine.ts:218-250](file:///d:/workspace/InvestAssistantMVP/apps/backend/src/services/pluginEngine.ts#L218-L250)）。⇒ 本期**统一默认 `sh510300`**，映射表 P1。
-3. **胜率**：三种口径**实测就不同**——同一回测 514 个回合：按笔 **52.33%**，按金额加权 **49.75%**（差 2.6pp）；按持仓周期分组 **48.95% → 82.35%**（跨度 33pp）。信号侧：同一信号 T+5 绝对 **-0.71%**，基准 **-3.11%**（绝对亏、超额赢）。⇒ **主口径定为「按信号 × 多周期 × 超额胜率」**，绝对胜率并列，按笔作辅助。
+3. **胜率**：三种口径**实测就不同**——同数据同参数的可复现 A/B（400 回合）：按笔 **48.75%**、按成本金额加权 **49.52%**（差 0.77pp）；按持仓周期分桶 **46.02% → 70.00%**（跨度 24pp）。信号侧：同一信号 T+5 绝对 **-0.71%**，基准 **-3.11%**（绝对亏、超额赢）。⇒ **主口径定为「按信号 × 多周期 × 超额胜率」**，绝对胜率并列，按笔作辅助。**（历史快照 514 回合 / 52.33% 已不可复现，见 §3.3 说明，不作依据。）**
 4. **分组下钻**：**行业和市值字段都有**（股票域），不需要退到「强度+标的类型」；但 **ETF 无市值、行业仅 313 条成员记录**，ETF 域归「未分类」。行业表**只有当前快照、无历史版本**（无 `date` 列）→ 历史评估存在轻微前视偏差（接受，见 §6.2 D10）。
 5. **采纳率**：**不存在 `trade_status` 四态列**。实际是 `adopted` + `ignored` 两个布尔 + `linked_trade_id`。两个 PATCH **不互斥**（可同时为 1），无 `ignored_at`。⇒ 「未处理」用 `adopted=0 AND ignored=0` 派生；分母按拍板取「已处理」。
 
@@ -135,16 +135,20 @@
 
 **实测差异（同一批数据，三种口径）**
 
-回测 `bt_run`（五福轮动 ETF，2023-01-03→2025-12-31，514 个已平仓回合）：
+| 口径 | 历史快照（`bt_run 28574a45`，514 回合，**不可复现**） | 可复现 A/B（当前行情库 + 当前代码，400 回合，2026-11-08 复跑） |
+|---|---|---|
+| 按笔（等权） | 52.33% | **48.75%** |
+| 按金额加权（成本口径） | 49.75% | **49.52%**（差 -0.77pp） |
+| 持仓 0–1 天 | 48.95% | **47.47%**（n=198） |
+| 持仓 2–3 天 | 49.29% | **46.02%**（n=113） |
+| 持仓 4–10 天 | 58.47% | **53.16%**（n=79） |
+| 持仓 >10 天 | 82.35% | **70.00%**（n=10，跨度 24pp） |
 
-| 口径 | 实测值 |
-|---|---|
-| 按笔（等权） | **52.33%** |
-| 按金额加权（proceeds） | **49.75%**（差 -2.6pp） |
-| 持仓 0–1 天 | 48.95% |
-| 持仓 2–3 天 | 49.29% |
-| 持仓 4–10 天 | 58.47% |
-| 持仓 >10 天 | 82.35%（跨度 33pp） |
+> ⚠️ **左列是历史快照，不是可复算结果**：存储基线 514 回合 / 52.33%；用**当前行情库 + 改动前代码**重跑同参数只得 **400 回合 / 48.75%**。
+> 差异成因**初步判断为代码漂移**（依据：行情库 `quotes.duckdb` 修改时间 2026-11-06 21:51 **早于**该基线运行时刻 21:59，数据未变；而 11-07 连续合入 3 个回测口径提交 `#106`（preclose 缺失 + 短期风控边界对齐 v5.2）/ `#111`（divisor/topN 移出策略参数、holdingsNum 上限推导）/ `#113`（第二批口径对齐 + 扩窗默认关闭））。
+> 故**一切百分比论证只用右列（可复现 A/B）**；左列仅作「历史快照」记录，不再作为结论依据。
+
+结论仍然成立：**同口径胜负在三种算法下确实不同** —— 右列「按笔 48.75% vs 成本加权 49.52%」相差 0.77pp；周期分桶 46.02%→70.00%（跨度 24pp）⇒ 报胜率必须同时声明算法与分组，否则不可比。
 
 信号侧（现有 3 条，仅作口径演示，**不足以下结论**）：
 
@@ -366,9 +370,24 @@
 ### 7.2 Step B —— 统计接口（主口径：按信号 × 多周期 × 超额）
 
 1. 新增聚合服务（批量 `IN` 取价，禁止逐信号查询）：业务库取信号 → 行情库批量取前复权价/指数价 → 费用 → 基准 → 多周期 → 分组。
-2. `GET /api/strategy/effectiveness`：`from/to/plugin_id/benchmark/horizon/group_by/origin/notional`；返回 `meta`（`sampleSize`、`insufficientSample`、`feeModel`、`benchmark`、状态计数）+ `summary[]` + `groups[]`。
-3. `GET /api/strategy/effectiveness/export`：`level=summary|detail`，BOM+CRLF。
-4. 前端：筛选栏、汇总表、下钻 tab、导出按钮、口径脚注；`insufficientSample` 时**只显示样本数，不显示百分比**。
+2. `GET /api/strategy/effectiveness`：`from/to/plugin_id/benchmark/horizon/group_by/origin/notional`；返回 `meta`（`sampleSize`、`insufficientSample`、**`fees`**、`benchmark`、状态计数）+ `summary[]` + `groups[]`。
+   **`meta.fees` 必须逐项下发实际生效费率**：`commissionRate` / `minCommission` / `stampDutyRate` / `transferFeeRate` / `slippageRate` / `notional`，并附 `feeModelLabel`（如「ETF 口径 0/0」「股票口径 0.001+0.00002」）。理由：真实费率打开后同策略半年 69 回合费用 1,761 → 10,472、收益 51.44% → 40.97%，**是结论级差异**，不标费率则不同结果之间不可比。
+3. `GET /api/strategy/effectiveness/export`：`level=summary|detail`，BOM+CRLF；**CSV 每行都带费率列**（或首部元信息行，二者至少一个），文件名/说明里写明口径标签。
+4. 前端：筛选栏、汇总表、下钻 tab、导出按钮、口径脚注；**页面必须常显「本次结果基于 X 口径（费率 a/b/c/d/e）」**；`insufficientSample` 时**只显示样本数，不显示百分比**。
+
+**实施记录（2026-11-08，Step B 已完成，PR 基于 Step A 分支，未合并）**
+
+| 项 | 落地结果 |
+|---|---|
+| 服务 | `services/strategyEffectiveness.ts`：纯计算（`evaluateSignal` / `summarizeHorizon` / `buildReport`）+ 装载（业务库信号筛选 + 行情库**按品种视图族批量 IN**）+ CSV 生成 |
+| 接口 | `GET /api/strategy/effectiveness`、`GET /api/strategy/effectiveness/export`（`level=summary|detail`），鉴权同 T135；参数非法一律 400 |
+| 费率元信息 | `meta.fees`（五项 + 名义本金）+ `meta.feeModelLabel` + `meta.feeModels[]`；**每行明细/每组汇总均带 `fees` 与 `feeModelLabel`**；CSV 每行同样带费率列 |
+| 样本门槛 | `sampleSize < 20` ⇒ `insufficientSample=true`，接口与 CSV **一并清空**胜率/均值（只留样本数与状态计数）；前端显示「样本不足（N 条）」 |
+| 统计口径 | 入场 = 信号日后首个可成交开盘（停牌/开盘涨停顺延）；出场 = 第 N 个交易日收盘（停牌顺延）；个股/ETF 前复权、指数原始收盘；超额 = `(1+净)/(1+基准)−1` |
+| 费率口径 | ETF 0/0 与股票 `0.001 / 0.00002` 按 `raw_symbol_class` 自动选择；混品种时 `meta.feeModels` 列出各项，明细逐条标注 |
+| 测试 | 单测 `tests/unit/strategy-effectiveness.test.ts` **13 passed**（多周期/停牌/窗未满/涨停/基准 stale/超额/样本门槛/CSV）；集成 `tests/integration/strategyEffectiveness.test.ts` **4 passed**（401/400/21 条合成信号/导出）；`typecheck`（backend + frontend）通过 |
+| 前端 | 策略有效性页新增筛选栏 + 汇总表 + 分组下钻 + 导出按钮 + **常显口径脚注**；样本不足只显示 N |
+| 未做（按约定） | 不改 F1 分级 / 风险过滤 / Top5 / 候选集；不碰 `pluginEngine.ts` / `routes/signal.ts` / `signalService.ts` / `SDD.md`；`plugin→benchmark` 映射仍留 P1 |
 
 ### 7.3 Step C —— 采纳口径与互斥修复
 
@@ -396,7 +415,7 @@
 ### 9.1 约束
 
 - 业务库 **3 条信号**、**1 只持仓标的** ⇒ **不得**把它们当验证样本，更不得把算出的比率写进文档/接口说明/页面文案。
-- 验证载体：**回测数据**（`bt_run/bt_round_trip`，514 回合）或**自造测试数据**（合成信号 + 合成行情）。
+- 验证载体：**回测数据**（当前可复跑的 400 回合 A/B；历史 514 回合快照不可复现，仅存档）或**自造测试数据**（合成信号 + 合成行情）。
 - 页面/接口对 `sampleSize < 20` 一律输出 `insufficientSample=true`，前端只显示「样本不足（N 条）」。
 
 ### 9.2 测试数据方案
@@ -406,7 +425,7 @@
 | 单测（纯函数） | 合成 `TradeRules` + 成交 | 印花税仅卖出、过户费双边、最低佣金双边；ETF 0/0 与旧结果逐位一致 |
 | 单测（纯函数） | 合成价格序列 | T+1/T+5/T+10 收益、除权（qfq）不跳变、停牌顺延、窗未满 `incomplete` |
 | 集成 | 合成 20+ 条信号（多标的、多日、含未处理/已采纳/已忽略/过期） | 采纳率分母=已处理；未处理单列；冲突为 0；`insufficientSample` 阈值 |
-| 集成 | 回测 514 回合 | 「按笔」胜率 52.33%、金额加权 49.75%、周期分桶 48.95/49.29/58.47/82.35（作为回归基线） |
+| 集成 | 可复现回测 A/B（400 回合，同数据同参数） | 「按笔」48.75% vs 成本加权 49.52%；分桶 47.47/46.02/53.16/70.00%（仅作历史存档对比，历史 514 快照不作回归基线） |
 | 回归 | 既有 ETF 回测 | 加字段后 `bt_metric` 各项**逐位不变** |
 
 > CI 行情库是 12KB 空壳：依赖真实行情的用例沿用 `tests/_marketData.ts` 的「探测表存在 → `it.skipIf`」模式；纯函数与合成数据用例必须**不依赖**真实库。
@@ -444,7 +463,8 @@
 | 关联任务 | T135（策略有效性六项） |
 | 现状标记 | 计划标 ✅（#129 拟改为 ⚠️） |
 | 偏差事实 | 现有 `GET /api/strategy/effectiveness` 类端点（`routes/strategy.ts` 的 outcome 计算）**无扣费、无基准、入场价用信号日收盘**，不满足 `INV-S5-2`（扣费）、`INV-S5-4`（基准）、`INV-S5-5`（次日开盘入场） |
-| 量化证据 | 回测侧同口径对比：按笔胜率 52.33%、金额加权 49.75%，差异源于金额加权；信号侧 T+5 绝对 −0.71% vs 基准 −3.11%（绝对亏、超额赢）⇒ 不做基准与扣费会给出**相反结论** |
+| 量化证据 | ① 口径差异（**可复现 A/B**，400 回合）：按笔 **48.75%** vs 按成本金额加权 **49.52%**（差 0.77pp）；持仓周期分桶 **46.02% → 70.00%**（跨度 24pp）。② 扣费差异：同策略 2024-01-02~06-28 同参，ETF 0/0 费用 1,761.49 / 累计 51.44%，股票费率（印花税 0.001 + 过户费 0.00002）费用 **10,472.24** / 累计 **40.97%**（差 10pp 以上）。③ 信号侧 T+5 绝对 −0.71% vs 基准 −3.11%（绝对亏、超额赢）⇒ 不做基准与扣费会给出**相反结论** |
+| **证据来源与可复现性** | ①的**存储基线** `bt_run 28574a45` 为 514 回合 / 按笔 52.33% / 金额加权 49.75%，但**用当前行情库 + 改动前代码重跑同参数只得 400 回合 / 48.75%** ⇒ 该快照**不可复算**，不得作为结论依据。**成因初步判断为代码漂移**（行情库 `quotes.duckdb` 修改时间 2026-11-06 21:51 早于基线运行 21:59，数据未变；11-07 合入 `#106`/`#111`/`#113` 三个回测口径提交）。故本表一律改用**同数据同参数 A/B**举证 |
 | 处置 | 由本方案 Step A（费率字段）/ Step B（多周期 + 超额 + 基准）/ Step C（采纳互斥）补齐；补齐前 T135 不得视为完成 |
 | 验收 | Step A：ETF 0/0 与旧结果逐位一致；Step B：主口径「信号 × 多周期 × 超额」数值与手算一致且 `sampleSize<20` 返回 `insufficientSample`；Step C：采纳/忽略互斥且 `ignored_at` 有值 |
 
@@ -468,8 +488,9 @@
 | ETF 无市值 | `raw_basic_daily` 中 `sh510300` 的 `totalmv=0, floatmv=0` |
 | 指数/ETF 基准可用 | `raw_kline_daily`：hs300 5304、hs905 5304、hs852 5304、hs016 5547、hs001 8758；510300 3510、510500 3314、512760 1797 |
 | 回测扣费且基准=510300 | `bt_run.rules_json`=0.0001/5/0.0001；`benchmark_symbol='sh510300'` |
-| 按笔胜率 52.33% | `bt_metric`（514 回合）；金额加权 49.75%（本篇复算） |
-| 持仓周期胜率跨度 33pp | 基于 `bt_round_trip` 复算：0–1d 48.95% / 2–3d 49.29% / 4–10d 58.47% / >10d 82.35% |
+| 口径差异可复现 | 同数据同参数 A/B（400 回合）：按笔 48.75%（成本加权 49.52%）；分桶 47.47% / 46.02% / 53.16% / 70.00%（n=198/113/79/10） |
+| ~~历史快照~~ | `bt_metric`（`bt_run 28574a45`，514 回合 / 52.33%）——**不可复现**，仅存档：同参重跑为 400 回合 / 48.75% |
+| 费率结论级影响 | 2024H1 同参：ETF 0/0 fees 1,761.49 / 51.44% vs 股票费率 fees 10,472.24 / 40.97% |
 | 纸面费率表不存在 | `data/backtest.db` 仅 `bt_*` 表 |
 | 业务费率表空壳 | `user_fee_config` 仅 DDL+索引；0 行；无读取调用 |
 | CSV 复用写法 | `brokerReconcile.ts:111-142, :240-258`（BOM+CRLF+文件名白名单） |

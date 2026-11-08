@@ -212,6 +212,10 @@ const ROUTE_CASES: RouteCase[] = [
   // F2：按信号查关联成交
   { method: 'GET', url: '/api/signal/:id/linked-trade' },
   { method: 'GET', url: '/api/strategy/signals/:id/outcome' },
+  // F4 Step B：策略有效性统计与导出
+  { method: 'GET', url: '/api/strategy/effectiveness' },
+  // CSV 导出（非 JSON ⇒ 只做可达性 + Content-Type 断言）
+  { method: 'GET', url: '/api/strategy/effectiveness/export', csv: true },
   { method: 'GET', url: '/api/ex-dividend/imports' },
 
   // ── 插件 / 策略 ──

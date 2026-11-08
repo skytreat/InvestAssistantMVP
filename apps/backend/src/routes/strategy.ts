@@ -24,6 +24,17 @@ import {
   type Plugin,
 } from '../services/pluginEngine.js';
 import { writeSystemLog } from '../services/logger.js';
+import {
+  DEFAULT_NOTIONAL,
+  GROUP_BYS,
+  HORIZONS,
+  buildEffectivenessCsv,
+  loadEffectivenessReport,
+  type EvaluateOptions,
+  type ExportLevel,
+  type GroupBy,
+  type Horizon,
+} from '../services/strategyEffectiveness.js';
 import { ok, fail } from '../lib/envelope.js';
 
 /**
@@ -120,6 +131,109 @@ export function reloadPluginsFromDir(dirPath: string = PLUGIN_ALLOWED_PATH): Rel
   return { dir: dirPath, loaded: plugins.length, plugins, errors };
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// F4 Step B —— 策略有效性统计（`/api/strategy/effectiveness` + `/export`）
+//
+// 契约见 `docs/audit/proposal-strategy-effectiveness-f4.md` §7.2：
+//   · 主口径 = 按信号 × 多周期 × 超额；绝对胜率并列
+//   · 每条结果 / 每组汇总都带实际生效费率（否则结果之间不可比）
+//   · sampleSize < 20 ⇒ insufficientSample = true，对外不输出百分比
+// ────────────────────────────────────────────────────────────────────────
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const BENCHMARK_RE = /^[a-z]{2}\d{6}$/;
+
+function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** 本地日期（避免 UTC 偏移把「今天」算成昨天） */
+function todayLocal(): string {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+interface ParsedEffectivenessQuery {
+  options: EvaluateOptions;
+  benchmark: string;
+  pluginId?: string;
+  origin?: string;
+  level: ExportLevel;
+}
+
+type ParseResult =
+  { ok: true; value: ParsedEffectivenessQuery } | { ok: false; code: string; message: string };
+
+/**
+ * 解析 + 校验查询参数（路由层）
+ *
+ * 非法参数一律 400，不把「静默降级」当成容错 —— 否则用户拿到的口径与预期不一致。
+ */
+function parseEffectivenessQuery(raw: Record<string, unknown>): ParseResult {
+  const to = typeof raw.to === 'string' && raw.to ? raw.to : todayLocal();
+  const from = typeof raw.from === 'string' && raw.from ? raw.from : addDays(to, -90);
+  if (!DATE_RE.test(to) || !DATE_RE.test(from)) {
+    return { ok: false, code: 'INVALID_DATE', message: 'from/to 必须为 YYYY-MM-DD' };
+  }
+  if (from > to) {
+    return { ok: false, code: 'INVALID_RANGE', message: 'from 不能晚于 to' };
+  }
+
+  const horizonRaw = typeof raw.horizon === 'string' && raw.horizon ? raw.horizon.split(',') : HORIZONS;
+  const horizons: Horizon[] = [];
+  for (const h of horizonRaw) {
+    const trimmed = h.trim();
+    if (!HORIZONS.includes(trimmed as Horizon)) {
+      return { ok: false, code: 'INVALID_HORIZON', message: `horizon 只支持 ${HORIZONS.join('/')}` };
+    }
+    if (!horizons.includes(trimmed as Horizon)) horizons.push(trimmed as Horizon);
+  }
+
+  const groupByRaw = typeof raw.group_by === 'string' && raw.group_by ? raw.group_by : 'plugin';
+  if (!GROUP_BYS.includes(groupByRaw as GroupBy)) {
+    return { ok: false, code: 'INVALID_GROUP_BY', message: `group_by 只支持 ${GROUP_BYS.join('/')}` };
+  }
+
+  const notionalRaw =
+    typeof raw.notional === 'string' && raw.notional ? Number(raw.notional) : DEFAULT_NOTIONAL;
+  if (!Number.isFinite(notionalRaw) || notionalRaw < 1_000 || notionalRaw > 100_000_000) {
+    return { ok: false, code: 'INVALID_NOTIONAL', message: 'notional 必须在 1000 ~ 100000000 之间' };
+  }
+
+  const benchmark = typeof raw.benchmark === 'string' && raw.benchmark ? raw.benchmark : 'sh510300';
+  if (!BENCHMARK_RE.test(benchmark)) {
+    return { ok: false, code: 'INVALID_BENCHMARK', message: 'benchmark 格式非法' };
+  }
+
+  const levelRaw = typeof raw.level === 'string' && raw.level ? raw.level : 'detail';
+  if (levelRaw !== 'summary' && levelRaw !== 'detail') {
+    return { ok: false, code: 'INVALID_LEVEL', message: 'level 只支持 summary/detail' };
+  }
+
+  const pluginId = typeof raw.plugin_id === 'string' && raw.plugin_id ? raw.plugin_id : undefined;
+  const origin = typeof raw.origin === 'string' && raw.origin ? raw.origin : undefined;
+
+  return {
+    ok: true,
+    value: {
+      options: {
+        from,
+        to,
+        horizons,
+        groupBy: groupByRaw as GroupBy,
+        notional: notionalRaw,
+        priceLimit: 0.1,
+      },
+      benchmark,
+      pluginId,
+      origin,
+      level: levelRaw,
+    },
+  };
+}
+
 /**
  * POST /api/strategy/reload（+ 别名 /api/strategy/plugins/reload）
  *
@@ -207,5 +321,71 @@ export async function registerStrategyRoutes(app: FastifyInstance) {
         t10: outcome(10),
       }),
     );
+  });
+
+  // ── F4 Step B：有效性统计（只读；不改 F1 分级 / 风险过滤 / 候选集）────────
+  app.get('/api/strategy/effectiveness', async (request, reply) => {
+    const user = currentUser(request);
+    if (!user) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+
+    const parsed = parseEffectivenessQuery(request.query as Record<string, unknown>);
+    if (!parsed.ok) return reply.code(400).send(fail(400, parsed.code, parsed.message));
+
+    try {
+      const report = await loadEffectivenessReport(user.sub, {
+        ...parsed.value.options,
+        pluginId: parsed.value.pluginId,
+        origin: parsed.value.origin,
+        benchmark: parsed.value.benchmark,
+      });
+      return reply.send(ok(report));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeSystemLog({
+        logType: 'plugin_execute',
+        level: 'ERROR',
+        message: `策略有效性统计失败: ${msg}`,
+      });
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', '策略有效性统计失败'));
+    }
+  });
+
+  /**
+   * CSV 导出（默认 detail）
+   *
+   * 约定抄 I8（`brokerReconcile.ts`）：UTF-8 BOM + CRLF、文件名白名单 + 日期戳。
+   * **每行都带费率列**，报告正文（每行 `fee_model_label`）即口径标识。
+   */
+  app.get('/api/strategy/effectiveness/export', async (request, reply) => {
+    const user = currentUser(request);
+    if (!user) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+
+    const parsed = parseEffectivenessQuery(request.query as Record<string, unknown>);
+    if (!parsed.ok) return reply.code(400).send(fail(400, parsed.code, parsed.message));
+
+    try {
+      const report = await loadEffectivenessReport(user.sub, {
+        ...parsed.value.options,
+        pluginId: parsed.value.pluginId,
+        origin: parsed.value.origin,
+        benchmark: parsed.value.benchmark,
+      });
+      const csv = buildEffectivenessCsv(report, parsed.value.level);
+      return reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header(
+          'Content-Disposition',
+          `attachment; filename="strategy-effectiveness-${parsed.value.options.from}-${parsed.value.options.to}-${parsed.value.level}.csv"`,
+        )
+        .send(csv);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeSystemLog({
+        logType: 'plugin_execute',
+        level: 'ERROR',
+        message: `策略有效性导出失败: ${msg}`,
+      });
+      return reply.code(500).send(fail(500, 'INTERNAL_ERROR', '策略有效性导出失败'));
+    }
   });
 }
