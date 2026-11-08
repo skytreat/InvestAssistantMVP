@@ -386,10 +386,7 @@ export interface PatternIndicatorResult {
 export const PATTERN_INDICATOR_NAME = 'APP_PATTERN';
 
 /** 从 K 线数组里取形态（**字段搬运**，形态由后端算好、`buildChartBars` 映射到桶） */
-export function calcPatterns(
-  dataList: KLineData[],
-  bars: readonly ChartBar[],
-): PatternIndicatorResult[] {
+export function calcPatterns(dataList: KLineData[], bars: readonly ChartBar[]): PatternIndicatorResult[] {
   return dataList.map((bar, i) => ({
     patterns: bars[i]?.patterns ?? (bar as unknown as ChartBar).patterns ?? [],
   }));
@@ -405,9 +402,7 @@ export function calcPatterns(
  *    形态请求晚于 K 线请求返回，图表内部数据列表不会因此刷新
  *    （`resetData` 只由数据指纹触发）⇒ 读 dataList 会一直画「还没有形态」的旧快照。
  */
-export function createPatternIndicator(
-  getBars?: BarsProvider,
-): IndicatorTemplate<PatternIndicatorResult> {
+export function createPatternIndicator(getBars?: BarsProvider): IndicatorTemplate<PatternIndicatorResult> {
   return {
     name: PATTERN_INDICATOR_NAME,
     shortName: 'PATTERN',
