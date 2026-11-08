@@ -256,6 +256,29 @@ describe('重放与删除', () => {
     expect(ids).not.toContain('8');
   });
 
+  it('被跳过的标注有可见提示（role=status），下次全部适用后提示消失', async () => {
+    const view = await renderReady({ overlays: [valid, timestampMismatch] });
+
+    const hint = screen.getByTestId('kline-overlay-skip-hint');
+    expect(hint).toHaveAttribute('role', 'status');
+    expect(hint.textContent).toBe('当前周期有 1 条标注不适用已隐藏');
+
+    // 下一次成功重放（只剩全部适用的标注）⇒ 提示自然清空，不堆积
+    view.rerender(
+      <KlineChart
+        symbol="sh600000"
+        period="day"
+        bars={BARS}
+        dataSignature="sig-1"
+        params={DEFAULT_INDICATOR_PARAMS}
+        showMa
+        subIndicator="macd"
+        overlays={[valid]}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByTestId('kline-overlay-skip-hint')).toBeNull());
+  });
+
   it('点选已持久化标注后可删除（id 映射回记录 id）', async () => {
     const onDeleteOverlay = vi.fn(async () => ({ ok: true }));
     await renderReady({ overlays: [valid], onDeleteOverlay });
