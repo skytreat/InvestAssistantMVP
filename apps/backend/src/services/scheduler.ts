@@ -550,11 +550,19 @@ export function registerCronJobs(app: FastifyInstance): void {
               const result = await runFullBackup();
               // 行情库开关关闭时 duckdb.success=true 且 skipped=true —— 这是配置生效，不是失败。
               const duckdbState = result.duckdb.skipped ? 'SKIP' : result.duckdb.success ? 'OK' : 'FAIL';
-              const anyError = !result.sqlite.success || (!result.duckdb.skipped && !result.duckdb.success);
+              const backtestState = result.backtest.skipped
+                ? 'SKIP'
+                : result.backtest.success
+                  ? 'OK'
+                  : 'FAIL';
+              const anyError =
+                !result.sqlite.success ||
+                (!result.backtest.skipped && !result.backtest.success) ||
+                (!result.duckdb.skipped && !result.duckdb.success);
               writeSystemLog({
                 logType: 'backup',
                 level: anyError ? 'ERROR' : 'SUCCESS',
-                message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} duckdb=${duckdbState} cleaned=${result.cleanedFiles}`,
+                message: `备份完成: sqlite=${result.sqlite.success ? 'OK' : 'FAIL'} backtest=${backtestState} duckdb=${duckdbState} cleaned=${result.cleanedFiles}`,
                 detail: JSON.stringify(result),
               });
             } catch (err: any) {

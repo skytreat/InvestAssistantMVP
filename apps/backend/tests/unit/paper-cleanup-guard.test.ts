@@ -89,6 +89,39 @@ describe('cleanup-backtest-data 守卫', () => {
     after.close();
   });
 
+  it('A16：预置 paper_equity 后跑清理 → abort 且纸面行原样保留（守卫优先于「只删 bt_*」）', () => {
+    const { root, dbPath } = makeRoot();
+    const db = new Database(dbPath);
+    createPaperSchema(db);
+    const accountId = Number(
+      db
+        .prepare(
+          `INSERT INTO paper_account (
+             user_id, strategy_id, strategy_version, strategy_name, name,
+             params_json, rules_json, fee_snapshot_json, initial_cash, cash
+           ) VALUES (1, 's', 'v', 'n', 'a', '{}', '{}', '{}', 100, 100)`,
+        )
+        .run().lastInsertRowid,
+    );
+    db.prepare(
+      `INSERT INTO paper_equity (account_id, trade_date, equity, cash) VALUES (?, '2026-11-06', 100, 100)`,
+    ).run(accountId);
+    // 同时放一张 bt_ 表，证明即便有可清理目标，守卫也先 abort（不会误删一半）
+    db.exec(`CREATE TABLE bt_run (id INTEGER PRIMARY KEY); INSERT INTO bt_run (id) VALUES (1);`);
+    db.close();
+
+    const res = run(root);
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain('ABORT');
+
+    const after = new Database(dbPath, { readonly: true });
+    expect((after.prepare(`SELECT COUNT(*) AS n FROM paper_equity`).get() as { n: number }).n).toBe(1);
+    expect((after.prepare(`SELECT COUNT(*) AS n FROM paper_account`).get() as { n: number }).n).toBe(1);
+    // bt_* 同样未被删（abort 发生在任何写操作之前）
+    expect((after.prepare(`SELECT COUNT(*) AS n FROM bt_run`).get() as { n: number }).n).toBe(1);
+    after.close();
+  });
+
   it('库文件不存在时安全退出（不创建空库）', () => {
     const { root, dbPath } = makeRoot();
     const res = run(root);

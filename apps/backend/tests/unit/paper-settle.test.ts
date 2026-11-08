@@ -19,6 +19,9 @@ import {
 } from '../../src/services/paper/settle.js';
 import { withBusyRetry } from '../../src/services/paper/retry.js';
 
+// A14：改费用配置的端到端断言需要直接操作费用配置表
+import { createFeeConfig, updateFeeConfig } from '../../src/services/paper/fees.js';
+
 const DAYS = ['2026-11-05', '2026-11-06', '2026-11-09', '2026-11-10'];
 const LEDGER_START = '2026-11-09';
 
@@ -358,5 +361,81 @@ describe('结算落账', () => {
       .get(id) as any;
     expect(pos.qty).toBe(249_900);
     expect(account.cash).toBeLessThan(1_000_000);
+  });
+
+  /**
+   * A14 端到端（S4 Gate）：**改费用配置 → 重跑结算 → 结果不变**
+   *
+   * 建户冻结 0.0001 / 最低 5 的快照；落账后把该配置改成 0.003 / 最低 100。
+   * 若结算读活配置，佣金 = max(100, 999699.96×0.003=2999.10) = 2999.10；
+   * 正确实现只读快照 ⇒ 佣金 99.97、现金与净值逐位不变。
+   * 再回灌水位重跑同一交易日，净值行必须与首跑完全一致（不重复、不漂移）。
+   */
+  it('A14 改费用配置后结算与重跑净值不变（只读建户快照）', async () => {
+    const fee = createFeeConfig(db, 1, { name: 'A14 费率', commissionRate: 0.0001, minCommission: 5 });
+    const account = createPaperAccount(db, businessDb, {
+      userId: 1,
+      strategyId: 'ref-buy-and-hold',
+      strategyVersion: '0.1.0',
+      initialCash: 1_000_000,
+      params: { symbol: 'sh510300', weight: 1, rebalance: false },
+      feeConfigId: fee.id,
+    });
+    await changePaperPhase(db, 1, account.id, {
+      to: 'ledger',
+      confirm: true,
+      today: '2026-11-06',
+      loadHolidays: async () => [],
+    });
+
+    // 落账后改配置（此时账户已有冻结快照）
+    const updated = updateFeeConfig(db, 1, fee.id, { commissionRate: 0.003, minCommission: 100 });
+    expect(updated.commissionRate).toBe(0.003);
+
+    const data = makeData();
+    await decideAt(account.id, data, '2026-11-06');
+    const outcomes = await settleAccountPending(db, account.id, makeDeps(data, LEDGER_START));
+    expect(outcomes[0]).toMatchObject({ status: 'done', filled: 1 });
+
+    const order = db
+      .prepare(`SELECT * FROM paper_order WHERE account_id = ? AND status = 'filled'`)
+      .get(account.id) as any;
+    expect(order.filled_notional).toBeCloseTo(999_699.96, 2);
+    // 快照口径：99.969996 → 99.97；活配置口径会是 2999.10（本断言就是 Gate 证据）
+    expect(order.fee).toBeCloseTo(99.97, 2);
+
+    const acc = db.prepare('SELECT * FROM paper_account WHERE id = ?').get(account.id) as any;
+    expect((JSON.parse(acc.fee_snapshot_json) as { commissionRate: number }).commissionRate).toBe(0.0001);
+    expect(acc.cash).toBeCloseTo(1_000_000 - 999_699.96 - 99.97, 1);
+
+    const equityBefore = db
+      .prepare(
+        'SELECT trade_date, equity, cash, risk_mv, cash_mv, exposure FROM paper_equity WHERE account_id = ? ORDER BY trade_date',
+      )
+      .all(account.id);
+
+    // 重跑：水位回灌到落账起点、删掉当日净值点（模拟「补算/重跑」）
+    db.prepare('UPDATE paper_account SET last_settled_date = NULL WHERE id = ?').run(account.id);
+    db.prepare('DELETE FROM paper_equity WHERE account_id = ? AND trade_date = ?').run(
+      account.id,
+      LEDGER_START,
+    );
+    const rerun = await settleAccountPending(db, account.id, makeDeps(data, LEDGER_START));
+    expect(rerun[0]).toMatchObject({ status: 'done' });
+
+    const equityAfter = db
+      .prepare(
+        'SELECT trade_date, equity, cash, risk_mv, cash_mv, exposure FROM paper_equity WHERE account_id = ? ORDER BY trade_date',
+      )
+      .all(account.id);
+    expect(equityAfter).toEqual(equityBefore);
+
+    const accAfter = db
+      .prepare('SELECT cash, last_settled_date FROM paper_account WHERE id = ?')
+      .get(account.id) as any;
+    expect(accAfter.cash).toBeCloseTo(acc.cash, 6);
+    expect(accAfter.last_settled_date).toBe(LEDGER_START);
+    // 未产生重复订单（重跑不追加 pending）
+    expect(count('paper_order')).toBe(1);
   });
 });
