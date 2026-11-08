@@ -254,6 +254,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         trade_reason?: string;
         remark?: string;
         system_followed?: number; // T39: 由信号触发的导入（cron 自动导入）
+        signal_id?: number | null; // F2：可选关联信号（写入信号表的 linked_trade_id）
       };
       const user = (request as any).user as { sub: number; username: string; role: string };
       if (
@@ -325,25 +326,78 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         }
       }
 
-      const info = db
-        .prepare(
-          `INSERT INTO user_trade_record
+      /**
+       * F2 —— 可选关联信号（**只做手动交易这条链路**）
+       *
+       * 关联方向：`user_strategy_signal.linked_trade_id → user_trade_record.id`
+       * （字段在信号表上，写入的是**本次新建成交**的 id）。
+       *
+       * 校验前置、插入与回填同事务：
+       *   - `signal_id` 缺省 / null ⇒ 照常录入，**不因缺关联而拒绝**
+       *   - 信号必须属于当前用户、未软删、标的与本次成交一致
+       *   - 信号已指向**另一条**成交 ⇒ 409 `SIGNAL_ALREADY_LINKED`（先解绑再录入）
+       */
+      const signalId = body.signal_id == null ? null : Number(body.signal_id);
+      if (signalId != null && (!Number.isInteger(signalId) || signalId <= 0)) {
+        return reply.code(400).send(fail(400, 'INVALID_BODY', 'signal_id 非法'));
+      }
+      if (signalId != null) {
+        const sig = db
+          .prepare(
+            `SELECT id, asset_code, linked_trade_id FROM user_strategy_signal
+             WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+          )
+          .get(signalId, user.sub) as
+          { id: number; asset_code: string; linked_trade_id: number | null } | undefined;
+        if (!sig) {
+          return reply.code(404).send(fail(404, 'SIGNAL_NOT_FOUND', `关联的信号不存在：${signalId}`));
+        }
+        if (sig.asset_code !== assetCode) {
+          return reply.code(400).send(fail(400, 'ASSET_MISMATCH', '信号与交易标的不一致，无法关联'));
+        }
+        if (sig.linked_trade_id != null) {
+          return reply
+            .code(409)
+            .send(
+              fail(
+                409,
+                'SIGNAL_ALREADY_LINKED',
+                `该信号已关联成交 #${sig.linked_trade_id}，请先在信号列表解绑后再录入`,
+              ),
+            );
+        }
+      }
+
+      // 插入成交 + 回填信号关联放在同一事务：避免「成交落库但关联丢失」
+      const insertTrade = db.transaction(() => {
+        const inserted = db
+          .prepare(
+            `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, remark, system_followed)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          user.sub,
-          assetCode,
-          tradeType,
-          body.trade_date,
-          body.trade_time,
-          body.quantity,
-          body.price,
-          body.fee ?? 0,
-          tradeReason,
-          body.remark ?? null,
-          body.system_followed ?? null,
-        );
+          )
+          .run(
+            user.sub,
+            assetCode,
+            tradeType,
+            body.trade_date,
+            body.trade_time,
+            body.quantity,
+            body.price,
+            body.fee ?? 0,
+            tradeReason,
+            body.remark ?? null,
+            body.system_followed ?? null,
+          );
+        if (signalId != null) {
+          db.prepare(
+            `UPDATE user_strategy_signal SET linked_trade_id = ?
+             WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+          ).run(inserted.lastInsertRowid, signalId, user.sub);
+        }
+        return inserted.lastInsertRowid;
+      });
+      const tradeId = insertTrade();
 
       writeSystemLog({
         logType: 'trade',
@@ -356,7 +410,9 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 
       reply.code(201).send(
         ok({
-          trade_id: info.lastInsertRowid,
+          trade_id: tradeId,
+          // F2：本次关联的信号 id（未关联为 null，供前端提示「已回填关联」）
+          linked_signal_id: signalId,
           position: calcPosition(user.sub, assetCode),
           hold_rel: holdRel,
         }),

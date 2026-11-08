@@ -160,6 +160,13 @@ export default function TradeInput() {
   const [price, setPrice] = useState<string>('');
   const [fee, setFee] = useState<string>('0');
   const [tradeReason, setTradeReason] = useState<string>('');
+  /**
+   * F2：可选关联信号 id（`/trade?signal_id=123` 可预填，便于从信号页跳转录入）
+   *
+   * 留空 = 不关联（后端允许为空，不因缺字段拒绝录入）。
+   */
+  const querySignalId = searchParams.get('signal_id') ?? '';
+  const [signalId, setSignalId] = useState<string>(/^\d+$/.test(querySignalId) ? querySignalId : '');
   /** 数量是否被用户手动改过（清仓自动填数量时用它判断要不要覆盖）*/
   const [quantityTouched, setQuantityTouched] = useState(false);
 
@@ -296,8 +303,17 @@ export default function TradeInput() {
   const priceValid = Number.isFinite(parsedPrice) && parsedPrice >= 0;
   const dateValid = DATE_RE.test(tradeDate);
   const timeValid = TIME_RE.test(tradeTime);
+  /** F2：关联信号 id 可选；填了就必须是正整数 */
+  const signalIdValid = signalId.trim() === '' || /^\d+$/.test(signalId.trim());
   const formValid =
-    quantityValid && priceValid && reasonValid && dateValid && timeValid && !oversold && !duplicateHit;
+    quantityValid &&
+    priceValid &&
+    reasonValid &&
+    dateValid &&
+    timeValid &&
+    signalIdValid &&
+    !oversold &&
+    !duplicateHit;
 
   /* ── 交易类型切换（字段联动） ── */
   const handleTypeChange = (next: TradeType) => {
@@ -338,6 +354,8 @@ export default function TradeInput() {
       price: Number(price),
       fee: Number(fee) || 0,
       trade_reason: tradeReason.trim(),
+      // F2：可选关联信号 —— 留空则不带该字段（后端允许为空）
+      ...(signalId.trim() !== '' ? { signal_id: Number(signalId.trim()) } : {}),
     };
 
     setLoading(true);
@@ -507,6 +525,40 @@ export default function TradeInput() {
               value={fee}
               onChange={(e) => setFee(e.target.value)}
             />
+          </div>
+
+          {/* F2：可选关联信号（留空 = 不关联；录入成功后回填信号的 linked_trade_id） */}
+          <div style={rowStyle} data-testid="trade-form-row">
+            <label htmlFor="trade-input-signal" style={rowLabelStyle}>
+              关联信号
+            </label>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <input
+                id="trade-input-signal"
+                style={{
+                  ...controlStyle,
+                  ...(signalIdValid ? {} : { border: `1px solid ${COLORS.danger}` }),
+                }}
+                type="number"
+                min={1}
+                placeholder="可选：信号 id（留空则不关联）"
+                value={signalId}
+                aria-invalid={!signalIdValid}
+                aria-describedby="trade-signal-hint"
+                onChange={(e) => setSignalId(e.target.value)}
+              />
+              <div
+                id="trade-signal-hint"
+                data-testid="trade-signal-hint"
+                style={{
+                  fontSize: TYPO.captionSize,
+                  marginTop: SPACING.gapTight,
+                  color: signalIdValid ? COLORS.textSecondary : COLORS.danger,
+                }}
+              >
+                {signalIdValid ? '关联后可在信号列表看到「已成交」' : '信号 id 必须是正整数'}
+              </div>
+            </div>
           </div>
 
           {/* ④ 实时预估面板 */}
