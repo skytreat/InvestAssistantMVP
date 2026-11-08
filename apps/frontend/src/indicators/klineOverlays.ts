@@ -153,6 +153,44 @@ export function filterReplayableOverlays(
   });
 }
 
+/**
+ * 把「服务端返回的列表」与「本地当前列表」按 `id` 合并。
+ *
+ * 为什么需要合并：加载请求是异步的，用户可能在请求飞行途中新增或删除标注。
+ * 直接用 `setOverlays(rows)` 会**覆盖本地意图**（新增的消失、删除的被刷回来）。
+ * 合并规则：
+ * - 同一 `id` 以**服务端为准**（后端权威）；
+ * - 本次加载窗口内新增、但服务端返回里还没有的 ⇒ **保留**；
+ * - 本地已删除的 `id` ⇒ **排除**（即使返回里仍带着它）；
+ * - 只保留 `symbol + period` 与当前页一致的本地项（切换标的 / 周期时不能串数据）。
+ */
+export function mergeOverlaysFromServer(
+  serverRows: readonly StoredOverlay[],
+  localRows: readonly StoredOverlay[],
+  options: { symbol: string; period: string; deletedIds?: ReadonlySet<number> },
+): StoredOverlay[] {
+  const deletedIds = options.deletedIds ?? new Set<number>();
+  const merged: StoredOverlay[] = [];
+  const seen = new Set<string>();
+
+  for (const row of serverRows) {
+    const key = String(row.id);
+    if (deletedIds.has(Number(row.id)) || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+
+  for (const row of localRows) {
+    if (row.symbol !== options.symbol || row.period !== options.period) continue;
+    const key = String(row.id);
+    if (deletedIds.has(Number(row.id)) || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+
+  return merged;
+}
+
 /** 把图表 overlay 的 points 转成持久化点位；缺失 timestamp / value 的点位返回 null */
 export function overlayPointsFromChart(overlay: {
   points?: ReadonlyArray<{ timestamp?: number; value?: number }>;

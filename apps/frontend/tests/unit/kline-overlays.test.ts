@@ -1,7 +1,8 @@
 /**
  * kline-overlays.test.ts — 纯逻辑单测（不渲染、不联网）
  *
- * 覆盖：5 个工具清单 / 落点校验 / 重放过滤 / createOverlay 参数构造（含斐波那契）。
+ * 覆盖：5 个工具清单 / 落点校验 / 重放过滤 / createOverlay 参数构造（含斐波那契）/
+ *      加载返回与本地状态按 id 合并（并发竞态）。
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -10,6 +11,7 @@ import {
   buildOverlayCreate,
   collectBarTimestamps,
   filterReplayableOverlays,
+  mergeOverlaysFromServer,
   overlayPointsFromChart,
   validateOverlayDraft,
   type OverlayDraft,
@@ -214,5 +216,50 @@ describe('buildOverlayCreate', () => {
     expect(typeof create.extendData).toBe('string');
     expect(create.extendData).toBe('');
     expect(DEFAULT_ANNOTATION_TEXT).toBe('标注');
+  });
+});
+
+/**
+ * 并发竞态（PR review）：加载请求飞行途中新增 / 删除，返回后必须保持本地意图
+ */
+describe('mergeOverlaysFromServer', () => {
+  function stored(id: number, value = 10): StoredOverlay {
+    return {
+      id,
+      symbol: 'sh600000',
+      period: 'day',
+      name: 'horizontalStraightLine',
+      points: [{ timestamp: TS_A, value }],
+      text: null,
+    };
+  }
+
+  it('加载进行中新增：返回快照不含它 ⇒ 保留；同 id 以服务端为准', () => {
+    const merged = mergeOverlaysFromServer([stored(1)], [stored(1, 99), stored(5, 11)], {
+      symbol: 'sh600000',
+      period: 'day',
+    });
+    // id=1 由服务端覆盖（value 回到 10），id=5 是本地新增且返回里没有 ⇒ 保留
+    expect(merged.map((item) => item.id)).toEqual([1, 5]);
+    expect(merged[0].points[0].value).toBe(10);
+    expect(merged[1].points[0].value).toBe(11);
+  });
+
+  it('加载进行中删除：返回快照仍带着已删 id ⇒ 排除', () => {
+    const merged = mergeOverlaysFromServer([stored(1), stored(2)], [stored(2)], {
+      symbol: 'sh600000',
+      period: 'day',
+      deletedIds: new Set([2]),
+    });
+    expect(merged.map((item) => item.id)).toEqual([1]);
+  });
+
+  it('切换标的 / 周期后不残留旧本地项', () => {
+    const oldSymbol = { ...stored(9), symbol: 'sz000001' };
+    const merged = mergeOverlaysFromServer([stored(3)], [oldSymbol], {
+      symbol: 'sh600000',
+      period: 'day',
+    });
+    expect(merged.map((item) => item.id)).toEqual([3]);
   });
 });

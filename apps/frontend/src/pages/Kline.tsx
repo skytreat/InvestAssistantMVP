@@ -31,7 +31,12 @@ import {
   TRADE_SELL_COLOR,
   TRADE_MIXED_COLOR,
 } from '../indicators/chartIndicators';
-import type { OverlayDraft, OverlaySaveResult, StoredOverlay } from '../indicators/klineOverlays';
+import {
+  mergeOverlaysFromServer,
+  type OverlayDraft,
+  type OverlaySaveResult,
+  type StoredOverlay,
+} from '../indicators/klineOverlays';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -190,6 +195,14 @@ export default function Kline() {
   const [overlays, setOverlays] = useState<StoredOverlay[]>([]);
   /** 手工画线加载失败的提示（不影响 K 线本身）*/
   const [overlayError, setOverlayError] = useState<string | null>(null);
+  /**
+   * 本次加载窗口内已删除的标注 id
+   *
+   * 加载请求是异步的：用户可能在请求飞行途中删掉一条，服务端返回的旧快照仍带着它。
+   * 用这个集合在应用返回结果时排除，避免「删掉的被刷回来」。
+   * 每轮加载开始时清空 —— 服务端已软删除，新一轮快照不会再包含它。
+   */
+  const deletedOverlayIdsRef = useRef<Set<number>>(new Set());
   /** 取数次数（每次成功加载 +1）—— 参与数据指纹，保证新数据一定重新灌进图表 */
   const [loadSeq, setLoadSeq] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -345,6 +358,8 @@ export default function Kline() {
    */
   useEffect(() => {
     let cancelled = false;
+    // 新一轮加载 ⇒ 之前的删除已被服务端软删除，旧集合不再需要
+    deletedOverlayIdsRef.current = new Set<number>();
     if (fq !== 'bfq') {
       setOverlays([]);
       setOverlayError(null);
@@ -361,7 +376,15 @@ export default function Kline() {
         if (cancelled) return;
         const rows =
           isOkEnvelope(res.data) && Array.isArray(res.data.data) ? (res.data.data as StoredOverlay[]) : [];
-        setOverlays(rows);
+        // 🔴 按 id 合并，不用整体覆盖：请求飞行途中用户可能新增 / 删除，
+        //    直接覆盖会让新增消失、删除被刷回来（见 PR review 的并发竞态）。
+        setOverlays((prev) =>
+          mergeOverlaysFromServer(rows, prev, {
+            symbol,
+            period,
+            deletedIds: deletedOverlayIdsRef.current,
+          }),
+        );
         setOverlayError(null);
       } catch (e) {
         if (cancelled) return;
@@ -434,6 +457,8 @@ export default function Kline() {
         return { ok: false, message: res.data?.message ?? '删除画线失败' };
       }
       setOverlays((prev) => prev.filter((item) => Number(item.id) !== id));
+      // 记入本轮的删除集合：加载快照若还带着它，应用返回结果时会被排除
+      deletedOverlayIdsRef.current.add(id);
       return { ok: true };
     } catch (e) {
       return { ok: false, message: extractErrorMessageOrErrorMessage(e) };
