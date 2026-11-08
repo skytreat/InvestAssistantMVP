@@ -144,11 +144,10 @@ describe('PA-06 组合执行器', () => {
       symbols: ['sh600000'],
       plugins: [PLUGIN_A, PLUGIN_B],
       runCondition: async (plugin) =>
-        plugin.id === 'a_plugin'
-          ? exec('a_plugin', 'BUY', 0.8)
-          : exec('b_plugin', 'SELL', 0.8),
+        plugin.id === 'a_plugin' ? exec('a_plugin', 'BUY', 0.8) : exec('b_plugin', 'SELL', 0.8),
     });
 
+    expect(outcome.results[0].pluginId).toBe(comboPluginId(combo.id));
     expect(outcome.signals).toHaveLength(0);
     expect(outcome.results[0].status).toBe('SKIP');
     expect(outcome.results[0].skipReason).toBe('NO_SIGNAL');

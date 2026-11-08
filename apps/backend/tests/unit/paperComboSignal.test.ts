@@ -112,7 +112,13 @@ describe('PA-09 DB 信号源', () => {
     seedSignal({ symbol: 'sh600036', tradeDate: '2026-11-06', direction: 'sell', strength: 0.5 });
     // 最新日但被过滤的
     seedSignal({ symbol: 'sh601318', tradeDate: '2026-11-06', direction: 'buy', strength: null });
-    seedSignal({ symbol: 'sh601988', tradeDate: '2026-11-06', direction: 'buy', strength: 0.6, isDeleted: 1 });
+    seedSignal({
+      symbol: 'sh601988',
+      tradeDate: '2026-11-06',
+      direction: 'buy',
+      strength: 0.6,
+      isDeleted: 1,
+    });
     seedSignal({
       symbol: 'sh600030',
       tradeDate: '2026-11-06',

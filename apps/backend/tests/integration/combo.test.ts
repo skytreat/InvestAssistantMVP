@@ -61,7 +61,12 @@ describe('PA-07 组合策略 CRUD', () => {
     expect(body.data.configVersion).toBe(1);
     expect(body.data.conditions).toHaveLength(2);
     // 落库参数是「校验后的完整参数」（含默认值），保证回放可复现
-    expect(body.data.conditions[0].params).toMatchObject({ period: 14, oversold: 25, overbought: 70, days: 120 });
+    expect(body.data.conditions[0].params).toMatchObject({
+      period: 14,
+      oversold: 25,
+      overbought: 70,
+      days: 120,
+    });
   });
 
   it('GET 列表 / 详情', async () => {
@@ -127,20 +132,24 @@ describe('PA-07 组合策略 CRUD', () => {
     expect(JSON.parse(off.body).data.enabled).toBe(false);
 
     const defaultList = JSON.parse(
-      (await bundle.app.inject({
-        method: 'GET',
-        url: '/api/strategy/combos',
-        headers: auth(bundle.adminToken),
-      })).body,
+      (
+        await bundle.app.inject({
+          method: 'GET',
+          url: '/api/strategy/combos',
+          headers: auth(bundle.adminToken),
+        })
+      ).body,
     );
     expect(defaultList.data.some((item: { id: string }) => item.id === created.id)).toBe(false);
 
     const allList = JSON.parse(
-      (await bundle.app.inject({
-        method: 'GET',
-        url: '/api/strategy/combos?include_disabled=1',
-        headers: auth(bundle.adminToken),
-      })).body,
+      (
+        await bundle.app.inject({
+          method: 'GET',
+          url: '/api/strategy/combos?include_disabled=1',
+          headers: auth(bundle.adminToken),
+        })
+      ).body,
     );
     expect(allList.data.some((item: { id: string }) => item.id === created.id)).toBe(true);
 

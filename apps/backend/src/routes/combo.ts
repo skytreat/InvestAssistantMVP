@@ -91,9 +91,7 @@ function parseConditions(raw: unknown): ComboConditionInput[] {
       throw new ComboInputError(`条件插件不存在：${pluginId}`);
     }
     if (!isAllowedComboCondition(plugin)) {
-      throw new ComboInputError(
-        `条件插件「${pluginId}」不允许：只允许未停用的 monitor 且非风险/组合级插件`,
-      );
+      throw new ComboInputError(`条件插件「${pluginId}」不允许：只允许未停用的 monitor 且非风险/组合级插件`);
     }
 
     let enabled = true;

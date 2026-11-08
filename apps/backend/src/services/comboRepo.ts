@@ -271,7 +271,7 @@ export function listCombos(
          FROM strategy_combo
         WHERE user_id = ? AND is_deleted = 0
           AND (? = 1 OR enabled = 1)
-        ORDER BY created_at ASC, id ASC`,
+        ORDER BY created_at ASC, rowid ASC`,
     )
     .all(userId, options.includeDisabled ? 1 : 0) as ComboRow[];
 

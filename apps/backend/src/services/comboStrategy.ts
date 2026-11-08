@@ -214,7 +214,14 @@ export async function executeCombos(options: ExecuteCombosOptions): Promise<Comb
     if (enabledConditions.length < 2) {
       stats.failed += 1;
       const reason = `启用条件不足 2 个（当前 ${enabledConditions.length} 个），AND 组合不成立`;
-      results.push({ pluginId, status: 'SKIP', signals: [], durationMs: 0, skipReason: 'NO_SIGNAL', error: reason });
+      results.push({
+        pluginId,
+        status: 'SKIP',
+        signals: [],
+        durationMs: 0,
+        skipReason: 'NO_SIGNAL',
+        error: reason,
+      });
       writeSystemLog({
         logType: 'plugin_execute',
         level: 'WARN',
@@ -260,8 +267,9 @@ export async function executeCombos(options: ExecuteCombosOptions): Promise<Comb
             exec = { pluginId: plugin.id, status: 'ERROR', signals: [], durationMs: 0, error: message };
           }
           const signal =
-            exec.signals.find((s) => s.symbol === symbol && (s.signalType === 'BUY' || s.signalType === 'SELL')) ??
-            exec.signals.find((s) => s.symbol === symbol);
+            exec.signals.find(
+              (s) => s.symbol === symbol && (s.signalType === 'BUY' || s.signalType === 'SELL'),
+            ) ?? exec.signals.find((s) => s.symbol === symbol);
           conditionResults.push({
             pluginId: plugin.id,
             enabled: true,
@@ -278,7 +286,13 @@ export async function executeCombos(options: ExecuteCombosOptions): Promise<Comb
     } catch (err) {
       stats.failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      results.push({ pluginId, status: 'ERROR', signals: [], durationMs: Date.now() - startedAt, error: message });
+      results.push({
+        pluginId,
+        status: 'ERROR',
+        signals: [],
+        durationMs: Date.now() - startedAt,
+        error: message,
+      });
       writeSystemLog({
         logType: 'plugin_execute',
         level: 'WARN',

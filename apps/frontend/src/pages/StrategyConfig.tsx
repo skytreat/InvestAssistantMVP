@@ -251,8 +251,8 @@ export default function StrategyConfig() {
             color: COLORS.textPillNeutral,
           }}
         >
-          <b>跨境 ETF 提示</b>：跨境 ETF 在 A 股时段流动性受限。若组合策略适用于跨境 ETF，请把信号视为次日参考，
-          避免在 A 股早盘追价。
+          <b>跨境 ETF 提示</b>：跨境 ETF 在 A 股时段流动性受限。若组合策略适用于跨境
+          ETF，请把信号视为次日参考， 避免在 A 股早盘追价。
           <button
             type="button"
             style={{

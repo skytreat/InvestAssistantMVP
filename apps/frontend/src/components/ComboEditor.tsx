@@ -75,7 +75,10 @@ function paramsOf(plugin: ComboPluginOption, current?: Record<string, unknown>):
   return next;
 }
 
-function toDrafts(initial: ComboItem | null | undefined, plugins: ComboPluginOption[]): ComboConditionDraft[] {
+function toDrafts(
+  initial: ComboItem | null | undefined,
+  plugins: ComboPluginOption[],
+): ComboConditionDraft[] {
   if (initial && initial.conditions.length > 0) {
     return initial.conditions.map((condition) => {
       const plugin = plugins.find((item) => item.id === condition.pluginId);
@@ -298,7 +301,9 @@ export default function ComboEditor({ plugins, initial, onSaved, onCancel }: Pro
                     schema={plugin.paramSchema ?? []}
                     values={condition.params}
                     idPrefix={`combo-condition-${rowNumber}`}
-                    onChange={(key, value) => patchCondition(index, { params: { ...condition.params, [key]: value } })}
+                    onChange={(key, value) =>
+                      patchCondition(index, { params: { ...condition.params, [key]: value } })
+                    }
                   />
                 </div>
               )}
