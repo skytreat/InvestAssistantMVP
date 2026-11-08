@@ -520,9 +520,7 @@ export default function Dashboard() {
           };
           setSigTradeDate(typeof meta.trade_date === 'string' ? meta.trade_date : null);
           setSigDateSource(meta.trade_date_source ?? 'explicit');
-          setSigLatestQuoteDate(
-            typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null,
-          );
+          setSigLatestQuoteDate(typeof meta.latest_quote_date === 'string' ? meta.latest_quote_date : null);
         } else setSigError(res.data.message ?? '请求失败');
       } catch (err) {
         setSigError(extractErrorMessage(err));
@@ -641,7 +639,7 @@ export default function Dashboard() {
       : sigDateSource === 'quote'
         ? '行情最新日'
         : sigDateSource === 'today'
-          ? '兜底交易日（行情库暂不可用）'
+          ? '兜底交易日'
           : '指定日期';
 
   return (

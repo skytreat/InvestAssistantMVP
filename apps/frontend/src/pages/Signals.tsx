@@ -257,9 +257,7 @@ export default function Signals() {
           trade_date?: string | null;
           trade_date_source?: DateSource;
         };
-        setTop5TradeDate(
-          typeof meta.trade_date === 'string' ? meta.trade_date : date,
-        );
+        setTop5TradeDate(typeof meta.trade_date === 'string' ? meta.trade_date : date);
         setTop5Source(meta.trade_date_source ?? 'explicit');
       } else {
         setTop5Rows([]);
@@ -364,15 +362,7 @@ export default function Signals() {
    * ⚠️ 指纹比对放在 **timer 回调内** —— 这样「点【查询】按钮」先把指纹写进去，
    *    300ms 后到期的防抖就会自己跳过，**不会重复发两次请求**。
    */
-  const filterKey = JSON.stringify([
-    tradeDate,
-    startDate,
-    endDate,
-    assetCode,
-    pluginId,
-    direction,
-    gradeTab,
-  ]);
+  const filterKey = JSON.stringify([tradeDate, startDate, endDate, assetCode, pluginId, direction, gradeTab]);
   const lastQueriedFilterKey = useRef<string>(filterKey);
 
   useEffect(() => {
@@ -598,9 +588,7 @@ export default function Signals() {
 
       {/* F3：今日 Top 5 摘要区（与主列表同屏，先回答「哪几条最值得看」） */}
       <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
-        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>
-          今日 Top 5 摘要
-        </div>
+        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>今日 Top 5 摘要</div>
         {top5TradeDate ? (
           <div
             data-testid="signals-top5-date-note"
@@ -617,10 +605,7 @@ export default function Signals() {
         {top5Loading ? (
           <Spinner />
         ) : top5Rows.length === 0 ? (
-          <div
-            data-testid="signals-top5-empty"
-            style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}
-          >
+          <div data-testid="signals-top5-empty" style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}>
             该交易日暂无信号
           </div>
         ) : (
@@ -862,9 +847,7 @@ export default function Signals() {
                       <tr
                         key={typeof row.id === 'number' ? row.id : i}
                         data-testid={isExpired ? 'signals-row-expired' : undefined}
-                        style={
-                          muted ? { color: COLORS.textMuted, opacity: isExpired ? 0.6 : 1 } : undefined
-                        }
+                        style={muted ? { color: COLORS.textMuted, opacity: isExpired ? 0.6 : 1 } : undefined}
                         title={
                           isExpired
                             ? `已过期（有效期至 ${expiresAt}）`

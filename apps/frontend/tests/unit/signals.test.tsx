@@ -384,16 +384,7 @@ describe('Signals · 结果表可读性', () => {
     await screen.findByRole('table');
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
     // V3.8 T149：新增「操作」列（采纳/忽略/关联交易）
-    expect(headers).toEqual([
-      '标的代码',
-      '策略',
-      '方向',
-      '分级',
-      '强度',
-      '标签',
-      '交易日期',
-      '操作',
-    ]);
+    expect(headers).toEqual(['标的代码', '策略', '方向', '分级', '强度', '标签', '交易日期', '操作']);
   });
 
   it('数据行按列顺序渲染（标的代码 / 策略 / 方向 / 分级 / 强度 / 标签 / 交易日期）', async () => {

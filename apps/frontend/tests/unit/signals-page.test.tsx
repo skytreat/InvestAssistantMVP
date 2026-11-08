@@ -550,10 +550,7 @@ describe('F1 · 信号分级', () => {
     renderWithRouter(<Signals />);
 
     await waitFor(() => expect(signalCalls()).toHaveLength(1));
-    expect(screen.getByTestId('signals-grade-tab-strong')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(screen.getByTestId('signals-grade-tab-strong')).toHaveAttribute('aria-pressed', 'true');
     expect(signalCalls()[0]?.[1]?.params).toMatchObject({ grade: 'strong' });
 
     await user.click(screen.getByTestId('signals-grade-tab-all'));
@@ -608,14 +605,10 @@ describe('F6 · 冷却展示合并', () => {
   });
 
   it('合并行标注「连续第 N 日选中」，并显示默认 3 根 K 线旁注', async () => {
-    installPagedMock([
-      { rows: [{ ...BUY_ROW, consecutive_days: 3 }], totalPages: 1, total: 1 },
-    ]);
+    installPagedMock([{ rows: [{ ...BUY_ROW, consecutive_days: 3 }], totalPages: 1, total: 1 }]);
     renderWithRouter(<Signals />);
 
-    expect(await screen.findByTestId('signals-consecutive-count')).toHaveTextContent(
-      '连续第 3 日选中',
-    );
+    expect(await screen.findByTestId('signals-consecutive-count')).toHaveTextContent('连续第 3 日选中');
     expect(screen.getByTestId('signals-cooldown-note')).toHaveTextContent('冷却 3 根 K 线');
     // 旁注必须写明「仅展示层」，避免被误解为抑制信号
     expect(screen.getByTestId('signals-cooldown-note')).toHaveTextContent('不影响信号生成与交易链路');

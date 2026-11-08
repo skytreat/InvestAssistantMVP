@@ -76,7 +76,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
-  if (db) db.db.prepare('DELETE FROM user_strategy_signal WHERE user_id IN (?, ?)').run(TEST_USER_ID, OTHER_USER_ID);
+  if (db)
+    db.db
+      .prepare('DELETE FROM user_strategy_signal WHERE user_id IN (?, ?)')
+      .run(TEST_USER_ID, OTHER_USER_ID);
   try {
     fs.rmSync(tmpDbPath, { force: true });
     fs.rmSync(`${tmpDbPath}-wal`, { force: true });

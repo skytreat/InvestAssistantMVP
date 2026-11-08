@@ -51,11 +51,7 @@ interface RowFixture {
 }
 
 /** 造一条纯函数入参（不落库）*/
-function row(
-  id: number,
-  tradeDate: string,
-  opts: Partial<RowFixture> = {},
-): RowFixture {
+function row(id: number, tradeDate: string, opts: Partial<RowFixture> = {}): RowFixture {
   return {
     id,
     plugin_id: 'p1',
@@ -228,9 +224,9 @@ describe('F6 · cooldown_until 回填（只写展示列，不增删信号）', (
     expect(first.cooldownUntil).toBe(THU);
 
     const countAfter = (
-      db.db
-        .prepare('SELECT COUNT(*) AS c FROM user_strategy_signal WHERE user_id = ?')
-        .get(TEST_USER_ID) as { c: number }
+      db.db.prepare('SELECT COUNT(*) AS c FROM user_strategy_signal WHERE user_id = ?').get(TEST_USER_ID) as {
+        c: number;
+      }
     ).c;
     expect(countAfter).toBe(2);
 
