@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
+import { ensureComboTables } from './comboSchema.js';
 
 /**
  * ConfigStore 单例
@@ -438,6 +439,9 @@ export class ConfigStore {
 
     // T134（V3.4）：信号生命周期列补齐
     this._ensureSignalLifecycleColumns();
+
+    // T133（PA-06）：组合策略配置表（`strategy_combo` / `strategy_combo_condition`，幂等建表）
+    ensureComboTables(this._db);
 
     // T87b：唯一键从「表级 UNIQUE 约束」迁移到「部分唯一索引（WHERE is_deleted = 0）」
     this._ensureTradeRecordUniqueConstraint();

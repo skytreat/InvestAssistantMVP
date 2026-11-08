@@ -4,8 +4,7 @@
  * 只新增表，不改 `user_strategy_signal` 结构；全部 `CREATE TABLE IF NOT EXISTS`
  * ⇒ 重复启动幂等，不引入迁移框架（AGENTS.md「DDL 变更判据」）。
  *
- * ⚠️ 独立于 `configStore.ts`：当前 `#126`/`#127`/`#128` 在途，先以独立模块落地，
- * 待三个 PR 合并后再由 ConfigStore 启动时调用 `ensureComboTables(db)`。
+ * ⚠️ ConfigStore 启动时调用 `ensureComboTables(db)`（PA-06 已接入），与 `DDL_SQL` 同为幂等建表。
  */
 import type Database from 'better-sqlite3';
 
