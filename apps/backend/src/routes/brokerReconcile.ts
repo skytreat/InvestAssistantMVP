@@ -3,6 +3,7 @@
  * - POST /api/broker-reconcile/run        触发一次对账（重算去重/回填/归因，幂等）
  * - GET  /api/broker-reconcile/latest     最近一次对账报告（D-25：按需重算，事实层为唯一真相源）
  * - GET  /api/broker-reconcile/diff       差异明细（分页 + 按归因类别下钻）
+ * - GET  /api/broker-reconcile/diff/export 差异明细 CSV 导出（I8：与页面表格同列序）
  * - POST /api/broker-reconcile/confirm    T129 确认补录（批量 + 逐条可修正；admin）
  * - POST /api/broker-reconcile/diff/:id/match  T129 标记「已手工记录」（admin）
  *
@@ -12,7 +13,14 @@ import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { ok, fail } from '../lib/envelope.js';
 import { runAssetClassSyncIfNeeded } from '../services/assetClassSync.js';
-import { buildReconcileReport, attributionDrilldown } from '../services/broker/brokerReconcileReport.js';
+import {
+  buildReconcileReport,
+  attributionDrilldown,
+  attributionRowsAll,
+  DIFF_CATEGORIES,
+  ATTRIBUTION_ONLY_EVENTS,
+  type DiffCategory,
+} from '../services/broker/brokerReconcileReport.js';
 import {
   confirmTrades,
   markAsManuallyRecorded,
@@ -74,19 +82,11 @@ export async function registerBrokerReconcileRoutes(app: FastifyInstance) {
     if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
     const q = request.query as { brokerCode?: string; category?: string; page?: string; pageSize?: string };
     if (!q.brokerCode?.trim()) return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
-    const category = (q.category ?? 'unmatched') as
-      'repo' | 'cashLikeEtf' | 'dividend' | 'offExchange' | 'unknown' | 'unmatched' | 'nonTrade';
-    const CATEGORIES = [
-      'repo',
-      'cashLikeEtf',
-      'dividend',
-      'offExchange',
-      'unknown',
-      'unmatched',
-      'nonTrade',
-    ] as const;
-    if (!(CATEGORIES as readonly string[]).includes(category)) {
-      return reply.code(400).send(fail(400, 'INVALID_CATEGORY', `category 须为 ${CATEGORIES.join('|')}`));
+    const category = (q.category ?? 'unmatched') as DiffCategory;
+    if (!(DIFF_CATEGORIES as readonly string[]).includes(category)) {
+      return reply
+        .code(400)
+        .send(fail(400, 'INVALID_CATEGORY', `category 须为 ${DIFF_CATEGORIES.join('|')}`));
     }
     const page = Math.max(1, Number(q.page) || 1);
     const pageSize = Math.min(200, Math.max(1, Number(q.pageSize) || 50));
@@ -99,6 +99,46 @@ export async function registerBrokerReconcileRoutes(app: FastifyInstance) {
       pageSize,
     );
     return ok(r, { pagination: { page, pageSize, total: r.total } });
+  });
+
+  /**
+   * I8 差异明细 CSV 导出（PRD_v3 §3.2.1「可筛选 + 可导出」/ §4.3「导出 CSV」）
+   *
+   * - 与 `/diff` 共用同一分类白名单与 SQL 条件，导出该分类下**全量**明细（不受分页限制）
+   * - 列序与页面表格一致：id / 事件 / 标的 / 日期 / 数量 / 金额 / 状态 / 排除原因
+   * - 带 UTF-8 BOM + CRLF，Excel 直接打开中文不乱码
+   */
+  app.get('/api/broker-reconcile/diff/export', async (request, reply) => {
+    const userId = userIdOf(request as { user?: { sub?: number | string } });
+    if (userId <= 0) return reply.code(401).send(fail(401, 'UNAUTHORIZED', '未登录'));
+    const q = request.query as { brokerCode?: string; category?: string };
+    if (!q.brokerCode?.trim()) return reply.code(400).send(fail(400, 'INVALID_BODY', '缺少 brokerCode'));
+    const category = (q.category ?? 'unmatched') as DiffCategory;
+    if (!(DIFF_CATEGORIES as readonly string[]).includes(category)) {
+      return reply
+        .code(400)
+        .send(fail(400, 'INVALID_CATEGORY', `category 须为 ${DIFF_CATEGORIES.join('|')}`));
+    }
+    const rows = attributionRowsAll(ConfigStore.getInstance().db, userId, q.brokerCode.trim(), category);
+    const csv = buildDiffCsv(rows);
+    const safeCode =
+      q.brokerCode
+        .trim()
+        .replace(/[^A-Za-z0-9._-]+/g, '_')
+        .slice(0, 40) || 'broker';
+    const now = new Date();
+    const stamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('');
+    return reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header(
+        'Content-Disposition',
+        `attachment; filename="broker-reconcile-${safeCode}-${category}-${stamp}.csv"`,
+      )
+      .send(csv);
   });
 
   /**
@@ -174,3 +214,46 @@ export async function registerBrokerReconcileRoutes(app: FastifyInstance) {
 
 /** T129 补录可修正类型的白名单（对外暴露给 envelope 遍历表 / 前端） */
 export const BROKER_CONFIRM_TRADE_TYPES = CONFIRMABLE_TRADE_TYPES;
+
+/** CSV 列序必须与页面表格数据列一致（表头文字也复用页面用词） */
+const DIFF_CSV_HEADERS = ['id', '事件', '标的', '日期', '数量', '金额', '状态', '排除原因'];
+
+/**
+ * RFC4180 单元格转义。
+ *
+ * `text=true` 时额外中和 CSV 公式注入（`= + - @` 开头会诱导 Excel 当公式执行）；
+ * 数值列不处理，否则负号会被破坏。
+ */
+function csvCell(value: unknown, text = false): string {
+  if (value == null) return '';
+  let s = String(value);
+  if (text && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  if (/[",\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function isAttributionOnlyEvent(value: unknown): boolean {
+  return (ATTRIBUTION_ONLY_EVENTS as readonly string[]).includes(String(value ?? ''));
+}
+
+/** 差异明细 → CSV 文本（UTF-8 BOM + CRLF，便于 Excel 直接打开中文） */
+function buildDiffCsv(rows: Array<Record<string, unknown>>): string {
+  const lines = [DIFF_CSV_HEADERS.join(',')];
+  for (const r of rows) {
+    const dateText =
+      r.trade_date == null ? '' : `${String(r.trade_date)}${r.trade_time ? ` ${String(r.trade_time)}` : ''}`;
+    lines.push(
+      [
+        csvCell(r.id),
+        csvCell(r.raw_event_type ?? r.event_type, true),
+        csvCell(r.asset_code, true),
+        csvCell(dateText),
+        csvCell(r.quantity),
+        csvCell(r.amount ?? r.cash_flow),
+        csvCell(isAttributionOnlyEvent(r.event_type) ? '归因（不补录）' : r.match_status, true),
+        csvCell(r.exclude_reason, true),
+      ].join(','),
+    );
+  }
+  return `\uFEFF${lines.join('\r\n')}`;
+}

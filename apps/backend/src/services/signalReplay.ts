@@ -12,6 +12,8 @@ import {
   resolveLatestSignalDate,
   getTradeDate,
   SIGNAL_USER_ID,
+  assignSignalCooldowns,
+  assignSignalGrades,
   type SignalOrigin,
 } from './signalService.js';
 import { listTradeDatesBetween, resolveLatestQuoteDate } from './marketData.js';
@@ -318,6 +320,18 @@ export async function replaySignals(options: SignalReplayOptions = {}): Promise<
           day.inserted += persist.inserted;
           day.skipped += persist.skipped;
           day.errors += persist.errors;
+        }
+        // F1：回放落库后回填分级（只写 grade / expires_at，不改变回放产生的信号集合）
+        try {
+          await assignSignalGrades(tradeDate, userId);
+        } catch (gradeErr: unknown) {
+          notes.push(`${tradeDate} 信号分级失败：${String(gradeErr)}`);
+        }
+        // F6：回填 cooldown_until（仅展示层冷却合并判断用，回放信号集合不变）
+        try {
+          await assignSignalCooldowns(tradeDate, userId);
+        } catch (coolErr: unknown) {
+          notes.push(`${tradeDate} 冷却回填失败：${String(coolErr)}`);
         }
       }
     } catch (err) {

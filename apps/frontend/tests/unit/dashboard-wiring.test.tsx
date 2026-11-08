@@ -184,6 +184,9 @@ function installApiMock(): void {
         return mockResponse(STAT);
       case '/signal':
         return mockResponse(SIGNAL_ROWS);
+      // F3：概览卡走「今日 Top 5」单日端点
+      case '/signal/top5':
+        return mockResponse(SIGNAL_ROWS);
       case '/signal/stats':
         return mockResponse(SIGNAL_STATS);
       case '/trade':
@@ -652,6 +655,9 @@ async function installApiMockFallback(url: string): Promise<unknown> {
     case '/asset-stat/latest':
       return mockResponse(STAT);
     case '/signal':
+      return mockResponse(SIGNAL_ROWS);
+    // F3：概览卡走「今日 Top 5」单日端点
+    case '/signal/top5':
       return mockResponse(SIGNAL_ROWS);
     case '/signal/stats':
       return mockResponse(SIGNAL_STATS);

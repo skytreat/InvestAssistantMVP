@@ -1,6 +1,6 @@
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from './logger.js';
-import { resolveLatestQuoteDate } from './marketData.js';
+import { isTradingDay, resolveLatestQuoteDate } from './marketData.js';
 import type { PluginSignal } from './pluginEngine.js';
 
 /**
@@ -268,4 +268,283 @@ export async function resolveDefaultSignalTradeDate(
     return { tradeDate: latestQuoteDate, source: 'quote', latestQuoteDate };
   }
   return { tradeDate: getTradeDate(), source: 'today', latestQuoteDate: null };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// F1：信号分级（PRD_v3 §4.2「强 / 中 / 弱，默认只显示强」）
+// ─────────────────────────────────────────────────────────────────
+
+/** 信号分级枚举（与 DDL `grade` 的 CHECK 约束一一对应）*/
+export type SignalGrade = 'strong' | 'medium' | 'weak';
+
+/**
+ * 候选充足时的**纯分数分位**边界（用户口径，不可改）
+ *
+ * 强 = 当日候选前 20%；中 = 20%–50%；弱 = 后 50%。
+ */
+const GRADE_STRONG_RATIO = 0.2;
+const GRADE_MEDIUM_RATIO = 0.5;
+
+/**
+ * 候选不足时的**绝对分值兜底**阈值
+ *
+ * 当日可分级信号 < {@link GRADE_MIN_CANDIDATES} 只时，百分位没有统计意义，
+ * 退回按强度绝对分值定档：≥0.6 强 / ≥0.3 中 / 其余弱。
+ *
+ * ⚠️ 这两个常量是**兜底口径的唯一来源**（插件 `strength` 均归一化到 0~1，
+ * 但各插件分布差异大，故阈值只做「保守的绝对判断」，主路径永远是分位）。
+ */
+const GRADE_MIN_CANDIDATES = 10;
+const GRADE_ABS_STRONG_MIN = 0.6;
+const GRADE_ABS_MEDIUM_MIN = 0.3;
+
+/**
+ * 有效期（交易日）：强 3 / 中 2 / 弱 1
+ *
+ * 到期日写入 `expires_at`，过期信号**置灰不删**（前端标注「生成于 X 天前」）。
+ */
+const GRADE_TTL_TRADING_DAYS: Record<SignalGrade, number> = {
+  strong: 3,
+  medium: 2,
+  weak: 1,
+};
+
+/** `YYYY-MM-DD` + n 天（UTC 日历运算，不做时区偏移）*/
+function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * 求 `tradeDate` 之后第 n 个交易日
+ *
+ * 主路径：逐日 `isTradingDay()`（工作日 + `raw_holidays` 休市黑名单，见 marketData.ts）。
+ * 兜底：行情日历不可用（`isTradingDay()` 恒 false）时按**纯工作日**推算 ——
+ * 这样离线/空壳库环境下 `expires_at` 仍有确定值，而不是 NULL。
+ */
+async function nthTradingDayAfter(tradeDate: string, n: number): Promise<string> {
+  const dates: string[] = [];
+  let cursor = tradeDate;
+  // 45 天窗口足够覆盖国庆/春节长假（最长约 9 个休市日）
+  for (let i = 0; i < 45 && dates.length < n; i++) {
+    cursor = addDays(cursor, 1);
+    if (await isTradingDay(cursor)) dates.push(cursor);
+  }
+  if (dates.length >= n) return dates[n - 1];
+
+  // 兜底：纯工作日推算（节假日不准，但不会因行情层不可用而卡住）
+  let fallback = tradeDate;
+  let count = 0;
+  while (count < n) {
+    fallback = addDays(fallback, 1);
+    const dow = new Date(`${fallback}T00:00:00Z`).getUTCDay();
+    if (dow >= 1 && dow <= 5) count++;
+  }
+  return fallback;
+}
+
+/** 按规则给「当日各信号强度」定档（纯函数，便于单测）*/
+export function gradeSignalStrengths(strengths: number[]): SignalGrade[] {
+  if (strengths.length === 0) return [];
+  if (strengths.length < GRADE_MIN_CANDIDATES) {
+    return strengths.map((s) =>
+      s >= GRADE_ABS_STRONG_MIN ? 'strong' : s >= GRADE_ABS_MEDIUM_MIN ? 'medium' : 'weak',
+    );
+  }
+  const strongEnd = Math.ceil(strengths.length * GRADE_STRONG_RATIO);
+  const mediumEnd = Math.ceil(strengths.length * GRADE_MEDIUM_RATIO);
+  return strengths.map((_, i) => (i < strongEnd ? 'strong' : i < mediumEnd ? 'medium' : 'weak'));
+}
+
+export interface GradeResult {
+  graded: number;
+  strong: number;
+  medium: number;
+  weak: number;
+}
+
+/**
+ * 给某一交易日的全部信号回填 `grade` + `expires_at`（F1）
+ *
+ * 口径：
+ * - **纯分数分位**（按 `strength` 降序排名，`id` 升序做确定性 tie-break）；
+ * - 只处理 `strength` 非空的行 —— 无强度的信号保持 `grade = NULL`（未分级）；
+ * - `expires_at` = 交易日之后第 强3 / 中2 / 弱1 个交易日；
+ * - **幂等**：重复调用只会覆盖同样的定档结果（当天信号集合不变时）。
+ *
+ * ⚠️ 本函数**只改 `grade` / `expires_at` 两列**，不新增/删除任何信号行，
+ *    因此对信号生成链路（scheduler / admin 手动触发 / 区间回放）无副作用。
+ */
+export async function assignSignalGrades(
+  tradeDate: string,
+  userId: number = SIGNAL_USER_ID,
+): Promise<GradeResult> {
+  const db = ConfigStore.getInstance().db;
+  const rows = db
+    .prepare(
+      `SELECT id, strength FROM user_strategy_signal
+       WHERE user_id = ? AND trade_date = ? AND is_deleted = 0 AND strength IS NOT NULL
+       ORDER BY strength DESC, id ASC`,
+    )
+    .all(userId, tradeDate) as Array<{ id: number; strength: number }>;
+
+  const result: GradeResult = { graded: 0, strong: 0, medium: 0, weak: 0 };
+  if (rows.length === 0) return result;
+
+  const grades = gradeSignalStrengths(
+    rows.map((r) => {
+      const n = Number(r.strength);
+      return Number.isFinite(n) ? n : 0;
+    }),
+  );
+
+  const expiryByGrade: Record<SignalGrade, string> = {
+    strong: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.strong),
+    medium: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.medium),
+    weak: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.weak),
+  };
+
+  const stmt = db.prepare(
+    'UPDATE user_strategy_signal SET grade = ?, expires_at = ? WHERE id = ? AND user_id = ?',
+  );
+  const tx = db.transaction(() => {
+    rows.forEach((row, i) => {
+      const grade = grades[i];
+      stmt.run(grade, expiryByGrade[grade], row.id, userId);
+      result.graded += 1;
+      result[grade] += 1;
+    });
+  });
+  tx();
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F6 · 冷却（**仅展示层合并去重**，不改生成/交易链路，也不改回测口径）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 冷却窗口默认根数（PRD_v3 §4.1「冷却 [3] 根 K 线内不重复」）
+ *
+ * 可通过 `SIGNAL_COOLDOWN_BARS` 覆盖（1~20），也可由 `GET /api/signal`
+ * 的 `cooldown_bars` 查询参数临时覆盖（排查/演示用）。
+ */
+const DEFAULT_COOLDOWN_BARS = 3;
+const MAX_COOLDOWN_BARS = 20;
+
+/** 读取冷却窗口根数（**惰性读 env**，避免模块顶层求值——CI coverage 陷阱）*/
+export function resolveSignalCooldownBars(): number {
+  const n = Number(process.env.SIGNAL_COOLDOWN_BARS);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_COOLDOWN_BARS;
+  return Math.min(MAX_COOLDOWN_BARS, Math.floor(n));
+}
+
+/** `YYYY-MM-DD` + n 个**工作日**（仅在 `cooldown_until` 缺失时做兜底窗口）*/
+function addWeekdays(date: string, n: number): string {
+  let cursor = date;
+  let count = 0;
+  while (count < n) {
+    cursor = addDays(cursor, 1);
+    const dow = new Date(`${cursor}T00:00:00Z`).getUTCDay();
+    if (dow >= 1 && dow <= 5) count++;
+  }
+  return cursor;
+}
+
+/**
+ * 给某一交易日的全部信号回填 `cooldown_until`（F6）
+ *
+ * ⚠️ **只写展示判断用的列**：信号生成照旧一条不少（不因冷却而抑制），
+ * 交易链路与回测口径都不读取该列。
+ */
+export async function assignSignalCooldowns(
+  tradeDate: string,
+  userId: number = SIGNAL_USER_ID,
+  bars: number = resolveSignalCooldownBars(),
+): Promise<{ updated: number; cooldownUntil: string }> {
+  const db = ConfigStore.getInstance().db;
+  const cooldownUntil = await nthTradingDayAfter(tradeDate, bars);
+  const info = db
+    .prepare(
+      `UPDATE user_strategy_signal SET cooldown_until = ?
+       WHERE user_id = ? AND trade_date = ? AND is_deleted = 0`,
+    )
+    .run(cooldownUntil, userId, tradeDate);
+  return { updated: info.changes, cooldownUntil };
+}
+
+/** 冷却合并所需字段（`SELECT *` 行够用）*/
+export interface CooldownRowFields {
+  plugin_id: string;
+  asset_code: string;
+  direction: string;
+  trade_date: string;
+  created_at?: string | null;
+  id?: number;
+  cooldown_until?: string | null;
+}
+
+/** 合并后的展示行：附带「连续第 N 日选中」计数 */
+export type CooldownCollapsed<T> = T & { consecutive_days: number };
+
+/**
+ * 展示层冷却合并去重（纯函数，便于单测）
+ *
+ * 口径（用户指定）：
+ * - 同一 **策略 + 标的 + 方向** 的信号，在冷却窗口（默认 3 根 K 线）内合并为**一条**；
+ * - 窗口判定优先用行上的 `cooldown_until`（生成时照写）；历史行无该值时
+ *   用 `trade_date + bars` 个**工作日**兜底；
+ * - 合并后保留**最新一条**（其分级/强度/标签即为展示值），并标注 `consecutive_days`；
+ * - 输出按 `trade_date ASC, created_at ASC, id ASC` 排序（与列表契约一致）。
+ */
+export function collapseSignalsByCooldown<T extends CooldownRowFields>(
+  rows: T[],
+  bars: number = resolveSignalCooldownBars(),
+): Array<CooldownCollapsed<T>> {
+  const windowEndOf = (row: T): string => {
+    const raw = row.cooldown_until;
+    if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    return addWeekdays(row.trade_date, bars);
+  };
+
+  // 入参已按升序查询；这里再排一次保证纯函数对任意输入顺序都确定
+  const ordered = [...rows].sort(
+    (a, b) =>
+      a.trade_date.localeCompare(b.trade_date) ||
+      String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
+      (a.id ?? 0) - (b.id ?? 0),
+  );
+
+  const active = new Map<string, { row: CooldownCollapsed<T>; end: string }>();
+  const out: Array<CooldownCollapsed<T>> = [];
+  const flush = (): void => {
+    for (const chain of active.values()) out.push(chain.row);
+    active.clear();
+  };
+
+  for (const row of ordered) {
+    const key = `${row.plugin_id}|${row.asset_code}|${row.direction}`;
+    const chain = active.get(key);
+    if (!chain) {
+      active.set(key, { row: { ...row, consecutive_days: 1 }, end: windowEndOf(row) });
+      continue;
+    }
+    if (row.trade_date <= chain.end) {
+      // 窗口内 → 合并进当前链，代表行换成最新一条，窗口顺延
+      chain.row = { ...row, consecutive_days: chain.row.consecutive_days + 1 };
+      const end = windowEndOf(row);
+      if (end > chain.end) chain.end = end;
+    } else {
+      out.push(chain.row);
+      active.set(key, { row: { ...row, consecutive_days: 1 }, end: windowEndOf(row) });
+    }
+  }
+  flush();
+  return out.sort(
+    (a, b) =>
+      a.trade_date.localeCompare(b.trade_date) ||
+      String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
+      (a.id ?? 0) - (b.id ?? 0),
+  );
 }
