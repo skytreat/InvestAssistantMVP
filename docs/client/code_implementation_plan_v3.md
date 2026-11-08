@@ -99,6 +99,8 @@
 
 **合计 33 个任务**（T119~T152；T139 manual_sheet 三方对账已移出 → V4 候选；T151/T152 为后续增补）。
 
+> ✅ **T131 状态说明（2026-11-08）**：C7 缺陷（`emotion_status` / `buy_reason` / `sell_reason` / `system_followed` 传入不落库）的修复见 PR #130，已合入 `main`（commit `46b25a7`）；并按 `docs/audit/acceptance-retest-c7-a5-2026-11-08.md` 在该 `main` 提交上复测通过。
+
 ### 2.1 排期建议
 
 | 阶段 | 建议时点 | 理由 |
