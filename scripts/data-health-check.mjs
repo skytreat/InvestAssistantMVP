@@ -39,6 +39,10 @@ const cols = db
   .all()
   .map((c) => c.name);
 const HAS_TRADE_TIME = cols.includes('trade_time');
+// 券商成交（broker_code IS NOT NULL）不受业务层唯一索引约束 —— 该索引是
+// `WHERE is_deleted = 0 AND broker_code IS NULL` 的**部分唯一索引**（见 configStore.ts）。
+// 体检脚本必须同口径，否则同一券商回报里的多笔成交会被误报成「重复」。
+const HAS_BROKER_CODE = cols.includes('broker_code');
 if (!HAS_TRADE_TIME) {
   console.log(
     '[data-health] ⚠️ 该库 schema 早于 T87（无 trade_time 列）—— ' +
@@ -96,11 +100,13 @@ for (const r of costRows) {
 
 // ── 2. 同日+同标的+同类型+同时刻 重复 ──
 // 去重键：T87 起是「同日 + 同标的 + 同类型 + **同时刻**」；旧 schema 无 trade_time 列则退到「同日」
+// ⚠️ 排除券商成交行（`broker_code IS NOT NULL`）—— 与业务层部分唯一索引同口径，
+//    券商回报里的多笔成交允许并存，不算重复。
 const dupRows = db
   .prepare(
     `SELECT user_id, asset_code, trade_type, trade_date${HAS_TRADE_TIME ? ', trade_time' : ''}, COUNT(*) AS cnt
        FROM user_trade_record
-      WHERE is_deleted = 0
+      WHERE is_deleted = 0${HAS_BROKER_CODE ? ' AND broker_code IS NULL' : ''}
       GROUP BY user_id, asset_code, trade_type, trade_date${HAS_TRADE_TIME ? ', trade_time' : ''}
      HAVING COUNT(*) > 1`,
   )
@@ -125,7 +131,9 @@ console.log(
 );
 
 if (problems.length === 0) {
-  console.log('[data-health] ✅ 全部通过：无负持仓 / 无负成本 / 无同日同标的同类型同时刻重复');
+  console.log(
+    '[data-health] ✅ 全部通过：无负持仓 / 无负成本 / 无同日同标的同类型同时刻重复（券商成交除外）',
+  );
   db.close();
   process.exit(0);
 }

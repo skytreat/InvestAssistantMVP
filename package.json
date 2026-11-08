@@ -14,7 +14,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "npm run typecheck -w @invest/core && npm run build -w @invest/core && npm run typecheck -w @invest/backend && npm run typecheck -w @invest/frontend",
-    "build": "npm run build -w @invest/core && npm run build -w @invest/backend && npm run build -w @invest/frontend"
+    "build": "npm run build -w @invest/core && npm run build -w @invest/backend && npm run build -w @invest/frontend",
+    "docs:gen": "node scripts/docs-lint.mjs --gen",
+    "docs:lint": "node scripts/docs-lint.mjs --check"
   },
   "engines": {
     "node": ">=22"
