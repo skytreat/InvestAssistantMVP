@@ -31,6 +31,12 @@ import {
   TRADE_SELL_COLOR,
   TRADE_MIXED_COLOR,
 } from '../indicators/chartIndicators';
+import {
+  mergeOverlaysFromServer,
+  type OverlayDraft,
+  type OverlaySaveResult,
+  type StoredOverlay,
+} from '../indicators/klineOverlays';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -185,6 +191,18 @@ export default function Kline() {
   const [signals, setSignals] = useState<SignalMarker[]>([]);
   /** T152：K 线窗口内交易标记 */
   const [trades, setTrades] = useState<TradeMarker[]>([]);
+  /** 手工画线：当前标的 + 周期已持久化的标注（仅**不复权（bfq）**口径加载）*/
+  const [overlays, setOverlays] = useState<StoredOverlay[]>([]);
+  /** 手工画线加载失败的提示（不影响 K 线本身）*/
+  const [overlayError, setOverlayError] = useState<string | null>(null);
+  /**
+   * 本次加载窗口内已删除的标注 id
+   *
+   * 加载请求是异步的：用户可能在请求飞行途中删掉一条，服务端返回的旧快照仍带着它。
+   * 用这个集合在应用返回结果时排除，避免「删掉的被刷回来」。
+   * 每轮加载开始时清空 —— 服务端已软删除，新一轮快照不会再包含它。
+   */
+  const deletedOverlayIdsRef = useRef<Set<number>>(new Set());
   /** 取数次数（每次成功加载 +1）—— 参与数据指纹，保证新数据一定重新灌进图表 */
   const [loadSeq, setLoadSeq] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -333,6 +351,54 @@ export default function Kline() {
   }, [symbol]);
 
   /**
+   * 手工画线：按「当前标的 + 周期」加载已持久化的标注
+   *
+   * 🔒 复权口径写死 **不复权（bfq）**：前复权会在除权日改写历史价格，导致已画的线漂移，
+   *    故非 bfq 时既不加载也不允许绘制（`KlineChart` 的 `overlaysEnabled` 同为 false）。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    // 新一轮加载 ⇒ 之前的删除已被服务端软删除，旧集合不再需要
+    deletedOverlayIdsRef.current = new Set<number>();
+    if (fq !== 'bfq') {
+      setOverlays([]);
+      setOverlayError(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      try {
+        const res = await api.get<ApiEnvelopeBody>('/kline-overlays', {
+          params: { symbol, period },
+        });
+        if (cancelled) return;
+        const rows =
+          isOkEnvelope(res.data) && Array.isArray(res.data.data) ? (res.data.data as StoredOverlay[]) : [];
+        // 🔴 按 id 合并，不用整体覆盖：请求飞行途中用户可能新增 / 删除，
+        //    直接覆盖会让新增消失、删除被刷回来（见 PR review 的并发竞态）。
+        setOverlays((prev) =>
+          mergeOverlaysFromServer(rows, prev, {
+            symbol,
+            period,
+            deletedIds: deletedOverlayIdsRef.current,
+          }),
+        );
+        setOverlayError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setOverlays([]);
+        setOverlayError('画线加载失败: ' + extractErrorMessageOrErrorMessage(e));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, period, fq]);
+
+  /**
    * 🔴 T71：指标 + 周期聚合的**派生值**
    *
    * 参数一变 → 这里重算 → 新的 `bars` 传给图表 → 图表只重算指标、**不取数**。
@@ -366,6 +432,38 @@ export default function Kline() {
     if (bars.length === 0) return '';
     return `${bars[0].date} ~ ${bars[bars.length - 1].date}`;
   }, [bars]);
+
+  /** 手工画线：保存新标注（落点校验已由 `KlineChart` 在保存前完成）*/
+  const handleCreateOverlay = useCallback(async (draft: OverlayDraft): Promise<OverlaySaveResult> => {
+    try {
+      const res = await api.post<ApiEnvelopeBody>('/kline-overlays', draft);
+      if (isOkEnvelope(res.data) && res.data.data) {
+        const saved = res.data.data as StoredOverlay;
+        setOverlays((prev) => [...prev, saved]);
+        setOverlayError(null);
+        return { ok: true, id: Number(saved.id) };
+      }
+      return { ok: false, message: res.data?.message ?? '画线保存失败' };
+    } catch (e) {
+      return { ok: false, message: extractErrorMessageOrErrorMessage(e) };
+    }
+  }, []);
+
+  /** 手工画线：删除标注（后端软删除，前端同步列表）*/
+  const handleDeleteOverlay = useCallback(async (id: number): Promise<OverlaySaveResult> => {
+    try {
+      const res = await api.delete<ApiEnvelopeBody>(`/kline-overlays/${id}`);
+      if (!isOkEnvelope(res.data)) {
+        return { ok: false, message: res.data?.message ?? '删除画线失败' };
+      }
+      setOverlays((prev) => prev.filter((item) => Number(item.id) !== id));
+      // 记入本轮的删除集合：加载快照若还带着它，应用返回结果时会被排除
+      deletedOverlayIdsRef.current.add(id);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: extractErrorMessageOrErrorMessage(e) };
+    }
+  }, []);
 
   return (
     <div style={{ fontFamily: TYPO.fontFamily }}>
@@ -662,7 +760,19 @@ export default function Kline() {
               height={isMobile ? 420 : 560}
               mainHeight={isMobile ? 250 : 380}
               subHeight={isMobile ? 110 : 140}
+              overlays={overlays}
+              overlaysEnabled={fq === 'bfq'}
+              onCreateOverlay={handleCreateOverlay}
+              onDeleteOverlay={handleDeleteOverlay}
             />
+            {overlayError && (
+              <div
+                data-testid="kline-overlay-error"
+                style={{ color: COLORS.danger, fontSize: TYPO.smallSize, marginTop: 4 }}
+              >
+                {overlayError}
+              </div>
+            )}
           </Suspense>
         </>
       )}

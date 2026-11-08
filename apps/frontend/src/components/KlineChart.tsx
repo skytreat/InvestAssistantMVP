@@ -49,6 +49,20 @@ import type { Chart, KLineData } from 'klinecharts';
 import { COLORS, TYPO } from '../theme/tokens';
 import { PERIOD_TO_KLINECHARTS, type ChartBar, type KlinePeriod } from '../indicators/chartBars';
 import type { IndicatorParams } from '../indicators/chartParams';
+import {
+  DEFAULT_ANNOTATION_TEXT,
+  OVERLAY_TOOLS,
+  buildOverlayCreate,
+  collectBarTimestamps,
+  filterReplayableOverlays,
+  getOverlayTool,
+  overlayPointsFromChart,
+  validateOverlayDraft,
+  type OverlayDraft,
+  type OverlaySaveResult,
+  type OverlayToolName,
+  type StoredOverlay,
+} from '../indicators/klineOverlays';
 import KlineHoverPanel from './KlineHoverPanel';
 import KlineTradePanel from './KlineTradePanel';
 import {
@@ -129,6 +143,14 @@ export interface KlineChartProps {
   mainHeight?: number;
   /** 副图高度（px）*/
   subHeight?: number;
+  /** 当前标的/周期已持久化的画线（页面按 **不复权（bfq）** 口径拉取）*/
+  overlays?: StoredOverlay[];
+  /** 画线是否可用：仅**不复权（bfq）**口径下可用（点位存的是当时成交价）*/
+  overlaysEnabled?: boolean;
+  /** 保存新画线（页面负责落库）；返回保存后的记录 id */
+  onCreateOverlay?: (draft: OverlayDraft) => Promise<OverlaySaveResult>;
+  /** 删除画线（软删除）*/
+  onDeleteOverlay?: (id: number) => Promise<OverlaySaveResult>;
 }
 
 /** klinecharts 运行时模块（动态 import 的结果）*/
@@ -186,6 +208,10 @@ export default function KlineChart({
   height = 560,
   mainHeight = 380,
   subHeight = 140,
+  overlays = [],
+  overlaysEnabled = true,
+  onCreateOverlay,
+  onDeleteOverlay,
 }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -221,6 +247,19 @@ export default function KlineChart({
   const [isFullscreen, setIsFullscreen] = useState(false);
   /** 全屏的根元素：包含图表 + hover 浮窗 + 交易明细面板 + 全屏按钮 */
   const wrapperRef = useRef<HTMLDivElement>(null);
+  /** 当前绘制态工具（null = 空闲）*/
+  const [activeTool, setActiveTool] = useState<OverlayToolName | null>(null);
+  /** 被选中的画线 overlay id（图表 overlay id == 持久化记录 id 的字符串形式）*/
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+  /** 画线提示（落点非法 / 保存失败等）*/
+  const [overlayNotice, setOverlayNotice] = useState<string | null>(null);
+  /** 文字标注输入内容（仅 `simpleAnnotation` 使用）*/
+  const [annotationText, setAnnotationText] = useState('');
+  /** 正在绘制中的 overlay id（切换工具 / 取消时移除）*/
+  const drawingOverlayIdRef = useRef<string | null>(null);
+  /** 页面注入的落库回调（避免绘制回调闭包拿到过期引用）*/
+  const overlayHandlersRef = useRef({ onCreateOverlay, onDeleteOverlay });
+  overlayHandlersRef.current = { onCreateOverlay, onDeleteOverlay };
 
   /* ---------------- 初始化（只跑一次） ---------------- */
   useEffect(() => {
@@ -645,6 +684,141 @@ export default function KlineChart({
     chartRef.current?.resize();
   }, [isFullscreen, ready]);
 
+  /* ---------------- 手工画线（5 个内置模板） ---------------- */
+
+  /** 「删除选中标注」只对已落库的记录可用（绘制中的临时 overlay id 不在 overlays 里）*/
+  const selectedIsPersisted = overlays.some((item) => String(item.id) === selectedOverlayId);
+  /** 当前工具需要的落点数（提示文案用）*/
+  const activePointCount = activeTool ? (getOverlayTool(activeTool)?.pointCount ?? 0) : 0;
+
+  /**
+   * 绘制结束：落点校验（**timestamp 必须落在已有 bar 上**）→ 落库；失败则从图上移除
+   *
+   * 🔒 复权口径写死不复权（bfq）：`points.value` 就是图上当时显示的成交价。
+   */
+  const finishOverlayDrawing = useCallback(
+    async (
+      tool: OverlayToolName,
+      overlay: { id: string; points?: ReadonlyArray<{ timestamp?: number; value?: number }> },
+    ) => {
+      const chart = chartRef.current;
+      setActiveTool(null);
+      drawingOverlayIdRef.current = null;
+      // 测试环境可能存在不完整的 chart 替身：缺 removeOverlay 时只做提示，不炸页面
+      const removeChartOverlay = (id: string) => {
+        if (typeof chart?.removeOverlay === 'function') chart.removeOverlay({ id });
+      };
+
+      const points = overlayPointsFromChart(overlay);
+      const text = tool === 'simpleAnnotation' ? annotationText.trim() || DEFAULT_ANNOTATION_TEXT : null;
+      const draft: OverlayDraft = {
+        symbol,
+        period,
+        name: tool,
+        points: points ?? [],
+        text,
+      };
+      const error = validateOverlayDraft(draft, collectBarTimestamps(barsRef.current));
+      if (error) {
+        removeChartOverlay(overlay.id);
+        setOverlayNotice(error);
+        return;
+      }
+
+      const handler = overlayHandlersRef.current.onCreateOverlay;
+      if (!handler) {
+        removeChartOverlay(overlay.id);
+        setOverlayNotice('画线保存不可用');
+        return;
+      }
+
+      const result = await handler(draft);
+      if (!result.ok) {
+        removeChartOverlay(overlay.id);
+        setOverlayNotice(result.message ?? '画线保存失败');
+        return;
+      }
+      setOverlayNotice(null);
+    },
+    [annotationText, period, symbol],
+  );
+
+  /** 点击工具 → 进入绘制态（`createOverlay` 不传 `points` 即开始取点）*/
+  const startOverlayDrawing = useCallback(
+    (tool: OverlayToolName) => {
+      const chart = chartRef.current;
+      if (!chart || !overlaysEnabled || typeof chart.createOverlay !== 'function') return;
+      if (drawingOverlayIdRef.current) {
+        chart.removeOverlay({ id: drawingOverlayIdRef.current });
+        drawingOverlayIdRef.current = null;
+      }
+      setSelectedOverlayId(null);
+      setOverlayNotice(null);
+      setActiveTool(tool);
+      const createdId = chart.createOverlay({
+        name: tool,
+        paneId: CANDLE_PANE_ID,
+        needDefaultPointFigure: true,
+        onDrawEnd: (event) => {
+          void finishOverlayDrawing(
+            tool,
+            event.overlay as unknown as {
+              id: string;
+              points?: ReadonlyArray<{ timestamp?: number; value?: number }>;
+            },
+          );
+        },
+      });
+      drawingOverlayIdRef.current = typeof createdId === 'string' ? createdId : null;
+    },
+    [finishOverlayDrawing, overlaysEnabled],
+  );
+
+  /** 删除选中的已持久化标注（后端软删除）*/
+  const deleteSelectedOverlay = useCallback(async () => {
+    if (!selectedOverlayId) return;
+    const handler = overlayHandlersRef.current.onDeleteOverlay;
+    const id = Number(selectedOverlayId);
+    if (!handler || !Number.isInteger(id)) return;
+    const result = await handler(id);
+    if (!result.ok) {
+      setOverlayNotice(result.message ?? '删除画线失败');
+      return;
+    }
+    const chart = chartRef.current;
+    if (typeof chart?.removeOverlay === 'function') chart.removeOverlay({ id: selectedOverlayId });
+    setSelectedOverlayId(null);
+    setOverlayNotice(null);
+  }, [selectedOverlayId]);
+
+  /**
+   * 重放已持久化的画线
+   *
+   * - 只重放 `timestamp` 能对应当前 bar 集合的标注（对不上的**跳过**，不删除）；
+   * - 标的 / 周期 / 原始数据变化后重新同步（先清主图 overlay，再按可重放列表重建）。
+   */
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready) return;
+    // 测试替身可能不完整：缺 overlay 能力时直接跳过重放（不影响 K 线渲染）
+    if (typeof chart.removeOverlay !== 'function' || typeof chart.createOverlay !== 'function') {
+      return;
+    }
+    chart.removeOverlay({ paneId: CANDLE_PANE_ID });
+    setSelectedOverlayId(null);
+    if (!overlaysEnabled) return;
+
+    const barTimestamps = collectBarTimestamps(barsRef.current);
+    const replayable = filterReplayableOverlays(overlays, barTimestamps);
+    for (const item of replayable) {
+      chart.createOverlay({
+        ...buildOverlayCreate(item, CANDLE_PANE_ID),
+        onSelected: (event) => setSelectedOverlayId(event.overlay.id),
+        onDeselected: (event) => setSelectedOverlayId((prev) => (prev === event.overlay.id ? null : prev)),
+      });
+    }
+  }, [ready, symbol, period, dataSignature, overlays, overlaysEnabled]);
+
   return (
     <div
       ref={wrapperRef}
@@ -657,6 +831,112 @@ export default function KlineChart({
         background: isFullscreen ? COLORS.chartBg : undefined,
       }}
     >
+      {/* 手工画线工具栏（5 个内置模板）：仅**不复权（bfq）**口径可用 */}
+      <div
+        data-testid="kline-overlay-toolbar"
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: 6,
+          marginBottom: 6,
+        }}
+      >
+        <span style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary }}>画线：</span>
+        {OVERLAY_TOOLS.map((tool) => {
+          const active = activeTool === tool.name;
+          return (
+            <button
+              key={tool.name}
+              type="button"
+              data-testid={`kline-overlay-tool-${tool.name}`}
+              aria-pressed={active}
+              disabled={!overlaysEnabled}
+              onClick={() => startOverlayDrawing(tool.name)}
+              title={
+                overlaysEnabled ? `点击后在图上按 ${tool.pointCount} 个落点` : '画线仅支持「不复权」口径'
+              }
+              style={{
+                padding: '2px 8px',
+                fontSize: TYPO.captionSize,
+                color: active ? COLORS.brand : COLORS.textSecondary,
+                background: active ? COLORS.brandBg : 'transparent',
+                border: `1px solid ${active ? COLORS.brand : COLORS.borderMedium}`,
+                borderRadius: 4,
+                cursor: overlaysEnabled ? 'pointer' : 'not-allowed',
+                opacity: overlaysEnabled ? 1 : 0.55,
+              }}
+            >
+              {tool.label}
+            </button>
+          );
+        })}
+        {activeTool === 'simpleAnnotation' && (
+          <input
+            data-testid="kline-overlay-text"
+            aria-label="标注文字"
+            placeholder="标注文字（留空用默认）"
+            value={annotationText}
+            maxLength={120}
+            onChange={(event) => setAnnotationText(event.target.value)}
+            style={{
+              width: 160,
+              padding: '2px 6px',
+              fontSize: TYPO.captionSize,
+              color: COLORS.textPrimary,
+              background: COLORS.cardBg,
+              border: `1px solid ${COLORS.borderMedium}`,
+              borderRadius: 4,
+              boxSizing: 'border-box',
+            }}
+          />
+        )}
+        <button
+          type="button"
+          data-testid="kline-overlay-delete"
+          disabled={!selectedIsPersisted}
+          onClick={() => void deleteSelectedOverlay()}
+          title="在图上点选一条标注后删除"
+          style={{
+            padding: '2px 8px',
+            fontSize: TYPO.captionSize,
+            color: selectedIsPersisted ? COLORS.danger : COLORS.textTertiary,
+            background: 'transparent',
+            border: `1px solid ${selectedIsPersisted ? COLORS.danger : COLORS.borderMedium}`,
+            borderRadius: 4,
+            cursor: selectedIsPersisted ? 'pointer' : 'not-allowed',
+            opacity: selectedIsPersisted ? 1 : 0.55,
+          }}
+        >
+          删除选中标注
+        </button>
+        {activeTool && (
+          <span
+            data-testid="kline-overlay-hint"
+            style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary }}
+          >
+            绘制中：请在图上按 {activePointCount} 个落点
+          </span>
+        )}
+        {!overlaysEnabled && (
+          <span
+            data-testid="kline-overlay-disabled-hint"
+            style={{ fontSize: TYPO.captionSize, color: COLORS.textTertiary }}
+          >
+            画线仅支持「不复权」口径
+          </span>
+        )}
+        {overlayNotice && (
+          <span
+            role="alert"
+            data-testid="kline-overlay-notice"
+            style={{ fontSize: TYPO.captionSize, color: COLORS.danger }}
+          >
+            {overlayNotice}
+          </span>
+        )}
+      </div>
+
       <div
         ref={containerRef}
         data-testid="kline-chart-container"
