@@ -191,7 +191,9 @@ function buyFeeOf(notional: number, rules: TradeRules): number {
 
 /** 卖出总费用 = 佣金 + 过户费 + 印花税（0/0 时与旧 `commissionOf` 逐位相同） */
 function sellFeeOf(notional: number, rules: TradeRules): number {
-  return round2(commissionOf(notional, rules) + transferFeeOf(notional, rules) + stampDutyOf(notional, rules));
+  return round2(
+    commissionOf(notional, rules) + transferFeeOf(notional, rules) + stampDutyOf(notional, rules),
+  );
 }
 
 /** 目标仓位 → 目标金额（targetNotional 优先；`hold` 不动 ⇒ 没有目标金额） */
