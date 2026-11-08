@@ -101,7 +101,10 @@ export default function ComboEditor({ plugins, initial, onSaved, onCancel }: Pro
   const candidates = plugins.filter(isComboConditionCandidate);
   const [name, setName] = useState(initial?.name ?? '');
   const [assetScope, setAssetScope] = useState(initial?.assetScope ?? 'all');
-  const [cooldownBars, setCooldownBars] = useState(initial?.cooldownBars ?? 3);
+  const [cooldownBars, setCooldownBars] = useState<string>(
+    initial?.cooldownBars !== undefined ? String(initial.cooldownBars) : '3',
+  );
+  const [cooldownError, setCooldownError] = useState<string | null>(null);
   const [conditions, setConditions] = useState<ComboConditionDraft[]>(() => toDrafts(initial, candidates));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,8 +136,16 @@ export default function ComboEditor({ plugins, initial, onSaved, onCancel }: Pro
 
   const save = async () => {
     setError(null);
+    setCooldownError(null);
     if (name.trim() === '') {
       setError('组合名称不能为空');
+      return;
+    }
+    // 冷却根数：空输入保持为空（不静默变 0），保存前按 1~20 整数校验并在字段旁提示
+    const cooldownRaw = cooldownBars.trim();
+    const cooldownValue = Number(cooldownRaw);
+    if (cooldownRaw === '' || !Number.isInteger(cooldownValue) || cooldownValue < 1 || cooldownValue > 20) {
+      setCooldownError('冷却根数必须是 1~20 的整数');
       return;
     }
     if (conditions.length < 2) {
@@ -165,7 +176,7 @@ export default function ComboEditor({ plugins, initial, onSaved, onCancel }: Pro
       const payload = {
         name: name.trim(),
         assetScope,
-        cooldownBars,
+        cooldownBars: cooldownValue,
         conditions: conditions.map((item) => ({
           pluginId: item.pluginId,
           enabled: item.enabled,
@@ -226,18 +237,34 @@ export default function ComboEditor({ plugins, initial, onSaved, onCancel }: Pro
           </select>
         </label>
 
-        <label style={fieldStyle}>
-          冷却根数
-          <input
-            aria-label="冷却根数"
-            type="number"
-            min={1}
-            max={20}
-            value={cooldownBars}
-            onChange={(e) => setCooldownBars(Number(e.target.value))}
-            style={{ ...inputStyle, width: 96 }}
-          />
-        </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={fieldStyle}>
+            冷却根数
+            <input
+              aria-label="冷却根数"
+              type="number"
+              min={1}
+              max={20}
+              value={cooldownBars}
+              aria-invalid={cooldownError ? true : undefined}
+              aria-describedby={cooldownError ? 'combo-cooldown-error' : undefined}
+              onChange={(e) => {
+                setCooldownBars(e.target.value);
+                setCooldownError(null);
+              }}
+              style={{ ...inputStyle, width: 96 }}
+            />
+          </label>
+          {cooldownError && (
+            <span
+              id="combo-cooldown-error"
+              data-testid="combo-cooldown-error"
+              style={{ color: COLORS.danger, fontSize: TYPO.captionSize }}
+            >
+              {cooldownError}
+            </span>
+          )}
+        </div>
       </div>
 
       {scopeNote && (

@@ -129,8 +129,9 @@ function parseAssetScope(raw: unknown): ComboAssetScope {
 
 function parseCooldownBars(raw: unknown): number {
   if (raw === undefined || raw === null) return 3;
-  if (typeof raw !== 'number') {
-    throw new ComboInputError('cooldownBars 必须是数字');
+  // 与 `assertCooldownBars`（仓储层）同口径：1~20 的整数；这里先拦，避免同一约束两端各管一半
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > 20) {
+    throw new ComboInputError('冷却根数必须是 1~20 的整数');
   }
   return raw;
 }

@@ -256,6 +256,51 @@ describe('PA-07 校验与鉴权', () => {
     expect(JSON.parse(res.body).code).toBe('PARAM_INVALID');
   });
 
+  it.each([
+    ['0', 0],
+    ['3.5', 3.5],
+    ['99', 99],
+    ['空字符串', ''],
+  ])('cooldownBars 非法（%s）→ 400 PARAM_INVALID', async (_label, value) => {
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/strategy/combos',
+      headers: auth(bundle.adminToken),
+      payload: {
+        name: '冷却越界',
+        cooldownBars: value,
+        conditions: validConditions,
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe('PARAM_INVALID');
+    expect(body.message).toContain('1~20');
+  });
+
+  it('PUT 的 cooldownBars 越界 → 400（路由层先拦，不依赖仓储层兜底）', async () => {
+    const created = await createCombo();
+    const res = await bundle.app.inject({
+      method: 'PUT',
+      url: `/api/strategy/combos/${created.id}`,
+      headers: auth(bundle.adminToken),
+      payload: { cooldownBars: 0 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('PARAM_INVALID');
+  });
+
+  it('cooldownBars 省略 → 默认 3（不误判为非法）', async () => {
+    const res = await bundle.app.inject({
+      method: 'POST',
+      url: '/api/strategy/combos',
+      headers: auth(bundle.adminToken),
+      payload: { name: '默认冷却', conditions: validConditions },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.cooldownBars).toBe(3);
+  });
+
   it('toggle 的 enabled 非布尔 → 400', async () => {
     const created = await createCombo();
     const res = await bundle.app.inject({

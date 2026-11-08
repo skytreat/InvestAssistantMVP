@@ -259,6 +259,42 @@ describe('组合策略编辑（PA-08）', () => {
     expect(await screen.findByText('组合至少需要 2 个条件')).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
   });
+
+  it('冷却根数：清空后保存 → 字段旁提示且不发请求；填回合法值后正常保存', async () => {
+    postMock.mockResolvedValueOnce(
+      mockResponse({ ...COMBO, id: 'cmb_cooldown', name: '冷却校验', cooldownBars: 5 }),
+    );
+
+    renderWithRouter(<StrategyConfig />);
+    await screen.findByTestId('combos-section');
+    await userEvent.click(screen.getByTestId('combo-new'));
+
+    await userEvent.type(await screen.findByLabelText('组合名称'), '冷却校验');
+    const cooldown = screen.getByLabelText('冷却根数');
+    expect(cooldown).toHaveValue(3);
+
+    // 清空 ⇒ 保持为空（旧实现会静默变 0），保存被字段级校验拦下
+    await userEvent.clear(cooldown);
+    expect(cooldown).toHaveValue(null);
+    await userEvent.click(screen.getByRole('button', { name: '保存组合' }));
+    expect(await screen.findByTestId('combo-cooldown-error')).toHaveTextContent('冷却根数必须是 1~20 的整数');
+    expect(cooldown).toHaveAttribute('aria-invalid', 'true');
+    expect(postMock).not.toHaveBeenCalled();
+
+    // 超范围 21 ⇒ 仍被拦下
+    await userEvent.type(cooldown, '21');
+    await userEvent.click(screen.getByRole('button', { name: '保存组合' }));
+    expect(await screen.findByTestId('combo-cooldown-error')).toHaveTextContent('1~20');
+    expect(postMock).not.toHaveBeenCalled();
+
+    // 填回 5 ⇒ 提示消失并正常提交数字
+    await userEvent.clear(cooldown);
+    await userEvent.type(cooldown, '5');
+    await userEvent.click(screen.getByRole('button', { name: '保存组合' }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('combo-cooldown-error')).not.toBeInTheDocument();
+    expect((postMock.mock.calls[0][1] as Record<string, unknown>).cooldownBars).toBe(5);
+  });
 });
 
 describe('组合启停与删除（PA-08）', () => {
