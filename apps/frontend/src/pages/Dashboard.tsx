@@ -509,8 +509,12 @@ export default function Dashboard() {
          * ⚠️ 与 `/signal`（跨交易日「最近 N 条」）不同，本端点**强制单日**，
          *    默认日由后端解析（最近有信号日 → 最近行情日 → 今天），
          *    并把实际交易日与来源放进 meta —— 前端不再自己猜今天。
+         *
+         * 🔴 风险类信号不进 Top5：这一栏的语义是「今日最值得看的机会」，
+         *    风险提示（占比超限 / 浮亏止损 / 集中度）挤进来会稀释它；
+         *    后端按 `sub_category` 排除（本端点默认即排除，此处显式传参表明意图）。
          */
-        const res = await api.get('/signal/top5');
+        const res = await api.get('/signal/top5', { params: { exclude_risk: 1 } });
         if (isOkEnvelope(res.data)) {
           setSignals((res.data.data ?? []) as Signal[]);
           const meta = res.data as unknown as {

@@ -156,7 +156,7 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
     expect(produced.has('sh600000'), '不得再对硬编码 sh600000 产生信号').toBe(false);
   });
 
-  it('stats.total = 插件数 × 标的数（不再是「插件数」这种无意义口径）', async () => {
+  it('stats.total = 逐标的插件数 × 标的数 + 组合级插件数（不再是「插件数」这种无意义口径）', async () => {
     installDuckDBMock();
     seedRelations([
       ['sh600001', 'watch'],
@@ -164,10 +164,13 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
       ['sh600003', 'hold'],
     ]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
-    const monitorCount = getAllPlugins().filter((p) => p.category === 'monitor').length;
+    const monitors = getAllPlugins().filter((p) => p.category === 'monitor');
+    // 组合级插件（requiresPositions，如风险类）读整份持仓快照，只执行 1 次，不按标的重数
+    const positional = monitors.filter((p) => p.requiresPositions).length;
+    const perSymbol = monitors.length - positional;
 
     const result = await executeAllPlugins({ symbols });
-    expect(result.stats.total).toBe(monitorCount * symbols.length);
+    expect(result.stats.total).toBe(perSymbol * symbols.length + positional);
   });
 
   it('不传 symbols → 沿用旧行为（每个插件跑 1 次）', async () => {

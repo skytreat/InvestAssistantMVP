@@ -978,9 +978,9 @@ describe('pluginEngine 覆盖 — S2 持仓视图', () => {
     });
 
     const res = await executePlugin(plugin, {}, buildPluginContext(undefined, snapshot));
-    // 返回空信号 → 有快照但无行情，归为 NO_DATA（不是 POSITION_UNAVAILABLE）
+    // 返回空信号 → 有快照但本插件零行情 IO，归为 NO_SIGNAL（不是 NO_DATA / POSITION_UNAVAILABLE）
     expect(res.status).toBe('SKIP');
-    expect(res.skipReason).toBe('NO_DATA');
+    expect(res.skipReason).toBe('NO_SIGNAL');
     expect(seen).toEqual({ cash: 500, equity: 1700, available: true, count: 1 });
   });
 
@@ -994,7 +994,9 @@ describe('pluginEngine 覆盖 — S2 持仓视图', () => {
     builtinPlugins.push(plugin);
     try {
       const res = await executeAllPlugins({ symbols: ['sh600000'], asOfDate: '2026-01-05' });
-      expect(res.stats.positionUnavailable).toBe(1);
+      // 回放不给持仓快照 ⇒ 所有组合级插件（含内置 position_risk_alert）都会记一次
+      const positionalCount = builtinPlugins.filter((p) => p.requiresPositions).length;
+      expect(res.stats.positionUnavailable).toBe(positionalCount);
       expect(res.results.find((r) => r.pluginId === 'risk-probe')?.skipReason).toBe('POSITION_UNAVAILABLE');
     } finally {
       builtinPlugins.splice(builtinPlugins.indexOf(plugin), 1);

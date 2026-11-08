@@ -1,7 +1,7 @@
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from './logger.js';
 import { isTradingDay, resolveLatestQuoteDate } from './marketData.js';
-import type { PluginSignal } from './pluginEngine.js';
+import type { PluginSignal, PluginSubCategory } from './pluginEngine.js';
 
 /**
  * 信号生成的目标用户 id
@@ -80,14 +80,18 @@ const DIRECTION_MAP: Record<string, 'buy' | 'sell' | 'hold'> = {
  * INSERT 列顺序（persistSignals / persistBatchSignals 共用）
  *
  * T58：显式写入 `is_final = 1`。这里是常量而非用户输入，故用 SQL 字面量而非占位符；
- * 真正来自外部的 9 个字段全部走 `?` 预编译绑定。
+ * 其余 11 个列全部走 `?` 预编译绑定。
  *
  * F 域区间回放：`origin` 区分 `live`（日常链路实时生成）/ `replay`（回放补算），
  * 两个持久化函数都通过参数绑定写入，不再依赖列默认值。
+ *
+ * 风险类落地：`sub_category` 记录插件子分类（六分类 + `custom`），
+ * **只作为读取侧的稳定过滤判据**（`sub_category <> 'risk'` 排除风险提示），
+ * 不改变方向语义；`is_final` 仍保持在列尾（T58 断言依赖这一点）。
  */
 export const SIGNAL_INSERT_SQL = `INSERT OR IGNORE INTO user_strategy_signal
-     (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json, origin, is_final)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`;
+     (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, metrics_json, origin, sub_category, is_final)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`;
 
 /** 信号来源：live = 日常链路（17:02 定时 / 手动触发）；replay = 区间回放补算 */
 export type SignalOrigin = 'live' | 'replay';
@@ -111,6 +115,13 @@ export function persistSignals(
   tradeDate: string,
   userId: number = 1,
   origin: SignalOrigin = 'live',
+  /**
+   * 插件子分类（写入 `sub_category`）
+   *
+   * 风险类必须写 `'risk'` —— 读取侧（Top5 / 持仓卡徽标）靠这一列排除风险提示。
+   * 其余调用方传 `pluginResult.subCategory` 即可；不传则落 NULL（视为非风险）。
+   */
+  subCategory: PluginSubCategory | null = null,
 ): PersistResult {
   const db = ConfigStore.getInstance().db;
   let inserted = 0;
@@ -134,6 +145,7 @@ export function persistSignals(
           s.strength ?? null,
           serializeMetrics(s.metrics),
           origin,
+          subCategory,
         );
         if (info.changes > 0) inserted++;
         else skipped++;
@@ -159,7 +171,13 @@ export function persistSignals(
  * → 让调用方在 executePlugin 层就分别调用 persistSignals
  */
 export function persistBatchSignals(
-  results: Array<{ pluginId: string; pluginCategory: 'monitor' | 'filter'; signals: PluginSignal[] }>,
+  results: Array<{
+    pluginId: string;
+    pluginCategory: 'monitor' | 'filter';
+    signals: PluginSignal[];
+    /** 插件子分类（风险类必须传 'risk'，读取侧据此排除） */
+    subCategory?: PluginSubCategory | null;
+  }>,
   tradeDate: string,
   userId: number = 1,
   origin: SignalOrigin = 'live',
@@ -187,6 +205,7 @@ export function persistBatchSignals(
             s.strength ?? null,
             serializeMetrics(s.metrics),
             origin,
+            r.subCategory ?? null,
           );
           if (info.changes > 0) inserted++;
           else skipped++;
