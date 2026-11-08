@@ -154,6 +154,23 @@ export function filterReplayableOverlays(
 }
 
 /**
+ * 统计「因 timestamp 不在当前 bar 集合而被跳过」的标注数量（用于给用户一条可见提示）。
+ *
+ * 等价于「过滤前后差值」，但只统计 `symbol + period` 与当前页一致的标注：
+ * 切换标的的瞬间列表里可能还留着上一个标的的记录，那些不属于「当前周期不适用」，不计入。
+ */
+export function countSkippedOverlays(
+  overlays: readonly StoredOverlay[],
+  barTimestamps: ReadonlySet<number>,
+  scope: { symbol: string; period: string },
+): number {
+  const scoped = overlays.filter(
+    (overlay) => overlay.symbol === scope.symbol && overlay.period === scope.period,
+  );
+  return scoped.length - filterReplayableOverlays(scoped, barTimestamps).length;
+}
+
+/**
  * 把「服务端返回的列表」与「本地当前列表」按 `id` 合并。
  *
  * 为什么需要合并：加载请求是异步的，用户可能在请求飞行途中新增或删除标注。

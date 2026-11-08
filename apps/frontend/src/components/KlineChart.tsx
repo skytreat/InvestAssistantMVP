@@ -55,6 +55,7 @@ import {
   buildOverlayCreate,
   collectBarTimestamps,
   filterReplayableOverlays,
+  countSkippedOverlays,
   getOverlayTool,
   overlayPointsFromChart,
   validateOverlayDraft,
@@ -253,6 +254,8 @@ export default function KlineChart({
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
   /** 画线提示（落点非法 / 保存失败等）*/
   const [overlayNotice, setOverlayNotice] = useState<string | null>(null);
+  /** 本次重放被跳过的标注条数（timestamp 不在当前 bar 集合）；0 ⇒ 不渲染提示 */
+  const [skippedOverlayCount, setSkippedOverlayCount] = useState(0);
   /** 文字标注输入内容（仅 `simpleAnnotation` 使用）*/
   const [annotationText, setAnnotationText] = useState('');
   /** 正在绘制中的 overlay id（切换工具 / 取消时移除）*/
@@ -806,9 +809,14 @@ export default function KlineChart({
     }
     chart.removeOverlay({ paneId: CANDLE_PANE_ID });
     setSelectedOverlayId(null);
-    if (!overlaysEnabled) return;
+    if (!overlaysEnabled) {
+      setSkippedOverlayCount(0);
+      return;
+    }
 
     const barTimestamps = collectBarTimestamps(barsRef.current);
+    // 跳过条数随每次重放自然更新（含清空），不额外弹窗，避免「每次绘制都弹」
+    setSkippedOverlayCount(countSkippedOverlays(overlays, barTimestamps, { symbol, period }));
     const replayable = filterReplayableOverlays(overlays, barTimestamps);
     for (const item of replayable) {
       chart.createOverlay({
@@ -924,6 +932,16 @@ export default function KlineChart({
             style={{ fontSize: TYPO.captionSize, color: COLORS.textTertiary }}
           >
             画线仅支持「不复权」口径
+          </span>
+        )}
+        {overlaysEnabled && skippedOverlayCount > 0 && (
+          <span
+            // 信息性提示 ⇒ `status`（不是 `alert`：不打断屏幕阅读器朗读，也不与错误提示抢角色）
+            role="status"
+            data-testid="kline-overlay-skip-hint"
+            style={{ fontSize: TYPO.captionSize, color: COLORS.textTertiary }}
+          >
+            当前周期有 {skippedOverlayCount} 条标注不适用已隐藏
           </span>
         )}
         {overlayNotice && (

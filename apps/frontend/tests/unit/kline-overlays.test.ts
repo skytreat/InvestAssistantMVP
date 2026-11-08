@@ -12,6 +12,7 @@ import {
   collectBarTimestamps,
   filterReplayableOverlays,
   mergeOverlaysFromServer,
+  countSkippedOverlays,
   overlayPointsFromChart,
   validateOverlayDraft,
   type OverlayDraft,
@@ -23,6 +24,7 @@ const TS_B = Date.UTC(2026, 9, 13);
 const TS_C = Date.UTC(2026, 9, 14);
 const BARS = [{ timestamp: TS_A }, { timestamp: TS_B }, { timestamp: TS_C }];
 const BAR_TIMESTAMPS = collectBarTimestamps(BARS);
+const SCOPE = { symbol: 'sh600000', period: 'day' };
 
 function draft(overrides: Partial<OverlayDraft> = {}): OverlayDraft {
   return {
@@ -157,6 +159,48 @@ describe('filterReplayableOverlays', () => {
     ];
     const replayable = filterReplayableOverlays(rows, BAR_TIMESTAMPS);
     expect(replayable.map((row) => row.id)).toEqual([1, 3]);
+  });
+});
+
+describe('countSkippedOverlays', () => {
+  const stored = (overrides: Partial<StoredOverlay> = {}): StoredOverlay => ({
+    id: 1,
+    symbol: 'sh600000',
+    period: 'day',
+    name: 'horizontalStraightLine',
+    points: [{ timestamp: TS_A, value: 10 }],
+    text: null,
+    ...overrides,
+  });
+
+  it('返回值 = 过滤前后差值（全部对得上时为 0）', () => {
+    expect(countSkippedOverlays([stored()], BAR_TIMESTAMPS, SCOPE)).toBe(0);
+    const rows = [
+      stored({ id: 1 }),
+      stored({ id: 2, points: [{ timestamp: Date.UTC(2020, 0, 1), value: 10 }] }),
+      stored({
+        id: 3,
+        name: 'fibonacciLine',
+        points: [
+          { timestamp: TS_A, value: 10 },
+          { timestamp: Date.UTC(2020, 0, 1), value: 12 },
+        ],
+      }),
+    ];
+    expect(countSkippedOverlays(rows, BAR_TIMESTAMPS, SCOPE)).toBe(2);
+  });
+
+  it('只统计当前标的 + 周期的标注（切换标的的残留不计入）', () => {
+    const rows = [
+      stored({ id: 1 }),
+      stored({ id: 2, symbol: 'sz000001', points: [{ timestamp: Date.UTC(2020, 0, 1), value: 10 }] }),
+      stored({ id: 3, period: 'week', points: [{ timestamp: Date.UTC(2020, 0, 1), value: 10 }] }),
+    ];
+    expect(countSkippedOverlays(rows, BAR_TIMESTAMPS, SCOPE)).toBe(0);
+  });
+
+  it('空列表 ⇒ 0', () => {
+    expect(countSkippedOverlays([], BAR_TIMESTAMPS, SCOPE)).toBe(0);
   });
 });
 
