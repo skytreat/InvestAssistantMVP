@@ -149,11 +149,13 @@ describe('账户生命周期', () => {
  */
 function makePaperUser(username: string): { userId: number; token: string } {
   const db = bundle.db.db;
-  db.prepare(
-    `INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`,
-  ).run(username, hashPassword(`${username}123456`));
-  const userId = (db.prepare(`SELECT id FROM user_account WHERE username = ?`).get(username) as { id: number })
-    .id;
+  db.prepare(`INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`).run(
+    username,
+    hashPassword(`${username}123456`),
+  );
+  const userId = (
+    db.prepare(`SELECT id FROM user_account WHERE username = ?`).get(username) as { id: number }
+  ).id;
   return { userId, token: makeUserToken(userId, username) };
 }
 
