@@ -1447,8 +1447,9 @@ tdx2db 原生产出，**不做任何 schema 变更**。MVP 只读子集如下：
 | `/api/strategy/plugins/:id/config` | PUT | 是 | 更新插件 enabled 状态 + params |
 | `/api/strategy/plugins/:id/toggle` | PUT | 是 | **启用 / 禁用**单个插件。body `{ enabled }`（接受 `true/false` / `1/0` / `'1'/'0'/'true'/'false'`，后端统一收口成 SQLite 的 `0/1`）；**无法识别的取值 → 400 `PARAM_INVALID`**（不是 500）。⚠️ **方法必须是 PUT** —— Fastify 不做方法回退，用 POST 会 404 |
 | `/api/strategy/reload` | POST | 是（仅 admin）| 热加载自定义插件 |
-| `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>**`exclude_risk=1/true`**：排除风险类信号（`WHERE (sub_category IS NULL OR sub_category <> 'risk')`，**按子分类列判定、不按 plugin_id 字符串匹配**）—— 供 Dashboard Top5「今日最值得看的机会」使用；不传则照常返回全部（信号页需要展示风险提示）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
+| `/api/signal` | GET | 是 | 信号列表；支持 trade_date + plugin_id + direction 筛选；**按 `user_id` 隔离**（取自 token，**绝不信请求参数**）。<br>**`exclude_risk=1/true`**：排除风险类信号（`WHERE (sub_category IS NULL OR sub_category <> 'risk')`，**按子分类列判定、不按 plugin_id 字符串匹配**）—— 通用列表按需排除（**缺省不排除**，信号页要展示风险提示）；Dashboard Top5 走 `/api/signal/top5`（该端点缺省排除，见下行）。<br>⚠️ **分页窗口口径 = 「最近 N 条，页内升序」**（内层 `ORDER BY trade_date DESC` + `LIMIT ? OFFSET ?` 取最近一页，外层再 `ORDER BY trade_date ASC` 排回，`created_at / id` 作确定性 tie-break）⇒ **页内恒为升序**（G5.5「signals 升序」），但**第 1 页是最新的 N 条**（改动前是最早的 N 条）—— 与 `GET /api/quote/:symbol/kline` 的「近 20 条信号」**同口径** ⇒ 同一用户 + 同一标的时两端集合一致 |
 | `/api/signal/stats` | GET | 是 | **今日信号统计**（T67）：`?trade_date=YYYY-MM-DD`（缺省=今天）；返回 `{ total, up, down, hold }`（buy→up / sell→down / hold→hold）；**1 次 GROUP BY**，不受 `/api/signal` 分页影响 |
+| `/api/signal/top5` | GET | 是 | **今日 Top5 摘要**（F3）：`?trade_date=YYYY-MM-DD`（缺省 = 最近有信号日 → 最近行情日 → 东八区今天）；**强制单日 + `LIMIT 5`**；排序 `grade` 强>中>弱>未分级 → `strength` 降序（NULL 排同档末尾）→ `id` 倒序。meta 返回 `trade_date / trade_date_source / latest_quote_date / limit`。<br>**`exclude_risk` 缺省 = 排除**风险类（`sub_category='risk'`）—— 该端点定位「今日最值得看的机会」；显式 `exclude_risk=0|false` 才放开。⚠️ 与 `/api/signal` 的 `exclude_risk`（缺省 = 不排除）**语义相反**，勿混用 |
 | `/api/stockscan` | POST | 是 | 筛选插件执行。返回 `{ totalCandidates, totalMatched, results, tradeDate, filters }`：`totalCandidates`=DuckDB 初筛候选池只数；`totalMatched`=**命中插件条件的总只数**（不是候选池、不是返回条数）；`results`=按 score 降序的**前 `max_results` 条（默认/上限 100）**。⚠️ **不支持分页**：`totalMatched > results.length` 时其余命中不可翻页获取 |
 | `/api/review/yield` | GET | 是 | 双口径收益统计；支持 date_range + granularity（monthly/quarterly/yearly）|
 | `/api/candidate` | GET | 是 | **候选池列表**（`asset_code` / `baseline_price` / `candidate_reason` / `tracked_days` / `created_at`；按 `user_id` 隔离）—— T67 今日动态概览卡「重点关注」的候选侧数据源 |
@@ -1900,9 +1901,12 @@ export interface StrategyPlugin {
 > 插件上下文（单日快照 + K 线）都没有，塞进插件会伪造数据来源。
 >
 > **读取侧契约（为什么风险 HOLD 不会污染交易信号）**：
-> 1. 风险 HOLD **不带 `strength`** ⇒ 分级候选集（`WHERE strength IS NOT NULL`）自动排除，强/中/弱分位分母不被稀释；
+> 1. 风险 HOLD **不带 `strength`** ⇒ 分级候选集（`WHERE strength IS NOT NULL`）自动排除，强/中/弱分位分母不被稀释。
+>    ⚠️ **这是对 F1 候选集实现的依赖，不是永久保证**：当前 `assignSignalGrades` 只取 `strength IS NOT NULL` 的行；
+>    若未来分级口径改为基于当日**全部**信号（NULL 进分母或被当最弱档），必须改为显式 `sub_category <> 'risk'` 排除。
+>    该隔离由 `position-risk-alert.test.ts` 直接调用真实 `assignSignalGrades` 固化（有/无风险 HOLD 分级结果逐行相同）；
 > 2. 落库写 `sub_category='risk'` ⇒ 读取侧按该列（**不按 plugin_id 字符串匹配**）排除：
->    `getLatestSignalsByAssets`（持仓卡徽标 / 候选徽标）内层过滤、`GET /api/signal` 的 `exclude_risk=1`（Dashboard Top5）；
+>    `getLatestSignalsByAssets`（持仓卡徽标 / 候选徽标）内层过滤、`GET /api/signal/top5`（Dashboard Top5，**缺省排除**）与 `GET /api/signal` 的 `exclude_risk=1`（通用列表按需排除）；
 > 3. 信号页与持仓风险区不带该过滤，风险提示照常展示。
 
 > **子分类口径**：`sub_category` 一律取本节 `PluginSubCategory` 的 V3 六分类。旧值 `breakout` / `mean_reversion` 已由 `normalizeSubCategory()` 映射为 `volume` / `volatility`，上表不再出现旧值。

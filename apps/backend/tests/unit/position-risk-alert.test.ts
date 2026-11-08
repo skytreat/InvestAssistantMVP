@@ -32,7 +32,7 @@ import {
   type PluginPositionView,
 } from '../../src/services/pluginEngine.js';
 import { calculateSMA } from '../../src/services/indicators.js';
-import { persistSignals, persistBatchSignals } from '../../src/services/signalService.js';
+import { persistSignals, persistBatchSignals, assignSignalGrades } from '../../src/services/signalService.js';
 import { getLatestSignalsByAssets } from '../../src/services/todaySignals.js';
 import { ConfigStore } from '../../src/config/configStore.js';
 import { calculateBoll, calculateRSI } from '@invest/core';
@@ -56,11 +56,7 @@ function pos(
 }
 
 /** 插件的 execute() 是纯计算：context 只提供快照，零行情 IO */
-function ctxWith(
-  positions: PluginPositionView[],
-  equity: number,
-  available = true,
-): PluginContext {
+function ctxWith(positions: PluginPositionView[], equity: number, available = true): PluginContext {
   return {
     async getDailyKlines() {
       return [];
@@ -80,10 +76,7 @@ function ctxWith(
 }
 
 /** 跑一次插件（默认参数 + 覆盖项；`concentrationThreshold: 1` 等于关掉集中度规则） */
-async function run(
-  ctx: PluginContext,
-  params: Record<string, unknown> = {},
-): Promise<PluginExecutionResult> {
+async function run(ctx: PluginContext, params: Record<string, unknown> = {}): Promise<PluginExecutionResult> {
   return executePlugin(findPlugin('position_risk_alert'), params, ctx);
 }
 
@@ -116,7 +109,10 @@ describe('A. 三条快照级规则', () => {
   it('单票占比超限 → 一条 HOLD，label / metrics 带阈值与实际值', async () => {
     // A 市值 400 / 权益 1000 = 40% > 30%；B / C 各 30% 不越界；现价 100 = 成本 90 ⇒ 无浮亏
     const res = await run(
-      ctxWith([pos('sh600000', 4, 90, 400), pos('sh600001', 3, 100, 300), pos('sh600002', 3, 100, 300)], 1000),
+      ctxWith(
+        [pos('sh600000', 4, 90, 400), pos('sh600001', 3, 100, 300), pos('sh600002', 3, 100, 300)],
+        1000,
+      ),
       { concentrationThreshold: 1 }, // 关掉集中度规则，隔离单票占比
     );
 
@@ -134,10 +130,10 @@ describe('A. 三条快照级规则', () => {
   });
 
   it('浮亏触及止损 → 一条 HOLD（现价 88 / 成本 100 ⇒ -12%）', async () => {
-    const res = await run(
-      ctxWith([pos('sh600000', 3, 100, 264), pos('sh600001', 1, 100, 736)], 1000),
-      { concentrationThreshold: 1, maxPositionWeight: 0.8 },
-    );
+    const res = await run(ctxWith([pos('sh600000', 3, 100, 264), pos('sh600001', 1, 100, 736)], 1000), {
+      concentrationThreshold: 1,
+      maxPositionWeight: 0.8,
+    });
 
     expect(res.signals).toHaveLength(1);
     const s = res.signals[0];
@@ -153,7 +149,12 @@ describe('A. 三条快照级规则', () => {
     // 前 3 名合计 800 / 1000 = 80% > 60%，第 4 名（200）不在前 3 名
     const res = await run(
       ctxWith(
-        [pos('sh600000', 3, 100, 300), pos('sh600001', 2, 100, 250), pos('sh600002', 2, 100, 250), pos('sh600003', 2, 100, 200)],
+        [
+          pos('sh600000', 3, 100, 300),
+          pos('sh600001', 2, 100, 250),
+          pos('sh600002', 2, 100, 250),
+          pos('sh600003', 2, 100, 200),
+        ],
         1000,
       ),
       { maxPositionWeight: 0.5 }, // 关掉单票占比规则
@@ -176,10 +177,10 @@ describe('A. 三条快照级规则', () => {
   it('多规则命中的同一标的**合并为一条**（唯一键一天只能落一条）', async () => {
     // A：市值 700 / 权益 1000（占比超限），现价 100 / 成本 500 ⇒ 浮亏 -80%，且是前 1 名（集中度）
     // B：市值 300，占比 30% 不越界
-    const res = await run(
-      ctxWith([pos('sh600000', 7, 500, 700), pos('sh600001', 3, 100, 300)], 1000),
-      { concentrationTopN: 1, concentrationThreshold: 0.3 },
-    );
+    const res = await run(ctxWith([pos('sh600000', 7, 500, 700), pos('sh600001', 3, 100, 300)], 1000), {
+      concentrationTopN: 1,
+      concentrationThreshold: 0.3,
+    });
 
     const a = res.signals.filter((s) => s.symbol === 'sh600000');
     expect(a).toHaveLength(1);
@@ -198,10 +199,9 @@ describe('A. 不臆造信号（跳过分支）', () => {
   });
 
   it('marketValue = 0 的标的被跳过（取不到价 ≠ 零仓位风险）', async () => {
-    const res = await run(
-      ctxWith([pos('sh600000', 4, 100, 0), pos('sh600001', 10, 100, 1000)], 1000),
-      { concentrationThreshold: 1 },
-    );
+    const res = await run(ctxWith([pos('sh600000', 4, 100, 0), pos('sh600001', 10, 100, 1000)], 1000), {
+      concentrationThreshold: 1,
+    });
     expect(res.signals.map((s) => s.symbol)).toEqual(['sh600001']);
   });
 
@@ -266,7 +266,10 @@ describe('B. 落库与读取侧（真实 SQLite）', () => {
 
   it('persistSignals 写入 sub_category = risk 且 strength 为 NULL', async () => {
     const res = await run(
-      ctxWith([pos('sh600000', 4, 90, 400), pos('sh600001', 3, 100, 300), pos('sh600002', 3, 100, 300)], 1000),
+      ctxWith(
+        [pos('sh600000', 4, 90, 400), pos('sh600001', 3, 100, 300), pos('sh600002', 3, 100, 300)],
+        1000,
+      ),
       { concentrationThreshold: 1 },
     );
     const p = persistSignals(
@@ -461,5 +464,92 @@ describe('B. 落库与读取侧（真实 SQLite）', () => {
         )
         .get(UID),
     ).toEqual({ n: 3 });
+  });
+
+  /**
+   * 上一条是**契约快照**（照抄候选集 SQL）；本条直接调**真实** `assignSignalGrades`，
+   * 证明「加风险 HOLD 前后分级结果逐行相同」——不依赖复制实现、不会被实现漂移欺骗。
+   *
+   * ⚠️ 用 ≥10 条交易信号（`GRADE_MIN_CANDIDATES`），确保走的是**分位分支**而非绝对分值兜底
+   * （只有分位才存在「分母被稀释」的隔离问题）。
+   */
+  it('真实 assignSignalGrades：风险 HOLD 加入前后分级阈值完全相同（分位分支）', async () => {
+    const testDate = '2026-11-05';
+    // 12 条交易信号（强度递减），确保候选数 ≥ 10 → 走 20%/50% 分位
+    const tradeScores = [95, 88, 80, 74, 68, 62, 55, 48, 42, 35, 28, 20];
+    const insertTrade = db.db.prepare(
+      `INSERT INTO user_strategy_signal
+         (user_id, asset_code, plugin_id, plugin_category, trade_date, direction, label, strength, origin, sub_category, is_final)
+       VALUES (?, ?, 'macd_cross', 'monitor', ?, 'buy', '买入', ?, 'live', 'trend', 1)`,
+    );
+    tradeScores.forEach((strength, i) => {
+      insertTrade.run(UID, `sh6001${String(i).padStart(2, '0')}`, testDate, strength);
+    });
+
+    /** 读回交易信号的 (asset_code → grade, expires_at)，用于逐行比较 */
+    const readGrades = (): Array<{ asset_code: string; grade: string | null; expires_at: string | null }> =>
+      db.db
+        .prepare(
+          `SELECT asset_code, grade, expires_at FROM user_strategy_signal
+           WHERE user_id = ? AND trade_date = ? AND sub_category = 'trend'
+           ORDER BY asset_code ASC`,
+        )
+        .all(UID, testDate) as Array<{ asset_code: string; grade: string | null; expires_at: string | null }>;
+
+    const firstResult = await assignSignalGrades(testDate, UID);
+    expect(firstResult.graded).toBe(tradeScores.length); // 只分级交易信号
+    const before = readGrades();
+    // 分位分支的分布：前 ceil(12*0.2)=3 强 / 接下来 3 中 / 余 6 弱
+    expect(before.slice(0, 3).every((r) => r.grade === 'strong')).toBe(true);
+    expect(before.slice(3, 6).every((r) => r.grade === 'medium')).toBe(true);
+    expect(before.slice(6).every((r) => r.grade === 'weak')).toBe(true);
+
+    // 同一天加入 3 条风险 HOLD（strength 为 NULL，落 `sub_category='risk'`）
+    persistSignals(
+      [
+        {
+          symbol: 'sh600200',
+          signalType: 'HOLD',
+          label: '浮亏触及止损（-12.0% ≤ -10.0%）',
+          pluginId: 'position_risk_alert',
+          timestamp: `${testDate}T00:00:00.000Z`,
+        },
+        {
+          symbol: 'sh600201',
+          signalType: 'HOLD',
+          label: '单票占比超限（40.0% > 30.0%）',
+          pluginId: 'position_risk_alert',
+          timestamp: `${testDate}T00:00:00.000Z`,
+        },
+        {
+          symbol: 'sh600202',
+          signalType: 'HOLD',
+          label: '仓位集中度偏高（前 3 名合计 80.0% > 60.0%）',
+          pluginId: 'position_risk_alert',
+          timestamp: `${testDate}T00:00:00.000Z`,
+        },
+      ],
+      'position_risk_alert',
+      'monitor',
+      testDate,
+      UID,
+      'live',
+      'risk',
+    );
+
+    const secondResult = await assignSignalGrades(testDate, UID);
+    // 分级总数 / 各档数量与第一次完全相同 ⇒ 分位阈值未被风险 HOLD 稀释
+    expect(secondResult).toEqual(firstResult);
+    expect(readGrades()).toEqual(before);
+
+    // 风险 HOLD 自身：不参与分级（grade 为 NULL），也从未写入 strength
+    const riskRows = db.db
+      .prepare(
+        `SELECT grade, strength FROM user_strategy_signal
+         WHERE user_id = ? AND trade_date = ? AND sub_category = 'risk'`,
+      )
+      .all(UID, testDate) as Array<{ grade: string | null; strength: number | null }>;
+    expect(riskRows).toHaveLength(3);
+    expect(riskRows.every((r) => r.grade === null && r.strength === null)).toBe(true);
   });
 });

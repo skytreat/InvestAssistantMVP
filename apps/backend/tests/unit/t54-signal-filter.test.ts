@@ -130,6 +130,19 @@ async function query(qs: string): Promise<{ rows: SignalRow[]; total: number }> 
   return { rows: body.data, total: body.pagination.total };
 }
 
+/** F3 `/api/signal/top5`（强制单日 + LIMIT 5；元数据为 envelope 顶层字段，非 `meta`）*/
+async function queryTop5(qs: string): Promise<{ rows: SignalRow[]; tradeDate: string }> {
+  const res = await app.inject({ method: 'GET', url: `/api/signal/top5?${qs}` });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body) as {
+    code: number;
+    data: SignalRow[];
+    trade_date: string;
+  };
+  expect(body.code).toBe(0);
+  return { rows: body.data, tradeDate: body.trade_date };
+}
+
 describe('T54 · asset_code 单标的过滤', () => {
   it('只回该标的（3 个交易日的 6 条）', async () => {
     const { rows, total } = await query('asset_code=sh600000');
@@ -345,6 +358,28 @@ describe('T54 · exclude_risk 排除风险类', () => {
     seedRiskRows();
     const { total } = await query(`asset_code=${RISK_ASSET}&exclude_risk=true`);
     expect(total).toBe(1);
+  });
+
+  /**
+   * F3 `/api/signal/top5` 的缺省语义 = **排除**风险类（与 `/api/signal` 相反）
+   *
+   * 该端点定位是「今日最值得看的机会」，风险提示挤进来会稀释摘要卡；
+   * 缺省即排除，只有显式 `exclude_risk=0|false` 才放开（仅供排查/风险视角复用）。
+   * 显式传 `trade_date` 以隔离其他用例留下的数据（`sequence.shuffle` 随机顺序）。
+   */
+  it('/api/signal/top5 默认排除风险类，只回交易信号', async () => {
+    seedRiskRows();
+    const { rows, tradeDate } = await queryTop5(`trade_date=2026-11-06`);
+    expect(tradeDate).toBe('2026-11-06');
+    // 该日仅有 RISK_ASSET 的两条（交易信号 + 风险提示），默认排除后只剩交易信号
+    expect(rows).toHaveLength(1);
+    expect(rows[0].plugin_id).toBe('rsi_oversold');
+  });
+
+  it('/api/signal/top5?exclude_risk=0 放开风险类（返回两条）', async () => {
+    seedRiskRows();
+    const { rows } = await queryTop5(`trade_date=2026-11-06&exclude_risk=0`);
+    expect(rows.map((r) => r.plugin_id).sort()).toEqual(['position_risk_alert', 'rsi_oversold']);
   });
 });
 

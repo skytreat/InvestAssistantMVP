@@ -298,8 +298,7 @@ export async function registerSignalRoutes(app: FastifyInstance) {
        * 与 `GET /api/signal` 的 `exclude_risk`（缺省 = 不排除）语义相反 ——
        * 因为该端点的定位是「机会」，而通用列表的定位是「全部信号（含风险提示）」。
        */
-      const excludeRisk =
-        q.exclude_risk === undefined || q.exclude_risk === '1' || q.exclude_risk === 'true';
+      const excludeRisk = q.exclude_risk === undefined || q.exclude_risk === '1' || q.exclude_risk === 'true';
       let tradeDate: string;
       let dateSource: 'explicit' | 'signal' | 'quote' | 'today' = 'explicit';
       let latestQuoteDate: string | null = null;
@@ -316,9 +315,7 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       }
 
       // 风险类排除条件（无用户输入，纯常量片段，不涉及拼接注入）
-      const riskFilter = excludeRisk
-        ? ` AND (sub_category IS NULL OR sub_category <> 'risk')`
-        : '';
+      const riskFilter = excludeRisk ? ` AND (sub_category IS NULL OR sub_category <> 'risk')` : '';
       const rows = ConfigStore.getInstance()
         .db.prepare(
           `SELECT * FROM user_strategy_signal

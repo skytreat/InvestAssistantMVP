@@ -954,10 +954,8 @@ export const builtinPlugins: Plugin[] = [
       const lastBullish = last.close > last.open;
       const lastBearish = last.close < last.open;
 
-      const bullishEngulf =
-        prevBearish && lastBullish && last.open <= prev.close && last.close >= prev.open;
-      const bearishEngulf =
-        prevBullish && lastBearish && last.open >= prev.close && last.close <= prev.open;
+      const bullishEngulf = prevBearish && lastBullish && last.open <= prev.close && last.close >= prev.open;
+      const bearishEngulf = prevBullish && lastBearish && last.open >= prev.close && last.close <= prev.open;
 
       const prevBody = Math.abs(prev.close - prev.open);
       const lastBody = Math.abs(last.close - last.open);
@@ -1168,8 +1166,7 @@ export const builtinPlugins: Plugin[] = [
     category: 'monitor',
     subCategory: 'risk',
     complexity: 'simple',
-    description:
-      '基于持仓快照的三条快照级规则（单票占比超限 / 浮亏触及止损 / 仓位集中度）输出 HOLD 风险提示',
+    description: '基于持仓快照的三条快照级规则（单票占比超限 / 浮亏触及止损 / 仓位集中度）输出 HOLD 风险提示',
     // 风险类是**组合级**插件：读整份持仓快照，不接受 symbol 参数（标的域循环里只执行一次）
     paramSchema: [
       {
