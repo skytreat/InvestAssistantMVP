@@ -5,6 +5,7 @@
  *   - `duckdb.skipped=true`（ENABLE_QUOTE_BACKUP=false）→ `duckdb=SKIP` 且 `level=SUCCESS`
  *   - 未跳过且成功 → `duckdb=OK` + SUCCESS（回归）
  *   - 真实失败 → `duckdb=FAIL` + ERROR（skip 不得掩盖失败）
+ *   - PA-15：回测/纸面账本库（`backtest.db`）纳入备份清单，失败同样抬 level=ERROR
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -50,6 +51,7 @@ describe('scheduler — 17:05 备份日志（ENABLE_QUOTE_BACKUP）', () => {
   it('duckdb.skipped=true → duckdb=SKIP 且 level=SUCCESS（不得误报 ERROR）', async () => {
     runFullBackupMock.mockResolvedValue({
       sqlite: { success: true, size: 1024 },
+      backtest: { success: true, size: 1024 },
       duckdb: { success: true, skipped: true },
       cleanedFiles: 0,
     });
@@ -70,6 +72,7 @@ describe('scheduler — 17:05 备份日志（ENABLE_QUOTE_BACKUP）', () => {
   it('未跳过且成功 → duckdb=OK + SUCCESS（默认行为回归）', async () => {
     runFullBackupMock.mockResolvedValue({
       sqlite: { success: true, size: 1024 },
+      backtest: { success: true, size: 1024 },
       duckdb: { success: true, size: 2048 },
       cleanedFiles: 1,
     });
@@ -90,6 +93,7 @@ describe('scheduler — 17:05 备份日志（ENABLE_QUOTE_BACKUP）', () => {
   it('DuckDB 真实失败（未 skipped）→ duckdb=FAIL + ERROR', async () => {
     runFullBackupMock.mockResolvedValue({
       sqlite: { success: true, size: 1024 },
+      backtest: { success: true, size: 1024 },
       duckdb: { success: false, error: 'disk full' },
       cleanedFiles: 0,
     });
@@ -101,6 +105,27 @@ describe('scheduler — 17:05 备份日志（ENABLE_QUOTE_BACKUP）', () => {
       const summaries = summaryLogs(logSpy);
       expect(summaries).toHaveLength(1);
       expect(summaries[0].message).toContain('duckdb=FAIL');
+      expect(summaries[0].level).toBe('ERROR');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('回测/纸面账本库真实失败 → backtest=FAIL + ERROR（PA-15）', async () => {
+    runFullBackupMock.mockResolvedValue({
+      sqlite: { success: true, size: 1024 },
+      backtest: { success: false, error: 'backtest db locked' },
+      duckdb: { success: true, size: 2048 },
+      cleanedFiles: 0,
+    });
+
+    const logSpy = vi.spyOn(loggerNs, 'writeSystemLog').mockImplementation(() => {});
+    try {
+      await runBackupTask(collectJobs());
+
+      const summaries = summaryLogs(logSpy);
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].message).toContain('backtest=FAIL');
       expect(summaries[0].level).toBe('ERROR');
     } finally {
       logSpy.mockRestore();

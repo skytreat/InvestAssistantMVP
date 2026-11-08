@@ -151,6 +151,14 @@ export interface PluginPositionView {
   avgCost: number;
   /** 按最新收盘价估算的市值（取不到价时为 0） */
   marketValue: number;
+  /**
+   * 资产分类（`asset_class` 表口径，无记录默认 `risk`）
+   *
+   * 风险类插件只对 `risk` 类持仓做占比 / 止损判断：
+   * 货币 ETF 等 `cash` 类持仓既不该有「浮亏止损」，也不该进「单票占比」分母之外的判断
+   * （现金类市值仍计入 `equity`，见 `loadPositionSnapshot`）。
+   */
+  assetClass: 'risk' | 'cash';
 }
 
 /**
@@ -856,6 +864,940 @@ export const builtinPlugins: Plugin[] = [
       return signals.slice(0, limit);
     },
   }),
+
+  // ---------- 吞没反转（V3 六分类的 pattern 代表） ----------
+  /*
+   * ## 为什么选「吞没」而不是锤子线 / 缺口
+   *
+   * 1. **判据稳定**：吞没由两根 K 线的**实体包含关系**定义，不依赖影线长度的经验阈值。
+   *    锤子线的「下影线 ≥ 实体 2 倍」在 10 元股与 300 元股、低波动与高波动行情下口径漂移，
+   *    很难写成可验收的硬断言；
+   * 2. **方向完整**：吞没能同时给出看涨 / 看跌两个方向，适合 monitor 类（可同时落 buy / sell）；
+   * 3. **必须有趋势背景**：脱离趋势的吞没只是随机噪声，故叠加 MA(maPeriod) 趋势过滤。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 看涨吞没：前一根为阴线（prev.close < prev.open）→ 当根为阳线（last.close > last.open），
+   *   且当根实体**完全覆盖**前一根实体（last.open ≤ prev.close 且 last.close ≥ prev.open），
+   *   同时前一根收盘价位于 MA(maPeriod) **下方**（下跌趋势背景）。
+   * - 看跌吞没：前一根为阳线 → 当根为阴线，实体反包，且前一根收盘价位于 MA 上方。
+   * - 量能确认：当根成交量 ≥ minVolumeRatio × 前 volumePeriod 根均量（默认 1.2 倍），
+   *   过滤掉缩量假形态。
+   *
+   * ## 不臆造信号
+   * 数据不足 / MA 为 NaN / 均量为 0 / 没有趋势背景 → 一律返回 `[]`。
+   */
+  definePlugin({
+    id: 'engulfing_reversal',
+    name: '吞没反转形态',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'pattern',
+    complexity: 'simple',
+    description:
+      '下跌趋势中出现放量看涨吞没 → 买入信号；上涨趋势中出现放量看跌吞没 → 卖出信号（前复权 OHLC 口径）',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'maPeriod', label: '趋势均线周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minVolumeRatio',
+        label: '放量确认倍数',
+        type: 'number',
+        default: 1.2,
+        min: 0.5,
+        max: 5,
+        step: 0.1,
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const maPeriod = params.maPeriod as number;
+      const volumePeriod = params.volumePeriod as number;
+      const minVolumeRatio = params.minVolumeRatio as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 需要前一根 + 均量窗口 + 当根，缺一根都不判形态
+      if (klines.length < Math.max(maPeriod, volumePeriod) + 2) return [];
+
+      const n = klines.length;
+      const last = klines[n - 1];
+      const prev = klines[n - 2];
+
+      const closes = klines.map((k) => k.close);
+      const ma = ctx.calculateSMA(closes, maPeriod)[n - 1];
+      if (ma === undefined || Number.isNaN(ma)) return [];
+
+      // 均量窗口必须**排除当根**，否则当根放量会自己抬高基准、稀释确认强度
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+
+      const volumeRatio = last.volume / avgVolume;
+      if (volumeRatio < minVolumeRatio) return [];
+
+      const prevBearish = prev.close < prev.open;
+      const prevBullish = prev.close > prev.open;
+      const lastBullish = last.close > last.open;
+      const lastBearish = last.close < last.open;
+
+      const bullishEngulf = prevBearish && lastBullish && last.open <= prev.close && last.close >= prev.open;
+      const bearishEngulf = prevBullish && lastBearish && last.open >= prev.close && last.close <= prev.open;
+
+      const prevBody = Math.abs(prev.close - prev.open);
+      const lastBody = Math.abs(last.close - last.open);
+      // 实体反包幅度（当根实体 / 前一根实体）；趋势背景成立时 prevBody 必 > 0
+      const engulfRatio = prevBody > 0 ? lastBody / prevBody : 0;
+      const strength = Math.min(
+        1,
+        0.5 * Math.min(1, engulfRatio) + 0.5 * Math.min(1, volumeRatio / (minVolumeRatio * 2)),
+      );
+
+      const base = {
+        symbol,
+        pluginId: 'engulfing_reversal',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          open: last.open,
+          high: last.high,
+          low: last.low,
+          close: last.close,
+          prevOpen: prev.open,
+          prevClose: prev.close,
+          ma,
+          volumeRatio,
+          maPeriod,
+          volumePeriod,
+        },
+      };
+
+      // 下跌趋势 + 看涨吞没 → 买入（反转向上）
+      if (bullishEngulf && prev.close < ma) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `看涨吞没（${last.close.toFixed(2)} 反包前阴线 ${prev.open.toFixed(2)}~${prev.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阴线 ${prev.open.toFixed(2)}→${prev.close.toFixed(2)} 且收盘低于 MA${maPeriod}=${ma.toFixed(2)}；当根阳线 ${last.open.toFixed(2)}→${last.close.toFixed(2)} 实体反包，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（看涨吞没反转）`,
+          },
+        ];
+      }
+      // 上涨趋势 + 看跌吞没 → 卖出（反转向下）
+      if (bearishEngulf && prev.close > ma) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `看跌吞没（${last.close.toFixed(2)} 反包前阳线 ${prev.open.toFixed(2)}~${prev.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阳线 ${prev.open.toFixed(2)}→${prev.close.toFixed(2)} 且收盘高于 MA${maPeriod}=${ma.toFixed(2)}；当根阴线 ${last.open.toFixed(2)}→${last.close.toFixed(2)} 实体反包，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（看跌吞没反转）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
+  // ---------- 星线反转（早晨之星 / 黄昏之星，pattern 类第三个代表） ----------
+  /*
+   * ## 为什么用「实体分离」替代「跳空缺口」
+   *
+   * 经典定义要求星线（第 2 根）与第 1 根**跳空**分离。A 股 ETF 日线连续竞价、
+   * 前复权后真实缺口极少，若坚持「跳空」判据，信号会长期接近 0。
+   * 本项目用**实体完全分离**作为替代判据（不是放宽成普通反转）：
+   *   早晨之星 —— 第 2 根实体上沿 < 第 1 根收盘价（第 1 根为阴线，其收盘价即实体下沿）；
+   *   黄昏之星 —— 第 2 根实体下沿 > 第 1 根收盘价（第 1 根为阳线，其收盘价即实体上沿）。
+   * 只要实体有任何重叠（哪怕只差 1 分钱）就不成立，形态判据仍是硬条件。
+   *
+   * 同时**不引入**「星线实体 ≤ 第 1 根实体的 N%」一类需要调参的经验阈值 —— 绝对价差
+   * 在低价 ETF 与高价股之间口径漂移，无法写成可验收的硬断言。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 早晨之星（BUY）：第 1 根阴线且收盘 < MA(maPeriod)（下跌趋势背景）；第 2 根实体
+   *   完全位于第 1 根实体下方；第 3 根阳线且收盘 > 第 1 根收盘价（收复失地）；
+   * - 黄昏之星（SELL）：完全镜像（第 1 根阳线且收盘 > MA，第 2 根实体在上方，第 3 根阴线）；
+   * - 量能确认：第 3 根成交量 ≥ minVolumeRatio × 前 volumePeriod 根均量（窗口不含第 3 根）。
+   *
+   * ## 不臆造信号
+   * 数据不足 / MA 为 NaN / 均量为 0 / 量比不足 / 实体未分离 → 一律返回 `[]`。
+   */
+  definePlugin({
+    id: 'star_reversal',
+    name: '星线反转形态（早晨之星 / 黄昏之星）',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'pattern',
+    complexity: 'simple',
+    description:
+      '下跌趋势中出现放量早晨之星 → 买入信号；上涨趋势中出现放量黄昏之星 → 卖出信号（前复权 OHLC 口径）',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'maPeriod', label: '趋势均线周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minVolumeRatio',
+        label: '放量确认倍数',
+        type: 'number',
+        default: 1.2,
+        min: 0.5,
+        max: 5,
+        step: 0.1,
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const maPeriod = params.maPeriod as number;
+      const volumePeriod = params.volumePeriod as number;
+      const minVolumeRatio = params.minVolumeRatio as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 三根 K 线 + 星线前的 MA + 均量窗口，缺一项都不判形态
+      if (klines.length < Math.max(maPeriod + 2, volumePeriod + 1)) return [];
+
+      const n = klines.length;
+      const c1 = klines[n - 3];
+      const star = klines[n - 2];
+      const c3 = klines[n - 1];
+
+      const closes = klines.map((k) => k.close);
+      // 趋势基准取第 1 根处（`n - 3`），避免形态自身把 MA 抬高 / 压低
+      const ma = ctx.calculateSMA(closes, maPeriod)[n - 3];
+      if (ma === undefined || Number.isNaN(ma)) return [];
+
+      // 均量窗口必须排除第 3 根，否则当根放量会自己抬高基准、稀释确认强度
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+
+      const volumeRatio = c3.volume / avgVolume;
+      if (volumeRatio < minVolumeRatio) return [];
+
+      const starTop = Math.max(star.open, star.close);
+      const starBottom = Math.min(star.open, star.close);
+
+      // 早晨之星：第 1 根阴线（收盘即实体下沿），星线实体整体在其下方，第 3 根阳线收复
+      const morningStar =
+        c1.close < c1.open &&
+        starTop < c1.close &&
+        c3.close > c3.open &&
+        c3.close > c1.close &&
+        c1.close < ma;
+
+      // 黄昏之星：完全镜像
+      const eveningStar =
+        c1.close > c1.open &&
+        starBottom > c1.close &&
+        c3.close < c3.open &&
+        c3.close < c1.close &&
+        c1.close > ma;
+
+      const c1Body = Math.abs(c1.close - c1.open);
+      // 收复幅度（第 3 根收盘越过第 1 根收盘的距离 / 第 1 根实体）；命中时 c1Body > 0
+      const recovery = c1Body > 0 ? Math.abs(c3.close - c1.close) / c1Body : 0;
+      const strength = Math.min(
+        1,
+        0.5 * Math.min(1, recovery) + 0.5 * Math.min(1, volumeRatio / (minVolumeRatio * 2)),
+      );
+
+      const base = {
+        symbol,
+        pluginId: 'star_reversal',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          c1Open: c1.open,
+          c1Close: c1.close,
+          starOpen: star.open,
+          starClose: star.close,
+          open: c3.open,
+          high: c3.high,
+          low: c3.low,
+          close: c3.close,
+          ma,
+          volumeRatio,
+          maPeriod,
+          volumePeriod,
+        },
+      };
+
+      // 下跌趋势 + 早晨之星 → 买入（反转向上）
+      if (morningStar) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `早晨之星（${c3.close.toFixed(2)} 收复第 1 根收盘 ${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `第 1 根阴线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘低于 MA${maPeriod}=${ma.toFixed(2)}；星线实体 ${star.open.toFixed(2)}~${star.close.toFixed(2)} 完全位于其下方；第 3 根阳线收 ${c3.close.toFixed(2)}，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（早晨之星反转）`,
+          },
+        ];
+      }
+      // 上涨趋势 + 黄昏之星 → 卖出（反转向下）
+      if (eveningStar) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `黄昏之星（${c3.close.toFixed(2)} 跌破第 1 根收盘 ${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `第 1 根阳线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘高于 MA${maPeriod}=${ma.toFixed(2)}；星线实体 ${star.open.toFixed(2)}~${star.close.toFixed(2)} 完全位于其上方；第 3 根阴线收 ${c3.close.toFixed(2)}，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（黄昏之星反转）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
+  // ---------- 刺透 / 乌云盖顶反转（两根 K 线，pattern） ----------
+  /*
+   * ## 为什么必须保留一个 penetration 阈值（且显式暴露为参数）
+   *
+   * 刺透（piercing）与乌云盖顶（dark cloud）的**定义本身**就包含「第 2 根收进第 1 根实体多深」：
+   * 经典口径是收盘越过第 1 根实体中点（50%）。去掉这个判据后，第 2 根只要比第 1 根收盘
+   * 多收 1 分钱就算反转，形态退化成噪声。故该阈值**无法避免**，但把它**显式暴露为参数**
+   * `penetration`（默认 0.5 = 经典中点），而不是硬编码在代码里。
+   * 其余判据只用纯 OHLC 关系：两根方向、第 2 根开盘越过前一根收盘、第 2 根收盘不越过
+   * 前一根开盘（越过则属于 `engulfing_reversal` 的「实体反包」，两插件职责分离）。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 刺透（BUY）：前一根阴线且收盘 < MA(maPeriod)；当根阳线且开盘 < 前一根收盘（低开），
+   *   收盘 > 前收盘 + penetration × 前一根实体高度，且收盘 < 前一根开盘；
+   * - 乌云盖顶（SELL）：完全镜像（前一根阳线、当根阴线高开、收盘跌回前实体 penetration 以下）；
+   * - 量能确认：当根成交量 ≥ minVolumeRatio × 前 volumePeriod 根均量（窗口不含当根）。
+   *
+   * ## 不臆造信号
+   * 数据不足 / MA 为 NaN / 均量为 0 / 量比不足 / 穿透幅度差一点不达 penetration → 一律 `[]`。
+   */
+  definePlugin({
+    id: 'piercing_darkcloud',
+    name: '刺透 / 乌云盖顶形态',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'pattern',
+    complexity: 'simple',
+    description:
+      '下跌趋势中出现放量刺透（低开收复前一根实体）→ 买入信号；上涨趋势中出现放量乌云盖顶（高开跌回前一根实体）→ 卖出信号',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'maPeriod', label: '趋势均线周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minVolumeRatio',
+        label: '放量确认倍数',
+        type: 'number',
+        default: 1.2,
+        min: 0.5,
+        max: 5,
+        step: 0.1,
+      },
+      {
+        key: 'penetration',
+        label: '实体穿透比例',
+        type: 'number',
+        default: 0.5,
+        min: 0.1,
+        max: 0.9,
+        step: 0.05,
+        description: '第 2 根收盘必须越过前一根实体的比例（0.5 = 经典中点口径）',
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const maPeriod = params.maPeriod as number;
+      const volumePeriod = params.volumePeriod as number;
+      const minVolumeRatio = params.minVolumeRatio as number;
+      const penetration = params.penetration as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 两根 K 线 + 前一根处的 MA + 均量窗口，缺一项都不判形态
+      if (klines.length < Math.max(maPeriod + 1, volumePeriod + 1)) return [];
+
+      const n = klines.length;
+      const c1 = klines[n - 2];
+      const c2 = klines[n - 1];
+
+      const closes = klines.map((k) => k.close);
+      // 趋势基准取前一根处（`n - 2`），避免形态自身污染趋势口径
+      const ma = ctx.calculateSMA(closes, maPeriod)[n - 2];
+      if (ma === undefined || Number.isNaN(ma)) return [];
+
+      // 均量窗口必须排除当根，否则当根放量会自己抬高 / 压低基准
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+
+      const volumeRatio = c2.volume / avgVolume;
+      if (volumeRatio < minVolumeRatio) return [];
+
+      const c1Body = Math.abs(c1.close - c1.open);
+
+      // 刺透：前阴线 + 当根阳线低开，收盘越过前一根实体的 penetration 比例且未超过其开盘
+      const piercing =
+        c1.close < c1.open &&
+        c1.close < ma &&
+        c2.close > c2.open &&
+        c2.open < c1.close &&
+        c2.close > c1.close + penetration * (c1.open - c1.close) &&
+        c2.close < c1.open;
+
+      // 乌云盖顶：完全镜像
+      const darkCloud =
+        c1.close > c1.open &&
+        c1.close > ma &&
+        c2.close < c2.open &&
+        c2.open > c1.close &&
+        c2.close < c1.close - penetration * (c1.close - c1.open) &&
+        c2.close > c1.open;
+
+      // 实际穿透比例（当根收盘越过前一根收盘的距离 / 前一根实体）；命中时 c1Body > 0
+      const pierceRatio = c1Body > 0 ? Math.abs(c2.close - c1.close) / c1Body : 0;
+      const strength = Math.min(
+        1,
+        0.5 * Math.min(1, pierceRatio) + 0.5 * Math.min(1, volumeRatio / (minVolumeRatio * 2)),
+      );
+
+      const base = {
+        symbol,
+        pluginId: 'piercing_darkcloud',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          c1Open: c1.open,
+          c1Close: c1.close,
+          open: c2.open,
+          high: c2.high,
+          low: c2.low,
+          close: c2.close,
+          ma,
+          volumeRatio,
+          penetration,
+          maPeriod,
+          volumePeriod,
+        },
+      };
+
+      // 下跌趋势 + 刺透 → 买入（反转向上）
+      if (piercing) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `刺透形态（${c2.close.toFixed(2)} 收复前阴线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阴线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘低于 MA${maPeriod}=${ma.toFixed(2)}；当根阳线低开 ${c2.open.toFixed(2)} 收 ${c2.close.toFixed(2)}，穿透前实体 ${(pierceRatio * 100).toFixed(0)}% ≥ ${(penetration * 100).toFixed(0)}%，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（刺透反转）`,
+          },
+        ];
+      }
+      // 上涨趋势 + 乌云盖顶 → 卖出（反转向下）
+      if (darkCloud) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `乌云盖顶（${c2.close.toFixed(2)} 跌回前阳线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阳线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘高于 MA${maPeriod}=${ma.toFixed(2)}；当根阴线高开 ${c2.open.toFixed(2)} 收 ${c2.close.toFixed(2)}，跌穿前实体 ${(pierceRatio * 100).toFixed(0)}% ≥ ${(penetration * 100).toFixed(0)}%，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（乌云盖顶反转）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
+  // ---------- 量价突破（V3 六分类的 volume 代表，monitor 版） ----------
+  /*
+   * ## 为什么新增 monitor 版，而不是改造 filter 版 `volume_breakout`
+   *
+   * 1. **语义不同**：filter 是「全市场条件选股」，由 `/api/stockscan` 调用、只返回候选、
+   *    **不落 `user_strategy_signal`**；monitor 是「每日收盘对自选 ∪ 持仓逐标的跑信号并落库」。
+   *    两者触发范围与结果去向都不同，合并会改变现有 filter 的选股行为与性能。
+   * 2. **方向不同**：filter 只做 BUY 候选，而量价的风险一侧（放量下跌）只有 monitor 能承载。
+   * 3. **不改现有 5 个插件的行为**：本插件是独立新增，`volume_breakout` 保持原样。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 放量突破：当根收盘 > 前 lookback 日**最高价**，且成交量 ≥ volumeRatio × 前 lookback 日均量 → BUY
+   * - 放量破位：当根收盘 < 前 lookback 日**最低价**，且成交量 ≥ volumeRatio × 前 lookback 日均量 → SELL
+   * - ⚠️ 前 lookback 日**不含当根**，避免当根自己抬高 / 压低基准；均量为 0 时不臆造信号。
+   */
+  definePlugin({
+    id: 'volume_price_breakout',
+    name: '量价突破（信号版）',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'volume',
+    complexity: 'simple',
+    description:
+      '收盘放量突破前 lookback 日最高价 → 买入信号；收盘放量跌破前 lookback 日最低价 → 卖出信号（信号落 user_strategy_signal）',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'lookback', label: '突破回溯天数', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumeRatio', label: '放量倍数', type: 'number', default: 1.5, min: 1, max: 10 },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const lookback = params.lookback as number;
+      const volumeRatio = params.volumeRatio as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 需要前 lookback 根 + 当根
+      if (klines.length < lookback + 1) return [];
+
+      const n = klines.length;
+      const last = klines[n - 1];
+      const prev = klines.slice(n - 1 - lookback, n - 1);
+      if (prev.length < lookback) return [];
+
+      const prevHigh = Math.max(...prev.map((k) => k.high));
+      const prevLow = Math.min(...prev.map((k) => k.low));
+      const avgVolume = prev.reduce((acc, k) => acc + k.volume, 0) / prev.length;
+      if (!(avgVolume > 0)) return [];
+
+      const ratio = last.volume / avgVolume;
+      if (ratio < volumeRatio) return [];
+
+      const base = {
+        symbol,
+        pluginId: 'volume_price_breakout',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          close: last.close,
+          high: last.high,
+          low: last.low,
+          prevHigh,
+          prevLow,
+          volumeRatio: ratio,
+          lookback,
+          amount: last.amount,
+        },
+      };
+      const strength = Math.min(1, ratio / (volumeRatio * 2));
+
+      // 放量突破 → 买入
+      if (last.close > prevHigh) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `放量突破（${last.close.toFixed(2)} > 前 ${lookback} 日高 ${prevHigh.toFixed(2)}）`,
+            strength,
+            detail: `收盘 ${last.close.toFixed(2)} 突破前 ${lookback} 日最高 ${prevHigh.toFixed(2)}，量比 ${ratio.toFixed(2)} ≥ ${volumeRatio}（量价齐升）`,
+          },
+        ];
+      }
+      // 放量破位 → 卖出
+      if (last.close < prevLow) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `放量破位（${last.close.toFixed(2)} < 前 ${lookback} 日低 ${prevLow.toFixed(2)}）`,
+            strength,
+            detail: `收盘 ${last.close.toFixed(2)} 跌破前 ${lookback} 日最低 ${prevLow.toFixed(2)}，量比 ${ratio.toFixed(2)} ≥ ${volumeRatio}（放量下跌）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
+  // ---------- 高位放量滞涨（V3 六分类 volume 类，只输出 SELL） ----------
+  /*
+   * ## 语义与方向
+   *
+   * 「量能放大但价格没跟上」是高位派发的预警，故**只输出 SELL（减仓提示）**。
+   * **不实现**与之对称的「缩量下跌 = 吸筹」——那条属于另一个未验证的假说，未并入本插件。
+   *
+   * ## 三组判据（缺一组不出信号）
+   *
+   * 1. **量能放大**：当根成交量 / 前 volumePeriod 根均量 ≥ volumeRatio（均量窗口不含当根）；
+   * 2. **价格滞胀**：近 stallDays 日累计涨幅（含下跌）≤ maxGain；
+   * 3. **位置条件**：距近 highLookback 日最高价回撤 ≤ maxDrawdownFromHigh，
+   *    且近 riseLookback 日累计涨幅 ≥ minRise（即「先涨上去的高位」）。
+   *
+   * ⚠️ **位置条件不可省**：低位放量不涨可能是吸筹，只有位置条件能把它排除；
+   * 去掉位置条件会把「底部放量吸筹」误报成减仓信号。
+   *
+   * ## 阈值口径
+   *
+   * 所有阈值均为**经验默认值，没有优化依据，不是回测寻优结果**，可按标的 / 策略调整。
+   * `volumeRatio` 默认 1.8 与既有量价插件的放量量级对齐（`volume_price_breakout` 默认 1.5，
+   * 本插件要求「滞涨」而非「突破」，故略高）。
+   *
+   * ## strength 与分级的关系
+   *
+   * 本插件输出的是**方向性 SELL 交易信号**（减仓提示），**写 strength**（= 量能强度，
+   * 口径与既有量价插件一致：`min(1, 实际量比 / (volumeRatio × 2))`）。
+   * 故它会进入 F1 分级候选集（`strength IS NOT NULL`），参与当日强/中/弱分位分母 ——
+   * 这是预期行为，与 `position_risk_alert`（风险 HOLD、刻意不带 strength）不同。
+   * `sub_category='volume'`，不进入任何风险过滤（`exclude_risk` / Top5 缺省排除均只看 `risk`）。
+   *
+   * ## 不臆造信号
+   * 历史不足（少于所需窗口）/ 均量为 0 / 价格基准 ≤ 0 → 一律返回 `[]`。
+   */
+  definePlugin({
+    id: 'volume_stall',
+    name: '高位放量滞涨',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'volume',
+    complexity: 'simple',
+    description:
+      '高位（近 highLookback 日最高价附近且近 riseLookback 日已明显上涨）出现放量但近 stallDays 日涨幅滞胀 → 卖出（减仓提示）信号',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumeRatio', label: '放量倍数', type: 'number', default: 1.8, min: 1, max: 10 },
+      { key: 'stallDays', label: '滞胀观察天数', type: 'integer', default: 3, min: 1, max: 20 },
+      {
+        key: 'maxGain',
+        label: '滞胀涨幅上限',
+        type: 'number',
+        default: 0.02,
+        min: 0,
+        max: 0.2,
+        step: 0.01,
+        description: '近 stallDays 日累计涨幅 ≤ 该值才成立（0.02 = 2%，含下跌）；经验默认值，无优化依据',
+      },
+      { key: 'highLookback', label: '高点回溯天数', type: 'integer', default: 60, min: 20, max: 250 },
+      {
+        key: 'maxDrawdownFromHigh',
+        label: '距高点最大回撤',
+        type: 'number',
+        default: 0.05,
+        min: 0,
+        max: 0.5,
+        step: 0.01,
+        description: '现价距近 highLookback 日最高价回撤 ≤ 该值才算高位（0.05 = 5%）；经验默认值，无优化依据',
+      },
+      { key: 'riseLookback', label: '前置涨幅回溯天数', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minRise',
+        label: '前置涨幅下限',
+        type: 'number',
+        default: 0.1,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        description:
+          '近 riseLookback 日累计涨幅 ≥ 该值才算「先涨上去的高位」（0.1 = 10%）；经验默认值，无优化依据',
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const volumePeriod = params.volumePeriod as number;
+      const volumeRatio = params.volumeRatio as number;
+      const stallDays = params.stallDays as number;
+      const maxGain = params.maxGain as number;
+      const highLookback = params.highLookback as number;
+      const maxDrawdownFromHigh = params.maxDrawdownFromHigh as number;
+      const riseLookback = params.riseLookback as number;
+      const minRise = params.minRise as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 四个窗口取最长者：均量窗口 / 滞胀窗口 / 高点窗口 / 前置涨幅窗口
+      const need = Math.max(volumePeriod + 1, stallDays + 1, highLookback, riseLookback + 1);
+      if (klines.length < need) return [];
+
+      const n = klines.length;
+      const last = klines[n - 1];
+
+      // ① 量能放大：均量窗口必须排除当根，避免当根放量自己抬高基准
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+      const ratio = last.volume / avgVolume;
+      if (ratio < volumeRatio) return [];
+
+      // ② 价格滞胀：近 stallDays 日累计涨幅（可为负，含下跌）
+      const stallBase = klines[n - 1 - stallDays].close;
+      if (!(stallBase > 0)) return [];
+      const stallGain = last.close / stallBase - 1;
+      if (!(stallGain <= maxGain)) return [];
+
+      // ③ 位置条件（不可省）：距近 highLookback 日最高价回撤 + 近 riseLookback 日累计涨幅
+      const highWindow = klines.slice(n - highLookback);
+      const maxHigh = Math.max(...highWindow.map((k) => k.high));
+      if (!(maxHigh > 0)) return [];
+      const drawdown = (maxHigh - last.close) / maxHigh;
+      if (!(drawdown <= maxDrawdownFromHigh)) return [];
+
+      const riseBase = klines[n - 1 - riseLookback].close;
+      if (!(riseBase > 0)) return [];
+      const riseGain = last.close / riseBase - 1;
+      if (!(riseGain >= minRise)) return [];
+
+      // 量能强度口径与既有量价插件一致（唯一成分是实际量比，不掺经验权重）
+      const strength = Math.min(1, ratio / (volumeRatio * 2));
+
+      return [
+        {
+          symbol,
+          signalType: 'SELL' as const,
+          label: `高位放量滞涨（量比 ${ratio.toFixed(2)}，近 ${stallDays} 日 ${(stallGain * 100).toFixed(1)}%，距 ${highLookback} 日高回撤 ${(drawdown * 100).toFixed(1)}%）`,
+          strength,
+          pluginId: 'volume_stall',
+          timestamp: new Date().toISOString(),
+          metrics: {
+            volumeRatio: ratio,
+            avgVolume,
+            volumePeriod,
+            stallGain,
+            stallDays,
+            maxGain,
+            maxHigh,
+            drawdown,
+            maxDrawdownFromHigh,
+            riseGain,
+            riseLookback,
+            minRise,
+          },
+          detail: `当根量 ${last.volume} 为前 ${volumePeriod} 日均量 ${avgVolume.toFixed(0)} 的 ${ratio.toFixed(2)} 倍 ≥ ${volumeRatio}（放量）；近 ${stallDays} 日累计 ${(stallGain * 100).toFixed(2)}% ≤ ${(maxGain * 100).toFixed(2)}%（滞涨）；现价 ${last.close.toFixed(2)} 距近 ${highLookback} 日最高 ${maxHigh.toFixed(2)} 回撤 ${(drawdown * 100).toFixed(2)}% ≤ ${(maxDrawdownFromHigh * 100).toFixed(2)}%，近 ${riseLookback} 日累计 ${(riseGain * 100).toFixed(2)}% ≥ ${(minRise * 100).toFixed(2)}%（高位）——放量滞涨，减仓提示`,
+        },
+      ];
+    },
+  }),
+
+  // ---------- 持仓风险提示（V3 六分类的 risk 代表） ----------
+  /*
+   * ## 边界：只做**快照级**规则，不复制组合风险呈现
+   *
+   * 本插件只判断三条能由「持仓快照 + 最新估值」直接得出、且可逐标的归因的规则：
+   *   ① 单票占比超限  weight = marketValue / equity > maxPositionWeight
+   *   ② 浮亏触及止损  unrealizedRatio = price / avgCost - 1 ≤ -stopLossRatio
+   *   ③ 仓位集中度    前 concentrationTopN 名市值合计 / equity > concentrationThreshold
+   * 行业集中度与最大回撤**仍由 `portfolioRisk.ts` 的呈现承载**：
+   *   前者需要行业分类（插件上下文没有），后者需要历史权益曲线（快照只有当日一帧），
+   *   塞进插件会伪造数据来源。
+   *
+   * ## 为什么只输出 HOLD
+   *
+   * 「占比超限 / 浮亏止损 / 集中度」是**风险提示**，不是交易指令。
+   * 用 SELL 冒充会让下游（信号页、纸面账户、持仓卡徽标）把它当成卖出建议，
+   * 风险提示必须与方向性交易信号在数据上可区分，故恒为 `HOLD`。
+   *
+   * ## 为什么**不设置 strength**
+   *
+   * 交易信号的分级（强/中/弱）按**当日全部带 strength 的信号**分位计算；
+   * 风险 HOLD 若带 strength 会稀释分母、把真实交易信号整体推档。
+   * 故这里刻意不写 `strength`（落库为 NULL），使分级候选集（`strength IS NOT NULL`）自动排除风险提示。
+   *
+   * ## 为什么一个标的只出**一条**信号
+   *
+   * `user_strategy_signal` 唯一键是 `(user_id, asset_code, plugin_id, trade_date)`，
+   * 同一插件同一标的一天只能落一条 ⇒ 三条规则命中时**合并**为一条，label 逐条列出、metrics 带各项实际值与阈值。
+   *
+   * ## 不臆造信号
+   *
+   * - 持仓快照不可用（无 userId / 回放 / 读取失败）：引擎按 `requiresPositions` 直接 SKIP（`POSITION_UNAVAILABLE`）；
+   * - `equity <= 0`：无法计算占比，**不用 0 做分母**，直接不出信号；
+   * - 标的 `marketValue <= 0`（取不到最新价）：跳过该标的，不把「无价」当成「零仓位风险」；
+   * - `cash` 类持仓（货币 ETF 等）：不参与占比 / 止损判断（现金类市值仍计入 equity 分母）。
+   */
+  definePlugin({
+    id: 'position_risk_alert',
+    name: '持仓风险提示',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'risk',
+    complexity: 'simple',
+    description: '基于持仓快照的三条快照级规则（单票占比超限 / 浮亏触及止损 / 仓位集中度）输出 HOLD 风险提示',
+    // 风险类是**组合级**插件：读整份持仓快照，不接受 symbol 参数（标的域循环里只执行一次）
+    paramSchema: [
+      {
+        key: 'maxPositionWeight',
+        label: '单票占比上限',
+        type: 'number',
+        default: 0.3,
+        min: 0.05,
+        max: 1,
+        step: 0.05,
+        description: '单标的市值占权益比例超过该值 → 提示（0.3 = 30%）',
+      },
+      {
+        key: 'stopLossRatio',
+        label: '浮亏止损线',
+        type: 'number',
+        default: 0.1,
+        min: 0.01,
+        max: 0.5,
+        step: 0.01,
+        description: '浮亏比例达到该值 → 提示（0.1 = 回撤 10%）',
+      },
+      {
+        key: 'concentrationTopN',
+        label: '集中度前 N 名',
+        type: 'integer',
+        default: 3,
+        min: 1,
+        max: 10,
+        description: '取市值最大的 N 个标的计算合计占比',
+      },
+      {
+        key: 'concentrationThreshold',
+        label: '集中度上限',
+        type: 'number',
+        default: 0.6,
+        min: 0.1,
+        max: 1,
+        step: 0.05,
+        description: '前 N 名合计占比超过该值 → 提示（0.6 = 60%）',
+      },
+    ],
+    async execute(ctx, params) {
+      const positions = ctx.positions();
+      if (positions.length === 0) return [];
+
+      const equity = ctx.equity;
+      // 权益 ≤ 0 时占比无意义：不拿 0 做分母
+      if (!(equity > 0)) return [];
+
+      const maxPositionWeight = params.maxPositionWeight as number;
+      const stopLossRatio = params.stopLossRatio as number;
+      const concentrationTopN = params.concentrationTopN as number;
+      const concentrationThreshold = params.concentrationThreshold as number;
+
+      // 只判断风险类且有估值的持仓：cash 类无止损语义；marketValue=0 说明取不到价，跳过
+      const riskPositions = positions.filter(
+        (p) => p.assetClass === 'risk' && p.quantity > 0 && p.marketValue > 0,
+      );
+      if (riskPositions.length === 0) return [];
+
+      // 集中度是**组合级**判据：按市值降序取前 N 名，合计占比越高越集中
+      const topSlice = [...riskPositions]
+        .sort((a, b) => b.marketValue - a.marketValue)
+        .slice(0, concentrationTopN);
+      const topNWeight = topSlice.reduce((acc, p) => acc + p.marketValue, 0) / equity;
+      const concentrated = topNWeight > concentrationThreshold;
+      const topNSymbols = new Set(topSlice.map((p) => p.symbol));
+
+      const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
+      const signals: PluginSignal[] = [];
+
+      for (const p of riskPositions) {
+        const weight = p.marketValue / equity;
+        // 现价用市值反推，避免再取一次行情（execute() 内零 IO）
+        const price = p.marketValue / p.quantity;
+        // 浮亏比例（负数为亏）；成本为 0 时不判浮亏
+        const unrealizedRatio = p.avgCost > 0 ? price / p.avgCost - 1 : 0;
+
+        const labels: string[] = [];
+        const details: string[] = [];
+        const metrics: Record<string, number> = { weight, maxPositionWeight, unrealizedRatio, stopLossRatio };
+
+        // ① 浮亏触及止损（风险最高，放首位作为主标签）
+        if (p.avgCost > 0 && unrealizedRatio <= -stopLossRatio) {
+          labels.push(`浮亏触及止损（${pct(unrealizedRatio)} ≤ -${pct(stopLossRatio)}）`);
+          details.push(
+            `浮亏 ${pct(-unrealizedRatio)}（现价 ${price.toFixed(2)}，成本 ${p.avgCost.toFixed(2)}）已达止损线 ${pct(stopLossRatio)}`,
+          );
+        }
+        // ② 单票占比超限
+        if (weight > maxPositionWeight) {
+          labels.push(`单票占比超限（${pct(weight)} > ${pct(maxPositionWeight)}）`);
+          details.push(
+            `单票占比 ${pct(weight)}（市值 ${p.marketValue.toFixed(2)} / 权益 ${equity.toFixed(2)}）超过上限 ${pct(maxPositionWeight)}`,
+          );
+        }
+        // ③ 仓位集中度（只标记贡献集中度的前 N 名标的）
+        if (concentrated && topNSymbols.has(p.symbol)) {
+          labels.push(
+            `仓位集中度偏高（前 ${concentrationTopN} 名合计 ${pct(topNWeight)} > ${pct(concentrationThreshold)}）`,
+          );
+          details.push(
+            `前 ${concentrationTopN} 名标的合计占比 ${pct(topNWeight)} 超过上限 ${pct(concentrationThreshold)}`,
+          );
+          metrics.topNWeight = topNWeight;
+          metrics.concentrationThreshold = concentrationThreshold;
+          metrics.concentrationTopN = concentrationTopN;
+        }
+
+        if (labels.length === 0) continue;
+
+        metrics.ruleCount = labels.length;
+        signals.push({
+          symbol: p.symbol,
+          // 🔴 只用 HOLD：风险提示不是交易指令；且**不写 strength**（见上方注释）
+          signalType: 'HOLD',
+          label: labels.join(' + '),
+          pluginId: 'position_risk_alert',
+          timestamp: new Date().toISOString(),
+          metrics,
+          detail: details.join('；'),
+        });
+      }
+
+      return signals;
+    },
+    requiresPositions: true,
+  }),
 ];
 
 // ---------------------------------------------------------------------------
@@ -1336,6 +2278,15 @@ export type PluginExecutionStatus = 'SUCCESS' | 'TIMEOUT' | 'ERROR' | 'SKIP';
 
 export interface PluginExecutionResult {
   pluginId: string;
+  /**
+   * 本次执行插件的子分类（六分类 + `custom` 兜底）
+   *
+   * 由执行结果携带，供持久化写入 `user_strategy_signal.sub_category` ——
+   * 读取侧据此做**稳定判据**过滤（如「风险信号不进 Top5 / 不抢持仓卡徽标」），
+   * 不依赖 plugin_id 字符串匹配（插件 id 可改名，子分类是契约字段）。
+   * 仅 `status === 'SUCCESS'` 时写入；其余状态无信号可写，保持 undefined。
+   */
+  subCategory?: PluginSubCategory;
   status: PluginExecutionStatus;
   signals: PluginSignal[];
   /** execute() 的**纯计算**耗时（不含行情 IO，T88 口径） */
@@ -1537,7 +2488,10 @@ export async function executePlugin(
 
         if (signals.length === 0) {
           // 区分「没数据」与「没信号」：两者此前都只记一句「无信号」，计数上也分不开
-          const skipReason: 'NO_DATA' | 'NO_SIGNAL' = klinesRead > 0 ? 'NO_SIGNAL' : 'NO_DATA';
+          // ⚠️ 组合级插件（requiresPositions，如风险类）**按设计零行情 IO**，
+          //    klinesRead 恒为 0，不能据此判成 NO_DATA（否则「持仓无风险」会被记成「无行情」）。
+          const skipReason: 'NO_DATA' | 'NO_SIGNAL' =
+            plugin.requiresPositions || klinesRead > 0 ? 'NO_SIGNAL' : 'NO_DATA';
           writeSystemLog({
             logType: 'plugin_execute',
             level: 'SKIP',
@@ -1564,6 +2518,7 @@ export async function executePlugin(
           });
           settle({
             pluginId: plugin.id,
+            subCategory: plugin.subCategory,
             status: 'SUCCESS',
             signals,
             durationMs,
@@ -1747,13 +2702,16 @@ async function loadPositionSnapshot(userId: number, asOfDate?: string): Promise<
     let equity = 0;
     for (const p of positions) {
       const marketValue = (prices.get(p.asset_code)?.close ?? 0) * p.totalQuantity;
-      if (getAssetClass(db, p.asset_code) === 'cash') cash += marketValue;
+      // 分类只取一次：既用于现金累计，也写进插件视图（避免同标的重复查同一张表）
+      const assetClass = getAssetClass(db, p.asset_code);
+      if (assetClass === 'cash') cash += marketValue;
       equity += marketValue;
       views.push({
         symbol: p.asset_code,
         quantity: p.totalQuantity,
         avgCost: p.avgCost,
         marketValue,
+        assetClass,
       });
     }
     return { available: true, positions: views, cash, equity };
@@ -1825,7 +2783,8 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     const ctx = buildPluginContext({ klines: prefetchKlines, windowDays: days, endDate: end }, snapshot);
 
     const stats: PluginBatchStats = {
-      total: monitorPlugins.length * symbols.length,
+      // 组合级插件（requiresPositions，如风险类）只执行 1 次，不按标的重数统计
+      total: monitorPlugins.reduce((acc, p) => acc + (p.requiresPositions ? 1 : symbols.length), 0),
       success: 0,
       timeout: 0,
       error: 0,
@@ -1836,28 +2795,41 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
     const allSignals: PluginSignal[] = [];
     const results: PluginExecutionResult[] = [];
 
+    /**
+     * 一次执行 + 归并结果（两条路径共用，避免统计分支各写一份）
+     */
+    const runOnce = async (plugin: Plugin, params: Record<string, unknown>): Promise<void> => {
+      const res = await executePlugin(plugin, params, ctx);
+      results.push(res);
+      if (res.status === 'SUCCESS') {
+        stats.success += 1;
+        allSignals.push(...res.signals);
+      } else if (res.status === 'TIMEOUT') {
+        stats.timeout += 1;
+      } else if (res.status === 'ERROR') {
+        stats.error += 1;
+      } else {
+        stats.skip += 1;
+        if (res.skipReason === 'NO_DATA') stats.noData += 1;
+        else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
+      }
+    };
+
     for (const plugin of monitorPlugins) {
+      const userParams = { ...(options.userParams ?? {}), ...(userConfigs.get(plugin.id)?.params ?? {}) };
+      /**
+       * 🔴 组合级插件（`requiresPositions`）**只执行一次**：
+       *   它读的是整份持仓快照，与「逐标的」正交；按标的重复执行会产出 N 份相同信号
+       *   （落库虽被唯一键去重，但 stats / results / 日志会被放大 N 倍）。
+       *   这类插件也不接受注入的 `symbol`（其 paramSchema 无该字段，注入值会被校验丢弃）。
+       */
+      if (plugin.requiresPositions) {
+        await runOnce(plugin, userParams);
+        continue;
+      }
       for (const symbol of symbols) {
         // 参数优先级：调用方入参 < 用户配置 < 运行时注入的 symbol
-        const params = {
-          ...(options.userParams ?? {}),
-          ...(userConfigs.get(plugin.id)?.params ?? {}),
-          symbol,
-        };
-        const res = await executePlugin(plugin, params, ctx);
-        results.push(res);
-        if (res.status === 'SUCCESS') {
-          stats.success += 1;
-          allSignals.push(...res.signals);
-        } else if (res.status === 'TIMEOUT') {
-          stats.timeout += 1;
-        } else if (res.status === 'ERROR') {
-          stats.error += 1;
-        } else {
-          stats.skip += 1;
-          if (res.skipReason === 'NO_DATA') stats.noData += 1;
-          else if (res.skipReason === 'POSITION_UNAVAILABLE') stats.positionUnavailable += 1;
-        }
+        await runOnce(plugin, { ...userParams, symbol });
       }
     }
 

@@ -173,8 +173,8 @@ function lastIndexAtOrBefore(bars: readonly Bar[] | undefined, cutoff: string): 
   return ans;
 }
 
-/** 最近一根（≤ date）的收盘；没有则 null */
-function closeAtOrBefore(bars: readonly Bar[] | undefined, date: string): number | null {
+/** 最近一根 ≤ `date` 的收盘价（纸面结算写 `paper_position.last_price` 也用它，保证同口径） */
+export function closeAtOrBefore(bars: readonly Bar[] | undefined, date: string): number | null {
   const idx = lastIndexAtOrBefore(bars, date);
   return idx >= 0 ? bars![idx].close : null;
 }
@@ -383,8 +383,8 @@ export function makeContext(args: {
   };
 }
 
-/** 从 `UniverseSnapshot` 取策略需要的部分 */
-function universeViewOf(snapshot: ReturnType<UniverseResolver>): UniverseView {
+/** 从 `UniverseSnapshot` 取策略需要的部分（纸面账户决策复用同一口径） */
+export function universeViewOf(snapshot: ReturnType<UniverseResolver>): UniverseView {
   return {
     asOf: snapshot.asOf,
     marketLiquidityPassCount: snapshot.marketLiquidityPassCount,

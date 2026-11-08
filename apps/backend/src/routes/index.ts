@@ -20,6 +20,7 @@ import { registerStrategyRoutes } from './strategy.js';
 import { registerExDividendRoutes } from './exDividend.js';
 import { registerBrokerImportRoutes } from './brokerImport.js';
 import { registerBrokerReconcileRoutes } from './brokerReconcile.js';
+import { registerPaperRoutes } from './paper.js';
 import { extractToken, verifyToken } from '../services/auth.js';
 import { fail } from '../lib/envelope.js';
 
@@ -107,6 +108,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerExDividendRoutes(app);
   await registerBrokerImportRoutes(app);
   await registerBrokerReconcileRoutes(app);
+  // PA-07：纸面账户（S1：建户 / 查询 / 关闭 / 手动切阶段 + 费用配置）
+  await registerPaperRoutes(app);
   // 🔴 T94 的 reload 路由此前**从未被注册**（PR#15 实现了 handler 但漏了接线）
   //    → SDD §4.4:1383 的 `POST /api/strategy/reload` 实测 404。本波补上。
   await registerStrategyRoutes(app);

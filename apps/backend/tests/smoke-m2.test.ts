@@ -197,17 +197,23 @@ describe('M2 除权自动导入', () => {
 });
 
 // ========================================================================
-// M2 scheduler 4 段 cron 注册
+// M2 scheduler 5 段 cron 注册
 // ========================================================================
-describe('M2 scheduler 4 段 cron 注册', () => {
-  it('registerCronJobs 注册 4 个 CronJob', () => {
+describe('M2 scheduler 5 段 cron 注册', () => {
+  it('registerCronJobs 注册 5 个 CronJob', () => {
     registerCronJobs(app);
     const jobs = app.scheduler.getAllJobs();
-    expect(jobs).toHaveLength(4);
+    expect(jobs).toHaveLength(5);
 
     // 验证每个 job 都有唯一 ID（AsyncTask 的第一个参数就是 task id → job id）
     const ids = jobs.map((j: any) => j.id).sort();
-    expect(ids).toEqual(['backup', 'datacheck-c1-c12', 'dividend-import', 'signal-generate']);
+    expect(ids).toEqual([
+      'backup',
+      'datacheck-c1-c12',
+      'dividend-import',
+      'paper-account-daily',
+      'signal-generate',
+    ]);
   });
 });
 

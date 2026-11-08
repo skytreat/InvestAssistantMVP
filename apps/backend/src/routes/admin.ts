@@ -8,8 +8,6 @@ import {
   getTradeDate,
   resolveSignalSymbols,
   SIGNAL_USER_ID,
-  assignSignalCooldowns,
-  assignSignalGrades,
 } from '../services/signalService.js';
 import { writeSystemLog, readFallbackLogTail } from '../services/logger.js';
 import { replaySignals, ReplayRangeTooLargeError } from '../services/signalReplay.js';
@@ -89,28 +87,6 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         const persist = persistSignals(p.signals, p.pluginId, 'monitor', tradeDate);
         totalInserted += persist.inserted;
         totalSkipped += persist.skipped;
-      }
-      // F1：手动触发与 17:02 定时链路同一口径（只回填 grade / expires_at）
-      try {
-        await assignSignalGrades(tradeDate, SIGNAL_USER_ID);
-      } catch (gradeErr: unknown) {
-        writeSystemLog({
-          logType: 'trigger_manual',
-          level: 'WARN',
-          message: '信号分级失败（不影响信号生成主流程）',
-          detail: String(gradeErr),
-        });
-      }
-      // F6：与定时链路一致，回填 cooldown_until（仅展示层用，不抑制信号）
-      try {
-        await assignSignalCooldowns(tradeDate, SIGNAL_USER_ID);
-      } catch (coolErr: unknown) {
-        writeSystemLog({
-          logType: 'trigger_manual',
-          level: 'WARN',
-          message: '信号冷却回填失败（不影响信号生成主流程）',
-          detail: String(coolErr),
-        });
       }
       reply.send(
         ok({
@@ -432,11 +408,20 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     if (body.confirm !== true) {
       return reply
         .code(400)
-        .send(fail(400, 'CONFIRM_REQUIRED', '恢复备份会覆盖当前业务库，请传 { "confirm": true } 二次确认'));
+        .send(
+          fail(
+            400,
+            'CONFIRM_REQUIRED',
+            '恢复备份会覆盖当前业务库/纸面账本，请传 { "confirm": true } 二次确认',
+          ),
+        );
     }
 
-    const { restoreSQLiteBackup } = await import('../services/backup.js');
-    const result = restoreSQLiteBackup(decodeURIComponent(file));
+    // PA-15：备份清单覆盖两类 SQLite（business.db / backtest.db，后者含 paper_* 账本），
+    // 按文件名前缀分派到各自的恢复流程（各库独立的路径、白名单与校验）。
+    const { restoreSQLiteBackup, restoreBacktestBackup } = await import('../services/backup.js');
+    const name = decodeURIComponent(file);
+    const result = name.startsWith('backtest.db.') ? restoreBacktestBackup(name) : restoreSQLiteBackup(name);
     if (!result.success) {
       return reply.code(400).send(fail(400, 'RESTORE_FAILED', result.error ?? '备份恢复失败'));
     }
@@ -444,10 +429,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     writeSystemLog({
       logType: 'trigger_manual',
       level: 'SUCCESS',
-      message: `${operator.username} 从备份恢复 SQLite 业务库：${file}`,
-      detail: `safety_backup=${result.safetyBackup ?? '无'}`,
+      message: `${operator.username} 从备份恢复 SQLite 库：${name}`,
+      detail: `scope=${name.startsWith('backtest.db.') ? 'backtest' : 'business'} safety_backup=${result.safetyBackup ?? '无'}`,
     });
 
-    return reply.send(ok({ file, safetyBackup: result.safetyBackup }));
+    return reply.send(ok({ file: name, safetyBackup: result.safetyBackup }));
   });
 }

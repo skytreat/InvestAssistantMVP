@@ -332,11 +332,11 @@ CREATE TABLE IF NOT EXISTS paper_fee_config (
 );
 
 -- 系统默认行全库至多一条（回退链的第 ③ 层）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_fee_config_system_default
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_fee_config_system_default
     ON paper_fee_config (is_system_default) WHERE is_system_default = 1 AND is_deleted = 0;
 
 -- 同一用户下配置名唯一（系统级配置 user_id 为 NULL，靠 name 区分）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_fee_config_user_name
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_fee_config_user_name
     ON paper_fee_config (COALESCE(user_id, -1), name) WHERE is_deleted = 0;
 
 CREATE TABLE IF NOT EXISTS paper_account (
@@ -366,10 +366,10 @@ CREATE TABLE IF NOT EXISTS paper_account (
 );
 
 -- D6 定稿：一个用户至多一个在用纸面账户（软删除后允许重建）
-CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_account_live_user
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_account_live_user
     ON paper_account (user_id) WHERE is_deleted = 0 AND status <> 'closed';
 
-CREATE INDEX IF NOT EXISTS ix_paper_account_user_status
+CREATE INDEX IF NOT EXISTS idx_paper_account_user_status
     ON paper_account (user_id, status);
 
 -- D5 定稿：不做出入金 ⇒ 初始资金建户后不可变（DB 级兜底，API 也不提供改额接口）
@@ -443,10 +443,10 @@ CREATE TABLE IF NOT EXISTS paper_order (
     FOREIGN KEY (account_id) REFERENCES paper_account(id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_paper_order_due
+CREATE INDEX IF NOT EXISTS idx_paper_order_due
     ON paper_order (account_id, trade_date, status);
 
-CREATE INDEX IF NOT EXISTS ix_paper_order_decision
+CREATE INDEX IF NOT EXISTS idx_paper_order_decision
     ON paper_order (account_id, decision_date, status);
 
 -- ─────────────────────────────────────────────────────────────
@@ -472,7 +472,7 @@ CREATE TABLE IF NOT EXISTS paper_equity (
     FOREIGN KEY (account_id) REFERENCES paper_account(id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_paper_equity_account_date
+CREATE INDEX IF NOT EXISTS idx_paper_equity_account_date
     ON paper_equity (account_id, trade_date);
 ```
 
@@ -804,7 +804,11 @@ for d in 交易日(L+1 .. T):
 
 - 独立「纸面账户」页面/卡片，**不混入真实资产仪表盘**；
 - 必须固定展示提示：「模拟成交，非真实交易；成交价 = 当日开盘价，账本在当日收盘后更新」；
-- 影子期：只展示目标标的/权重/信号，展示「切换为落账运行」按钮（二次确认）；
+- 影子期：只展示目标标的/权重/信号；
+- **必须**在页面上提供「手动切换阶段」入口（不是只读页，2026-11-08 追加，S4 Gate 项）：
+  · 页面可见当前阶段（影子 / 落账），并提供明确按钮，点击调用 `POST /api/paper/accounts/:id/phase`；
+  · 因「切换即冷启动」，按钮必须**二次确认**，确认文案写明后果：重置决策/结算水位、清空持仓、历史影子订单保留但不补记成交、现金回到初始资金；
+  · 切换成功与失败都必须有可见结果（失败不得静默吞掉），失败按 `code` 展示具体原因；
 - 落账期：持仓、订单、未成交事件、净值曲线、指标、未成交次数、闲置现金比例；
 - 不做 K 线图（Out-of-Scope 一致）。
 
@@ -846,7 +850,7 @@ for d in 交易日(L+1 .. T):
 | A13 | 策略版本不匹配 → 拒绝运行、不写账本 | 单测 |
 | A14 | 改 `paper_fee_config` 后重跑已开账户 → 结算仍用 `fee_snapshot_json`，结果不变 | 单测 |
 | A15 | 同一用户建第二个在用账户 → 409 `PAPER_ACCOUNT_EXISTS`；关闭旧账户后可新建 | 集成 |
-| A16 | 重置脚本只删 `bt_*`：预置一条 `paper_equity` 后跑清理 → 纸面行仍在 | 单测（临时库） |
+| A16 | 重置脚本只删 `bt_*`：预置一条 `paper_equity` 后跑清理 → 纸面行仍在（**口径按 §13.5 调整：守卫优先，命中即 abort**） | 单测（临时库） |
 | A17 | 回测批量与 17:04 同时写 → 纸面整体重试成功，且无半结算 | 集成（并发注入） |
 
 ### 9.3 测试数据
@@ -1035,7 +1039,7 @@ for d in 交易日(L+1 .. T):
 
 | 约束 | 实现 | 失败语义 |
 |---|---|---|
-| 一个用户至多一个在用账户 | 部分唯一索引 `ux_paper_account_live_user (user_id) WHERE is_deleted=0 AND status<>'closed'` | 建户返回 409 `PAPER_ACCOUNT_EXISTS`，提示先关闭旧账户 |
+| 一个用户至多一个在用账户 | 部分唯一索引 `idx_paper_account_live_user (user_id) WHERE is_deleted=0 AND status<>'closed'` | 建户返回 409 `PAPER_ACCOUNT_EXISTS`，提示先关闭旧账户 |
 | 账户锁定一个策略 | `strategy_id` + `strategy_version` 建户后不可变；无「换策略」接口 | 换策略 = 新建账户 |
 | 用户归属校验 | `user_account` 在 `business.db`，**无跨库外键**；建户时服务层查 `user_account` 存在且 `is_deleted=0` | 不存在 → 400 `USER_NOT_FOUND` |
 | 关闭与重建 | `status='closed'` 允许新建；软删除（`is_deleted=1`）同样允许新建；历史行永久保留 | — |
@@ -1087,7 +1091,7 @@ S4 前端与验收
 | **PA-02** | S0 | 同上：导出 `makeContext()` / `capTurnover()`（命名按仓库风格） | PA-01 | 回测全量测试全绿；纸面可直接调用且不复制逻辑（导出函数被回测自身复用即证明） |
 | **PA-03** | S0 | `apps/backend/src/services/backtest/account/portfolio.ts`：新增 `restore(positions, cash)` | 无 | 单测：恢复后 `equity/avgCost/costBasis/closeableQty` 与原 `Portfolio` 完全一致；`boughtToday = qty − closeable_qty` 可复现 T+1 冻结 |
 | **PA-04** | S0 | `apps/backend/src/services/backtest/calendar.ts` + `raw_holidays`：新增 `nextTradingDay()` | 无 | 单测：周五→周一、节假日前夕、长假、跨年；与历史日历交叉验证（历史日期上 `nextTradingDay` 必须等于下一根 bar） |
-| **PA-05** | S1 | `apps/backend/src/services/backtest/store/backtestDb.ts`（或新增同库 `paperSchema.ts`）：建 `paper_account/position/order/equity/fee_config` + 索引 + 触发器 | PA-03（restore 的字段要求） | 临时库连续执行两次 schema 无差异；`ux_paper_account_live_user` 与 `initial_cash` 触发器各有单测；`paper_*` 与 `bt_*` 同文件共存；**建表后立刻跑跨前缀隔离校验（§13.4：无跨前缀外键/触发器/视图、`idx_paper_`/`trg_paper_` 命名、清理守卫 abort 有测试）** |
+| **PA-05** | S1 | 新增 `apps/backend/src/services/backtest/store/paperSchema.ts`（`createPaperSchema(db)` 建 `paper_account/position/order/equity/fee_config` + 索引 + 触发器，**建表后同一函数内立刻**跑 §13.4 隔离校验）+ `apps/backend/src/services/paper/store.ts`（同库独立连接）；新增 `scripts/cleanup-backtest-data.mjs`（清理守卫） | PA-03（restore 的字段要求） | 临时库连续执行两次 schema 无差异；`idx_paper_account_live_user` 与 `initial_cash` 触发器各有单测；`paper_*` 与 `bt_*` 同文件共存；**隔离校验可被违例对象触红**（外键 / 视图 / 缺前缀索引 / 表白名单）；**清理脚本命中 `paper_%` 时退出码 ≠ 0 且对象仍在，只有 `bt_*` 时正常清理**（测试真的 spawn 脚本，非注释声明） |
 | **PA-06** | S1 | 新增 `apps/backend/src/services/paper/fees.ts`：配置 CRUD + 校验 + `feeSnapshotToTradeRules()` + 回退链 | PA-05 | 四层回退链单测；非法值拒绝；`stamp/transfer != 0` → `FEE_RULE_UNSUPPORTED`；快照冻结测试（A14） |
 | **PA-07** | S1 | 新增 `apps/backend/src/services/paper/accountService.ts` + `apps/backend/src/routes/paper.ts`：建户、查询、关闭、手动切阶段 | PA-05、PA-06 | A15（409 `PAPER_ACCOUNT_EXISTS`）；跨库用户校验；切阶段冷启动断言（cash/position/水位重置） |
 | **PA-08** | S2 | `apps/backend/src/services/scheduler.ts` 新增 17:04 段 + 新增 `services/paper/decision.ts`：影子决策，写 `paper_order(status='shadow')` | PA-02、PA-04、PA-07 | A11（影子不写 `paper_position`/`paper_equity`）；`waitForQuoteUpdate=true`；同日重跑行数不增；17:00–17:10 回测禁跑校验 |
@@ -1096,7 +1100,7 @@ S4 前端与验收
 | **PA-11** | S3 | `services/paper/settle.ts` + `report.ts`：未成交事件、缩量成交、三项闲置现金口径 | PA-10 | A5/A6；`unfilled_reason` 与 §6.2 映射逐条一致；报告指标可复算 |
 | **PA-12** | S3 | `settle.ts` + `scheduler.ts` + 新增 `services/paper/retry.ts`：幂等、补算、`SQLITE_BUSY` 重试、DuckDB 句柄冲突语义 | PA-10、PA-11 | A7/A10/A12/A17；`PAPER_DB_BUSY` / `PAPER_QUOTE_DB_BUSY` 不落成 `suspended` |
 | **PA-13** | S4 | `routes/paper.ts` 只读接口：账户、持仓、订单（含未成交）、净值曲线、报告摘要 | PA-09、PA-11 | 集成测试（`app.inject()`）；权限隔离（只能看自己账户） |
-| **PA-14** | S4 | `apps/frontend/src/api/*` + `apps/frontend/src/pages/*`：纸面账户页，分区展示 + 「非真实交易」固定提示 | PA-13 | 组件测试；与真实资产仪表盘分区；文案固定 |
+| **PA-14** | S4 | `apps/frontend/src/api/*` + `apps/frontend/src/pages/*`：纸面账户页，分区展示 + 「非真实交易」固定提示 + **必须**的「手动切换阶段」按钮（二次确认、后果文案、成功/失败可见） | PA-13 | 组件测试；与真实资产仪表盘分区；文案固定；**切阶段按钮存在且确认/成功/失败三态均有测试**（S4 Gate 项） |
 | **PA-15** | S4 | `apps/backend/tests/**` + `scripts/**`：A1 逐位对账、A14–A17、清理守卫、`backtest.db` 备份包含性 | PA-12、PA-13 | 全量测试绿；对账报告落 `docs/audit/`；备份清单含 `backtest.db` |
 
 ### 13.3 各阶段 Gate（不过不得进下一阶段）
@@ -1107,7 +1111,7 @@ S4 前端与验收
 | S1 | 表与配置只增不改行为 | schema 幂等；费用回退/校验/冻结全绿；现有回测与业务接口零回归；**§13.4 跨前缀隔离校验全绿（含清理守卫 abort 测试）** |
 | S2 | 影子不落账 | 影子期 `paper_position`/`paper_equity` 行数为 0；同日重跑幂等 |
 | S3 | 账本正确 | A1–A8、A10、A12、A17；`equity` 恒等式零漂移 |
-| S4 | 可用与可解释 | A14–A16；前端提示到位；备份/清理守卫有测试 |
+| S4 | 可用与可解释 | A14–A16；前端提示到位；**纸面账户页含「手动切换阶段」按钮（二次确认 + 后果文案 + 成功/失败可见）**；备份/清理守卫有测试 |
 
 > 与 `AGENTS.md` 的关系：本文是**提案**；采纳后 D1–D6 进 `SDD_v3.md`，任务映射进 `code_implementation_plan_v3.md`，
 > 关键取舍（同库、费用可配置、版本锁定）进 `docs/adr/`。
@@ -1134,19 +1138,20 @@ S4 前端与验收
 **2）命名断言：新建对象前缀唯一**
 
 - 表名白名单（不多不少）：`paper_account` / `paper_position` / `paper_order` / `paper_equity` / `paper_fee_config`；
-- 索引：必须匹配 `^idx_paper_`；
-  ⚠️ §5.2 现写作 `ix_paper_equity_account_date`，**PA-05 落地时统一改成 `idx_paper_equity_account_date`**，不要留两套前缀；
+- 索引：必须匹配 `^idx_paper_`（普通索引与**唯一索引**都算，不要保留 `ix_` / `ux_` 两套前缀，§5.2 已统一）；
 - 触发器：必须匹配 `^trg_paper_`（如 `trg_paper_account_initial_cash_immutable`）；
-- 断言实现：遍历 `SELECT name, type FROM sqlite_master WHERE name LIKE 'paper_%'`，
-  `type='index'` 不匹配 `^idx_paper_` 或 `type='trigger'` 不匹配 `^trg_paper_` ⇒ 抛 `PAPER_SCHEMA_BAD_PREFIX`。
+- 断言实现：遍历 `sqlite_master` 中 `tbl_name LIKE 'paper_%'` 的索引 / 触发器（而非只看 `name LIKE 'paper_%'`，否则 `idx_paper_*` 会被漏掉），
+  `type='index'` 且 `sql IS NOT NULL` 但不匹配 `^idx_paper_`，或 `type='trigger'` 不匹配 `^trg_paper_` ⇒ 抛 `PAPER_SCHEMA_BAD_PREFIX`。
   （SQLite 为 UNIQUE 约束自动创建的 `sqlite_autoindex_*` 不受此约束，按 `sql IS NULL` 跳过。）
 
 **3）清理 / 重置脚本守卫：探测命中即 abort，且禁止删库文件**
 
 ```text
-1) 目标库固定为 data/backtest.db —— 不得由参数/env 指到其它路径
-2) SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'paper_%'  → >0 立即 abort（退出码≠0，并打印命中的对象清单）
-3) 只允许删除白名单：bt_run / bt_trial 及其索引；出现任何其它前缀（尤其是 paper_*）一律 abort
+1) 目标库固定为 data/backtest.db（相对仓库根）—— 脚本不接受路径参数/env 覆盖
+2) SELECT name, type, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'
+   → 任一对象 name 命中 ^(paper_|idx_paper_|trg_paper_) 或 tbl_name 以 paper_ 开头 → 立即 abort
+     （退出码 ≠ 0，并打印命中的对象清单；只查 name LIKE 'paper_%' 会漏掉 idx_/trg_ 前缀的索引与触发器）
+3) 只允许删除白名单：全部 bt_* 表的数据（不 DROP schema）；出现任何非 bt_* 表一律 abort
 4) 脚本内禁止 rm / unlink / fs.unlink / DBI->unlink / `rm -rf` 目标库文件；出现即视为实现缺陷（review + grep 双查）
 ```
 
@@ -1155,6 +1160,19 @@ S4 前端与验收
 - 反向用例：只有 `bt_*` 的临时库 → 脚本退出码 0，且 `bt_run` 被清空。
 
 **4）收口判定**：`createPaperSchema` 连续执行两次无差异（幂等）+ 上述 1–3 全绿 + 清理守卫正向/反向各一条测试 —— 才算 PA-05 完成。
+
+### 13.5 A16 的口径修正：守卫优先于「只删 `bt_*`」（2026-11-08 追加，**有意偏离**）
+
+> **状态**：经所有者确认的有意偏离，**不是实现错误**；后续 review 不得按 §9.2 A16 原始字面重新提出。
+
+| 项 | 内容 |
+|---|---|
+| **原文表述** | §9.2 A16 / 旧 PA-15 验收：重置脚本只删 `bt_*`；预置一条 `paper_equity` 后跑清理 → **纸面行仍在**（隐含「清理会跳过并继续执行」） |
+| **实际口径** | 清理脚本探测到 `^paper_` / `^idx_paper_` / `^trg_paper_` 任一名命中即 **abort（退出码 ≠ 0）**，**任何写操作都不执行**；纸面行与 `bt_*` 行**全部原样保留** |
+| **为什么偏离** | §13.4 第 3 条第 2 款（S1 硬验收项）已规定「命中即 abort」，且「只查 `name LIKE 'paper_%'` 会漏掉 `idx_`/`trg_` 前缀」。两条并存时，「跳过 paper_ 继续删 `bt_*`」会让脚本在**前缀命名异常或未来新增对象漏配白名单**时静默误伤，与 S1 硬验收的隔离目标相反；abort 是更安全的一侧 |
+| **两者能否同时成立** | 不能。「纸面行仍在」在两种口径下都成立，但「清理照常完成（退出码 0）」与「命中即 abort」互斥，故必须择一 |
+| **落地证据** | `apps/backend/tests/unit/paper-cleanup-guard.test.ts`：预置 `paper_equity` + `bt_run` 后跑 `scripts/cleanup-backtest-data.mjs` → 断言**退出码 ≠ 0**、`stderr` 含 `ABORT`，且 `paper_account` / `paper_equity` / `bt_run` 行数均为 1（abort 发生在任何写入之前） |
+| **代价** | 库内只要残留任何 `paper_*` 对象，清理脚本就完全不可用（需人工确认后先删纸面账本）；这是刻意的「宁可停下也不误删」 |
 
 ---
 
