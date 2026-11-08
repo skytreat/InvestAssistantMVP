@@ -1012,6 +1012,338 @@ export const builtinPlugins: Plugin[] = [
     },
   }),
 
+  // ---------- 星线反转（早晨之星 / 黄昏之星，pattern 类第三个代表） ----------
+  /*
+   * ## 为什么用「实体分离」替代「跳空缺口」
+   *
+   * 经典定义要求星线（第 2 根）与第 1 根**跳空**分离。A 股 ETF 日线连续竞价、
+   * 前复权后真实缺口极少，若坚持「跳空」判据，信号会长期接近 0。
+   * 本项目用**实体完全分离**作为替代判据（不是放宽成普通反转）：
+   *   早晨之星 —— 第 2 根实体上沿 < 第 1 根收盘价（第 1 根为阴线，其收盘价即实体下沿）；
+   *   黄昏之星 —— 第 2 根实体下沿 > 第 1 根收盘价（第 1 根为阳线，其收盘价即实体上沿）。
+   * 只要实体有任何重叠（哪怕只差 1 分钱）就不成立，形态判据仍是硬条件。
+   *
+   * 同时**不引入**「星线实体 ≤ 第 1 根实体的 N%」一类需要调参的经验阈值 —— 绝对价差
+   * 在低价 ETF 与高价股之间口径漂移，无法写成可验收的硬断言。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 早晨之星（BUY）：第 1 根阴线且收盘 < MA(maPeriod)（下跌趋势背景）；第 2 根实体
+   *   完全位于第 1 根实体下方；第 3 根阳线且收盘 > 第 1 根收盘价（收复失地）；
+   * - 黄昏之星（SELL）：完全镜像（第 1 根阳线且收盘 > MA，第 2 根实体在上方，第 3 根阴线）；
+   * - 量能确认：第 3 根成交量 ≥ minVolumeRatio × 前 volumePeriod 根均量（窗口不含第 3 根）。
+   *
+   * ## 不臆造信号
+   * 数据不足 / MA 为 NaN / 均量为 0 / 量比不足 / 实体未分离 → 一律返回 `[]`。
+   */
+  definePlugin({
+    id: 'star_reversal',
+    name: '星线反转形态（早晨之星 / 黄昏之星）',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'pattern',
+    complexity: 'simple',
+    description:
+      '下跌趋势中出现放量早晨之星 → 买入信号；上涨趋势中出现放量黄昏之星 → 卖出信号（前复权 OHLC 口径）',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'maPeriod', label: '趋势均线周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minVolumeRatio',
+        label: '放量确认倍数',
+        type: 'number',
+        default: 1.2,
+        min: 0.5,
+        max: 5,
+        step: 0.1,
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const maPeriod = params.maPeriod as number;
+      const volumePeriod = params.volumePeriod as number;
+      const minVolumeRatio = params.minVolumeRatio as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 三根 K 线 + 星线前的 MA + 均量窗口，缺一项都不判形态
+      if (klines.length < Math.max(maPeriod + 2, volumePeriod + 1)) return [];
+
+      const n = klines.length;
+      const c1 = klines[n - 3];
+      const star = klines[n - 2];
+      const c3 = klines[n - 1];
+
+      const closes = klines.map((k) => k.close);
+      // 趋势基准取第 1 根处（`n - 3`），避免形态自身把 MA 抬高 / 压低
+      const ma = ctx.calculateSMA(closes, maPeriod)[n - 3];
+      if (ma === undefined || Number.isNaN(ma)) return [];
+
+      // 均量窗口必须排除第 3 根，否则当根放量会自己抬高基准、稀释确认强度
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+
+      const volumeRatio = c3.volume / avgVolume;
+      if (volumeRatio < minVolumeRatio) return [];
+
+      const starTop = Math.max(star.open, star.close);
+      const starBottom = Math.min(star.open, star.close);
+
+      // 早晨之星：第 1 根阴线（收盘即实体下沿），星线实体整体在其下方，第 3 根阳线收复
+      const morningStar =
+        c1.close < c1.open &&
+        starTop < c1.close &&
+        c3.close > c3.open &&
+        c3.close > c1.close &&
+        c1.close < ma;
+
+      // 黄昏之星：完全镜像
+      const eveningStar =
+        c1.close > c1.open &&
+        starBottom > c1.close &&
+        c3.close < c3.open &&
+        c3.close < c1.close &&
+        c1.close > ma;
+
+      const c1Body = Math.abs(c1.close - c1.open);
+      // 收复幅度（第 3 根收盘越过第 1 根收盘的距离 / 第 1 根实体）；命中时 c1Body > 0
+      const recovery = c1Body > 0 ? Math.abs(c3.close - c1.close) / c1Body : 0;
+      const strength = Math.min(
+        1,
+        0.5 * Math.min(1, recovery) + 0.5 * Math.min(1, volumeRatio / (minVolumeRatio * 2)),
+      );
+
+      const base = {
+        symbol,
+        pluginId: 'star_reversal',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          c1Open: c1.open,
+          c1Close: c1.close,
+          starOpen: star.open,
+          starClose: star.close,
+          open: c3.open,
+          high: c3.high,
+          low: c3.low,
+          close: c3.close,
+          ma,
+          volumeRatio,
+          maPeriod,
+          volumePeriod,
+        },
+      };
+
+      // 下跌趋势 + 早晨之星 → 买入（反转向上）
+      if (morningStar) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `早晨之星（${c3.close.toFixed(2)} 收复第 1 根收盘 ${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `第 1 根阴线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘低于 MA${maPeriod}=${ma.toFixed(2)}；星线实体 ${star.open.toFixed(2)}~${star.close.toFixed(2)} 完全位于其下方；第 3 根阳线收 ${c3.close.toFixed(2)}，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（早晨之星反转）`,
+          },
+        ];
+      }
+      // 上涨趋势 + 黄昏之星 → 卖出（反转向下）
+      if (eveningStar) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `黄昏之星（${c3.close.toFixed(2)} 跌破第 1 根收盘 ${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `第 1 根阳线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘高于 MA${maPeriod}=${ma.toFixed(2)}；星线实体 ${star.open.toFixed(2)}~${star.close.toFixed(2)} 完全位于其上方；第 3 根阴线收 ${c3.close.toFixed(2)}，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（黄昏之星反转）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
+  // ---------- 刺透 / 乌云盖顶反转（两根 K 线，pattern） ----------
+  /*
+   * ## 为什么必须保留一个 penetration 阈值（且显式暴露为参数）
+   *
+   * 刺透（piercing）与乌云盖顶（dark cloud）的**定义本身**就包含「第 2 根收进第 1 根实体多深」：
+   * 经典口径是收盘越过第 1 根实体中点（50%）。去掉这个判据后，第 2 根只要比第 1 根收盘
+   * 多收 1 分钱就算反转，形态退化成噪声。故该阈值**无法避免**，但把它**显式暴露为参数**
+   * `penetration`（默认 0.5 = 经典中点），而不是硬编码在代码里。
+   * 其余判据只用纯 OHLC 关系：两根方向、第 2 根开盘越过前一根收盘、第 2 根收盘不越过
+   * 前一根开盘（越过则属于 `engulfing_reversal` 的「实体反包」，两插件职责分离）。
+   *
+   * ## 计算口径（前复权 OHLC，按日期升序）
+   *
+   * - 刺透（BUY）：前一根阴线且收盘 < MA(maPeriod)；当根阳线且开盘 < 前一根收盘（低开），
+   *   收盘 > 前收盘 + penetration × 前一根实体高度，且收盘 < 前一根开盘；
+   * - 乌云盖顶（SELL）：完全镜像（前一根阳线、当根阴线高开、收盘跌回前实体 penetration 以下）；
+   * - 量能确认：当根成交量 ≥ minVolumeRatio × 前 volumePeriod 根均量（窗口不含当根）。
+   *
+   * ## 不臆造信号
+   * 数据不足 / MA 为 NaN / 均量为 0 / 量比不足 / 穿透幅度差一点不达 penetration → 一律 `[]`。
+   */
+  definePlugin({
+    id: 'piercing_darkcloud',
+    name: '刺透 / 乌云盖顶形态',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'pattern',
+    complexity: 'simple',
+    description:
+      '下跌趋势中出现放量刺透（低开收复前一根实体）→ 买入信号；上涨趋势中出现放量乌云盖顶（高开跌回前一根实体）→ 卖出信号',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'maPeriod', label: '趋势均线周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minVolumeRatio',
+        label: '放量确认倍数',
+        type: 'number',
+        default: 1.2,
+        min: 0.5,
+        max: 5,
+        step: 0.1,
+      },
+      {
+        key: 'penetration',
+        label: '实体穿透比例',
+        type: 'number',
+        default: 0.5,
+        min: 0.1,
+        max: 0.9,
+        step: 0.05,
+        description: '第 2 根收盘必须越过前一根实体的比例（0.5 = 经典中点口径）',
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const maPeriod = params.maPeriod as number;
+      const volumePeriod = params.volumePeriod as number;
+      const minVolumeRatio = params.minVolumeRatio as number;
+      const penetration = params.penetration as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 两根 K 线 + 前一根处的 MA + 均量窗口，缺一项都不判形态
+      if (klines.length < Math.max(maPeriod + 1, volumePeriod + 1)) return [];
+
+      const n = klines.length;
+      const c1 = klines[n - 2];
+      const c2 = klines[n - 1];
+
+      const closes = klines.map((k) => k.close);
+      // 趋势基准取前一根处（`n - 2`），避免形态自身污染趋势口径
+      const ma = ctx.calculateSMA(closes, maPeriod)[n - 2];
+      if (ma === undefined || Number.isNaN(ma)) return [];
+
+      // 均量窗口必须排除当根，否则当根放量会自己抬高 / 压低基准
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+
+      const volumeRatio = c2.volume / avgVolume;
+      if (volumeRatio < minVolumeRatio) return [];
+
+      const c1Body = Math.abs(c1.close - c1.open);
+
+      // 刺透：前阴线 + 当根阳线低开，收盘越过前一根实体的 penetration 比例且未超过其开盘
+      const piercing =
+        c1.close < c1.open &&
+        c1.close < ma &&
+        c2.close > c2.open &&
+        c2.open < c1.close &&
+        c2.close > c1.close + penetration * (c1.open - c1.close) &&
+        c2.close < c1.open;
+
+      // 乌云盖顶：完全镜像
+      const darkCloud =
+        c1.close > c1.open &&
+        c1.close > ma &&
+        c2.close < c2.open &&
+        c2.open > c1.close &&
+        c2.close < c1.close - penetration * (c1.close - c1.open) &&
+        c2.close > c1.open;
+
+      // 实际穿透比例（当根收盘越过前一根收盘的距离 / 前一根实体）；命中时 c1Body > 0
+      const pierceRatio = c1Body > 0 ? Math.abs(c2.close - c1.close) / c1Body : 0;
+      const strength = Math.min(
+        1,
+        0.5 * Math.min(1, pierceRatio) + 0.5 * Math.min(1, volumeRatio / (minVolumeRatio * 2)),
+      );
+
+      const base = {
+        symbol,
+        pluginId: 'piercing_darkcloud',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          c1Open: c1.open,
+          c1Close: c1.close,
+          open: c2.open,
+          high: c2.high,
+          low: c2.low,
+          close: c2.close,
+          ma,
+          volumeRatio,
+          penetration,
+          maPeriod,
+          volumePeriod,
+        },
+      };
+
+      // 下跌趋势 + 刺透 → 买入（反转向上）
+      if (piercing) {
+        return [
+          {
+            ...base,
+            signalType: 'BUY' as const,
+            label: `刺透形态（${c2.close.toFixed(2)} 收复前阴线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阴线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘低于 MA${maPeriod}=${ma.toFixed(2)}；当根阳线低开 ${c2.open.toFixed(2)} 收 ${c2.close.toFixed(2)}，穿透前实体 ${(pierceRatio * 100).toFixed(0)}% ≥ ${(penetration * 100).toFixed(0)}%，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（刺透反转）`,
+          },
+        ];
+      }
+      // 上涨趋势 + 乌云盖顶 → 卖出（反转向下）
+      if (darkCloud) {
+        return [
+          {
+            ...base,
+            signalType: 'SELL' as const,
+            label: `乌云盖顶（${c2.close.toFixed(2)} 跌回前阳线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)}）`,
+            strength,
+            detail: `前一根阳线 ${c1.open.toFixed(2)}→${c1.close.toFixed(2)} 且收盘高于 MA${maPeriod}=${ma.toFixed(2)}；当根阴线高开 ${c2.open.toFixed(2)} 收 ${c2.close.toFixed(2)}，跌穿前实体 ${(pierceRatio * 100).toFixed(0)}% ≥ ${(penetration * 100).toFixed(0)}%，量比 ${volumeRatio.toFixed(2)} ≥ ${minVolumeRatio}（乌云盖顶反转）`,
+          },
+        ];
+      }
+      return [];
+    },
+  }),
+
   // ---------- 量价突破（V3 六分类的 volume 代表，monitor 版） ----------
   /*
    * ## 为什么新增 monitor 版，而不是改造 filter 版 `volume_breakout`

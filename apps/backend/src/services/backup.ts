@@ -4,6 +4,9 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { ConfigStore } from '../config/configStore.js';
 import { DuckDBInstance } from '@duckdb/node-api';
+import Database from 'better-sqlite3';
+import { resolveBacktestDbPath } from './backtest/store/backtestDb.js';
+import { PaperStore } from './paper/store.js';
 import { writeSystemLog } from './logger.js';
 
 /**
@@ -156,6 +159,58 @@ export async function backupDuckDB(): Promise<{
 }
 
 /**
+ * 回测 / 纸面账本库热备份（PA-15）
+ *
+ * 纸面账本（`paper_*`）与回测结果（`bt_*`）同库（D1：`data/backtest.db`）⇒ 一次备份两者全覆盖。
+ * - 源库可能正被 `PaperStore` / `BacktestStore` 打开（WAL）：用 SQLite 在线备份 API，读已提交页，不加写锁；
+ * - 这里**另开只读连接**（不复用 `PaperStore.getInstance()`：那会顺带建表写库，且备份不该依赖单例是否已初始化）；
+ * - 文件不存在 ⇒ SKIP（从未跑过回测/纸面），不视为失败。
+ */
+export async function backupBacktestDb(): Promise<{
+  success: boolean;
+  size?: number;
+  skipped?: boolean;
+  error?: string;
+}> {
+  try {
+    _ensureBackupDir();
+    const dbPath = resolveBacktestDbPath();
+    if (!fs.existsSync(dbPath)) {
+      writeSystemLog({
+        logType: 'backup',
+        level: 'SKIP',
+        message: '回测/纸面账本备份跳过（库文件不存在）',
+        detail: `reason=not_exists path=${dbPath}`,
+      });
+      return { success: true, skipped: true };
+    }
+    const out = path.join(BACKUP_DIR, `backtest.db.${_date()}`);
+    const src = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      await src.backup(out);
+    } finally {
+      src.close();
+    }
+    const size = fs.statSync(out).size;
+    writeSystemLog({
+      logType: 'backup',
+      level: 'INFO',
+      message: '回测/纸面账本备份成功',
+      detail: `file=${out} size=${size}`,
+    });
+    return { success: true, size };
+  } catch (err: any) {
+    writeSystemLog({
+      logType: 'backup',
+      level: 'ERROR',
+      message: '回测/纸面账本备份失败',
+      detail: String(err),
+    });
+    return { success: false, error: String(err) };
+  }
+}
+
+/**
  * OCI Object Storage 上传（MVP T30 降级逻辑）
  *
  * 前提：服务器上 rclone 已配置好 oci remote（rclone config create oci swift ...）
@@ -206,15 +261,17 @@ function _uploadToOCI(files: string[]): { success: boolean; uploaded: number; er
 }
 
 /**
- * 一键备份（SQLite 恒常 + DuckDB 受 ENABLE_QUOTE_BACKUP 控制）+ 可选 OCI 上传
+ * 一键备份（SQLite 恒常 + 回测/纸面账本恒常 + DuckDB 受 ENABLE_QUOTE_BACKUP 控制）+ 可选 OCI 上传
  */
 export async function runFullBackup(): Promise<{
   sqlite: { success: boolean; size?: number };
+  backtest: { success: boolean; size?: number; skipped?: boolean };
   duckdb: { success: boolean; size?: number; skipped?: boolean };
   cleanedFiles: number;
   ociUploaded?: number;
 }> {
   const sqliteResult = await backupSQLite();
+  const backtestResult = await backupBacktestDb();
   const duckdbResult = await backupDuckDB();
   const cleaned = _deleteOldBackups();
 
@@ -224,8 +281,10 @@ export async function runFullBackup(): Promise<{
     const files: string[] = [];
     const date = _date();
     const sqlitePath = path.join(BACKUP_DIR, `business.db.${date}`);
+    const backtestPath = path.join(BACKUP_DIR, `backtest.db.${date}`);
     const duckdbPath = path.join(BACKUP_DIR, `v_stock_qfq.${date}.parquet`);
     if (fs.existsSync(sqlitePath)) files.push(sqlitePath);
+    if (fs.existsSync(backtestPath)) files.push(backtestPath);
     if (fs.existsSync(duckdbPath)) files.push(duckdbPath);
     const ociResult = _uploadToOCI(files);
     ociUploaded = ociResult.uploaded;
@@ -235,6 +294,11 @@ export async function runFullBackup(): Promise<{
 
   return {
     sqlite: { success: sqliteResult.success, size: sqliteResult.size },
+    backtest: {
+      success: backtestResult.success,
+      size: backtestResult.size,
+      skipped: backtestResult.skipped,
+    },
     duckdb: {
       success: duckdbResult.success,
       size: duckdbResult.size,
@@ -245,8 +309,88 @@ export async function runFullBackup(): Promise<{
   };
 }
 
-/** 可恢复的 SQLite 备份文件名（backupSQLite 产出的命名规范） */
+/** 可恢复的 SQLite 业务库备份文件名（backupSQLite 产出的命名规范） */
 const RESTORE_FILE_RE = /^business\.db\.\d{4}-\d{2}-\d{2}$/;
+
+/** 可恢复的回测 / 纸面账本备份文件名（backupBacktestDb 产出的命名规范） */
+const RESTORE_BACKTEST_FILE_RE = /^backtest\.db\.\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 从备份恢复回测 / 纸面账本库（PA-15）
+ *
+ * 与 `restoreSQLiteBackup` 同构（白名单 + 安全备份 + 断连替换 + 重开校验），差异：
+ *   - 目标是 `resolveBacktestDbPath()`（D1：`data/backtest.db`），**不是**业务库；
+ *   - 替换前先关闭 `PaperStore` 单例（Windows 上被打开的文件无法覆盖）；
+ *   - 预校验备份内容含 `paper_account`，避免把回测库/别的库顶进纸面账本位置。
+ */
+export function restoreBacktestBackup(fileName: string): RestoreResult {
+  if (!RESTORE_BACKTEST_FILE_RE.test(fileName)) {
+    return { success: false, error: `文件名非法（仅接受 backtest.db.YYYY-MM-DD）：${fileName}` };
+  }
+
+  const backupRoot = path.resolve(BACKUP_DIR);
+  const source = path.resolve(backupRoot, fileName);
+  if (!source.startsWith(backupRoot + path.sep)) {
+    return { success: false, error: '路径越界，拒绝恢复' };
+  }
+  if (!fs.existsSync(source)) {
+    return { success: false, error: `备份文件不存在：${fileName}` };
+  }
+
+  const dbPath = resolveBacktestDbPath();
+  const safetyName = `backtest.db.${_date()}.pre-restore-${Date.now()}`;
+  const safetyPath = path.join(backupRoot, safetyName);
+
+  try {
+    // 1. 预校验：备份里必须真有纸面账本表（防止用回测库/坏文件覆盖当前账本）
+    const probe = new Database(source, { readonly: true, fileMustExist: true });
+    try {
+      const has = probe
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='paper_account'`)
+        .get() as { name: string } | undefined;
+      if (!has) throw new Error('备份内容不完整，缺少 paper_account');
+    } finally {
+      probe.close();
+    }
+
+    // 2. 安全备份（当前账本 → pre-restore，恢复错了可回滚）
+    fs.mkdirSync(backupRoot, { recursive: true });
+    const hadCurrent = fs.existsSync(dbPath);
+    if (hadCurrent) fs.copyFileSync(dbPath, safetyPath);
+
+    // 3. 断连 → 替换 → 清 WAL 残留
+    PaperStore.resetInstance();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.copyFileSync(source, dbPath);
+    for (const suffix of ['-wal', '-shm']) {
+      try {
+        fs.unlinkSync(dbPath + suffix);
+      } catch {
+        /* 不存在即可 */
+      }
+    }
+
+    // 4. 重开并校验（PaperStore 构造会跑建表 + 隔离校验；能读到行数即证明库可读）
+    const store = PaperStore.getInstance();
+    const count = (store.db.prepare('SELECT COUNT(*) AS c FROM paper_account').get() as { c: number }).c;
+    writeSystemLog({
+      logType: 'backup',
+      level: 'SUCCESS',
+      message: `回测/纸面账本备份恢复完成：${fileName}`,
+      detail: `safety_backup=${hadCurrent ? safetyName : '无'} paper_accounts=${count}`,
+    });
+
+    return { success: true, safetyBackup: hadCurrent ? safetyName : undefined };
+  } catch (err: any) {
+    writeSystemLog({
+      logType: 'backup',
+      level: 'ERROR',
+      message: `回测/纸面账本备份恢复失败：${fileName}`,
+      detail: String(err),
+    });
+    return { success: false, error: String(err) };
+  }
+}
 
 export interface RestoreResult {
   success: boolean;

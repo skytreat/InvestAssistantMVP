@@ -261,14 +261,17 @@ describe('阻塞路径', () => {
 });
 
 describe('阶段跳过', () => {
-  it('落账期账户 → skipped（S2 不做结算）', async () => {
+  it('落账期账户 → 产出 pending（S3 起不再跳过）', async () => {
     const account = newAccount(1);
     db.prepare(`UPDATE paper_account SET phase = 'ledger' WHERE id = ?`).run(account.id);
     const outcome = await runPaperDecision(db, account.id, makeDeps(makeData()));
-    expect(outcome.status).toBe('skipped');
-    if (outcome.status !== 'skipped') return;
-    expect(outcome.reason).toBe('ledger-phase');
-    expect(count('paper_order')).toBe(0);
+    expect(outcome.status).toBe('done');
+    const row = db
+      .prepare(`SELECT status, trade_date FROM paper_order WHERE account_id = ? ORDER BY id DESC`)
+      .get(account.id) as { status: string; trade_date: string };
+    // 切换即冷启动：`ledger_start_date` 由 accountService 写入；此处未写 ⇒ 回放起点回退到决策日
+    expect(row.status).toBe('pending');
+    expect(row.trade_date).toBe('2026-11-09');
   });
 
   it('paused 账户 → skipped', async () => {
@@ -282,21 +285,26 @@ describe('阶段跳过', () => {
 });
 
 describe('日更段编排', () => {
-  it('多账户：影子完成、落账跳过，且都不写持仓/净值', async () => {
+  it('多账户：影子与落账都产出订单，落账行为 pending；都不写持仓/净值', async () => {
     const a1 = newAccount(1);
     const a2 = newAccount(2);
     db.prepare(`UPDATE paper_account SET phase = 'ledger' WHERE id = ?`).run(a2.id);
 
     const summary = await runPaperDecisionStage({ db, deps: makeDeps(makeData()), silent: true });
     expect(summary.accounts).toBe(2);
-    expect(summary.done).toBe(1);
-    expect(summary.skipped).toBe(1);
+    expect(summary.done).toBe(2);
+    expect(summary.skipped).toBe(0);
     expect(summary.failed).toBe(0);
     expect(summary.decisionDate).toBe('2026-11-06');
 
-    expect(count('paper_order')).toBe(1);
+    expect(count('paper_order')).toBe(2);
     expect(count('paper_position')).toBe(0);
     expect(count('paper_equity')).toBe(0);
+
+    const ledger = db.prepare(`SELECT status FROM paper_order WHERE account_id = ?`).get(a2.id) as {
+      status: string;
+    };
+    expect(ledger.status).toBe('pending');
 
     const shadow = db.prepare('SELECT start_date FROM paper_account WHERE id = ?').get(a1.id) as any;
     expect(shadow.start_date).toBe('2026-11-06');

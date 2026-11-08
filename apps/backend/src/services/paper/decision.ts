@@ -69,7 +69,7 @@ export type PaperDecisionOutcome =
       /** 策略在最终日给出的 warn 日志 */
       warnings: string[];
     }
-  | { status: 'skipped'; accountId: number; reason: 'account-not-active' | 'ledger-phase' }
+  | { status: 'skipped'; accountId: number; reason: 'account-not-active' }
   | {
       status: 'blocked';
       accountId: number;
@@ -102,6 +102,17 @@ function loadAccount(db: Database.Database, accountId: number): DecisionAccountR
     .get(accountId) as DecisionAccountRow | undefined;
   if (!row) throw new PaperError('PAPER_ACCOUNT_NOT_FOUND', 404, `纸面账户 ${accountId} 不存在`);
   return row;
+}
+
+/**
+ * 落账期回放起点（「切换即冷启动」）
+ *
+ * 切换当日 `ledger_start_date = nextTradingDay(T)` 会晚于决策日 T，直接用它会得到空回放区间；
+ * 故取 `min(ledger_start_date, decisionDate)`，保证切换当日就能产出第一笔 `pending`。
+ */
+function coldStartOf(account: DecisionAccountRow, decisionDate: string): string {
+  const ledgerStart = account.ledger_start_date ?? decisionDate;
+  return ledgerStart <= decisionDate ? ledgerStart : decisionDate;
 }
 
 function loadPositions(db: Database.Database, accountId: number): PortfolioRestorePosition[] {
@@ -218,7 +229,8 @@ export async function runPaperDecision(
 ): Promise<PaperDecisionOutcome> {
   const account = loadAccount(db, accountId);
   if (account.status !== 'active') return { status: 'skipped', accountId, reason: 'account-not-active' };
-  if (account.phase !== 'shadow') return { status: 'skipped', accountId, reason: 'ledger-phase' };
+  // 落账期（S3 起）：决策同样跑，只是产出 `pending`（次日 17:04 结算）
+  const orderStatus: 'shadow' | 'pending' = account.phase === 'ledger' ? 'pending' : 'shadow';
 
   const resolveCalendar = deps.resolveCalendarDate ?? resolveTargetTradeDate;
   const resolveQuote = deps.resolveQuoteDate ?? resolveLatestQuoteDate;
@@ -242,7 +254,11 @@ export async function runPaperDecision(
 
   const decisionDate = calendarDate;
   const params = JSON.parse(account.params_json) as Record<string, unknown>;
-  const replayStart = account.start_date ?? decisionDate;
+  // 落账期「切换即冷启动」：回放起点 = `ledger_start_date`，影子期的历史决策不参与重建。
+  // 切换当日 `ledger_start_date = nextTradingDay(T)` 会晚于决策日 T，故取两者较小值，
+  // 否则回放区间为空（§8.2 冷启动口径：水位重置，历史影子订单不补记）。
+  const replayStart =
+    orderStatus === 'pending' ? coldStartOf(account, decisionDate) : (account.start_date ?? decisionDate);
   const positions = loadPositions(db, accountId);
 
   const data = await buildData({
@@ -357,7 +373,7 @@ export async function runPaperDecision(
       account_id, signal_id, decision_date, trade_date, seq, asset_code,
       intent_kind, side, rebalance_mode, target_weight, target_notional,
       cutoff_equity, intent_notional, status, is_replayed, is_deleted
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shadow', 0, 0)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
     ON CONFLICT(account_id, signal_id) DO UPDATE SET
       trade_date = excluded.trade_date,
       seq = excluded.seq,
@@ -368,7 +384,7 @@ export async function runPaperDecision(
       target_notional = excluded.target_notional,
       cutoff_equity = excluded.cutoff_equity,
       intent_notional = excluded.intent_notional,
-      status = 'shadow',
+      status = excluded.status,
       is_deleted = 0,
       updated_at = datetime('now', 'localtime')
   `);
@@ -408,6 +424,7 @@ export async function runPaperDecision(
         d.targetNotional,
         cutoffEquity,
         d.intentNotional,
+        orderStatus,
       );
     });
 
@@ -417,7 +434,8 @@ export async function runPaperDecision(
       const res = db
         .prepare(
           `UPDATE paper_order SET status = 'superseded', updated_at = datetime('now', 'localtime')
-            WHERE account_id = ? AND decision_date = ? AND settled_at IS NULL AND status = 'shadow'
+            WHERE account_id = ? AND decision_date = ? AND settled_at IS NULL
+              AND status IN ('shadow', 'pending')
               AND signal_id NOT IN (${placeholders})`,
         )
         .run(accountId, decisionDate, ...keys);
@@ -426,7 +444,8 @@ export async function runPaperDecision(
       const res = db
         .prepare(
           `UPDATE paper_order SET status = 'superseded', updated_at = datetime('now', 'localtime')
-            WHERE account_id = ? AND decision_date = ? AND settled_at IS NULL AND status = 'shadow'`,
+            WHERE account_id = ? AND decision_date = ? AND settled_at IS NULL
+              AND status IN ('shadow', 'pending')`,
         )
         .run(accountId, decisionDate);
       superseded = res.changes;
@@ -473,7 +492,7 @@ export interface PaperDecisionStageSummary {
 /**
  * 17:04 纸面日更段：遍历 `active` 账户逐个决策。
  *
- * - 落账期账户在 S2 阶段跳过（结算属 PA-10，避免出现「有挂单无结算」的半成品账本）；
+ * - 影子期 → `paper_order(status='shadow')`；落账期 → `status='pending'`（次日 17:04 结算，PA-10）；
  * - 策略版本不匹配 → **账户置 paused + ERROR 日志**（方案 §7.5 / §12.3，不回退最新版本）。
  */
 export async function runPaperDecisionStage(args: {
