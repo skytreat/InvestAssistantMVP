@@ -27,6 +27,8 @@ import { PaperError } from './errors.js';
 import { resolvePaperStrategy } from './strategies.js';
 import { todayLocalDate } from './accountService.js';
 import { buildPaperMarketData, type BuildPaperMarketDataInput, type PaperMarketData } from './marketData.js';
+import { loadComboSignalSymbols } from './comboSignalSource.js';
+import { COMBO_SIGNAL_STRATEGY_ID } from '../backtest/strategies/comboSignal.js';
 
 /** `paper_account` 决策需要的列（只取本模块用到的） */
 interface DecisionAccountRow {
@@ -261,6 +263,14 @@ export async function runPaperDecision(
     orderStatus === 'pending' ? coldStartOf(account, decisionDate) : (account.start_date ?? decisionDate);
   const positions = loadPositions(db, accountId);
 
+  // PA-09：组合信号跟随的目标可能是固定池外的标的 —— 把回放区间内出现过的信号标的
+  // 一并装载行情（只影响装载范围；`decide()` 仍按 `asOf` 逐日过滤，无前视）。
+  const comboId = typeof params.comboId === 'string' ? params.comboId : '';
+  const extraSymbols =
+    account.strategy_id === COMBO_SIGNAL_STRATEGY_ID && comboId
+      ? loadComboSignalSymbols(comboId, replayStart, decisionDate)
+      : [];
+
   const data = await buildData({
     strategyId: account.strategy_id,
     params,
@@ -268,6 +278,7 @@ export async function runPaperDecision(
     end: decisionDate,
     benchmark: account.benchmark_asset_code,
     heldSymbols: positions.map((p) => p.symbol),
+    extraSymbols,
   });
 
   // 方案 §7.3：T 必须是真交易日（全市场行情已更新），基准当日也必须有 bar —— 否则阻塞
