@@ -23,6 +23,8 @@ import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
 import { syncSymbolDict } from './symbolDict.js';
+import { PaperStore } from './paper/store.js';
+import { runPaperDecisionStage } from './paper/decision.js';
 
 /**
  * 全部收盘后 cron 的时区（T108）。
@@ -275,6 +277,7 @@ export async function refreshSymbolDictSnapshot(
  *   17:01 → '1 17 * * 1-5'  （周一到周五 17:01，交易日排除周末）
  *   17:02 → '2 17 * * 1-5'
  *   17:03 → '3 17 * * 1-5'
+ *   17:04 → '4 17 * * 1-5'  （纸面账户日更：结算 T → 决策 T+1）
  *   17:05 → '5 17 * * 1-5'
  *
  * 注意：法定节假日不排除（MVP 简化），C1 交易日历校验会在非交易日自动返回 WARN+SKIP
@@ -535,6 +538,38 @@ export function registerCronJobs(app: FastifyInstance): void {
     ),
   );
 
+  // === 17:04 纸面账户日更（结算 T → 决策 T+1；S2 只做影子决策）===
+  app.scheduler.addCronJob(
+    new CronJob(
+      { cronExpression: '4 17 * * 1-5', timezone: CRON_TIMEZONE },
+      new AsyncTask('paper-account-daily', async () => {
+        await enqueueStage(
+          '纸面账户日更',
+          'paper_account',
+          async () => {
+            writeSystemLog({
+              logType: 'paper_account',
+              level: 'INFO',
+              message: '纸面账户日更开始',
+            });
+            try {
+              await runPaperDecisionStage({ db: PaperStore.getInstance().db });
+            } catch (err: any) {
+              writeSystemLog({
+                logType: 'paper_account',
+                level: 'ERROR',
+                message: '纸面账户日更异常',
+                detail: String(err),
+              });
+            }
+          },
+          true,
+        );
+      }),
+      { id: 'paper-account-daily', preventOverrun: true },
+    ),
+  );
+
   // === 17:05 备份（SQLite 恒常；DuckDB 受 ENABLE_QUOTE_BACKUP 控制）===
   app.scheduler.addCronJob(
     new CronJob(
@@ -575,6 +610,6 @@ export function registerCronJobs(app: FastifyInstance): void {
     logType: 'startup',
     level: 'INFO',
     message:
-      '4 段 cron 已注册: 17:01 校验+字典刷新 / 17:02 信号 / 17:03 除权 / 17:05 备份（等待 tdx2db 写窗口结束后串行执行）',
+      '5 段 cron 已注册: 17:01 校验+字典刷新 / 17:02 信号 / 17:03 除权 / 17:04 纸面日更 / 17:05 备份（等待 tdx2db 写窗口结束后串行执行）',
   });
 }

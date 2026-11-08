@@ -20,6 +20,9 @@ const auth = (token = bundle.adminToken) => ({ authorization: `Bearer ${token}` 
 beforeAll(async () => {
   process.env.BACKTEST_DB_PATH = path.join(tmpDir, 'backtest.db');
   PaperStore.resetInstance();
+  // ⚠️ 必须在这里**主动**建实例：`tests/setup.ts` 的 afterEach 会把 env 恢复成进程基线，
+  //    若留给首个请求惰性解析，本文件就会意外接到别的文件留下的同一个库（并发/串行都可能）。
+  PaperStore.getInstance();
   bundle = await createTestApp();
 });
 
@@ -136,5 +139,110 @@ describe('账户生命周期', () => {
       confirm: true,
     });
     expect(switchOther.status).toBe(404);
+  });
+});
+
+/**
+ * ⚠️ `sequence.shuffle=true`（T81 顺序敏感守卫）会在**文件内打乱用例顺序** ⇒
+ * 这里的用例**不能**复用 admin 的「单用户单账户」名额，否则会与生命周期用例随机 409。
+ * 每个用例各自建一个独立用户。
+ */
+function makePaperUser(username: string): { userId: number; token: string } {
+  const db = bundle.db.db;
+  db.prepare(`INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`).run(
+    username,
+    hashPassword(`${username}123456`),
+  );
+  const userId = (
+    db.prepare(`SELECT id FROM user_account WHERE username = ?`).get(username) as { id: number }
+  ).id;
+  return { userId, token: makeUserToken(userId, username) };
+}
+
+describe('只读报告（PA-09）', () => {
+  it('影子账户：订单 / 持仓 / 净值 / 报告四条只读路由', async () => {
+    const { token } = makePaperUser('viewer');
+    const created = await post(
+      '/api/paper/accounts',
+      { strategyId: 'ref-buy-and-hold', strategyVersion: '0.1.0', initialCash: 100_000 },
+      token,
+    );
+    expect(created.status).toBe(201);
+    const id: number = created.body.data.id;
+
+    // 影子期不跑决策，直接留痕一条 shadow 信号（PA-08 的产物形态）
+    PaperStore.getInstance()
+      .db.prepare(
+        `INSERT INTO paper_order (
+           account_id, signal_id, decision_date, trade_date, seq, asset_code,
+           intent_kind, side, rebalance_mode, target_weight, target_notional,
+           cutoff_equity, intent_notional, status
+         ) VALUES (?, ?, '2026-11-06', '2026-11-09', 0, 'sh510300',
+                   'target', 'buy', 'replace', 0.5, 50_000, 100_000, 50_000, 'shadow')`,
+      )
+      .run(id, `psig_${id}_2026-11-06_sh510300`);
+
+    const orders = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/paper/accounts/${id}/orders`,
+      headers: auth(token),
+    });
+    expect(orders.statusCode).toBe(200);
+    const orderList = JSON.parse(orders.body).data;
+    expect(orderList).toHaveLength(1);
+    expect(orderList[0].assetCode).toBe('sh510300');
+    expect(orderList[0].status).toBe('shadow');
+    expect(orderList[0].targetWeight).toBe(0.5);
+    expect(orderList[0].tradeDate).toBe('2026-11-09');
+
+    // 影子期这两张表恒空（§7.8：读了只会误导）
+    const positions = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/paper/accounts/${id}/positions`,
+      headers: auth(token),
+    });
+    expect(positions.statusCode).toBe(200);
+    expect(JSON.parse(positions.body).data).toEqual([]);
+
+    const equity = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/paper/accounts/${id}/equity`,
+      headers: auth(token),
+    });
+    expect(equity.statusCode).toBe(200);
+    expect(JSON.parse(equity.body).data).toEqual([]);
+
+    const report = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/paper/accounts/${id}/report`,
+      headers: auth(token),
+    });
+    expect(report.statusCode).toBe(200);
+    const data = JSON.parse(report.body).data;
+    expect(data.account.phase).toBe('shadow');
+    expect(data.ledger).toBeNull();
+    expect(data.shadow.latestDecisionDate).toBe('2026-11-06');
+    expect(data.shadow.latestTargets).toHaveLength(1);
+    expect(data.shadow.latestTargets[0].assetCode).toBe('sh510300');
+    expect(data.shadow.orderCounts).toEqual({ shadow: 1 });
+  });
+
+  it('跨用户读报告 → 404', async () => {
+    const { token } = makePaperUser('reporter');
+
+    const created = await post(
+      '/api/paper/accounts',
+      { strategyId: 'ref-buy-and-hold', strategyVersion: '0.1.0', initialCash: 10_000 },
+      token,
+    );
+    expect(created.status).toBe(201);
+    const accountId: number = created.body.data.id;
+
+    const asAdmin = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/paper/accounts/${accountId}/report`,
+      headers: auth(),
+    });
+    expect(asAdmin.statusCode).toBe(404);
   });
 });

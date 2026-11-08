@@ -294,12 +294,18 @@ describe('M3 Admin 手动触发 + Signal 查询', () => {
 
 // === Scheduler + Backup ===
 describe.sequential('M3 Scheduler + Backup', () => {
-  it('registerCronJobs → 4 段 cron 注册', async () => {
+  it('registerCronJobs → 5 段 cron 注册', async () => {
     registerCronJobs(app);
     const jobs = app.scheduler.getAllJobs();
-    expect(jobs.length).toBe(4);
+    expect(jobs.length).toBe(5);
     const ids = jobs.map((j) => j.id).sort();
-    expect(ids).toEqual(['backup', 'datacheck-c1-c12', 'dividend-import', 'signal-generate']);
+    expect(ids).toEqual([
+      'backup',
+      'datacheck-c1-c12',
+      'dividend-import',
+      'paper-account-daily',
+      'signal-generate',
+    ]);
   });
 
   it('SQLite 热备份成功', async () => {
