@@ -107,6 +107,15 @@ describe('账户生命周期', () => {
     const closed = await post(`/api/paper/accounts/${id}/close`, {});
     expect(closed.status).toBe(200);
     expect(closed.body.data.status).toBe('closed');
+
+    // A15 后半：关闭旧账户后允许新建（唯一索引只约束「在用」账户）
+    const rebuilt = await post('/api/paper/accounts', {
+      strategyId: 'wufu-rotation',
+      strategyVersion: '5.2.0-m3',
+      initialCash: 20_000,
+    });
+    expect(rebuilt.status).toBe(201);
+    expect(rebuilt.body.data.phase).toBe('shadow');
   });
 
   it('跨用户访问 → 404（不泄露存在性）', async () => {
@@ -149,11 +158,13 @@ describe('账户生命周期', () => {
  */
 function makePaperUser(username: string): { userId: number; token: string } {
   const db = bundle.db.db;
-  db.prepare(
-    `INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`,
-  ).run(username, hashPassword(`${username}123456`));
-  const userId = (db.prepare(`SELECT id FROM user_account WHERE username = ?`).get(username) as { id: number })
-    .id;
+  db.prepare(`INSERT OR IGNORE INTO user_account (username, password_hash, role) VALUES (?, ?, 'user')`).run(
+    username,
+    hashPassword(`${username}123456`),
+  );
+  const userId = (
+    db.prepare(`SELECT id FROM user_account WHERE username = ?`).get(username) as { id: number }
+  ).id;
   return { userId, token: makeUserToken(userId, username) };
 }
 
