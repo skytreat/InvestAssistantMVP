@@ -452,9 +452,13 @@ interface RunArgs {
   /** 策略参数（JSON；缺省用策略默认值）—— M4 复现单组参数用 */
   params: Record<string, unknown>;
   suspension: Required<SuspensionOptions>;
+  /** 印花税率（仅卖出；缺省 0 = ETF 口径） */
+  stampDutyRate: number;
+  /** 过户费率（买卖双边；缺省 0 = ETF 口径） */
+  transferFeeRate: number;
 }
 
-const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak|dynamic] [--indexes sh000300,sh000510,sz399101,sz399006] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--no-missing-bar] [--no-zero-volume]`;
+const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak|dynamic] [--indexes sh000300,sh000510,sz399101,sz399006] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--stamp-duty-rate 0.001] [--transfer-fee-rate 0.00002] [--no-missing-bar] [--no-zero-volume]`;
 
 function parseRunArgs(argv: readonly string[]): RunArgs {
   const options: RunArgs = {
@@ -474,6 +478,8 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
     topN: 300,
     params: {},
     suspension: { missingBar: true, zeroVolume: true },
+    stampDutyRate: 0,
+    transferFeeRate: 0,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -554,6 +560,16 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
       case '--top-n':
         options.topN = Number(readValue());
         break;
+      case '--stamp-duty-rate':
+      case '--transfer-fee-rate': {
+        const v = Number(readValue());
+        if (!Number.isFinite(v) || v < 0 || v > 0.1) {
+          throw new Error(`${arg} 必须是 0~0.1 的有限数（收到 ${v}）`);
+        }
+        if (arg === '--stamp-duty-rate') options.stampDutyRate = v;
+        else options.transferFeeRate = v;
+        break;
+      }
       case '--params': {
         const raw = readValue();
         let parsed: unknown;
@@ -725,6 +741,11 @@ async function runCommand(argv: readonly string[]): Promise<void> {
       priceMode: args.priceMode,
       suspension: args.suspension,
       universeParams: { divisor: args.divisor, topN: args.topN },
+      // D1（F4）：印花税（仅卖出）/ 过户费（双边）；缺省 0 ⇒ ETF 口径与旧结果一致
+      rules: {
+        stampDutyRate: args.stampDutyRate,
+        transferFeeRate: args.transferFeeRate,
+      },
     },
   );
 

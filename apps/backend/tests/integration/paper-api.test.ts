@@ -57,9 +57,14 @@ describe('费用配置', () => {
     expect(list.statusCode).toBe(200);
     expect(JSON.parse(list.body).data.some((c: any) => c.name === '测试券商')).toBe(true);
 
-    const bad = await post('/api/paper/fee-configs', { name: '带印花税', stampDutyRate: 0.001 });
-    expect(bad.status).toBe(400);
-    expect(bad.body.code).toBe('FEE_RULE_UNSUPPORTED');
+    const withFees = await post('/api/paper/fee-configs', {
+      name: '带印花税',
+      stampDutyRate: 0.001,
+      transferFeeRate: 0.00002,
+    });
+    expect(withFees.status).toBe(201);
+    expect(withFees.body.data.stampDutyRate).toBe(0.001);
+    expect(withFees.body.data.transferFeeRate).toBe(0.00002);
   });
 });
 
