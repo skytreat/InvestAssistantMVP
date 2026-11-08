@@ -221,9 +221,7 @@ describe('T150 策略有效性页（/strategy/effectiveness）', () => {
 
   it('有效性统计：费率口径脚注常显；样本不足只显示 N 条、不显示百分比', async () => {
     renderWithRouter(<StrategyEffectiveness />);
-    expect(
-      await screen.findByText(/本次结果基于 ETF 口径（印花税 0 \/ 过户费 0）/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/本次结果基于 ETF 口径（印花税 0 \/ 过户费 0）/)).toBeInTheDocument();
     expect(screen.getByText(/样本不足（3 条）/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出汇总' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出明细' })).toBeInTheDocument();

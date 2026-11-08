@@ -304,9 +304,7 @@ describe('summarizeHorizon / 样本门槛', () => {
   });
 
   it('sampleSize ≥ 20：保留百分比', () => {
-    const rows = Array.from({ length: 20 }, (_, i) =>
-      mkOutcome({ signalId: i + 1, netReturn: 0.01 }),
-    );
+    const rows = Array.from({ length: 20 }, (_, i) => mkOutcome({ signalId: i + 1, netReturn: 0.01 }));
     const safe = finalizeHorizonStats(summarizeHorizon(rows, 't5'));
     expect(safe.insufficientSample).toBe(false);
     expect(safe.winRateAbsolute).toBe(1);

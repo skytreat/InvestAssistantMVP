@@ -181,9 +181,7 @@ export function computeFees(notional: number, grossReturn: number, rates: FeeRat
   const sellCommission = round2(Math.max(rates.minCommission, sellBase * rates.commissionRate));
   const sellTransfer = round2(sellBase * rates.transferFeeRate);
   const sellStampDuty = round2(sellBase * rates.stampDutyRate);
-  const sellNet = round2(
-    sellBase * (1 - rates.slippageRate) - sellCommission - sellTransfer - sellStampDuty,
-  );
+  const sellNet = round2(sellBase * (1 - rates.slippageRate) - sellCommission - sellTransfer - sellStampDuty);
 
   return {
     notional,
@@ -400,7 +398,8 @@ export function evaluateSignal(
 
   if (entryIdx < 0) {
     // 无后续 bar = no_entry；有 bar 但都不可成交 = suspended / excluded
-    const status: SampleStatus = after.length === 0 ? 'no_entry' : limitUpSeen && !suspendedSeen ? 'excluded' : 'suspended';
+    const status: SampleStatus =
+      after.length === 0 ? 'no_entry' : limitUpSeen && !suspendedSeen ? 'excluded' : 'suspended';
     return options.horizons.map((h) => ({
       ...base,
       horizon: h,
@@ -459,8 +458,7 @@ export function evaluateSignal(
       benchEntry.value !== null && benchExit.value !== null && benchEntry.value > 0
         ? benchExit.value / benchEntry.value - 1
         : null;
-    const excessReturn =
-      benchmarkReturn !== null ? (1 + netReturn) / (1 + benchmarkReturn) - 1 : null;
+    const excessReturn = benchmarkReturn !== null ? (1 + netReturn) / (1 + benchmarkReturn) - 1 : null;
 
     outcomes.push({
       ...base,
@@ -552,7 +550,11 @@ function collectFeeModels(outcomes: SignalOutcome[]): FeeModelInfo[] {
 }
 
 /** 无信号 / 空报告（保持字段完整，避免前端判空分支分叉） */
-export function emptyReport(options: EvaluateOptions, benchmark: string, benchmarkClass: AssetClass): EffectivenessReport {
+export function emptyReport(
+  options: EvaluateOptions,
+  benchmark: string,
+  benchmarkClass: AssetClass,
+): EffectivenessReport {
   const rates = feeRatesForClass(benchmarkClass === 'stock' ? 'stock' : 'etf');
   return {
     meta: {
@@ -607,9 +609,7 @@ export function buildReport(input: {
   }
   const dominantFees = feeRatesForClass(dominantClass);
   const dominantLabel =
-    feeModels.length > 1
-      ? feeModels.map((m) => m.label).join(' + ')
-      : feeModelLabel(dominantFees);
+    feeModels.length > 1 ? feeModels.map((m) => m.label).join(' + ') : feeModelLabel(dominantFees);
 
   const groups: EffectivenessGroup[] = [];
   const values = [...new Set(all.map((o) => groupValueOf(o, options.groupBy)))].sort((a, b) =>
@@ -935,7 +935,13 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
         ...FEE_COLUMNS,
       ].join(','),
     );
-    const emit = (groupBy: string, groupValue: string, stats: HorizonStats, rates: FeeRates, label: string) => {
+    const emit = (
+      groupBy: string,
+      groupValue: string,
+      stats: HorizonStats,
+      rates: FeeRates,
+      label: string,
+    ) => {
       lines.push(
         [
           'summary',
@@ -966,7 +972,13 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
     for (const g of report.groups) {
       for (const s of g.stats) {
         const model = g.feeModels.length === 1 ? g.feeModels[0] : null;
-        emit(g.groupBy, g.value, s, model?.rates ?? report.meta.fees, model?.label ?? report.meta.feeModelLabel);
+        emit(
+          g.groupBy,
+          g.value,
+          s,
+          model?.rates ?? report.meta.fees,
+          model?.label ?? report.meta.feeModelLabel,
+        );
       }
     }
   } else {
@@ -995,7 +1007,10 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
       ].join(','),
     );
     const details = [...report.details].sort(
-      (a, b) => a.tradeDate.localeCompare(b.tradeDate) || a.signalId - b.signalId || a.horizon.localeCompare(b.horizon),
+      (a, b) =>
+        a.tradeDate.localeCompare(b.tradeDate) ||
+        a.signalId - b.signalId ||
+        a.horizon.localeCompare(b.horizon),
     );
     for (const d of details) {
       lines.push(

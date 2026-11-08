@@ -145,7 +145,10 @@ function feeFootnote(meta: EffectivenessReport['meta']): string {
     `分组 ${GROUP_BY_LABELS[meta.groupBy] ?? meta.groupBy}。`;
   if (meta.feeModels.length > 1) {
     const models = meta.feeModels
-      .map((m) => `${m.assetClass}: 印花税 ${rateText(m.rates.stampDutyRate)} / 过户费 ${rateText(m.rates.transferFeeRate)}`)
+      .map(
+        (m) =>
+          `${m.assetClass}: 印花税 ${rateText(m.rates.stampDutyRate)} / 过户费 ${rateText(m.rates.transferFeeRate)}`,
+      )
       .join('；');
     return `${base} 本次混合多种品种口径（${models}），明细行已逐条标注。`;
   }
@@ -268,7 +271,12 @@ export default function StrategyEffectiveness() {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label>
             <span style={labelTextStyle}>起始</span>
-            <input style={inputStyle} type="date" value={efFrom} onChange={(e) => setEfFrom(e.target.value)} />
+            <input
+              style={inputStyle}
+              type="date"
+              value={efFrom}
+              onChange={(e) => setEfFrom(e.target.value)}
+            />
           </label>
           <label>
             <span style={labelTextStyle}>结束</span>
@@ -331,7 +339,8 @@ export default function StrategyEffectiveness() {
             <p style={footnoteStyle}>{feeFootnote(report.meta)}</p>
             {report.meta.insufficientSample && (
               <p style={warnStyle}>
-                样本不足（{report.meta.sampleSize} 条）—— 按统计口径不输出百分比结论，请扩大时间范围或等待更多信号。
+                样本不足（{report.meta.sampleSize} 条）——
+                按统计口径不输出百分比结论，请扩大时间范围或等待更多信号。
               </p>
             )}
 

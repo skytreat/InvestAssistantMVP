@@ -163,7 +163,8 @@ interface ParsedEffectivenessQuery {
   level: ExportLevel;
 }
 
-type ParseResult = { ok: true; value: ParsedEffectivenessQuery } | { ok: false; code: string; message: string };
+type ParseResult =
+  { ok: true; value: ParsedEffectivenessQuery } | { ok: false; code: string; message: string };
 
 /**
  * 解析 + 校验查询参数（路由层）
@@ -195,7 +196,8 @@ function parseEffectivenessQuery(raw: Record<string, unknown>): ParseResult {
     return { ok: false, code: 'INVALID_GROUP_BY', message: `group_by 只支持 ${GROUP_BYS.join('/')}` };
   }
 
-  const notionalRaw = typeof raw.notional === 'string' && raw.notional ? Number(raw.notional) : DEFAULT_NOTIONAL;
+  const notionalRaw =
+    typeof raw.notional === 'string' && raw.notional ? Number(raw.notional) : DEFAULT_NOTIONAL;
   if (!Number.isFinite(notionalRaw) || notionalRaw < 1_000 || notionalRaw > 100_000_000) {
     return { ok: false, code: 'INVALID_NOTIONAL', message: 'notional 必须在 1000 ~ 100000000 之间' };
   }
