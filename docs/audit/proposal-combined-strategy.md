@@ -1,6 +1,6 @@
 # 组合策略（T133 / T148）方案
 
-> 状态：方案提案。本文件只做设计与排期，不含实现代码。
+> 状态：方案提案（四项决策已由 owner 拍板，见 §6）。本文件只做设计与排期，不含实现代码。
 > 关联需求：`INV-S3-18/19`（策略可组合、条件独立开关调参）、`INV-S3-24/25/26`（分级、Top N、快照）。
 > 关联任务：`code_implementation_plan_v3.md` 的 **T133**（策略分类/组合/适用品种）与 **T148**（策略配置页 UI）。
 > 关联文档：`PRD_v3.md` §4.1 ⑤、`InvestAssistantV3_NewRequirements.md` §4.2、`SDD_v3.md` §10.4。
@@ -12,11 +12,11 @@
 
 | 项 | 结论 |
 |---|---|
-| **MVP 范围** | 一条 **AND** 组合（2 个及以上 BUY/SELL 条件）、日线、同标的、只产出 **1 条合成监控信号**，写入现有 `user_strategy_signal`；复用现有插件条件计算、`persistSignals`、F1 分级、F6 冷却展示 |
-| **MVP 工作量量级** | 约 **4 个 T 任务**（DDL/CRUD、组合执行器、链路接入、前端最小编辑器）；纸面/回测共用同一个 `Strategy` 适配器 |
-| **完整版增量** | OR / 嵌套、组合强度可配置、配置版本化回放、组合评估分组、多用户隔离；再约 **6~8 个 T 任务** |
-| **真正待用户决策** | 只有 4 条：D1 组合逻辑（AND / AND-OR / 嵌套）、D2 组合强度合成、D3 回测口径、D4 配置变更与历史是否可变 |
-| **已定口径** | F6 冷却**只在展示层合并、不抑制生成**；风险 HOLD 由 `position_risk_alert` 独立产生、**不带 `strength`**、不进 F1 分级、默认不进今日 Top5 |
+| **MVP 范围** | 一条 **AND** 组合（2 个及以上 BUY/SELL 条件）、日线、同标的、只产出 **1 条合成监控信号**，写入现有 `user_strategy_signal`；组合强度 = 各条件 `strength` 的 **`min`**；回测走**先批量预生成信号、再跟随**；复用现有插件条件计算、`persistSignals`、F1 分级、F6 冷却展示 |
+| **MVP 工作量量级** | 约 **4 个 T 任务 / 10 个 PA 子任务**（DDL+仓储、求值器、链路接入、路由/前端、适配器与测试）；回测与纸面共用同一个 `Strategy` 适配器 |
+| **完整版增量** | OR / 嵌套、组合强度加权模型、配置版本化回放、组合评估分组、多用户隔离；再约 **6~8 个 T 任务** |
+| **四项决策已拍板** | **D1 仅 AND（OR / 嵌套留 P1）**；**D2 strength 取各条件 min**；**D3 预生成信号 + 跟随（判据只有一份）**；**D4 历史不可变、只影响未来（版本回放 P1）** —— 含理由见 §6 |
+| **其他已定口径** | F6 冷却**只在展示层合并、不抑制生成**；风险 HOLD 由 `position_risk_alert` 独立产生、**不带 `strength`**、不进 F1 分级、默认不进今日 Top5 |
 
 ---
 
@@ -60,7 +60,7 @@
 | 纸面 S1 只登记 `buy-and-hold` 与 `wufu-rotation`；插件策略接入属 S2 起 | `apps/backend/src/services/paper/strategies.ts` L8-L28 |
 
 **关键判定**：
-- 组合语义里**只有 AND**（"多个基础条件同时成立"）是需求定死的；OR、嵌套、跨标的、输出条数、强度合成、配置历史**均未写**。
+- 组合语义里**只有 AND**（"多个基础条件同时成立"）是需求定死的；OR、嵌套、跨标的、输出条数、强度合成、配置历史**需求原文未写** —— 已由 owner 拍板，见 §6。
 - F6 冷却**不是待决策**：已定为展示层合并，组合沿用同一口径。
 - 风险 HOLD **不是待决策**：它是独立插件、独立信号通道，不带 `strength`，与组合信号的共存方式见 §3.3。
 
@@ -70,19 +70,19 @@
 
 | 维度 | 文档/已定口径 | 状态 | 决策号 |
 |---|---|---|---|
-| 条件间逻辑 | 只有 INV-S3-18 的"同时成立"；PRD 示例为"且" | **AND 已定**；OR / 混合未写 | **D1** |
-| 嵌套 | 无任何文档表述 | **文档未定义** | **D1** |
+| 条件间逻辑 | 只有 INV-S3-18 的"同时成立"；PRD 示例为"且" | **已定：MVP 仅 AND**；OR / 混合留 P1 | D1 已定 |
+| 嵌套 | 无任何文档表述 | **文档未定义；排 P1** | D1 已定 |
 | 条件周期 | PRD 编辑框只有**组合级**"周期 [日线]"；V3 仅日线 | 组合级日线**已定**；条件级独立周期未写 | 已定（V3 不做条件级周期） |
 | 标的范围 | 信号表按 `asset_code` 一行一条；PRD 示例的条件都作用在同一标的上 | **同标的为隐含口径**；跨标的条件未写 | 已定（MVP 同标的；跨标的另开需求） |
 | 组合命中输出 | 文档只说"出信号"；`user_strategy_signal` 唯一键是 `(user_id, asset_code, plugin_id, trade_date)` | **一条合成信号** | 已定（按唯一键一行） |
 | 条件开关/调参 | INV-S3-19 | **已定** | — |
 | 冷却 | PRD L348/L360、INV-S3-23 | 窗口 N=3 **已定**；**落地为展示层合并，不抑制生成** | **已定，不再决策** |
-| 强度 | 文档未写组合强度如何合成 | **文档未定义** | **D2** |
+| 强度 | 文档未写组合强度如何合成 | **已定：`min(各启用条件 strength)`** | D2 已定 |
 | 适用品种 | INV-S3-17、PRD L358 | 组合级**已定**；条件级不做 | **已定** |
 | 组成条件是否仍单独出信号 | 文档未写 | 默认**不抑制**（各自独立） | 已定（无抑制需求；若后续要抑制另开） |
 | HOLD / 风险条件 | 风险 HOLD 由独立插件产生 | **组合条件只接受 BUY/SELL 类 monitor 插件**，不把风险 HOLD 当条件 | **已定** |
 
-> 明确不做推断：PRD 编辑框里没有 OR 按钮、没有括号、没有条件级周期下拉，因此**不能**据此认定"只支持 AND、只支持同周期"是需求；逻辑与强度仍待用户拍板。
+> 明确不做推断：PRD 编辑框里没有 OR 按钮、没有括号、没有条件级周期下拉 —— 这些"没有"只是界面示意，不能反过来当作需求依据。**"MVP 仅 AND"与"强度取 min"是 owner 的拍板结果（§6），不是从原型反推的**。
 
 ---
 
@@ -100,7 +100,7 @@
 | F1 分级 | `assignSignalGrades`（L398-L440） | 组合写 `strength` 即自动参与 | **只处理 `strength IS NOT NULL`（L405-L406）** |
 | F6 冷却 | `assignSignalCooldowns`（L480-L494）、`collapseSignalsByCooldown`（L520-L548） | 组合信号带 `plugin_id` 后自动参与展示合并 | 合并键是 `plugin_id|asset_code|direction`（L546）；**不抑制生成** |
 | 每日链路 | `scheduler.ts` L408-L454；`admin.ts` L89-L104 | 两条链路都走 `executeAllPlugins`，只需在引擎内挂一次 | 避免"手动触发有组合、定时没有"的漂移 |
-| 回测 | `Strategy` 接口（`backtest/strategy/types.ts` L189-L200） | 新增"组合信号跟随"适配器 | 回测不走 DuckDB 实时查询路径，见 D3 |
+| 回测 | `Strategy` 接口（`backtest/strategy/types.ts` L189-L200） | 新增"组合信号跟随"适配器 | D3 已定：先批量预生成、再跟随，判据只有一份（§6.3） |
 | 纸面 | `paper/strategies.ts` 的 `(id, version)` 注册表（L21-L44） | 组合适配器注册进 `BUILTINS` 后即可绑定纸面账户 | **纸面不直接读 `user_strategy_signal`**；S1 只有 buy-and-hold / wufu-rotation |
 
 ### 3.2 不能直接复用、必须新增的部分
@@ -114,11 +114,11 @@
 
 | 交互点 | 现状（含行号） | 组合接入后的影响 | 处理口径 |
 |---|---|---|---|
-| **F1 分级候选集** | `assignSignalGrades` 只取 `strength IS NOT NULL` 的行（`signalService.ts` L405-L406）；按**当日全部有强度信号**做分位定档（L414-L419） | 组合写 `strength` ⇒ 进入候选；不写 ⇒ `grade=NULL` ⇒ 不进强/中/弱页、不进 Top5。组合行会改变当日分位分母，**可能让原有信号降档** | 组合必须写 `strength`（D2 定合成方式）；**风险 HOLD 因 `strength=NULL` 天然不进候选，加入组合前后分位候选集逐行不变** |
+| **F1 分级候选集** | `assignSignalGrades` 只取 `strength IS NOT NULL` 的行（`signalService.ts` L405-L406）；按**当日全部有强度信号**做分位定档（L414-L419） | 组合写 `strength` ⇒ 进入候选；不写 ⇒ `grade=NULL` ⇒ 不进强/中/弱页、不进 Top5。组合行会改变当日分位分母，**可能让原有信号降档** | 组合必须写 `strength`（D2 已定：取各条件 `min`）；**风险 HOLD 因 `strength=NULL` 天然不进候选，加入组合前后分位候选集逐行不变** |
 | **F6 冷却展示** | **已定**：展示层合并去重，默认 3 根 K 线，同策略+同标的+同方向合并为一条并标注"连续第 N 日选中"；`cooldown_until` 只供展示判断，**不抑制生成**（L442-L518） | 组合信号按同一规则参与展示合并；库里仍按交易日逐条生成 | **组合沿用展示层口径**；不需要、也不应改成生成抑制 |
 | **今日 Top5（F2/T149）** | `GET /api/signal/top5` 默认排除 `sub_category='risk'`（`routes/signal.ts` L292-L334）；Dashboard 传 `exclude_risk=1`（`Dashboard.tsx` L517） | 组合信号 `sub_category=NULL` ⇒ 可进 Top5；风险 HOLD 默认被排除 | 组合有 `strength`/`grade` 后自然进入候选；无需改 Top5 代码 |
 | **风险 HOLD** | `position_risk_alert` 只输出 HOLD、`strength=NULL`、`sub_category='risk'`；通用信号列表默认包含、今日最新/Top5 默认排除（`todaySignals.ts` L66-L96） | 组合不产生 HOLD；组合信号与风险 HOLD 在同一信号表**分渠道共存**：组合进 F1/Top5，风险 HOLD 只在"全部信号/持仓风险区" | **已定**：组合条件不含 risk 插件；风险 HOLD 不进 F1、不进默认 Top5 |
-| **信号唯一键** | `UNIQUE(user_id, asset_code, plugin_id, trade_date)`（`configStore.ts` L205） | 一个组合在同一标的同一天最多 1 条；改配置后重跑同一天会 `INSERT OR IGNORE` 跳过旧行 | 见 D4（历史是否可变） |
+| **信号唯一键** | `UNIQUE(user_id, asset_code, plugin_id, trade_date)`（`configStore.ts` L205） | 一个组合在同一标的同一天最多 1 条；改配置后重跑同一天会 `INSERT OR IGNORE` 跳过旧行 | D4 已定：历史不可变，`INSERT OR IGNORE` 保留当天首条 |
 | **组成条件独立信号** | 现有插件各自独立落库 | 组合命中时，组成条件的单信号仍会存在；F6 只合并同 `plugin_id`，不会把组合与单条件合并 | 已定：**不抑制**组成条件；展示上可能出现"组合 + 单条件"两条，属预期 |
 
 ---
@@ -182,7 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
 | `sub_category` | `NULL` | 组合不是风险类；避免被 Top5 的 `risk` 过滤误伤 |
 | `direction` | `'buy'` / `'sell'`（**不输出 `hold`**） | 组合只做机会信号；风险 HOLD 由 `position_risk_alert` 独立负责 |
 | `label` | 例如 `MACD金叉 且 放量1.5倍（组合）` | 人读标签 |
-| `strength` | 合成值（D2） | **不写就不参与 F1 分级** |
+| `strength` | `min(各启用条件 strength)`（D2 已定） | **不写就不参与 F1 分级** |
 | `metrics_json` | `{combo_id, matched: [...], conditions: {pluginId: metrics}}` | 满足 INV-S3-26 的"指标值" |
 | `snapshot_json` | 组合配置快照 + 当日各条件输入摘要 | 配置变更后可回溯"当时用的是什么组合" |
 | `origin` | `'live'` / `'replay'` | 复用现有列 |
@@ -191,7 +191,7 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
 
 ### 4.4 配置变更对历史信号的影响
 
-| 场景 | 影响 | 口径（待 D4 确认） |
+| 场景 | 影响 | 口径（D4 已定） |
 |---|---|---|
 | 用户改条件/参数 | 只影响之后的交易日；历史 `user_strategy_signal` 行**不重算、不删除** | 默认"历史不可变"，用 `snapshot_json` 回溯 |
 | 同一天重跑（手动触发/回放） | 唯一键命中 ⇒ `INSERT OR IGNORE` 跳过旧行，**新配置不会覆盖当天旧组合信号** | 若要"重算当天"，需显式删除/软删当天 `combo:` 行后再写 |
@@ -217,7 +217,7 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
    - 读取启用组合 → 按 `asset_scope` 过滤标的 → 对每个标的、每个条件调用 `executePlugin(conditionPlugin, params, sharedCtx)`；
    - **条件候选白名单**：`category='monitor'` 且 `subCategory !== 'risk'`（排除 `position_risk_alert`）；
    - **AND**：全部启用条件都返回 `BUY` 才出 `BUY`；全部返回 `SELL` 才出 `SELL`；混合方向不出信号；
-   - 输出 1 条 `PluginSignal`，`pluginId='combo:<id>'`、`subCategory=NULL`、`strength` 按 D2；
+   - 输出 1 条 `PluginSignal`，`pluginId='combo:<id>'`、`subCategory=NULL`、`strength = min(各启用条件的 strength)`（D2 已定）；
    - 任一条件失败/超时 ⇒ 该标的组合本轮不成立，记 WARN，不 block 其他标的。
 4. 链路接入：在 `executeAllPlugins` 的批量预取之后、返回之前执行组合（`pluginEngine.ts` L1822-L1871 区间），使 `scheduler` 与 `admin` 自动共享；组合单独计数，不改变普通插件统计口径。
 5. 落库：复用 `persistSignals`；随后现有 `assignSignalGrades`、`assignSignalCooldowns` 照常执行，组合行自动参与 F1/Top5/F6。
@@ -227,7 +227,7 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
    - 适用品种、周期（固定日线）、冷却（默认 3）；
    - 跨境提示沿用现有一次性提示（L44、L73、L182）。
 7. 回测/纸面共用适配器：
-   - 新增 `backtest/strategies/comboSignal.ts`，实现 `Strategy.decide(ctx)`；推荐"历史逐日预生成组合信号 + 跟随"的两段式（D3），保证无前视（`types.ts` L151-L182 的 `asOf=T-1` 契约）。
+   - 新增 `backtest/strategies/comboSignal.ts`，实现 `Strategy.decide(ctx)`；按 D3 已定口径走"历史逐日预生成组合信号 + 跟随"两段式，**回测与实盘共用同一份条件实现**，保证无前视（`types.ts` L151-L182 的 `asOf=T-1` 契约）。
    - 把该适配器注册进 `paper/strategies.ts` 的 `BUILTINS`（L21-L28），纸面账户即可绑定；**纸面 S1 不读信号表**，不能假设"写了 `user_strategy_signal` 就自动生效"。
 
 **验收点（P0）**
@@ -258,12 +258,12 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
 
 ### 5.2 完整版（P1）
 
-| 能力 | 增量 | 依赖决策 |
+| 能力 | 增量 | 决策状态 |
 |---|---|---|
-| OR / 混合逻辑 | `combine_op` 扩展；UI 增加逻辑选择；求值器支持 OR | D1 |
-| 嵌套 | 条件树（表达式 JSON）或"子组合"引用；求值器递归 | D1 |
-| 组合强度模型 | 可配置 min / 加权 / 命中比例 | D2 |
-| 配置版本化回放 | 回放按 `config_version` / `snapshot_json` 重放 | D4 |
+| OR / 混合逻辑 | `combine_op` 扩展；UI 增加逻辑选择；求值器支持 OR | D1 已定：MVP 仅 AND，OR 排 P1 |
+| 嵌套 | 条件树（表达式 JSON）或"子组合"引用；求值器递归 | D1 已定：嵌套排 P1 |
+| 组合强度模型 | 加权平均 / 命中占比等可选模型（需先有业务依据） | D2 已定：MVP 取 min；加权属 P1 可选 |
+| 配置版本化回放 | 回放按 `config_version` / `snapshot_json` 重放 | D4 已定：历史不可变，版本回放排 P1 |
 | 评估分组 | 有效性页按"组合"分组（SDD_v3 §10.4 维度） | — |
 | 多用户 | 组合按 `user_id` 隔离执行；当前 `executeAllPlugins` 是单用户口径 | — |
 | 策略列表统一 | 组合以"虚拟策略"出现在 `/api/strategy/plugins`，与插件列表同构 | — |
@@ -279,18 +279,48 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
 
 ---
 
-## 6. 待决策清单（只保留真正需要用户拍板的 4 条）
+## 6. 已定口径（owner 已拍板，不再列为待决策）
 
-> 建议不等于决定，需 owner 确认后写入 T 任务。
+> 2026-11-08 owner 拍板。以下四项直接作为 T133 / T148 与 PA 任务的验收依据，实现不得再按其他口径分叉。
 
-| 编号 | 问题 | 可选口径 | 建议 | 影响面 |
-|---|---|---|---|---|
-| **D1** | 条件间逻辑是否只支持 AND | A. 仅 AND（MVP）；B. AND/OR 可切换；C. 任意嵌套表达式 | **A 先做 MVP，B 作为 P1，C 暂缓** | UI、求值器、测试矩阵 |
-| **D2** | 组合强度如何合成 | A. `min(各条件 strength)`（保守）；B. 加权平均；C. 命中条件数占比 | **A 为 MVP 默认**，B 作为可配置 P1 | F1 分位、Top5 排序 |
-| **D3** | 回测口径 | A. 组合条件在 `decide(ctx)` 内重算；B. 先按历史日预生成信号，再"信号跟随"；C. 不做回测，仅纸面 | **B**（复用同一套条件实现、避免算法漂移）；A 作为性能优化 | 回测精度、无前视 |
-| **D4** | 配置变更与历史/回放 | A. 历史不可变，只影响未来；B. 重算当天并覆盖；C. 按 `config_version` 重放 | **A 为默认，C 为 P1**；B 仅在明确"修正配置"场景开放 | 唯一键、回放、审计 |
+### 6.1 D1 组合逻辑：MVP 只做 AND
 
-### 6.1 已定口径（不再列为决策）
+| 项 | 内容 |
+|---|---|
+| 口径 | MVP **只做 AND**：所有启用条件同向成立才产出 1 条信号；**OR、嵌套（条件树）全部留 P1** |
+| 理由 | ① INV-S3-18 原文即"多个基础条件同时成立"，AND 是需求唯一写死的逻辑；② PRD 组合编辑框只表达"且"，没有 OR/括号；③ AND 的求值器、UI、测试矩阵最小，可先把"配置 → 信号 → 分级 → 冷却 → Top5 → 回测/纸面"整链跑通 |
+| 落地 | `combine_op` 字段保留（CHECK 限 `AND`/`OR`），但 MVP 写入与校验只接受 `AND`；求值器不实现 OR 分支；UI 不出现逻辑切换控件 |
+| 明确不做 | 不实现 OR 求值、不实现括号/嵌套、不实现"子组合引用"；这些需求出现前不加代码 |
+
+### 6.2 D2 组合强度：取各条件 strength 的 min
+
+| 项 | 内容 |
+|---|---|
+| 口径 | 组合 `strength = min(所有启用条件的 strength)` —— **最弱一环决定整体可信度** |
+| 理由 | ① 语义一致：AND 要求全部成立，整体可信度不应高于最弱条件；② 可解释：能够指认是哪一条拖低了强度；③ 零参数：min 不需权重配置，避免 INV-S3-21"默认参数必须有依据"的举证负担；④ 稳定：MVP 没有可信的权重来源 |
+| 明确不做 | **不用加权平均、不用命中条件数占比**；两者留 P1 作为可选模型，且必须先给出业务依据 |
+| 注意 | 组合行写 `strength` ⇒ 进入 F1 当日分位候选集，**会改变当日分位分母**；验收需对比"有/无组合"的档位分布（§8） |
+
+### 6.3 D3 回测口径：先批量预生成信号，再跟随
+
+| 项 | 内容 |
+|---|---|
+| 口径 | 回测**先按历史交易日批量预生成组合信号**（与实盘同一套条件实现、同一套 AND + min 求值），再由 `Strategy.decide()` **跟随已生成的信号** |
+| 理由 | ① **判据只有一份**：回测不在 `decide()` 内重写条件，避免"回测一套、实盘一套"的算法漂移；② 无前视可控：预生成阶段显式按 `asOf=T-1` 截断，跟随阶段只读 `<= asOf` 的信号；③ 可复现：两侧吃同一份信号口径，差异只来自成交/仓位假设 |
+| 允许的例外 | 预生成结果可落临时缓存（不必进业务表），但**不得使用与实盘不同的判据**；性能不足时优化预生成，不改判据 |
+| 明确不做 | 不允许"回测内部重算条件"作为第二套实现；不做分钟级/盘中回测 |
+
+### 6.4 D4 配置变更与历史：历史不可变，只影响未来
+
+| 项 | 内容 |
+|---|---|
+| 口径 | 组合配置（条件、参数、开关、适用品种、冷却）变更**只影响变更之后的交易日**；历史 `user_strategy_signal` 行**不重算、不覆盖、不删除** |
+| 理由 | ① 信号是"当时判据下的证据"，改配置即改写历史等于伪造回溯；② 唯一键 `(user_id, asset_code, plugin_id, trade_date)` 下重跑当天只能 `INSERT OR IGNORE`，天然保留首条；③ 复盘需要"当时用了什么配置"，由 `config_version` + `snapshot_json` 提供 |
+| 落地 | 每次条件/参数变更 `config_version+1`，并把变更时的组合配置写入信号 `snapshot_json`；同一天重跑命中唯一键即跳过 |
+| P1 | **配置版本化回放**：按 `config_version` 选择历史版本重放，排 P1；MVP 不提供"按旧版本重算历史"的入口 |
+| 明确不做 | 不提供"覆盖当天旧信号"的常规路径；若未来要"修正配置并重算"，须另开需求并显式软删当天 `combo:` 行 |
+
+### 6.5 其他已定口径（此前已确认）
 
 | 事项 | 已定口径 |
 |---|---|
@@ -304,11 +334,42 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
 
 ---
 
-## 7. 风险与回滚
+## 7. 实现任务拆分（PA-xx）
+
+> 交付单元仍按「一个 T 任务一条 commit」；PA 是 T133 / T148 内部可独立提交的子任务。
+> ⚠️ **公共文件** = `pluginEngine.ts`、`routes/signal.ts`、`signalService.ts`、`SDD.md`。
+> `#126` / `#127` / `#128` 正在合并且会改其中三个（`pluginEngine.ts`、`routes/signal.ts`、`SDD.md`），故
+> **PA-01 ~ PA-05 可立即做（新增文件为主，不碰公共文件）；PA-06 ~ PA-10 暂缓**，等三个 PR 合完再开。
+
+### 7.1 可立即做（仅新增文件）
+
+| 编号 | 任务 | 新增/改动文件 | 依赖 | 验收点 |
+|---|---|---|---|---|
+| **PA-01** | 组合配置表 DDL（**独立文件**，先不改 `configStore.ts`） | 新增 `apps/backend/src/config/comboSchema.ts`：导出 `ensureComboTables(db)`，内含 `strategy_combo` / `strategy_combo_condition` + 索引（§4.1） | 无 | `:memory:` 重复调用幂等；非法 `combine_op` / `asset_scope` 被 CHECK 拒绝；索引存在；不改 `user_strategy_signal` 结构 |
+| **PA-02** | 组合配置仓储（纯 SQL 封装） | 新增 `apps/backend/src/services/comboRepo.ts`：CRUD、条件有序读写、软删、`config_version+1` | PA-01 | CRUD 往返一致；`seq` 重排不冲突；软删后查询不可见；版本号单调递增；全部 prepared statement |
+| **PA-03** | 组合求值模块（纯逻辑：AND + min） | 新增 `apps/backend/src/services/comboEvaluator.ts`：`evaluateCombo(conditions, results)`，输出方向与 `strength=min` | 无（纯函数） | 全 BUY→BUY；全 SELL→SELL；混合方向→不成立；空条件→不成立；任一条件 SKIP/ERROR→该标的本轮不成立；`min` 取最弱；不读库、不碰插件上下文 |
+| **PA-04** | Strategy 适配器骨架（信号跟随） | 新增 `apps/backend/src/services/backtest/strategies/comboSignal.ts`：实现 `Strategy` 接口，依赖注入"信号源"（读 `<= asOf` 的预生成信号） | PA-03 | `asOf=T-1` 不读当日；`(id, version)` 可解析；用假信号源的纯单测可跑通；**暂不注册 `paper/strategies.ts`** |
+| **PA-05** | 单测（新增测试文件） | 新增 `tests/unit/comboSchema.test.ts`、`tests/unit/comboRepo.test.ts`、`tests/unit/comboEvaluator.test.ts`、`tests/unit/comboSignal.test.ts` | PA-01 ~ PA-04 | 全部在 `MARKET_DATA_MODE=mini` 下通过、不依赖真库；逐条覆盖 §6.1 ~ §6.4；不占端口（`singleFork=true`） |
+
+### 7.2 暂缓（会碰公共文件或与在途 PR 冲突）
+
+| 编号 | 任务 | 新增/改动文件 | 依赖 | 验收点 | 公共文件 |
+|---|---|---|---|---|---|
+| **PA-06** | 接入每日链路 | ⚠️ 改 `apps/backend/src/services/pluginEngine.ts`：`executeAllPlugins` 批量预取后调用组合求值（共享 `ctx`） | PA-02 / PA-03 + **#126-128 合并** | 手动触发与 17:02 定时结果一致；普通插件统计口径不变；条件失败隔离 | ⚠️ `pluginEngine.ts` |
+| **PA-07** | 组合 CRUD 路由 | 新增 `apps/backend/src/routes/combo.ts` + 注册（`app.ts` / `routes/index.ts` 视现状）；**不扩展 `routes/signal.ts`** | PA-02 | create / list / update / toggle / delete 全链路；非法条件 400 `PARAM_INVALID`；软删不物理删 | ⚠️ 若必须改 `routes/signal.ts` 则等合并；注册点也可能与他 PR 冲突 |
+| **PA-08** | 前端组合配置区块 | 改 `apps/frontend/src/pages/StrategyConfig.tsx`；新增 `apps/frontend/src/components/ComboEditor.tsx` | PA-07 | 条件增删/开关/调参、适用品种、固定日线、冷却默认 3；跨境提示一次；risk 插件不出现在条件候选 | 非四公共文件，但需与 T148 UI 排期协调 |
+| **PA-09** | 纸面注册适配器 | 改 `apps/backend/src/services/paper/strategies.ts`：`BUILTINS` 增加组合适配器 | PA-04 | 纸面可绑定并按 `(id, version)` 解析；**不改纸面账户 / 盈亏口径**；不假设"写信号表即生效" | 非四公共文件，但需与纸面 PR 协调 |
+| **PA-10** | 契约与计划更新 | ⚠️ 改 `docs/client/SDD.md`（V3 契约若落 `SDD_v3.md` 同样暂缓）；改 `docs/client/code_implementation_plan_v3.md`（T133 / T148 的 PA 登记） | PA-01 ~ PA-09 定稿 + **三 PR 合并** | SDD 只写契约（表 / 接口 / 信号编码），不复述业务理由；计划只写任务与依赖 | ⚠️ `SDD.md` / `SDD_v3.md`、计划文件 |
+
+> `signalService.ts` **预计不需要改**：组合复用 `persistSignals`、`assignSignalGrades`、`assignSignalCooldowns` 的既有入口（只调用、不改实现）。若实现中发现必须改，按公共文件暂缓处理。
+
+---
+
+## 8. 风险与回滚
 
 | 风险 | 说明 | 缓解 |
 |---|---|---|
-| F1 分位漂移 | 组合行加入当日强度集合，可能让原有信号降档 | D2 明确合成方式；验收对比"有/无组合"的分级分布 |
+| F1 分位漂移 | 组合行加入当日强度集合，可能让原有信号降档 | D2 已定 min（§6.2）；验收对比"有/无组合"的分级分布 |
 | 风险 HOLD 混入机会信号 | 若组合条件误选 risk 插件，会把 HOLD 当布尔条件 | 条件白名单排除 `sub_category='risk'`；A9 专门验收 |
 | 重复展示 | 组合信号与组成条件信号在信号页并存 | 已定不抑制；F6 合并键按 `plugin_id`，不会互相合并 |
 | 性能 | N 条件 × M 标的，若每条件重复查库会放大 | 共享 `executeAllPlugins` 的预取 `ctx`；条件级 50ms 预算复用 `executePlugin` |
@@ -319,7 +380,7 @@ CREATE INDEX IF NOT EXISTS idx_combo_condition ON strategy_combo_condition(combo
 
 ---
 
-## 8. 参考索引
+## 9. 参考索引
 
 | 内容 | 位置 |
 |---|---|
