@@ -6,9 +6,13 @@
  * ⇒ 回测与实盘共用同一份条件实现，避免算法漂移。
  *
  * 无前视契约：读取只到 `ctx.asOf`（= T-1）；信号日期晚于 `asOf` 的一律丢弃。
- * ⚠️ 骨架阶段尚未注册进 `paper/strategies.ts`（PA-09 暂缓，等公共文件窗口）。
+ * 注册入口见 `paper/strategies.ts`（PA-09）。
  */
 import { defineStrategy, type Strategy, type StrategyContext, type TargetSet } from '../strategy/types.js';
+
+/** 纸面/回测登记用的策略 id 与版本（`paper_account` 建户时冻结这两项） */
+export const COMBO_SIGNAL_STRATEGY_ID = 'combo-signal-follow';
+export const COMBO_SIGNAL_STRATEGY_VERSION = '0.1.0';
 
 export interface ComboSignalView {
   symbol: string;
@@ -43,8 +47,8 @@ const DEFAULT_COMBO_ID = '';
  */
 export function createComboSignalStrategy(options: ComboSignalStrategyOptions): Strategy {
   return defineStrategy({
-    id: 'combo-signal-follow',
-    version: '0.1.0',
+    id: COMBO_SIGNAL_STRATEGY_ID,
+    version: COMBO_SIGNAL_STRATEGY_VERSION,
     name: '组合策略：信号跟随',
     paramSchema: [
       {

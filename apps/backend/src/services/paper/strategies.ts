@@ -10,6 +10,12 @@
 import type { Strategy } from '../backtest/strategy/types.js';
 import { buyAndHoldStrategy } from '../backtest/strategies/buyAndHold.js';
 import { createWufuRotationStrategy } from '../backtest/strategies/wufuRotation/index.js';
+import {
+  COMBO_SIGNAL_STRATEGY_ID,
+  COMBO_SIGNAL_STRATEGY_VERSION,
+  createComboSignalStrategy,
+} from '../backtest/strategies/comboSignal.js';
+import { dbComboSignalSource } from './comboSignalSource.js';
 import { PaperError } from './errors.js';
 
 interface BuiltinEntry {
@@ -24,6 +30,13 @@ const BUILTINS: readonly BuiltinEntry[] = [
     id: 'wufu-rotation',
     version: '5.2.0-m3',
     create: () => createWufuRotationStrategy(),
+  },
+  {
+    // T133 / PA-09：组合信号跟随 —— 只读已预生成的 `combo:<id>` 信号（D3：判据只有一份），
+    // 账户参数 `comboId` / `weight` 由建户时的 params 决定；不碰结算与盈亏口径。
+    id: COMBO_SIGNAL_STRATEGY_ID,
+    version: COMBO_SIGNAL_STRATEGY_VERSION,
+    create: () => createComboSignalStrategy({ source: dbComboSignalSource }),
   },
 ];
 

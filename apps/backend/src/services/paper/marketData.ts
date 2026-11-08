@@ -57,6 +57,11 @@ export interface BuildPaperMarketDataInput {
   /** 已持仓标的（落账期必须把它们的序列装进来） */
   heldSymbols?: readonly string[];
   /**
+   * 额外需要行情的标的（PA-09：组合信号跟随的目标可能不在固定池里，
+   * 不装载就没法定价）。只影响**装载范围**，不影响 `asOf` 时点判定。
+   */
+  extraSymbols?: readonly string[];
+  /**
    * 是否装载时点名录；默认 `true`。
    * 落账期结算走 `targetsOverride`，**不会**调用 `universe` ⇒ 关掉可省掉一次全市场池查询。
    * 关闭后误调 `universe()` 会直接抛错（不允许静默返回空名录）。
@@ -101,6 +106,7 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
       input.benchmark,
       ...(userSymbol ? [userSymbol] : []),
       ...(input.heldSymbols ?? []),
+      ...(input.extraSymbols ?? []),
     ]),
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
