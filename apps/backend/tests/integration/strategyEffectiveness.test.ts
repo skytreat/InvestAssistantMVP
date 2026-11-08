@@ -3,6 +3,8 @@ import { cleanupIntegrationTest, createTestApp, type TestAppBundle } from './_he
 import { marketDataAvailable } from '../_marketData.js';
 
 const HAS_MARKET = await marketDataAvailable();
+// ⚠️ 下文的 `it.skipIf(!HAS_MARKET)` **不是静默跳过**：日常套件 `tests/setup.ts`
+// 强制 `MARKET_DATA_MODE=ci`，会在每次运行时现生成迷你行情库 ⇒ CI 中这两条真实执行。
 
 /**
  * F4 Step B —— `/api/strategy/effectiveness` + `/export` 集成测试
@@ -50,6 +52,7 @@ describe('F4 Step B · 策略有效性接口', () => {
     }
   });
 
+  // 见文件顶部说明：CI 走 `MARKET_DATA_MODE=ci` 现生成迷你库，此用例真实执行。
   it.skipIf(!HAS_MARKET)('21 条合成信号：返回 meta 费率口径、样本充足时输出统计，明细带费率', async () => {
     // 用真实存在的交易日（迷你库），确保入场/出场窗口有 bar
     const { queryDuckDB } = await import('../../src/db/duckdb.js');
@@ -91,6 +94,7 @@ describe('F4 Step B · 策略有效性接口', () => {
     expect(detail.feeModelLabel).toContain('ETF 口径');
   });
 
+  // 见文件顶部说明：CI 走 `MARKET_DATA_MODE=ci` 现生成迷你库，此用例真实执行。
   it.skipIf(!HAS_MARKET)('CSV 导出：BOM + CRLF + 每行费率列', async () => {
     const res = await bundle.app.inject({
       method: 'GET',

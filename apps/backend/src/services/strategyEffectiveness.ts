@@ -810,8 +810,10 @@ export async function loadEffectivenessReport(
   const benchmark = options.benchmark || 'sh510300';
 
   if (signals.length === 0) {
-    const cls = await fetchClassMap([benchmark]).then((m) => m.get(benchmark) ?? guessClass(benchmark));
-    return emptyReport(options, benchmark, cls);
+    // 0 信号时**不读行情库**：空报告只需要给费率挑品种口径，用代码形态规则即可
+    // （与 `fetchClassMap` 的兜底 `guessClass` 同源）。若仍查 DuckDB，行情库缺失/
+    // 被锁会把「本该返回的空报告」放大成 500 —— 空结果不应依赖行情层。
+    return emptyReport(options, benchmark, guessClass(benchmark));
   }
 
   const symbols = [...new Set(signals.map((s) => s.assetCode))];
