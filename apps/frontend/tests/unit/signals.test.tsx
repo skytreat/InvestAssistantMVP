@@ -373,7 +373,7 @@ describe('Signals · 结果表可读性', () => {
     getMock.mockReset();
   });
 
-  it('查询成功后表头为 标的代码/策略/方向/分级/强度/标签/交易日期', async () => {
+  it('查询成功后表头为 标的代码/策略/方向/分级/强度/标签/交易日期/状态', async () => {
     installApiMock();
     const user = userEvent.setup();
     renderWithRouter(<Signals />);
@@ -383,8 +383,9 @@ describe('Signals · 结果表可读性', () => {
 
     await screen.findByRole('table');
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+    // F2：新增「状态」列（已成交 / 已忽略 / 已采纳 / 未处理）
     // V3.8 T149：新增「操作」列（采纳/忽略/关联交易）
-    expect(headers).toEqual(['标的代码', '策略', '方向', '分级', '强度', '标签', '交易日期', '操作']);
+    expect(headers).toEqual(['标的代码', '策略', '方向', '分级', '强度', '标签', '交易日期', '状态', '操作']);
   });
 
   it('数据行按列顺序渲染（标的代码 / 策略 / 方向 / 分级 / 强度 / 标签 / 交易日期）', async () => {
@@ -412,7 +413,10 @@ describe('Signals · 结果表可读性', () => {
       '--',
       '放量突破',
       '2026-10-12',
-      '采纳忽略关联交易',
+      // F2：未关联成交且未采纳/忽略 → 未处理
+      '未处理',
+      // F2：未成交行额外带「录入交易」入口（跳转交易录入并预填 signal_id）
+      '采纳忽略关联交易录入交易',
     ]);
   });
 

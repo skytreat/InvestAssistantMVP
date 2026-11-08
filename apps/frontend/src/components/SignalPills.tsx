@@ -139,6 +139,60 @@ export function SignalGradeTag({ grade }: { grade: string | null | undefined }) 
  * ⚠️ **用中性灰 pill**：标签本身**不含**方向语义（方向由方向 pill 承担），
  *    着色会让「标签颜色 = 方向」的错觉。
  */
+/**
+ * F2：信号处理状态 tag（已成交 / 已忽略 / 已采纳 / 未处理）
+ *
+ * 状态由**后端派生**（`deriveSignalTradeStatus`，优先级 已成交 > 已忽略 > 已采纳 > 未处理），
+ * 前端不自己从 `adopted` / `ignored` 推断 —— 否则「关联成交已被软删」会显示成已成交。
+ *
+ * 配色：已成交=绿（事实已发生）、已采纳=橙（承诺未兑现）、已忽略=灰、
+ * 未处理=透明描边灰（最低视觉权重，避免干扰主要信息）。
+ */
+const TRADE_STATUS_META: Record<string, { label: string; bg: string; fg: string; border: string }> = {
+  traded: {
+    label: '已成交',
+    bg: COLORS.bgPillSuccess,
+    fg: COLORS.textPillSuccess,
+    border: COLORS.borderPillSuccess,
+  },
+  adopted: {
+    label: '已采纳',
+    bg: COLORS.bgPillWarning,
+    fg: COLORS.textPillWarning,
+    border: COLORS.borderPillWarning,
+  },
+  ignored: {
+    label: '已忽略',
+    bg: COLORS.bgPillNeutral,
+    fg: COLORS.textPillNeutral,
+    border: COLORS.borderPillNeutral,
+  },
+  pending: {
+    label: '未处理',
+    bg: 'transparent',
+    fg: COLORS.textMuted,
+    border: COLORS.borderPillNeutral,
+  },
+};
+
+export function SignalTradeStatusTag({ status }: { status: string | null | undefined }) {
+  const meta = (status && TRADE_STATUS_META[status]) || TRADE_STATUS_META.pending;
+  return (
+    <span
+      data-testid="signal-trade-status"
+      data-status={status ?? 'pending'}
+      style={{
+        ...pillStyle,
+        background: meta.bg,
+        color: meta.fg,
+        border: `1px solid ${meta.border}`,
+      }}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
 export function SignalLabelTag({ label }: { label: string | null | undefined }) {
   if (!label) {
     return (

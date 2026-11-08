@@ -6,7 +6,12 @@ import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
-import { SignalDirectionPill, SignalGradeTag, SignalLabelTag } from '../components/SignalPills';
+import {
+  SignalDirectionPill,
+  SignalGradeTag,
+  SignalLabelTag,
+  SignalTradeStatusTag,
+} from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
 import { useUserStore } from '../store/user';
 import {
@@ -99,9 +104,43 @@ interface SignalRow {
    * 仅 `dedupe=1` 时由后端下发；1 = 未被合并。
    */
   consecutive_days?: number;
+  /** F2：关联成交 id（信号表字段，指向 `user_trade_record.id`）*/
+  linked_trade_id?: number | null;
+  /** F2：处理状态（后端派生：traded / ignored / adopted / pending）*/
+  trade_status?: string;
+  /** F2：关联的成交已被软删（不要显示「查看成交」）*/
+  link_broken?: boolean;
+  adopted?: number | null;
+  ignored?: number | null;
   trade_date?: string;
   [key: string]: unknown;
 }
+
+/** F2：关联成交详情（`GET /api/signal/:id/linked-trade`）*/
+interface LinkedTradeDetail {
+  signal_id: number;
+  trade_status: string;
+  link_broken: boolean;
+  trade: {
+    id: number;
+    asset_code: string;
+    trade_type: string;
+    direction: 'buy' | 'sell' | 'other';
+    trade_date: string;
+    trade_time: string | null;
+    quantity: number;
+    price: number;
+    fee: number;
+    amount: number;
+    realized_pnl: number | null;
+  } | null;
+}
+
+const TRADE_DIRECTION_LABEL: Record<string, string> = {
+  buy: '买入',
+  sell: '卖出',
+  other: '其它',
+};
 
 /** F1：分级 tab（PRD_v3 §4.2「全部 / 强 / 中 / 弱 / 已过期」）*/
 type GradeTab = 'all' | 'strong' | 'medium' | 'weak' | 'expired';
@@ -205,12 +244,49 @@ export default function Signals() {
   // ── V3.8 T149：信号生命周期操作（采纳/忽略/关联交易）────────────────
   const [actMsg, setActMsg] = useState<string | null>(null);
 
+  /** F2：当前展开的关联成交详情（null = 未展开）*/
+  const [tradeDetail, setTradeDetail] = useState<LinkedTradeDetail | null>(null);
+  const [tradeDetailLoading, setTradeDetailLoading] = useState(false);
+
+  /**
+   * F2：按信号查关联成交（读取侧）
+   *
+   * 只读接口；断链（成交已软删）时后端返回 `link_broken: true` + `trade: null`。
+   */
+  const openTradeDetail = async (id: number) => {
+    setTradeDetailLoading(true);
+    try {
+      const res = await api.get(`/signal/${id}/linked-trade`);
+      if (isOkEnvelope(res.data)) {
+        setTradeDetail((res.data.data ?? null) as LinkedTradeDetail | null);
+      } else {
+        setActMsg(String(res.data?.message ?? '查询关联成交失败'));
+      }
+    } catch (e) {
+      setActMsg(extractErrorMessage(e, '查询关联成交失败'));
+    } finally {
+      setTradeDetailLoading(false);
+    }
+  };
+
   const signalAction = async (id: number, kind: 'adopt' | 'ignore') => {
     setActMsg(null);
     try {
       const res = await api.patch(`/signal/${id}/${kind}`);
       if (isOkEnvelope(res.data)) {
-        setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [`${kind}ed`]: 1 } : r)));
+        // F2：状态同步 —— 已成交不会被「采纳 / 忽略」覆盖（优先级固定为 已成交 > ...）
+        setRows((rs) =>
+          rs.map((r) =>
+            r.id === id
+              ? {
+                  ...r,
+                  [`${kind}ed`]: 1,
+                  trade_status:
+                    r.trade_status === 'traded' ? 'traded' : kind === 'adopt' ? 'adopted' : 'ignored',
+                }
+              : r,
+          ),
+        );
         setActMsg(kind === 'adopt' ? '已采纳' : '已忽略');
       } else {
         setActMsg(String(res.data?.message ?? '操作失败'));
@@ -232,8 +308,22 @@ export default function Signals() {
     }
     try {
       const res = await api.patch(`/signal/${id}/link-trade`, { tradeRecordId });
-      if (isOkEnvelope(res.data)) setActMsg('已关联交易');
-      else setActMsg(String(res.data?.message ?? '关联失败'));
+      if (isOkEnvelope(res.data)) {
+        const data = res.data.data as
+          { linked_trade_id?: number | null; unchanged?: boolean; shared_signals?: number } | undefined;
+        // F2：本地同步状态（后端已做校验；此处只更新展示，失败不掩盖成功结果）
+        setRows((rs) =>
+          rs.map((r) =>
+            r.id === id
+              ? { ...r, linked_trade_id: data?.linked_trade_id ?? tradeRecordId, trade_status: 'traded' }
+              : r,
+          ),
+        );
+        const shared = typeof data?.shared_signals === 'number' ? data.shared_signals : 0;
+        setActMsg(shared > 0 ? `已关联交易（该成交同时被另外 ${shared} 条信号关联）` : '已关联交易');
+      } else {
+        setActMsg(String(res.data?.message ?? '关联失败'));
+      }
     } catch (e) {
       setActMsg(extractErrorMessage(e, '关联失败'));
     }
@@ -680,15 +770,59 @@ export default function Signals() {
         <div
           style={{
             fontSize: TYPO.smallSize,
-            color:
-              actMsg === '已关联交易' || actMsg === '已采纳' || actMsg === '已忽略'
-                ? COLORS.success
-                : COLORS.danger,
+            color: actMsg.includes('失败') || actMsg.includes('非法') ? COLORS.danger : COLORS.success,
           }}
         >
           {actMsg}
         </div>
       )}
+
+      {/* F2：关联成交详情（读取侧）—— 点「查看成交」后展开，不跳页 */}
+      {tradeDetail ? (
+        <div
+          data-testid="signal-trade-detail"
+          style={{
+            ...cardStyle,
+            marginBottom: SPACING.gapTight,
+            fontSize: TYPO.smallSize,
+            lineHeight: 1.8,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>信号 #{tradeDetail.signal_id} 的关联成交</strong>
+            <button
+              style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+              onClick={() => setTradeDetail(null)}
+            >
+              关闭
+            </button>
+          </div>
+          {tradeDetailLoading ? (
+            <div style={{ color: COLORS.textMuted }}>加载中…</div>
+          ) : tradeDetail.trade ? (
+            <div>
+              <div>
+                {`成交 #${tradeDetail.trade.id} · ${tradeDetail.trade.asset_code} · ${TRADE_DIRECTION_LABEL[tradeDetail.trade.direction] ?? tradeDetail.trade.direction}（${tradeDetail.trade.trade_type}）`}
+              </div>
+              <div>
+                {`成交日 ${tradeDetail.trade.trade_date}${tradeDetail.trade.trade_time ? ' ' + tradeDetail.trade.trade_time : ''}；数量 ${tradeDetail.trade.quantity}；价格 ${tradeDetail.trade.price}`}
+              </div>
+              <div>
+                {`成交金额 ¥${tradeDetail.trade.amount.toFixed(2)}；费用 ¥${tradeDetail.trade.fee.toFixed(2)}`}
+              </div>
+              <div data-testid="signal-trade-pnl">
+                {tradeDetail.trade.realized_pnl != null
+                  ? `已实现盈亏 ¥${tradeDetail.trade.realized_pnl.toFixed(2)}`
+                  : '已实现盈亏：不可得（买入未平仓或权益类交易）'}
+              </div>
+            </div>
+          ) : tradeDetail.link_broken ? (
+            <div style={{ color: COLORS.danger }}>关联的成交已被删除（关联断链），请重新关联</div>
+          ) : (
+            <div style={{ color: COLORS.textMuted }}>该信号尚未关联成交</div>
+          )}
+        </div>
+      ) : null}
 
       <div style={cardStyle} aria-busy={loading}>
         {loading && rows.length === 0 ? (
@@ -809,6 +943,10 @@ export default function Signals() {
                     <th scope="col" style={thStyle}>
                       交易日期
                     </th>
+                    {/* F2：处理状态（已成交 / 已忽略 / 已采纳 / 未处理） */}
+                    <th scope="col" style={thStyle}>
+                      状态
+                    </th>
                     {/* V3.8 T149：信号生命周期操作（采纳/忽略/关联交易，PRD_v3 §4.2） */}
                     <th scope="col" style={thStyle}>
                       操作
@@ -914,6 +1052,26 @@ export default function Signals() {
                             </span>
                           ) : null}
                         </td>
+                        {/* F2：状态 tag（后端派生；断链不显示「查看成交」） */}
+                        <td style={thTdStyle}>
+                          <SignalTradeStatusTag status={row.trade_status} />
+                          {row.trade_status === 'traded' && row.link_broken !== true ? (
+                            <button
+                              data-testid="signal-trade-view"
+                              style={{
+                                ...buttonStyle,
+                                marginTop: 4,
+                                padding: '2px 8px',
+                                fontSize: TYPO.captionSize,
+                              }}
+                              onClick={() => {
+                                if (typeof row.id === 'number') void openTradeDetail(row.id);
+                              }}
+                            >
+                              查看成交
+                            </button>
+                          ) : null}
+                        </td>
                         {/* V3.8 T149：采纳/忽略/关联交易（过期信号仍可标注，标灰由后端 T134 的 expires_at 承担） */}
                         <td style={thTdStyle}>
                           {typeof row.id === 'number' ? (
@@ -938,6 +1096,16 @@ export default function Signals() {
                               >
                                 关联交易
                               </button>
+                              {/* F2：未成交 → 跳转交易录入并预填 signal_id（录入时自动回填关联） */}
+                              {row.trade_status !== 'traded' || row.link_broken === true ? (
+                                <button
+                                  data-testid="signal-trade-entry"
+                                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                                  onClick={() => navigate(`/trade?signal_id=${row.id}`)}
+                                >
+                                  录入交易
+                                </button>
+                              ) : null}
                             </div>
                           ) : null}
                         </td>
