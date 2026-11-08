@@ -64,6 +64,15 @@ const NEED_REASON_TYPES = new Set<TradeType>(['buy', 'add', 'reduce', 'clear']);
 /** 系统自动导入类：理由由系统固化写入（Requirements §5.2 分红 / 送股 / 转增） */
 const AUTO_IMPORT_TYPES = new Set<TradeType>(['dividend', 'bonus', 'transfer']);
 
+/** T131：情绪状态固定 5 档（与 DDL 的 CHECK 枚举严格一致，非法值返回 400 而非 500） */
+const EMOTION_STATUSES: ReadonlySet<string> = new Set([
+  '极度兴奋',
+  '兴奋',
+  '平静',
+  '焦虑',
+  '恐慌',
+]);
+
 /**
  * T87：`trade_time` 格式校验（秒级 HH:mm:ss）
  *
@@ -531,12 +540,43 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     }
   });
 
-  // T39: PATCH 复盘字段（只允许改 review_note/strategy_match/is_stop_loss/remark）
+  // T39 + T131: PATCH 复盘字段（含情绪状态 / 买卖理由 / 是否跟随系统）
   app.patch('/api/trade/:id', async (request, reply) => {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const body = request.body as Record<string, any>;
-    const allowedFields = ['review_summary', 'strategy_match', 'is_stop_loss', 'remark', 'trade_reason'];
+    const allowedFields = [
+      'review_summary',
+      'strategy_match',
+      'is_stop_loss',
+      'remark',
+      'trade_reason',
+      // T131（V3.3）：复盘字段对齐 —— 此前漏在白名单里 ⇒ 传入后被静默丢弃（C7）
+      'emotion_status',
+      'buy_reason',
+      'sell_reason',
+      'system_followed',
+    ];
+    // DDL 是 INTEGER + CHECK 0/1；JSON 布尔是自然输入，先归一，避免撞 CHECK 变 500
+    if (typeof body.system_followed === 'boolean') {
+      body.system_followed = body.system_followed ? 1 : 0;
+    }
+    // 边界校验（仅新纳入的枚举/三态字段）：非法值返回 400，不伪装成功
+    if (
+      body.emotion_status !== undefined &&
+      body.emotion_status !== null &&
+      !EMOTION_STATUSES.has(body.emotion_status)
+    ) {
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'emotion_status 非法'));
+    }
+    if (
+      body.system_followed !== undefined &&
+      body.system_followed !== null &&
+      body.system_followed !== 0 &&
+      body.system_followed !== 1
+    ) {
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'system_followed 只能是 0 或 1'));
+    }
     const updates: string[] = [];
     const params: any[] = [];
     for (const key of allowedFields) {
@@ -553,9 +593,15 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 
     const db = ConfigStore.getInstance().db;
     try {
-      db.prepare(
-        `UPDATE user_trade_record SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_deleted = 0`,
-      ).run(...params);
+      const info = db
+        .prepare(
+          `UPDATE user_trade_record SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+        )
+        .run(...params);
+      // 只有确实更新到行才返回成功（不存在 / 非本人 / 已软删 → 404，不伪装 200）
+      if (info.changes === 0) {
+        return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
+      }
       writeSystemLog({
         logType: 'trade',
         level: 'SUCCESS',
