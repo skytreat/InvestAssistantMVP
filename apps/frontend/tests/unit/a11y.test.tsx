@@ -256,6 +256,13 @@ function installApiMock(): void {
         return ok(ASSET_STAT);
       case '/signal':
         return ok(SIGNALS);
+      // F3：概览卡走「今日 Top 5」单日端点
+      case '/signal/top5':
+        return ok(SIGNALS, {
+          trade_date: '2026-10-17',
+          trade_date_source: 'signal',
+          latest_quote_date: null,
+        });
       case '/admin/system-log':
         return ok(SYSTEM_LOGS, { pagination: { total: 1, totalPages: 1 } });
       case '/review/yield':

@@ -264,24 +264,28 @@ export function buildReconcileReport(
   };
 }
 
-/**
- * 归因下钻（§9.2 diff 端点）：按归因类别取事实层明细，支持分页。
- * 类别：repo / cashLikeEtf / dividend / offExchange / unknown / unmatched / nonTrade
- *
- * `nonTrade` = 待补录的非成交族（转入 / 送股 / 现金分红）。它们**不属于成交族**，
- * 不参与「缺失未匹配（成交族）」，但同样必须由用户显式确认后才能补录（INV-S2-33）。
- * 现金分红可能 `quantity = 0`（只给发生金额），故前端可勾选条件不能只看股数。
- */
-export function attributionDrilldown(
-  db: Database.Database,
-  userId: number,
-  brokerCode: string,
-  category: 'repo' | 'cashLikeEtf' | 'dividend' | 'offExchange' | 'unknown' | 'unmatched' | 'nonTrade',
-  page = 1,
-  pageSize = 50,
-): { rows: Array<Record<string, unknown>>; total: number; page: number } {
+/** `/diff` 的归因类别（下钻与 CSV 导出共用，避免两处白名单漂移） */
+export const DIFF_CATEGORIES = [
+  'repo',
+  'cashLikeEtf',
+  'dividend',
+  'offExchange',
+  'unknown',
+  'unmatched',
+  'nonTrade',
+] as const;
+
+export type DiffCategory = (typeof DIFF_CATEGORIES)[number];
+
+/** 差异明细的列清单（页面表格与 CSV 导出的字段顺序都以它为准） */
+const DIFF_SELECT_COLUMNS = `b.id, b.event_type, b.raw_event_type, b.asset_code, b.trade_date, b.trade_time,
+              b.price, b.quantity, b.amount, b.cash_flow, b.fee_total, b.match_status,
+              b.exclude_reason, b.source_file`;
+
+/** 分类 → WHERE 条件 + 参数（nonTrade 的条件含占位符，故参数必须随条件一起返回） */
+function diffCondition(category: DiffCategory): { sql: string; params: unknown[] } {
   const nonTradePh = NON_TRADE_EVENTS.map(() => '?').join(',');
-  const cond: Record<string, string> = {
+  const cond: Record<DiffCategory, string> = {
     repo: "b.event_type = 'REPO'",
     cashLikeEtf: "b.event_type = 'CASH_LIKE_ETF'",
     dividend: "b.event_type IN ('DIVIDEND_CASH','DIVIDEND_BONUS')",
@@ -291,22 +295,42 @@ export function attributionDrilldown(
       "(b.match_status IN ('MISSING','FUZZY') AND b.event_type IN ('TRADE_BUY','TRADE_SELL','FUND_SUBSCRIBE','FUND_REDEEM'))",
     nonTrade: `(b.match_status IN ('MISSING','FUZZY') AND b.event_type IN (${nonTradePh}))`,
   };
-  // nonTrade 的条件含占位符 ⇒ 参数表需按条件顺序拼接（其余分类无参）
-  const condParams = category === 'nonTrade' ? NON_TRADE_EVENTS : [];
+  return {
+    sql: cond[category],
+    // nonTrade 的条件含占位符 ⇒ 参数表需按条件顺序拼接（其余分类无参）
+    params: category === 'nonTrade' ? [...NON_TRADE_EVENTS] : [],
+  };
+}
+
+/**
+ * 归因下钻（§9.2 diff 端点）：按归因类别取事实层明细，支持分页。
+ * 类别见 {@link DIFF_CATEGORIES}。
+ *
+ * `nonTrade` = 待补录的非成交族（转入 / 送股 / 现金分红）。它们**不属于成交族**，
+ * 不参与「缺失未匹配（成交族）」，但同样必须由用户显式确认后才能补录（INV-S2-33）。
+ * 现金分红可能 `quantity = 0`（只给发生金额），故前端可勾选条件不能只看股数。
+ */
+export function attributionDrilldown(
+  db: Database.Database,
+  userId: number,
+  brokerCode: string,
+  category: DiffCategory,
+  page = 1,
+  pageSize = 50,
+): { rows: Array<Record<string, unknown>>; total: number; page: number } {
+  const { sql: condSql, params: condParams } = diffCondition(category);
   const totalRow = db
     .prepare(
       `SELECT COUNT(*) n FROM broker_trade_record b
-        WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0 AND ${cond[category]}`,
+        WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0 AND ${condSql}`,
     )
     .get(userId, brokerCode, ...condParams) as { n: number };
   const total = Number(totalRow.n);
   const rows = db
     .prepare(
-      `SELECT b.id, b.event_type, b.raw_event_type, b.asset_code, b.trade_date, b.trade_time,
-              b.price, b.quantity, b.amount, b.cash_flow, b.fee_total, b.match_status,
-              b.exclude_reason, b.source_file
+      `SELECT ${DIFF_SELECT_COLUMNS}
          FROM broker_trade_record b
-        WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0 AND ${cond[category]}
+        WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0 AND ${condSql}
         ORDER BY b.trade_date, b.id
         LIMIT ? OFFSET ?`,
     )
@@ -314,4 +338,27 @@ export function attributionDrilldown(
     Record<string, unknown>
   >;
   return { rows, total, page };
+}
+
+/**
+ * CSV 导出（I8）：同一分类下的**全量**差异明细（不分页），字段顺序与页面表格一致。
+ *
+ * 页面表格的列序为 id / 事件 / 标的 / 日期 / 数量 / 金额 / 状态 / 排除原因；
+ * 这里必须复用 {@link attributionDrilldown} 的同一份条件与列清单，避免导出与页面口径分叉。
+ */
+export function attributionRowsAll(
+  db: Database.Database,
+  userId: number,
+  brokerCode: string,
+  category: DiffCategory,
+): Array<Record<string, unknown>> {
+  const { sql: condSql, params: condParams } = diffCondition(category);
+  return db
+    .prepare(
+      `SELECT ${DIFF_SELECT_COLUMNS}
+         FROM broker_trade_record b
+        WHERE b.user_id = ? AND b.broker_code = ? AND b.is_deleted = 0 AND ${condSql}
+        ORDER BY b.trade_date, b.id`,
+    )
+    .all(userId, brokerCode, ...condParams) as Array<Record<string, unknown>>;
 }
