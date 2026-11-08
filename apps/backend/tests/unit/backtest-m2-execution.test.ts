@@ -101,6 +101,64 @@ describe('M2 成交模拟器 · 佣金（含最低 5 元）', () => {
   });
 });
 
+describe('F4 Step A · 印花税 / 过户费（TradeRules 扩展）', () => {
+  const STOCK_RULES = {
+    ...DEFAULT_TRADE_RULES,
+    stampDutyRate: 0.001,
+    transferFeeRate: 0.00002,
+  } as const;
+  /** 卖出用：无现金、持仓 2900 份、开盘 10.00 */
+  const sellCase = (rules: Partial<typeof DEFAULT_TRADE_RULES>) =>
+    runCase({
+      mode: 'replace',
+      heldSymbols: ['sh510300'],
+      targets: [],
+      cash: 0,
+      positions: { sh510300: { qty: 2900, closeableQty: 2900 } },
+      bars: { sh510300: makeBar(10) },
+      rules,
+    });
+
+  it('ETF（0/0）：买入费用仍等于旧佣金口径（逐位不变）', () => {
+    const r = runCase({ targets: [buyTarget(30_000)] });
+    expect(r.fills[0].fee).toBe(5);
+    expect(r.cashDelta).toBeCloseTo(-29_007.9, 6);
+  });
+
+  it('股票买入：过户费双边计，印花税不计', () => {
+    const r = runCase({ targets: [buyTarget(30_000)], rules: STOCK_RULES });
+    const f = r.fills[0];
+    const notional = f.qty * f.price; // 2900 × 10.001 = 29,002.9
+    expect(f.qty).toBe(2900);
+    // 佣金 5 + 过户费 round2(29002.9 × 0.00002)=0.58 ⇒ 5.58（无印花税）
+    expect(f.fee).toBeCloseTo(5 + Math.round(notional * 0.00002 * 100) / 100, 6);
+    expect(r.cashDelta).toBeCloseTo(-(notional + f.fee), 6);
+  });
+
+  it('股票卖出：佣金 + 过户费 + 印花税（印花税仅卖出）', () => {
+    const r = sellCase(STOCK_RULES);
+    const f = r.fills[0];
+    const notional = f.qty * f.price; // 2900 × 9.999 = 28,997.1
+    // 佣金 max(5, 2.90)=5 + 过户费 0.58 + 印花税 29.00 ⇒ 34.58
+    expect(f.fee).toBeCloseTo(34.58, 6);
+    expect(r.cashDelta).toBeCloseTo(notional - f.fee, 6);
+  });
+
+  it('ETF 卖出（0/0）：仅佣金，与旧口径一致', () => {
+    const r = sellCase({});
+    const f = r.fills[0];
+    expect(f.fee).toBeCloseTo(5, 6);
+    expect(r.cashDelta).toBeCloseTo(f.qty * f.price - 5, 6);
+  });
+
+  it('印花税不因买入而扣（买 0/0 与带印花税规则下买入费用仅差过户费）', () => {
+    const etf = runCase({ targets: [buyTarget(30_000)] });
+    const stock = runCase({ targets: [buyTarget(30_000)], rules: STOCK_RULES });
+    expect(stock.fills[0].fee).toBeGreaterThan(etf.fills[0].fee);
+    expect(stock.fills[0].fee - etf.fills[0].fee).toBeCloseTo(0.58, 2);
+  });
+});
+
 describe('M2 成交模拟器 · 整手与最小成交额', () => {
   it('目标 1 万 / 开盘 10.00 → 900 份（向下取整到 100）', () => {
     const r = runCase({ targets: [buyTarget(10_000)] });

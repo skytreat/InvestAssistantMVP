@@ -37,9 +37,9 @@ CREATE TABLE IF NOT EXISTS paper_fee_config (
         CHECK (commission_rate >= 0 AND commission_rate <= 0.003),
     min_commission REAL NOT NULL DEFAULT 5
         CHECK (min_commission >= 0 AND min_commission <= 100),
-    stamp_duty_rate REAL NOT NULL DEFAULT 0     -- 0 = 不适用；非 0 首期拒绝（FEE_RULE_UNSUPPORTED）
+    stamp_duty_rate REAL NOT NULL DEFAULT 0     -- 印花税（仅卖出）；0 = ETF 口径，D1 起支持非 0
         CHECK (stamp_duty_rate >= 0 AND stamp_duty_rate <= 0.001),
-    transfer_fee_rate REAL NOT NULL DEFAULT 0   -- 0 = 不适用；非 0 首期拒绝（FEE_RULE_UNSUPPORTED）
+    transfer_fee_rate REAL NOT NULL DEFAULT 0   -- 过户费（双边）；0 = ETF 口径，D1 起支持非 0
         CHECK (transfer_fee_rate >= 0 AND transfer_fee_rate <= 0.001),
     slippage_rate REAL NOT NULL DEFAULT 0.0001
         CHECK (slippage_rate >= 0 AND slippage_rate <= 0.02),

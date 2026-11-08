@@ -33,6 +33,18 @@ export interface TradeRules {
   minNotional: number;
   /** 涨跌停幅度（0.10 = ±10%） */
   priceLimit: number;
+  /**
+   * 印花税率（**仅卖出**，按成交额；股票默认 0.001，ETF = 0）
+   *
+   * 可选：旧 `bt_run.rules_json` / 旧 `fee_snapshot_json` 无此字段，缺省按 0 解读。
+   */
+  stampDutyRate?: number;
+  /**
+   * 过户费率（**买卖双边**，按成交额；股票默认 0.00002，ETF = 0）
+   *
+   * 可选：同上，缺省按 0。
+   */
+  transferFeeRate?: number;
 }
 
 export const DEFAULT_TRADE_RULES: Readonly<TradeRules> = Object.freeze({
@@ -42,6 +54,9 @@ export const DEFAULT_TRADE_RULES: Readonly<TradeRules> = Object.freeze({
   lotSize: 100,
   minNotional: 10,
   priceLimit: 0.1,
+  // D1（F4 定稿）：缺省 0/0 ⇒ ETF 既有口径逐位不变
+  stampDutyRate: 0,
+  transferFeeRate: 0,
 });
 
 /** 模拟器需要的 bar（成交轨 bfq，含 preclose 用于涨跌停判定） */
@@ -79,7 +94,7 @@ export interface Fill {
   side: 'buy' | 'sell';
   qty: number;
   price: number;
-  /** 佣金（元，四舍五入到分） */
+  /** 总费用（佣金 + 过户费 + 印花税，元，四舍五入到分） */
   fee: number;
   /** 滑点成本（元，仅报告用；已包含在 price 里） */
   slippageCost: number;
@@ -157,6 +172,26 @@ function round2(x: number): number {
 
 function commissionOf(notional: number, rules: TradeRules): number {
   return round2(Math.max(rules.minCommission, notional * rules.commissionRate));
+}
+
+/** 过户费（买卖双边，按成交额；ETF 规则 0/0 时为精确 0） */
+function transferFeeOf(notional: number, rules: TradeRules): number {
+  return round2(notional * (rules.transferFeeRate ?? 0));
+}
+
+/** 印花税（仅卖出，按成交额；ETF 规则 0/0 时为精确 0） */
+function stampDutyOf(notional: number, rules: TradeRules): number {
+  return round2(notional * (rules.stampDutyRate ?? 0));
+}
+
+/** 买入总费用 = 佣金 + 过户费（四舍五入到分；0/0 时与旧 `commissionOf` 逐位相同） */
+function buyFeeOf(notional: number, rules: TradeRules): number {
+  return round2(commissionOf(notional, rules) + transferFeeOf(notional, rules));
+}
+
+/** 卖出总费用 = 佣金 + 过户费 + 印花税（0/0 时与旧 `commissionOf` 逐位相同） */
+function sellFeeOf(notional: number, rules: TradeRules): number {
+  return round2(commissionOf(notional, rules) + transferFeeOf(notional, rules) + stampDutyOf(notional, rules));
 }
 
 /** 目标仓位 → 目标金额（targetNotional 优先；`hold` 不动 ⇒ 没有目标金额） */
@@ -271,7 +306,9 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
     //    若照收 5 元，现金会被扣成负数（实测：卖出 2 份 × 1.1328 = 2.27 元、佣金 5 元
     //    ⇒ 现金 1.49 → −1.24，触发引擎「现金为负」不变量）。
     //    口径：佣金不超过成交额（向下取到分），即券商不会倒扣现金。
-    const fee = Math.min(commissionOf(notional, rules), Math.floor(notional * 100) / 100);
+    //    D1（F4）：费用口径为「佣金 + 过户费 + 印花税」，封顶同样作用于**总费用**；
+    //    ETF 规则 0/0 时后两项精确为 0 ⇒ 与旧结果逐位一致。
+    const fee = Math.min(sellFeeOf(notional, rules), Math.floor(notional * 100) / 100);
     cash += notional - fee;
     fills.push({
       date: req.date,
@@ -368,10 +405,10 @@ export function executeTargets(req: ExecutionRequest): ExecutionResult {
     }
 
     // 现金约束：不够就按整手递减（费用随成交额变，需重算）
-    let fee = commissionOf(qty * price, rules);
+    let fee = buyFeeOf(qty * price, rules);
     while (qty > 0 && cash < qty * price + fee) {
       qty -= rules.lotSize;
-      fee = qty > 0 ? commissionOf(qty * price, rules) : 0;
+      fee = qty > 0 ? buyFeeOf(qty * price, rules) : 0;
     }
     if (qty <= 0) {
       skipped.push({ ...baseOrder, qty: 0, reason: 'insufficient-cash' });

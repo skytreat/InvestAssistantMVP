@@ -4,8 +4,9 @@
  * 口径（D3 定稿）：
  *   - 建户时**快照冻结**，结算只读 `paper_account.fee_snapshot_json`；
  *   - 回退链：显式 `feeConfigId`（账户级）→ 用户默认（本人最早一条）→ 系统默认 → 内置默认；
- *   - **首期不支持印花税 / 过户费**：这两项非 0 直接拒绝（`FEE_RULE_UNSUPPORTED`），
- *     因为它们不在现有模拟器 `TradeRules` 的契约里，静默忽略会让费率看起来可配、实际不生效。
+ *   - **支持印花税 / 过户费**（D1 定稿，2026-11-08）：模拟器 `TradeRules` 已补
+ *     `stampDutyRate`（仅卖出）/ `transferFeeRate`（双边），费率可配且结算真实生效；
+ *   - 旧快照（`fee_snapshot_json` 无这两个字段）**按 0 解读**，不报错（向后兼容）。
  */
 import type Database from 'better-sqlite3';
 import { DEFAULT_TRADE_RULES, type TradeRules } from '../backtest/execution/simulator.js';
@@ -105,7 +106,7 @@ function resolveValues(input: Partial<FeeConfigValues>): FeeConfigValues {
   };
 }
 
-/** 校验费率、档位与「首期不支持项」；不通过抛 `FEE_VALUE_INVALID` / `FEE_RULE_UNSUPPORTED` */
+/** 校验费率、档位与取值范围；不通过抛 `FEE_VALUE_INVALID` */
 export function validateFeeConfig(input: Partial<FeeConfigValues>): FeeConfigValues {
   const values = resolveValues(input);
 
@@ -118,28 +119,22 @@ export function validateFeeConfig(input: Partial<FeeConfigValues>): FeeConfigVal
   if (!Number.isInteger(values.lotSize) || values.lotSize < 1 || values.lotSize > 1000) {
     throw new PaperError('FEE_VALUE_INVALID', 400, `lotSize=${values.lotSize} 必须是 1~1000 的整数`);
   }
-  if (values.stampDutyRate !== 0 || values.transferFeeRate !== 0) {
-    throw new PaperError(
-      'FEE_RULE_UNSUPPORTED',
-      400,
-      '首期不支持印花税 / 过户费（模拟器 TradeRules 无此字段），请置 0',
-    );
-  }
   return values;
 }
 
-/** 冻结快照 → 模拟器 `TradeRules`（结算唯一入口；不读回退链） */
+/**
+ * 冻结快照 → 模拟器 `TradeRules`（结算唯一入口；不读回退链）
+ *
+ * D1（F4 定稿）：印花税（仅卖出）/ 过户费（买卖双边）随快照进入规则；
+ * **旧快照缺这两个字段时按 0 解读**（`?? 0`），不报错 —— 已有账户的结算结果逐位不变。
+ */
 export function feeSnapshotToTradeRules(snapshot: FeeSnapshot): TradeRules {
-  if (snapshot.stampDutyRate !== 0 || snapshot.transferFeeRate !== 0) {
-    throw new PaperError(
-      'FEE_RULE_UNSUPPORTED',
-      400,
-      '费用快照含印花税 / 过户费，当前结算不支持（快照可能来自外部伪造）',
-    );
-  }
+  const s = snapshot as Partial<FeeConfigValues>;
   return {
     commissionRate: snapshot.commissionRate,
     minCommission: snapshot.minCommission,
+    stampDutyRate: s.stampDutyRate ?? 0,
+    transferFeeRate: s.transferFeeRate ?? 0,
     slippageRate: snapshot.slippageRate,
     lotSize: snapshot.lotSize,
     minNotional: snapshot.minNotional,
