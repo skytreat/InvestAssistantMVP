@@ -199,7 +199,8 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/strategy/signals/:id/outcome' },
   // F4 Step B：策略有效性统计与导出
   { method: 'GET', url: '/api/strategy/effectiveness' },
-  { method: 'GET', url: '/api/strategy/effectiveness/export' },
+  // CSV 导出（非 JSON ⇒ 只做可达性 + Content-Type 断言）
+  { method: 'GET', url: '/api/strategy/effectiveness/export', csv: true },
   { method: 'GET', url: '/api/ex-dividend/imports' },
 
   // ── 插件 / 策略 ──
