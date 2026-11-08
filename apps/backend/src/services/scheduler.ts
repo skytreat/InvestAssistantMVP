@@ -8,14 +8,7 @@ import { runAllChecks, hasQuoteDataOn } from './validator.js';
 import { executeAllPlugins } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
-import {
-  persistSignals,
-  getTradeDate,
-  resolveSignalSymbols,
-  SIGNAL_USER_ID,
-  assignSignalCooldowns,
-  assignSignalGrades,
-} from './signalService.js';
+import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from './signalService.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
 import { isDuckDBWriteSentinelPresent } from '../db/duckdb.js';
 import { runFullBackup } from './backup.js';
@@ -24,7 +17,7 @@ import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
 import { syncSymbolDict } from './symbolDict.js';
 import { PaperStore } from './paper/store.js';
-import { runPaperDecisionStage } from './paper/decision.js';
+import { runPaperDailyStage } from './paper/settle.js';
 
 /**
  * 全部收盘后 cron 的时区（T108）。
@@ -422,41 +415,10 @@ export function registerCronJobs(app: FastifyInstance): void {
                   pluginResult.pluginId,
                   'monitor',
                   tradeDate,
-                  SIGNAL_USER_ID,
-                  'live',
-                  pluginResult.subCategory ?? null,
                 );
                 totalInserted += persist.inserted;
                 totalSkipped += persist.skipped;
                 totalErrors += persist.errors;
-              }
-              // F1：回填 grade / expires_at（**只写这两列**，不增删信号）
-              try {
-                const graded = await assignSignalGrades(tradeDate, SIGNAL_USER_ID);
-                writeSystemLog({
-                  logType: 'signal_generate',
-                  level: 'INFO',
-                  message: `信号分级完成: graded=${graded.graded} 强=${graded.strong} 中=${graded.medium} 弱=${graded.weak}`,
-                  detail: JSON.stringify({ tradeDate }),
-                });
-              } catch (gradeErr: unknown) {
-                writeSystemLog({
-                  logType: 'signal_generate',
-                  level: 'WARN',
-                  message: '信号分级失败（不影响信号生成主流程）',
-                  detail: String(gradeErr),
-                });
-              }
-              // F6：回填 cooldown_until（**只供展示层冷却合并判断**，不抑制任何信号）
-              try {
-                await assignSignalCooldowns(tradeDate, SIGNAL_USER_ID);
-              } catch (coolErr: unknown) {
-                writeSystemLog({
-                  logType: 'signal_generate',
-                  level: 'WARN',
-                  message: '信号冷却回填失败（不影响信号生成主流程）',
-                  detail: String(coolErr),
-                });
               }
               writeSystemLog({
                 logType: 'signal_generate',
@@ -538,7 +500,7 @@ export function registerCronJobs(app: FastifyInstance): void {
     ),
   );
 
-  // === 17:04 纸面账户日更（结算 T → 决策 T+1；S2 只做影子决策）===
+  // === 17:04 纸面账户日更（落账期先结算 T，再决策 T+1；影子期只有决策）===
   app.scheduler.addCronJob(
     new CronJob(
       { cronExpression: '4 17 * * 1-5', timezone: CRON_TIMEZONE },
@@ -553,7 +515,7 @@ export function registerCronJobs(app: FastifyInstance): void {
               message: '纸面账户日更开始',
             });
             try {
-              await runPaperDecisionStage({ db: PaperStore.getInstance().db });
+              await runPaperDailyStage({ db: PaperStore.getInstance().db });
             } catch (err: any) {
               writeSystemLog({
                 logType: 'paper_account',

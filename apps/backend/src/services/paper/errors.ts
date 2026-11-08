@@ -17,6 +17,10 @@ export type PaperErrorCode =
   | 'PAPER_PHASE_TRANSITION_INVALID'
   | 'PAPER_PENDING_EXISTS'
   | 'PAPER_ALREADY_SETTLED'
+  /** 17:04 段 SQLite 写冲突重试耗尽（方案 §12.1.3）；pending 保留，等下次补算 */
+  | 'PAPER_DB_BUSY'
+  /** DuckDB 行情句柄被回测批量占用（方案 §12.1.3）；**不得**映射成停牌 */
+  | 'PAPER_QUOTE_DB_BUSY'
   | 'FEE_VALUE_INVALID'
   | 'FEE_RULE_UNSUPPORTED'
   | 'FEE_CONFIG_NOT_FOUND'
