@@ -280,6 +280,28 @@ CREATE TABLE IF NOT EXISTS symbol_dict (
 CREATE INDEX IF NOT EXISTS idx_symbol_dict_code6 ON symbol_dict(code6);
 CREATE INDEX IF NOT EXISTS idx_symbol_dict_pinyin ON symbol_dict(pinyin);
 
+-- K 线手工画线（独立 PR）：点位只存「timestamp + value」，复权口径**写死不复权（bfq）**。
+-- 为什么写死 bfq：画线是人对「当时成交价」的判断，前复权会在除权日改写历史价格导致线漂移；
+-- 未来若要支持 qfq，必须做历史点位迁移（见 PR 说明）。
+-- overlay_name 走前端 5 个内置模板白名单（后端二次校验，避免任意模板名入库）。
+-- styles_json 预留：当前不开放样式编辑（斐波那契分级位固定），故恒为 NULL。
+CREATE TABLE IF NOT EXISTS user_kline_overlay (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    asset_code   TEXT NOT NULL,
+    period       TEXT NOT NULL CHECK (period IN ('day', 'week', 'month')),
+    overlay_name TEXT NOT NULL,
+    points_json  TEXT NOT NULL,
+    text         TEXT,
+    styles_json  TEXT,
+    is_deleted   INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (user_id) REFERENCES user_account(id)
+);
+CREATE INDEX IF NOT EXISTS idx_kline_overlay_user_asset
+    ON user_kline_overlay(user_id, asset_code, period, is_deleted);
+
 -- V3（T122，SDD_v3 §11.1.1）事实层：券商原始记录。
 -- 幂等键 = row_hash（归一化内容 SHA-256）+ content_seq（同哈希在批次内出现序号，
 --   「同内容多笔」不被误判为重复，「同文件重复上传」被识别为重复，INV-S2-39）。

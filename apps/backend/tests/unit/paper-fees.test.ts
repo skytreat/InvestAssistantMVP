@@ -42,9 +42,15 @@ describe('validateFeeConfig', () => {
     expect(() => validateFeeConfig({ minNotional: -1 })).toThrow(/minNotional/);
   });
 
-  it('拒绝印花税 / 过户费（首期不支持，非静默忽略）', () => {
-    expect(() => validateFeeConfig({ stampDutyRate: 0.001 })).toThrow(/不支持印花税/);
-    expect(() => validateFeeConfig({ transferFeeRate: 0.0001 })).toThrow(/过户费/);
+  it('接受印花税 / 过户费（D1 起模拟器支持，不再拒绝）', () => {
+    const v = validateFeeConfig({ stampDutyRate: 0.001, transferFeeRate: 0.00002 });
+    expect(v.stampDutyRate).toBe(0.001);
+    expect(v.transferFeeRate).toBe(0.00002);
+  });
+
+  it('印花税 / 过户费仍受 0~0.001 范围约束', () => {
+    expect(() => validateFeeConfig({ stampDutyRate: 0.002 })).toThrow(/stampDutyRate/);
+    expect(() => validateFeeConfig({ transferFeeRate: -0.0001 })).toThrow(/transferFeeRate/);
   });
 });
 
@@ -67,6 +73,8 @@ describe('feeSnapshotToTradeRules', () => {
     expect(feeSnapshotToTradeRules(snap)).toEqual({
       commissionRate: 0.0002,
       minCommission: 6,
+      stampDutyRate: 0,
+      transferFeeRate: 0,
       slippageRate: 0.0002,
       lotSize: 200,
       minNotional: 20,
@@ -74,23 +82,41 @@ describe('feeSnapshotToTradeRules', () => {
     });
   });
 
-  it('快照含非 0 印花税时拒绝结算（防止外部伪造快照）', () => {
-    expect(() =>
-      feeSnapshotToTradeRules({
-        source: 'builtin',
-        feeConfigId: null,
-        name: 'x',
-        brokerName: null,
-        commissionRate: 0.0001,
-        minCommission: 5,
-        stampDutyRate: 0.001,
-        transferFeeRate: 0,
-        slippageRate: 0.0001,
-        lotSize: 100,
-        minNotional: 10,
-        priceLimitPct: 0.1,
-      }),
-    ).toThrow(/印花税/);
+  it('快照含非 0 印花税时进入结算规则（D1 起支持）', () => {
+    const rules = feeSnapshotToTradeRules({
+      source: 'builtin',
+      feeConfigId: null,
+      name: 'x',
+      brokerName: null,
+      commissionRate: 0.0001,
+      minCommission: 5,
+      stampDutyRate: 0.001,
+      transferFeeRate: 0.00002,
+      slippageRate: 0.0001,
+      lotSize: 100,
+      minNotional: 10,
+      priceLimitPct: 0.1,
+    });
+    expect(rules.stampDutyRate).toBe(0.001);
+    expect(rules.transferFeeRate).toBe(0.00002);
+  });
+
+  it('旧快照缺印花税 / 过户费字段时按 0 解读（不报错）', () => {
+    const legacy = {
+      source: 'builtin',
+      feeConfigId: null,
+      name: 'x',
+      brokerName: null,
+      commissionRate: 0.0001,
+      minCommission: 5,
+      slippageRate: 0.0001,
+      lotSize: 100,
+      minNotional: 10,
+      priceLimitPct: 0.1,
+    } as unknown as FeeSnapshot;
+    const rules = feeSnapshotToTradeRules(legacy);
+    expect(rules.stampDutyRate).toBe(0);
+    expect(rules.transferFeeRate).toBe(0);
   });
 });
 

@@ -85,7 +85,7 @@ describe('M1 SQLite', () => {
     expect(row.foreign_keys).toBe(1);
   });
 
-  it('15 张业务表全覆盖（M1 基线 7 张 + V3.1 新增 4 张 + V3.5 新增 1 张：symbol_dict + V3.7 新增 1 张：user_fee_config + T133 新增 2 张：组合策略）', () => {
+  it('16 张业务表全覆盖（M1 基线 7 张 + V3.1 新增 4 张 + V3.5 新增 1 张：symbol_dict + V3.7 新增 1 张：user_fee_config + K 线画线 1 张：user_kline_overlay + T133 新增 2 张：组合策略）', () => {
     const tables = db.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as { name: string }[];
@@ -106,6 +106,8 @@ describe('M1 SQLite', () => {
         'broker_import_template',
         'symbol_dict',
         'user_fee_config',
+        // K 线手工画线（独立 PR）：点位只存 timestamp + value，复权口径写死 bfq
+        'user_kline_overlay',
         // T133（PA-06）新增：组合策略配置
         'strategy_combo',
         'strategy_combo_condition',

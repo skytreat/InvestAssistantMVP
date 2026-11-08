@@ -61,6 +61,14 @@ export type SessionExpiredHandler = (from: string) => void;
 const sessionExpiredHandlers = new Set<SessionExpiredHandler>();
 
 /**
+ * 本轮「已登出」状态下是否已广播过过期事件（A5）
+ *
+ * 并发首屏会产生多个 401：若每个都广播，后到的会把 `from` 覆盖成 `/login`。
+ * 首个 401 置位 → 后续 401 直接跳过；带 token 的新请求（登录/刷新后）会复位。
+ */
+let sessionExpiredNotified = false;
+
+/**
  * 订阅「会话过期」事件，返回取消订阅函数
  *
  * 用法（`App.tsx`）：
@@ -105,7 +113,11 @@ export function currentPath(): string {
 
 api.interceptors.request.use((config) => {
   const token = useUserStore.getState().token;
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    // 有 token 说明已是「新的有效会话」→ 复位一次性标记（A5）
+    sessionExpiredNotified = false;
+    config.headers.Authorization = `Bearer ${token}`;
+  }
   return config;
 });
 
@@ -245,7 +257,15 @@ api.interceptors.response.use(
 
       // 刷新失败 / 没有 refresh token → 清会话 + 通知前端「会话过期」
       useUserStore.getState().logout();
-      emitSessionExpired(currentPath());
+      // 并发首屏会产生多个 401：首个已跳转后，后到的 401 取到的 currentPath() 变成 `/login`,
+      // 若照常广播就会把真正的原路径覆盖掉（A5）。
+      // 故：① 一轮过期只广播一次；② 绝不把 `/login` 写进 from。
+      if (!sessionExpiredNotified) {
+        sessionExpiredNotified = true;
+        if (typeof window === 'undefined' || window.location.pathname !== '/login') {
+          emitSessionExpired(currentPath());
+        }
+      }
     }
 
     normalizeErrorMessage(err);

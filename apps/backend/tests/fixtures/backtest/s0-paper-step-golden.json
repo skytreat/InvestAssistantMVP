@@ -16,7 +16,9 @@
       "slippageRate": 0.0001,
       "lotSize": 100,
       "minNotional": 10,
-      "priceLimit": 0.1
+      "priceLimit": 0.1,
+      "stampDutyRate": 0,
+      "transferFeeRate": 0
     },
     "suspension": {},
     "universeStats": {
