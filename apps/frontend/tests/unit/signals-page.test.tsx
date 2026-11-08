@@ -53,6 +53,10 @@ interface SignalFixture {
   direction: string;
   label: string;
   strength?: number | null;
+  grade?: string | null;
+  expires_at?: string | null;
+  /** F6 用：同一策略+标的+方向在冷却窗口内被合并的计数 */
+  consecutive_days?: number;
   trade_date: string;
 }
 
@@ -94,6 +98,10 @@ function installPagedMock(
   getMock.mockImplementation((url: string, cfg?: ApiGetConfig) => {
     if (url === '/market/latest-date') {
       return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+    }
+    // F3：摘要区默认返回空（避免与主列表的 pill / 进度条断言互相干扰）
+    if (url === '/signal/top5') {
+      return Promise.resolve(mockResponse([], DEFAULT_META));
     }
     const requested = Number(cfg?.params?.page ?? 1);
     const idx = Math.min(Math.max(requested - 1, 0), pages.length - 1);
@@ -139,9 +147,10 @@ describe('T72 ① · 进页自动加载', () => {
     expect(signalCalls()[0]?.[0]).toBe('/signal');
     const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
-    expect(params).toEqual({ page: 1, page_size: 50 });
+    // F1：分级 tab 默认「强」→ 参数里固定带 grade=strong（用户口径：默认只显强）
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
     expect(params).not.toHaveProperty('trade_date');
-    // 「全部策略 / 全部方向」⇒ 不预设任何过滤条件
+    // 「全部策略 / 全部方向」⇒ 不预设这些过滤条件
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
     expect(params).not.toHaveProperty('asset_code');
@@ -358,7 +367,8 @@ describe('G5.5 · asset_code / start_date / end_date 筛选 + 升序', () => {
 
     await screen.findByRole('table');
     const dataRows = screen.getAllByRole('row').slice(1);
-    const dates = dataRows.map((r) => within(r).getAllByRole('cell')[5].textContent);
+    // 列序：代码(0) 策略(1) 方向(2) 分级(3) 强度(4) 标签(5) 交易日期(6) 操作(7)
+    const dates = dataRows.map((r) => within(r).getAllByRole('cell')[6].textContent);
     expect(dates).toEqual(['2026-10-01', '2026-10-12', '2026-10-20']);
 
     // 前端**没有**按方向重排（后端给什么顺序就渲染什么顺序）
@@ -472,5 +482,157 @@ describe('T149 · 信号操作列（采纳/忽略 → PATCH /signal/:id/{adopt|i
     renderWithRouter(<Signals />);
     await userEvent.click(await screen.findByRole('button', { name: '忽略' }));
     await waitFor(() => expect(patchMock).toHaveBeenCalledWith('/signal/1/ignore'));
+  });
+});
+
+/** F3 · 今日 Top 5 摘要区（PRD_v3 §4.2） */
+describe('F3 · 今日 Top 5 摘要区', () => {
+  it('跟随主列表展示日拉取摘要，并展示排名 / 日期来源', async () => {
+    const top5Calls: Array<Record<string, unknown> | undefined> = [];
+    getMock.mockImplementation((url: string, cfg?: ApiGetConfig) => {
+      if (url === '/market/latest-date') {
+        return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+      }
+      if (url === '/signal/top5') {
+        top5Calls.push(cfg?.params);
+        return Promise.resolve(
+          mockResponse([BUY_ROW], {
+            trade_date: '2026-10-13',
+            trade_date_source: 'signal',
+            latest_quote_date: null,
+            limit: 5,
+          }),
+        );
+      }
+      return Promise.resolve(pagedResponse([BUY_ROW], 1, 1, 1));
+    });
+
+    renderWithRouter(<Signals />);
+
+    const summary = await screen.findByTestId('signals-top5-summary');
+    expect(within(summary).getByText('今日 Top 5 摘要')).toBeInTheDocument();
+
+    // 摘要跟随主列表解析出的展示日（2026-10-13），不是硬编码「今天」
+    await waitFor(() => expect(top5Calls).toEqual([{ trade_date: '2026-10-13' }]));
+    expect(screen.getByTestId('signals-top5-date-note')).toHaveTextContent(
+      '摘要交易日 2026-10-13（最近有信号日）',
+    );
+
+    const table = within(summary).getByRole('table', { name: '今日 Top 5 摘要' });
+    const rows = within(table).getAllByRole('row');
+    expect(rows).toHaveLength(2); // 表头 + 1 条
+    expect(within(rows[1]).getByText('1')).toBeInTheDocument(); // 排名
+    expect(within(rows[1]).getByText('sh600000')).toBeInTheDocument();
+  });
+
+  it('摘要接口失败时静默降级，不影响主列表', async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url === '/market/latest-date') {
+        return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+      }
+      if (url === '/signal/top5') return Promise.reject(new Error('摘要失败'));
+      return Promise.resolve(pagedResponse([BUY_ROW], 1, 1, 1));
+    });
+
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-top5-empty')).toHaveTextContent('该交易日暂无信号');
+    // 主列表仍然正常渲染
+    expect(screen.getByRole('table', { name: '策略信号列表' })).toBeInTheDocument();
+  });
+});
+
+/** F1 · 信号分级（PRD_v3 §4.2：默认只显强 / 过期置灰不删 / 标注生成于 X 天前） */
+describe('F1 · 信号分级', () => {
+  it('默认只显强：进页请求带 grade=strong；切「全部」后不再带', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    const user = userEvent.setup();
+    renderWithRouter(<Signals />);
+
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
+    expect(screen.getByTestId('signals-grade-tab-strong')).toHaveAttribute('aria-pressed', 'true');
+    expect(signalCalls()[0]?.[1]?.params).toMatchObject({ grade: 'strong' });
+
+    await user.click(screen.getByTestId('signals-grade-tab-all'));
+
+    await waitFor(() => expect(signalCalls().length).toBeGreaterThanOrEqual(2));
+    const params = lastParams();
+    expect(params).not.toHaveProperty('grade');
+    expect(screen.getByTestId('signals-grade-tab-all')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('分级 tag 按 grade 着色（强 / 中 / 弱 三档可辨）', async () => {
+    installPagedMock([
+      {
+        rows: [
+          { ...BUY_ROW, id: 1, grade: 'strong', expires_at: '2999-01-01' },
+          { ...BUY_ROW, id: 2, grade: 'medium', expires_at: '2999-01-01' },
+          { ...BUY_ROW, id: 3, grade: 'weak', expires_at: '2999-01-01' },
+        ],
+        totalPages: 1,
+        total: 3,
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    const tags = await screen.findAllByTestId('signal-grade-tag');
+    expect(tags.map((t) => t.textContent)).toEqual(['强', '中', '弱']);
+    expect(tags[0]).toHaveAttribute('data-grade', 'strong');
+    expect(tags[1]).toHaveAttribute('data-grade', 'medium');
+    expect(tags[2]).toHaveAttribute('data-grade', 'weak');
+  });
+
+  it('过期信号置灰不删，并标注「生成于 X 天前」', async () => {
+    const expired = { ...BUY_ROW, trade_date: '2026-01-02', expires_at: '2026-01-05' };
+    installPagedMock([{ rows: [expired], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    const row = await screen.findByTestId('signals-row-expired');
+    expect(row).toHaveStyle({ opacity: '0.6' });
+    // 行仍在表内（不删），并给出「生成于 N 天前」
+    expect(within(row).getByTestId('signals-expired-age')).toHaveTextContent(/生成于 \d+ 天前/);
+  });
+});
+
+/** F6 · 冷却只做展示层合并去重（不影响生成与交易链路） */
+describe('F6 · 冷却展示合并', () => {
+  it('列表请求带 dedupe=1（只影响展示，不改生成）', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
+    expect(signalCalls()[0]?.[1]?.params).toMatchObject({ dedupe: 1 });
+  });
+
+  it('合并行标注「连续第 N 日选中」，并显示默认 3 根 K 线旁注', async () => {
+    installPagedMock([{ rows: [{ ...BUY_ROW, consecutive_days: 3 }], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-consecutive-count')).toHaveTextContent('连续第 3 日选中');
+    expect(screen.getByTestId('signals-cooldown-note')).toHaveTextContent('冷却 3 根 K 线');
+    // 旁注必须写明「仅展示层」，避免被误解为抑制信号
+    expect(screen.getByTestId('signals-cooldown-note')).toHaveTextContent('不影响信号生成与交易链路');
+  });
+
+  it('未合并行（consecutive_days=1 或缺失）不显示连续标注', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByTestId('signal-label-tag');
+    expect(screen.queryByTestId('signals-consecutive-count')).not.toBeInTheDocument();
+  });
+
+  it('后端下发的 cooldown_bars 覆盖旁注窗口（可配置）', async () => {
+    installPagedMock([
+      {
+        rows: [BUY_ROW],
+        totalPages: 1,
+        total: 1,
+        meta: { ...DEFAULT_META, cooldown_bars: 5 },
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-cooldown-note')).toHaveTextContent('冷却 5 根 K 线');
   });
 });

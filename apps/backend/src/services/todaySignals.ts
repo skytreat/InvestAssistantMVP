@@ -63,6 +63,12 @@ export interface TodaySignalStats {
  * ⚠️ 不按 `is_final` 过滤 —— 与既有 `GET /api/signal` 端点口径保持一致
  *    （该端点也不过滤，且当前落库方恒写 `is_final = 1`）。
  *
+ * 🔴 **风险类信号不参与「最新一条」的选取**（`sub_category <> 'risk'`）：
+ *    持仓卡只有一个徽标位，语义是「该标的最近的**交易**信号」；
+ *    风险 HOLD（占比超限 / 浮亏止损 / 集中度）若抢到这个位置，会把真实的买入/卖出信号挤掉。
+ *    ⇒ 这里在**窗口函数内层**就过滤，`rn = 1` 取到的是「最新一条非风险信号」。
+ *    风险提示仍在信号页（`GET /api/signal` 不带 `exclude_risk`）与持仓风险区展示。
+ *
  * @param userId 用户 id（信号按用户隔离）
  * @param assetCodes 标的代码列表（内部去重）
  * @returns Map<asset_code, SignalRow>；**没有信号的标的不出现在结果里**（调用方取不到即为 null）
@@ -86,6 +92,8 @@ export async function getLatestSignalsByAssets(
                 ROW_NUMBER() OVER (PARTITION BY asset_code ORDER BY trade_date DESC, id DESC) AS rn
          FROM user_strategy_signal
          WHERE user_id = ? AND is_deleted = 0 AND asset_code IN (${placeholders})
+           -- 风险提示不抢持仓卡徽标（NULL = 历史行无子分类口径，视为非风险）
+           AND (sub_category IS NULL OR sub_category <> 'risk')
        ) WHERE rn = 1`,
     )
     .all(userId, ...unique) as Array<{

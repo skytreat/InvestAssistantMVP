@@ -27,7 +27,11 @@
  */
 
 import type Database from 'better-sqlite3';
-import { Portfolio, type CorporateAction, type PortfolioRestorePosition } from '../backtest/account/portfolio.js';
+import {
+  Portfolio,
+  type CorporateAction,
+  type PortfolioRestorePosition,
+} from '../backtest/account/portfolio.js';
 import { loadCorporateActions } from '../backtest/corporateActions.js';
 import { loadTradingCalendar, type TradingCalendar } from '../backtest/calendar.js';
 import {
@@ -50,11 +54,7 @@ import { buildPaperMarketData, type BuildPaperMarketDataInput, type PaperMarketD
 import { isDuckDbBusy, isSqliteBusy, withBusyRetry } from './retry.js';
 import { resolvePaperStrategy } from './strategies.js';
 import { todayLocalDate } from './accountService.js';
-import {
-  runPaperDecision,
-  type PaperDecisionDeps,
-  type PaperDecisionOutcome,
-} from './decision.js';
+import { runPaperDecision, type PaperDecisionDeps, type PaperDecisionOutcome } from './decision.js';
 
 /** 与回测默认一致：日历判为交易日但缺 bar / 零成交额 → 停牌 */
 const DEFAULT_SUSPENSION: SuspensionOptions = { missingBar: true, zeroVolume: true };
@@ -135,19 +135,14 @@ export type PaperSettleOutcome =
 
 export interface PaperSettleDeps extends PaperDecisionDeps {
   /** 除权事件装载（单测可注入空实现） */
-  loadActions?: (
-    symbols: readonly string[],
-    start: string,
-    end: string,
-  ) => Promise<CorporateAction[]>;
+  loadActions?: (symbols: readonly string[], start: string, end: string) => Promise<CorporateAction[]>;
   /** 交易日历装载（单测注入内存日历，避免依赖真实行情库） */
   loadCalendar?: () => Promise<TradingCalendar>;
 }
 
 function loadAccount(db: Database.Database, accountId: number): AccountRow | undefined {
   return db.prepare('SELECT * FROM paper_account WHERE id = ? AND is_deleted = 0').get(accountId) as
-    | AccountRow
-    | undefined;
+    AccountRow | undefined;
 }
 
 function loadPendingRows(db: Database.Database, accountId: number, tradeDate: string): OrderRow[] {
@@ -361,9 +356,8 @@ function writeSettleDay(args: {
     // 幂等二次确认（事务内）：以 `last_settled_date` 作日推进水位。
     // ⚠️ 不能用「paper_equity 存在」作判据 —— 切阶段会在 `ledger_start_date` 写**种子净值点**
     //    （§3.3），首日结算必须覆盖它；也不能在事务外判水位，并发第二个写入者会重复除权。
-    const water = db
-      .prepare('SELECT last_settled_date FROM paper_account WHERE id = ?')
-      .get(account.id) as { last_settled_date: string | null } | undefined;
+    const water = db.prepare('SELECT last_settled_date FROM paper_account WHERE id = ?').get(account.id) as
+      { last_settled_date: string | null } | undefined;
     if (water?.last_settled_date && water.last_settled_date >= tradeDate) return;
 
     for (const row of rows) {
@@ -373,8 +367,7 @@ function writeSettleDay(args: {
       const fillCandidates = result.fills
         .map((fill, idx) => ({ fill, idx }))
         .filter(({ fill, idx }) => !usedFillIdx.has(idx) && fill.symbol === row.asset_code);
-      const matchedFill =
-        fillCandidates.find(({ fill }) => fill.side === expectedSide) ?? fillCandidates[0];
+      const matchedFill = fillCandidates.find(({ fill }) => fill.side === expectedSide) ?? fillCandidates[0];
       if (matchedFill) {
         usedFillIdx.add(matchedFill.idx);
         const fill = matchedFill.fill;
@@ -531,7 +524,7 @@ export async function settleAccountPending(
 
   // 从水位之后的下一个交易日开始：无挂单日也要落估值点（与回测逐日一致，A1）
   const fromDate = account.last_settled_date
-    ? calendar.next(account.last_settled_date) ?? null
+    ? (calendar.next(account.last_settled_date) ?? null)
     : account.ledger_start_date;
   const dueDates = fromDate ? calendar.slice(fromDate, calendarDate) : [];
 
@@ -632,8 +625,7 @@ async function settleOneDay(
     throw new PaperError('FEE_CONFIG_NOT_FOUND', 409, '纸面账户缺少费用快照，无法结算');
   }
   const rules = feeSnapshotToTradeRules(JSON.parse(account.fee_snapshot_json) as FeeSnapshot);
-  const priceMode =
-    resolvePaperStrategy(account.strategy_id, account.strategy_version).priceMode ?? 'open';
+  const priceMode = resolvePaperStrategy(account.strategy_id, account.strategy_version).priceMode ?? 'open';
 
   const restorePositions: PortfolioRestorePosition[] = positions.map((pos) => ({
     symbol: pos.asset_code,
@@ -643,11 +635,7 @@ async function settleOneDay(
   }));
   const portfolio = new Portfolio(account.cash);
   if (restorePositions.length > 0) {
-    portfolio.restore(
-      restorePositions,
-      account.cash,
-      data.calendar.prev(tradeDate) ?? tradeDate,
-    );
+    portfolio.restore(restorePositions, account.cash, data.calendar.prev(tradeDate) ?? tradeDate);
   }
 
   const result = runSettleDay({

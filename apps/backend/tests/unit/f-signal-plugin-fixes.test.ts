@@ -156,13 +156,17 @@ describe('F 域 P1-2 — SKIP 分类（NO_DATA vs NO_SIGNAL）', () => {
     expect(res.signals).toHaveLength(1);
   });
 
-  it('批量统计 noData 与 skip 可分离（全部无行情 ⇒ skip == noData）', async () => {
+  it('批量统计 noData 与 skip 可分离（全部无行情 ⇒ 非组合级插件均计入 noData）', async () => {
     installEmptyDuckDBMock();
     seedUser(SIGNAL_USER_ID, 'f_signal_admin');
     const res = await executeAllPlugins({ symbols: ['sh600000', 'sh600001'] });
+    // 组合级插件（requiresPositions，如风险类）零行情 IO，SKIP 归 NO_SIGNAL 而非 NO_DATA
+    const positionalCount = getAllPlugins().filter(
+      (p) => p.category === 'monitor' && p.requiresPositions,
+    ).length;
     expect(res.stats.skip).toBeGreaterThan(0);
-    expect(res.stats.noData).toBe(res.stats.skip);
-    expect(res.stats.noData).toBe(res.stats.total);
+    expect(res.stats.skip).toBe(res.stats.total);
+    expect(res.stats.noData).toBe(res.stats.total - positionalCount);
   });
 });
 
@@ -172,11 +176,15 @@ describe('F 域 P1-3 — user_plugin_config 在 executeAllPlugins 内生效', ()
     seedUser(SIGNAL_USER_ID, 'f_signal_admin');
     seedPluginConfig('macd_cross', 0, { fast: 12 });
 
-    const monitorCount = getAllPlugins().filter((p) => p.category === 'monitor').length;
+    const monitors = getAllPlugins().filter((p) => p.category === 'monitor');
+    // 组合级插件（requiresPositions）只执行 1 次，逐标的插件按「禁用 1 个」后的数量 × 1 个标的
+    const positional = monitors.filter((p) => p.requiresPositions).length;
+    const perSymbolCount = monitors.length - positional;
     const res = await executeAllPlugins({ symbols: ['sh600000'] });
 
     expect(res.results.map((r) => r.pluginId)).not.toContain('macd_cross');
-    expect(res.stats.total).toBe((monitorCount - 1) * 1);
+    // 逐标的插件：禁用 1 个后剩 (perSymbolCount - 1) 个 × 1 标的；组合级插件恒 1 次
+    expect(res.stats.total).toBe(perSymbolCount - 1 + positional);
   });
 
   it('params_json 合并进执行参数，运行时 symbol 覆盖配置里的 symbol', async () => {
@@ -206,13 +214,14 @@ describe('F 域 P1-3 — user_plugin_config 在 executeAllPlugins 内生效', ()
     expect(rsiResult?.error ?? '').toContain('999');
   });
 
-  it('无配置记录 → 默认全部启用（total = monitor 插件数 × 标的数）', async () => {
+  it('无配置记录 → 默认全部启用（total = 逐标的插件 × 标的数 + 组合级插件 × 1）', async () => {
     installEmptyDuckDBMock();
     seedUser(SIGNAL_USER_ID, 'f_signal_admin');
 
-    const monitorCount = getAllPlugins().filter((p) => p.category === 'monitor').length;
+    const monitors = getAllPlugins().filter((p) => p.category === 'monitor');
+    const positional = monitors.filter((p) => p.requiresPositions).length;
     const res = await executeAllPlugins({ symbols: ['sh600000', 'sh600001'] });
-    expect(res.stats.total).toBe(monitorCount * 2);
+    expect(res.stats.total).toBe((monitors.length - positional) * 2 + positional);
   });
 });
 

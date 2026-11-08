@@ -98,8 +98,14 @@ interface RouteCase {
    * ⇒ 有真库时跳过；`smoke-m4.test.ts` 已覆盖它的 envelope 形状（`body.code === 0`）。
    */
   heavy?: boolean;
-  /** 是否**不走** envelope（只有 `/api/health`）*/
+  /** 是否**不走** envelope（`/api/health`）*/
   raw?: boolean;
+  /**
+   * 是否返回**非 JSON 文本**（CSV 导出，I8）
+   *
+   * CSV 无法 `res.json()`，故只断言可达性 + Content-Type，不做 envelope 形状校验。
+   */
+  csv?: boolean;
   /** 单条用例超时（毫秒）—— 走行情的端点在真库上可能十几秒 */
   timeout?: number;
 }
@@ -183,6 +189,8 @@ const ROUTE_CASES: RouteCase[] = [
   // ── 信号 / 除权 ──
   { method: 'GET', url: '/api/signal' },
   { method: 'GET', url: '/api/signal/stats' },
+  // F3：今日 Top 5 单日摘要
+  { method: 'GET', url: '/api/signal/top5' },
   { method: 'PATCH', url: '/api/signal/:id/adopt', payload: {} },
   { method: 'PATCH', url: '/api/signal/:id/ignore', payload: {} },
   { method: 'PATCH', url: '/api/signal/:id/link-trade', payload: {} },
@@ -220,6 +228,22 @@ const ROUTE_CASES: RouteCase[] = [
     payload: { brokerCode: 't89b', items: [{ sourceId: 1 }] },
   },
   { method: 'POST', url: '/api/broker-reconcile/diff/:id/match', payload: {} },
+  // I8：差异明细 CSV 导出（非 JSON ⇒ 只做可达性 + Content-Type 断言）
+  { method: 'GET', url: '/api/broker-reconcile/diff/export', query: { brokerCode: 't89b' }, csv: true },
+
+  // ── 纸面账户（PA-05~07 / S1）──
+  // 全是「空 body → 4xx 错误 envelope」路径：不建户、不写 paper_* 数据，
+  // 只为确认 envelope 形状（`error` 为字符串、`code` 为字符串、`data=null`）。
+  { method: 'GET', url: '/api/paper/strategies' },
+  { method: 'GET', url: '/api/paper/fee-configs' },
+  { method: 'POST', url: '/api/paper/fee-configs', payload: {} },
+  { method: 'PATCH', url: '/api/paper/fee-configs/:id', payload: {} },
+  { method: 'DELETE', url: '/api/paper/fee-configs/:id' },
+  { method: 'GET', url: '/api/paper/accounts' },
+  { method: 'POST', url: '/api/paper/accounts', payload: {} },
+  { method: 'GET', url: '/api/paper/accounts/:id' },
+  { method: 'POST', url: '/api/paper/accounts/:id/phase', payload: {} },
+  { method: 'POST', url: '/api/paper/accounts/:id/close', payload: {} },
 
   // ── 纸面账户（PA-05~07 / S1）──
   // 全是「空 body → 4xx 错误 envelope」路径：不建户、不写 paper_* 数据，
@@ -332,6 +356,13 @@ describe('T89b · envelope 契约（**响应体不得有 `success` 键**）', ()
           payload: c.payload as never,
           headers: { authorization: `Bearer ${adminToken}` },
         });
+
+        // CSV 导出（I8）：非 JSON，`res.json()` 会抛 ⇒ 只断言可达性与内容类型
+        if (c.csv) {
+          expect(res.statusCode, `${c.method} ${c.url} 应返回 2xx`).toBeLessThan(400);
+          expect(String(res.headers['content-type'])).toContain('text/csv');
+          return;
+        }
 
         const body = res.json() as Record<string, unknown>;
 

@@ -136,6 +136,14 @@ beforeEach(() => {
           { pagination: { total: DIFF_ROWS.length } },
         ),
       );
+    // I8：CSV 导出（responseType=blob）→ 直接给 Blob + Content-Disposition
+    if (url === '/broker-reconcile/diff/export')
+      return Promise.resolve({
+        data: new Blob(['\uFEFFid,事件'], { type: 'text/csv' }),
+        headers: {
+          'content-disposition': 'attachment; filename="broker-reconcile-gt-unmatched-20261107.csv"',
+        },
+      });
     return Promise.reject(new Error(`unexpected get ${url}`));
   });
   postMock.mockImplementation((url: string) => {
@@ -1513,5 +1521,52 @@ describe('一键全部补录（非成交族）', () => {
     renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
     await screen.findByText(/差额归因/);
     expect(screen.queryByTestId('one-click-backfill')).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * I8 · 差异明细 CSV 导出（PRD_v3 §3.2.1 / §4.3）
+ * ------------------------------------------------------------------ */
+
+describe('I8 差异明细导出', () => {
+  it('导出按钮按「当前券商 + 当前分类」请求 CSV，并触发浏览器下载', async () => {
+    const user = userEvent.setup();
+    const createObjectURL = vi.fn(() => 'blob:i8');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true });
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, configurable: true });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+    await screen.findByText('差异明细（2）');
+    await user.click(screen.getByTestId('diff-export-csv'));
+
+    await waitFor(() =>
+      expect(getMock).toHaveBeenCalledWith('/broker-reconcile/diff/export', {
+        params: { brokerCode: 'gt', category: 'unmatched' },
+        responseType: 'blob',
+      }),
+    );
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(clickSpy).toHaveBeenCalled();
+    expect(await screen.findByText(/已导出「缺失未匹配（成交族）」明细（2 条）/)).toBeInTheDocument();
+
+    clickSpy.mockRestore();
+    delete (URL as unknown as Record<string, unknown>).createObjectURL;
+    delete (URL as unknown as Record<string, unknown>).revokeObjectURL;
+  });
+
+  it('当前分类无差异时导出按钮禁用（不产生空文件）', async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: [] }));
+      if (url === '/broker-reconcile/latest') return Promise.resolve(mockResponse(REPORT));
+      if (url === '/broker-reconcile/diff')
+        return Promise.resolve(mockResponse({ rows: [], total: 0 }, { pagination: { total: 0 } }));
+      return Promise.reject(new Error(`unexpected get ${url}`));
+    });
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await screen.findByText('差异明细（0）');
+    expect(screen.getByTestId('diff-export-csv')).toBeDisabled();
   });
 });
