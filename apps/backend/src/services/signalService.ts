@@ -1,5 +1,6 @@
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from './logger.js';
+import { calcClosedTradePnLs } from './positionCalculator.js';
 import { isTradingDay, resolveLatestQuoteDate } from './marketData.js';
 import type { PluginSignal } from './pluginEngine.js';
 
@@ -547,4 +548,214 @@ export function collapseSignalsByCooldown<T extends CooldownRowFields>(
       String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
       (a.id ?? 0) - (b.id ?? 0),
   );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * F2 —— 信号 → 交易关联（**只做手动交易那条路**）
+ * ══════════════════════════════════════════════════════════════════════
+ *
+ * 口径（本轮实现钉死）：
+ *   ① 关联方向：`user_strategy_signal.linked_trade_id → user_trade_record.id`
+ *      （字段在**信号表**上指向成交记录，不是交易表反指信号）
+ *   ② 纸面账户的自关联（纸面账本内的 `signal_id`）**不复用、不改动**
+ *   ③ 关联**可选**：交易录入不传 `signal_id` 时照常落库
+ *   ④ 一条成交可被**多条**信号关联（成交是事实，信号是判断）——
+ *      采纳率的分母是「信号」，不会因多对一而重复计数
+ *   ⑤ 同一条信号只能指向**一条**成交；改指向需显式 `overwrite`
+ *   ⑥ 成交被软删 → 关联视为**断链**（`link_broken`），不静默当作已成交
+ */
+
+/** 信号的处理状态（展示派生，不落库） */
+export type SignalTradeStatus = 'traded' | 'ignored' | 'adopted' | 'pending';
+
+/** 状态 → 中文文案（前端与后端共用同一套字面量） */
+export const SIGNAL_TRADE_STATUS_LABEL: Record<SignalTradeStatus, string> = {
+  traded: '已成交',
+  ignored: '已忽略',
+  adopted: '已采纳',
+  pending: '未处理',
+};
+
+/** 派生状态所需的最小字段集（列表行 / 详情行都满足） */
+export interface SignalLinkFields {
+  adopted?: number | null;
+  ignored?: number | null;
+  linked_trade_id?: number | null;
+}
+
+/** 列表行补充的关联信息 */
+export interface SignalLinkAnnotation {
+  trade_status: SignalTradeStatus;
+  /** `linked_trade_id` 指向的成交已被软删 / 不存在（关联断链） */
+  link_broken: boolean;
+}
+
+/**
+ * 派生单行状态（优先级：已成交 > 已忽略 > 已采纳 > 未处理）
+ *
+ * ⚠️ 断链时**不算已成交** —— 否则用户会看到「已成交」但点不开任何成交记录。
+ */
+export function deriveSignalTradeStatus(row: SignalLinkFields, linkBroken = false): SignalTradeStatus {
+  const linkId = row.linked_trade_id;
+  if (!linkBroken && typeof linkId === 'number' && linkId > 0) return 'traded';
+  if (row.ignored === 1) return 'ignored';
+  if (row.adopted === 1) return 'adopted';
+  return 'pending';
+}
+
+/**
+ * 批量给信号列表行补 `trade_status` / `link_broken`
+ *
+ * 用**一次 IN 查询**判定关联成交是否存活（不逐行查，避免 N+1）。
+ */
+export function annotateSignalTradeStatus<T extends SignalLinkFields>(
+  rows: T[],
+  userId: number,
+): Array<T & SignalLinkAnnotation> {
+  const ids = Array.from(
+    new Set(rows.map((r) => r.linked_trade_id).filter((v): v is number => typeof v === 'number' && v > 0)),
+  );
+  const live = new Set<number>();
+  if (ids.length > 0) {
+    const db = ConfigStore.getInstance().db;
+    const placeholders = ids.map(() => '?').join(',');
+    const found = db
+      .prepare(
+        `SELECT id FROM user_trade_record
+         WHERE user_id = ? AND is_deleted = 0 AND id IN (${placeholders})`,
+      )
+      .all(userId, ...ids) as Array<{ id: number }>;
+    for (const r of found) live.add(r.id);
+  }
+  return rows.map((row) => {
+    const linkId = row.linked_trade_id;
+    const broken = typeof linkId === 'number' && linkId > 0 && !live.has(linkId);
+    return { ...row, trade_status: deriveSignalTradeStatus(row, broken), link_broken: broken };
+  });
+}
+
+/** 交易类型 → 方向（7 类交易：买入类 / 卖出类 / 权益类） */
+export function tradeTypeDirection(tradeType: string): 'buy' | 'sell' | 'other' {
+  if (tradeType === 'buy' || tradeType === 'add') return 'buy';
+  if (tradeType === 'reduce' || tradeType === 'clear') return 'sell';
+  return 'other';
+}
+
+/** 关联成交的展示字段（金额 / 方向 / 成交日 / 盈亏） */
+export interface LinkedTradeSummary {
+  id: number;
+  asset_code: string;
+  trade_type: string;
+  direction: 'buy' | 'sell' | 'other';
+  trade_date: string;
+  trade_time: string | null;
+  quantity: number;
+  price: number;
+  fee: number;
+  /** 成交金额 = quantity * price（不含费用） */
+  amount: number;
+  /**
+   * 已实现盈亏：仅**平仓类**（reduce / clear）可得（复用 `calcClosedTradePnLs` 口径）；
+   * 买入类尚未卖出 → null（不臆造未实现盈亏）
+   */
+  realized_pnl: number | null;
+}
+
+/** `GET /api/signal/:id/linked-trade` 的响应体 */
+export interface SignalTradeLinkView {
+  signal_id: number;
+  asset_code: string;
+  trade_date: string;
+  direction: string;
+  linked_trade_id: number | null;
+  trade_status: SignalTradeStatus;
+  link_broken: boolean;
+  trade: LinkedTradeSummary | null;
+}
+
+/** 按信号 id 取关联成交详情（信号不存在返回 null） */
+export function getSignalTradeLink(userId: number, signalId: number): SignalTradeLinkView | null {
+  const db = ConfigStore.getInstance().db;
+  const signal = db
+    .prepare(
+      `SELECT id, asset_code, trade_date, direction, adopted, ignored, linked_trade_id
+       FROM user_strategy_signal
+       WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+    )
+    .get(signalId, userId) as
+    | (SignalLinkFields & {
+        id: number;
+        asset_code: string;
+        trade_date: string;
+        direction: string;
+      })
+    | undefined;
+  if (!signal) return null;
+
+  const linkId = signal.linked_trade_id;
+  if (typeof linkId !== 'number' || linkId <= 0) {
+    return {
+      signal_id: signal.id,
+      asset_code: signal.asset_code,
+      trade_date: signal.trade_date,
+      direction: signal.direction,
+      linked_trade_id: null,
+      trade_status: deriveSignalTradeStatus(signal),
+      link_broken: false,
+      trade: null,
+    };
+  }
+
+  const trade = db
+    .prepare(
+      `SELECT id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee
+       FROM user_trade_record
+       WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+    )
+    .get(linkId, userId) as
+    | {
+        id: number;
+        asset_code: string;
+        trade_type: string;
+        trade_date: string;
+        trade_time: string | null;
+        quantity: number;
+        price: number;
+        fee: number;
+      }
+    | undefined;
+
+  if (!trade) {
+    return {
+      signal_id: signal.id,
+      asset_code: signal.asset_code,
+      trade_date: signal.trade_date,
+      direction: signal.direction,
+      linked_trade_id: linkId,
+      trade_status: deriveSignalTradeStatus(signal, true),
+      link_broken: true,
+      trade: null,
+    };
+  }
+
+  const closed = trade.trade_type === 'reduce' || trade.trade_type === 'clear';
+  const realized = closed
+    ? (calcClosedTradePnLs(userId).find((c) => c.trade_id === trade.id)?.realized_pnl ?? null)
+    : null;
+
+  return {
+    signal_id: signal.id,
+    asset_code: signal.asset_code,
+    trade_date: signal.trade_date,
+    direction: signal.direction,
+    linked_trade_id: linkId,
+    trade_status: 'traded',
+    link_broken: false,
+    trade: {
+      ...trade,
+      direction: tradeTypeDirection(trade.trade_type),
+      amount: trade.quantity * trade.price,
+      realized_pnl: realized,
+    },
+  };
 }

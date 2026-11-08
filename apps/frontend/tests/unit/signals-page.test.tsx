@@ -57,6 +57,10 @@ interface SignalFixture {
   expires_at?: string | null;
   /** F6 用：同一策略+标的+方向在冷却窗口内被合并的计数 */
   consecutive_days?: number;
+  /** F2：后端派生的处理状态 + 关联成交 id */
+  trade_status?: string;
+  linked_trade_id?: number | null;
+  link_broken?: boolean;
   trade_date: string;
 }
 
@@ -634,5 +638,95 @@ describe('F6 · 冷却展示合并', () => {
     renderWithRouter(<Signals />);
 
     expect(await screen.findByTestId('signals-cooldown-note')).toHaveTextContent('冷却 5 根 K 线');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * F2 · 信号处理状态 + 关联成交详情
+ *
+ * 状态由后端派生（`trade_status`），前端只渲染；点击「查看成交」走
+ * `GET /api/signal/:id/linked-trade`，不跳页。
+ * ------------------------------------------------------------------ */
+
+describe('F2 · 信号处理状态与关联成交', () => {
+  const TRADED_ROW: SignalFixture = {
+    ...BUY_ROW,
+    id: 1,
+    trade_date: '2026-11-06',
+    trade_status: 'traded',
+    linked_trade_id: 12,
+  };
+  const PENDING_ROW: SignalFixture = {
+    ...BUY_ROW,
+    id: 2,
+    trade_date: '2026-11-05',
+    trade_status: 'pending',
+    linked_trade_id: null,
+  };
+
+  function installMockWithDetail(): void {
+    getMock.mockImplementation((url: string, cfg?: ApiGetConfig) => {
+      if (url === '/market/latest-date') return Promise.resolve(mockResponse({ date: '2026-11-06' }));
+      if (url === '/signal/top5') return Promise.resolve(mockResponse([], DEFAULT_META));
+      if (url.startsWith('/signal/') && url.endsWith('/linked-trade')) {
+        return Promise.resolve(
+          mockResponse({
+            signal_id: 1,
+            asset_code: 'sh600000',
+            trade_date: '2026-11-06',
+            direction: 'buy',
+            linked_trade_id: 12,
+            trade_status: 'traded',
+            link_broken: false,
+            trade: {
+              id: 12,
+              asset_code: 'sh600000',
+              trade_type: 'buy',
+              direction: 'buy',
+              trade_date: '2026-11-06',
+              trade_time: '10:30:00',
+              quantity: 100,
+              price: 10,
+              fee: 5,
+              amount: 1000,
+              realized_pnl: null,
+            },
+          }),
+        );
+      }
+      const requested = Number(cfg?.params?.page ?? 1);
+      return Promise.resolve(pagedResponse([TRADED_ROW, PENDING_ROW], requested, 1, 2));
+    });
+  }
+
+  it('列表按后端 trade_status 渲染「已成交 / 未处理」，只有已成交有「查看成交」', async () => {
+    installMockWithDetail();
+    renderWithRouter(<Signals />);
+
+    await screen.findAllByText('sh600000');
+    const tags = screen.getAllByTestId('signal-trade-status');
+    expect(tags.map((t) => t.textContent)).toEqual(expect.arrayContaining(['已成交', '未处理']));
+    // 只有已成交那一行有「查看成交」；未成交那一行有「录入交易」入口
+    expect(screen.getAllByTestId('signal-trade-view')).toHaveLength(1);
+    expect(screen.getAllByTestId('signal-trade-entry')).toHaveLength(1);
+  });
+
+  it('点「查看成交」→ 调 /signal/:id/linked-trade 并展开详情（金额 / 方向 / 日期 / 盈亏）', async () => {
+    installMockWithDetail();
+    const user = userEvent.setup();
+    renderWithRouter(<Signals />);
+
+    await screen.findAllByText('sh600000');
+    await user.click(screen.getByTestId('signal-trade-view'));
+
+    await waitFor(() =>
+      expect(getMock.mock.calls.some(([url]) => url === '/signal/1/linked-trade')).toBe(true),
+    );
+    const panel = await screen.findByTestId('signal-trade-detail');
+    expect(within(panel).getByText(/成交 #12/)).toBeInTheDocument();
+    expect(within(panel).getByText(/· 买入（buy）/)).toBeInTheDocument();
+    expect(within(panel).getByText(/成交日 2026-11-06 10:30:00/)).toBeInTheDocument();
+    expect(within(panel).getByText(/成交金额 ¥1000\.00/)).toBeInTheDocument();
+    expect(screen.getByTestId('signal-trade-pnl')).toHaveTextContent('不可得');
   });
 });

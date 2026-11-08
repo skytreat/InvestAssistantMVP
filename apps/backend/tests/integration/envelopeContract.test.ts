@@ -194,6 +194,8 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'PATCH', url: '/api/signal/:id/adopt', payload: {} },
   { method: 'PATCH', url: '/api/signal/:id/ignore', payload: {} },
   { method: 'PATCH', url: '/api/signal/:id/link-trade', payload: {} },
+  // F2：按信号查关联成交
+  { method: 'GET', url: '/api/signal/:id/linked-trade' },
   { method: 'GET', url: '/api/strategy/signals/:id/outcome' },
   { method: 'GET', url: '/api/ex-dividend/imports' },
 

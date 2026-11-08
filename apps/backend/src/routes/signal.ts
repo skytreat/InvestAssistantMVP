@@ -3,12 +3,14 @@ import { ConfigStore } from '../config/configStore.js';
 import type { JwtPayload } from '../services/auth.js';
 import { getTodaySignalStats } from '../services/todaySignals.js';
 import {
+  annotateSignalTradeStatus,
   collapseSignalsByCooldown,
+  getSignalTradeLink,
   getTradeDate,
   resolveDefaultSignalTradeDate,
   resolveSignalCooldownBars,
 } from '../services/signalService.js';
-import type { CooldownRowFields } from '../services/signalService.js';
+import type { CooldownRowFields, SignalLinkFields } from '../services/signalService.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
@@ -165,7 +167,7 @@ export async function registerSignalRoutes(app: FastifyInstance) {
        *   `Dashboard.tsx` 的「最新信号」卡片此前因本口径**显示的是最早的 5 条**（与卡片标题矛盾），
        *   改后与标题一致。
        */
-      let rows: unknown[];
+      let rows: Array<SignalLinkFields & Record<string, unknown>>;
       let total = count;
       if (dedupe) {
         const all = db
@@ -190,11 +192,16 @@ export async function registerSignalRoutes(app: FastifyInstance) {
              )
              ORDER BY trade_date ASC, created_at ASC, id ASC`,
           )
-          .all(...params, pageSize, (page - 1) * pageSize);
+          .all(...params, pageSize, (page - 1) * pageSize) as Array<
+          SignalLinkFields & Record<string, unknown>
+        >;
       }
 
+      // F2：列表行补「已成交 / 已忽略 / 已采纳 / 未处理」派生状态（批量判定，不逐行查）
+      const annotated = annotateSignalTradeStatus(rows, user.sub);
+
       reply.send(
-        ok(rows, {
+        ok(annotated, {
           pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
           // F 域 P0-1：把「实际生效的交易日 + 来源 + 行情最新日」下发，前端不再自己猜今天
           trade_date: effectiveTradeDate,
@@ -345,11 +352,23 @@ export async function registerSignalRoutes(app: FastifyInstance) {
     return reply.send(ok({ id, ignored: 1 }));
   });
   // T141（V3.7）信号↔交易手动关联（INV-S3-15/16、INV-S6-4）
+  /**
+   * F2 幂等与冲突约定（本路由钉死，PR 说明同步）：
+   *
+   *   ① 重复关联**同一条**成交 → 200 + `unchanged: true`，不重复写、不报错
+   *   ② 信号已指向**另一条**成交 → 409 `SIGNAL_ALREADY_LINKED`；
+   *      确需改指向时显式传 `overwrite: true`（前端二次确认后才发）
+   *   ③ **一条成交可被多条信号关联**（成交是事实，信号是判断）；
+   *      响应附 `shared_signals`（除本条信号外，还有几条信号指向该成交）
+   *   ④ `tradeRecordId: null` → 解绑（幂等：已解绑再解绑仍 200）
+   *
+   * 关联方向：`user_strategy_signal.linked_trade_id → user_trade_record.id`
+   */
   app.patch('/api/signal/:id/link-trade', async (request, reply) => {
     const user = (request as AuthedRequest).user;
     const id = Number((request.params as { id: string }).id);
     if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
-    const body = (request.body ?? {}) as { tradeRecordId?: number | null };
+    const body = (request.body ?? {}) as { tradeRecordId?: number | null; overwrite?: boolean };
     const tradeId = body.tradeRecordId == null ? null : Number(body.tradeRecordId);
     if (tradeId != null && (!Number.isFinite(tradeId) || tradeId <= 0)) {
       return reply.code(400).send(fail(400, 'INVALID_BODY', 'tradeRecordId 非法'));
@@ -357,26 +376,81 @@ export async function registerSignalRoutes(app: FastifyInstance) {
     const db = ConfigStore.getInstance().db;
     const sig = db
       .prepare(
-        'SELECT id, asset_code FROM user_strategy_signal WHERE id = ? AND user_id = ? AND is_deleted = 0',
+        `SELECT id, asset_code, linked_trade_id FROM user_strategy_signal
+         WHERE id = ? AND user_id = ? AND is_deleted = 0`,
       )
-      .get(id, user.sub) as { id: number; asset_code: string } | undefined;
+      .get(id, user.sub) as { id: number; asset_code: string; linked_trade_id: number | null } | undefined;
     if (!sig) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
-    if (tradeId != null) {
-      const rec = db
-        .prepare(
-          'SELECT id, asset_code FROM user_trade_record WHERE id = ? AND user_id = ? AND is_deleted = 0',
-        )
-        .get(tradeId, user.sub) as { id: number; asset_code: string } | undefined;
-      if (!rec) return reply.code(404).send(fail(404, 'NOT_FOUND', '交易记录不存在'));
-      if (rec.asset_code !== sig.asset_code) {
-        return reply.code(400).send(fail(400, 'ASSET_MISMATCH', '信号与交易标的不一致'));
+
+    // 解绑路径
+    if (tradeId == null) {
+      if (sig.linked_trade_id == null) {
+        return reply.send(ok({ id, linked_trade_id: null, unchanged: true, shared_signals: 0 }));
       }
+      db.prepare('UPDATE user_strategy_signal SET linked_trade_id = NULL WHERE id = ? AND user_id = ?').run(
+        id,
+        user.sub,
+      );
+      return reply.send(ok({ id, linked_trade_id: null, unchanged: false, shared_signals: 0 }));
     }
+
+    const rec = db
+      .prepare('SELECT id, asset_code FROM user_trade_record WHERE id = ? AND user_id = ? AND is_deleted = 0')
+      .get(tradeId, user.sub) as { id: number; asset_code: string } | undefined;
+    if (!rec) return reply.code(404).send(fail(404, 'NOT_FOUND', '交易记录不存在'));
+    if (rec.asset_code !== sig.asset_code) {
+      return reply.code(400).send(fail(400, 'ASSET_MISMATCH', '信号与交易标的不一致'));
+    }
+
+    // 该成交已被多少条**其他**信号指向（多对一允许，但要如实告知）
+    const shared = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM user_strategy_signal
+           WHERE user_id = ? AND linked_trade_id = ? AND is_deleted = 0 AND id <> ?`,
+        )
+        .get(user.sub, tradeId, id) as { c: number }
+    ).c;
+
+    // 幂等：已指向同一条成交
+    if (sig.linked_trade_id === tradeId) {
+      return reply.send(ok({ id, linked_trade_id: tradeId, unchanged: true, shared_signals: shared }));
+    }
+    // 冲突：已指向另一条成交，未显式授权改指向
+    if (sig.linked_trade_id != null && !body.overwrite) {
+      return reply
+        .code(409)
+        .send(
+          fail(
+            409,
+            'SIGNAL_ALREADY_LINKED',
+            `该信号已关联成交 #${sig.linked_trade_id}，如需改指向请确认后重试（overwrite: true）`,
+          ),
+        );
+    }
+
     db.prepare('UPDATE user_strategy_signal SET linked_trade_id = ? WHERE id = ? AND user_id = ?').run(
       tradeId,
       id,
       user.sub,
     );
-    return reply.send(ok({ id, linked_trade_id: tradeId }));
+    return reply.send(ok({ id, linked_trade_id: tradeId, unchanged: false, shared_signals: shared }));
+  });
+
+  /**
+   * F2 —— 按信号查其关联成交（读取侧）
+   *
+   * GET /api/signal/:id/linked-trade
+   * 响应：`{ signal_id, asset_code, trade_date, direction, linked_trade_id,
+   *          trade_status, link_broken, trade }`
+   * `trade` 为 null 时：未关联，**或**关联的成交已被软删（此时 `link_broken: true`）。
+   */
+  app.get('/api/signal/:id/linked-trade', async (request, reply) => {
+    const user = (request as AuthedRequest).user;
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
+    const view = getSignalTradeLink(user.sub, id);
+    if (!view) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+    return reply.send(ok(view));
   });
 }
