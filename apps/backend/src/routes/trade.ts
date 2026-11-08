@@ -64,6 +64,9 @@ const NEED_REASON_TYPES = new Set<TradeType>(['buy', 'add', 'reduce', 'clear']);
 /** 系统自动导入类：理由由系统固化写入（Requirements §5.2 分红 / 送股 / 转增） */
 const AUTO_IMPORT_TYPES = new Set<TradeType>(['dividend', 'bonus', 'transfer']);
 
+/** T131：情绪状态固定 5 档（与 DDL 的 CHECK 枚举严格一致，非法值返回 400 而非 500） */
+const EMOTION_STATUSES: ReadonlySet<string> = new Set(['极度兴奋', '兴奋', '平静', '焦虑', '恐慌']);
+
 /**
  * T87：`trade_time` 格式校验（秒级 HH:mm:ss）
  *
@@ -251,6 +254,7 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         trade_reason?: string;
         remark?: string;
         system_followed?: number; // T39: 由信号触发的导入（cron 自动导入）
+        signal_id?: number | null; // F2：可选关联信号（写入信号表的 linked_trade_id）
       };
       const user = (request as any).user as { sub: number; username: string; role: string };
       if (
@@ -322,25 +326,78 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         }
       }
 
-      const info = db
-        .prepare(
-          `INSERT INTO user_trade_record
+      /**
+       * F2 —— 可选关联信号（**只做手动交易这条链路**）
+       *
+       * 关联方向：`user_strategy_signal.linked_trade_id → user_trade_record.id`
+       * （字段在信号表上，写入的是**本次新建成交**的 id）。
+       *
+       * 校验前置、插入与回填同事务：
+       *   - `signal_id` 缺省 / null ⇒ 照常录入，**不因缺关联而拒绝**
+       *   - 信号必须属于当前用户、未软删、标的与本次成交一致
+       *   - 信号已指向**另一条**成交 ⇒ 409 `SIGNAL_ALREADY_LINKED`（先解绑再录入）
+       */
+      const signalId = body.signal_id == null ? null : Number(body.signal_id);
+      if (signalId != null && (!Number.isInteger(signalId) || signalId <= 0)) {
+        return reply.code(400).send(fail(400, 'INVALID_BODY', 'signal_id 非法'));
+      }
+      if (signalId != null) {
+        const sig = db
+          .prepare(
+            `SELECT id, asset_code, linked_trade_id FROM user_strategy_signal
+             WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+          )
+          .get(signalId, user.sub) as
+          { id: number; asset_code: string; linked_trade_id: number | null } | undefined;
+        if (!sig) {
+          return reply.code(404).send(fail(404, 'SIGNAL_NOT_FOUND', `关联的信号不存在：${signalId}`));
+        }
+        if (sig.asset_code !== assetCode) {
+          return reply.code(400).send(fail(400, 'ASSET_MISMATCH', '信号与交易标的不一致，无法关联'));
+        }
+        if (sig.linked_trade_id != null) {
+          return reply
+            .code(409)
+            .send(
+              fail(
+                409,
+                'SIGNAL_ALREADY_LINKED',
+                `该信号已关联成交 #${sig.linked_trade_id}，请先在信号列表解绑后再录入`,
+              ),
+            );
+        }
+      }
+
+      // 插入成交 + 回填信号关联放在同一事务：避免「成交落库但关联丢失」
+      const insertTrade = db.transaction(() => {
+        const inserted = db
+          .prepare(
+            `INSERT INTO user_trade_record
          (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, trade_reason, remark, system_followed)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          user.sub,
-          assetCode,
-          tradeType,
-          body.trade_date,
-          body.trade_time,
-          body.quantity,
-          body.price,
-          body.fee ?? 0,
-          tradeReason,
-          body.remark ?? null,
-          body.system_followed ?? null,
-        );
+          )
+          .run(
+            user.sub,
+            assetCode,
+            tradeType,
+            body.trade_date,
+            body.trade_time,
+            body.quantity,
+            body.price,
+            body.fee ?? 0,
+            tradeReason,
+            body.remark ?? null,
+            body.system_followed ?? null,
+          );
+        if (signalId != null) {
+          db.prepare(
+            `UPDATE user_strategy_signal SET linked_trade_id = ?
+             WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+          ).run(inserted.lastInsertRowid, signalId, user.sub);
+        }
+        return inserted.lastInsertRowid;
+      });
+      const tradeId = insertTrade();
 
       writeSystemLog({
         logType: 'trade',
@@ -353,7 +410,9 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 
       reply.code(201).send(
         ok({
-          trade_id: info.lastInsertRowid,
+          trade_id: tradeId,
+          // F2：本次关联的信号 id（未关联为 null，供前端提示「已回填关联」）
+          linked_signal_id: signalId,
           position: calcPosition(user.sub, assetCode),
           hold_rel: holdRel,
         }),
@@ -531,12 +590,43 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     }
   });
 
-  // T39: PATCH 复盘字段（只允许改 review_note/strategy_match/is_stop_loss/remark）
+  // T39 + T131: PATCH 复盘字段（含情绪状态 / 买卖理由 / 是否跟随系统）
   app.patch('/api/trade/:id', async (request, reply) => {
     const user = (request as any).user;
     const tradeId = Number((request.params as any).id);
     const body = request.body as Record<string, any>;
-    const allowedFields = ['review_summary', 'strategy_match', 'is_stop_loss', 'remark', 'trade_reason'];
+    const allowedFields = [
+      'review_summary',
+      'strategy_match',
+      'is_stop_loss',
+      'remark',
+      'trade_reason',
+      // T131（V3.3）：复盘字段对齐 —— 此前漏在白名单里 ⇒ 传入后被静默丢弃（C7）
+      'emotion_status',
+      'buy_reason',
+      'sell_reason',
+      'system_followed',
+    ];
+    // DDL 是 INTEGER + CHECK 0/1；JSON 布尔是自然输入，先归一，避免撞 CHECK 变 500
+    if (typeof body.system_followed === 'boolean') {
+      body.system_followed = body.system_followed ? 1 : 0;
+    }
+    // 边界校验（仅新纳入的枚举/三态字段）：非法值返回 400，不伪装成功
+    if (
+      body.emotion_status !== undefined &&
+      body.emotion_status !== null &&
+      !EMOTION_STATUSES.has(body.emotion_status)
+    ) {
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'emotion_status 非法'));
+    }
+    if (
+      body.system_followed !== undefined &&
+      body.system_followed !== null &&
+      body.system_followed !== 0 &&
+      body.system_followed !== 1
+    ) {
+      return reply.code(400).send(fail(400, 'PARAM_INVALID', 'system_followed 只能是 0 或 1'));
+    }
     const updates: string[] = [];
     const params: any[] = [];
     for (const key of allowedFields) {
@@ -553,9 +643,15 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 
     const db = ConfigStore.getInstance().db;
     try {
-      db.prepare(
-        `UPDATE user_trade_record SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_deleted = 0`,
-      ).run(...params);
+      const info = db
+        .prepare(
+          `UPDATE user_trade_record SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+        )
+        .run(...params);
+      // 只有确实更新到行才返回成功（不存在 / 非本人 / 已软删 → 404，不伪装 200）
+      if (info.changes === 0) {
+        return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
+      }
       writeSystemLog({
         logType: 'trade',
         level: 'SUCCESS',

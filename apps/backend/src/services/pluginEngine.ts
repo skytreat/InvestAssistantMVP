@@ -1453,6 +1453,176 @@ export const builtinPlugins: Plugin[] = [
     },
   }),
 
+  // ---------- 高位放量滞涨（V3 六分类 volume 类，只输出 SELL） ----------
+  /*
+   * ## 语义与方向
+   *
+   * 「量能放大但价格没跟上」是高位派发的预警，故**只输出 SELL（减仓提示）**。
+   * **不实现**与之对称的「缩量下跌 = 吸筹」——那条属于另一个未验证的假说，未并入本插件。
+   *
+   * ## 三组判据（缺一组不出信号）
+   *
+   * 1. **量能放大**：当根成交量 / 前 volumePeriod 根均量 ≥ volumeRatio（均量窗口不含当根）；
+   * 2. **价格滞胀**：近 stallDays 日累计涨幅（含下跌）≤ maxGain；
+   * 3. **位置条件**：距近 highLookback 日最高价回撤 ≤ maxDrawdownFromHigh，
+   *    且近 riseLookback 日累计涨幅 ≥ minRise（即「先涨上去的高位」）。
+   *
+   * ⚠️ **位置条件不可省**：低位放量不涨可能是吸筹，只有位置条件能把它排除；
+   * 去掉位置条件会把「底部放量吸筹」误报成减仓信号。
+   *
+   * ## 阈值口径
+   *
+   * 所有阈值均为**经验默认值，没有优化依据，不是回测寻优结果**，可按标的 / 策略调整。
+   * `volumeRatio` 默认 1.8 与既有量价插件的放量量级对齐（`volume_price_breakout` 默认 1.5，
+   * 本插件要求「滞涨」而非「突破」，故略高）。
+   *
+   * ## strength 与分级的关系
+   *
+   * 本插件输出的是**方向性 SELL 交易信号**（减仓提示），**写 strength**（= 量能强度，
+   * 口径与既有量价插件一致：`min(1, 实际量比 / (volumeRatio × 2))`）。
+   * 故它会进入 F1 分级候选集（`strength IS NOT NULL`），参与当日强/中/弱分位分母 ——
+   * 这是预期行为，与 `position_risk_alert`（风险 HOLD、刻意不带 strength）不同。
+   * `sub_category='volume'`，不进入任何风险过滤（`exclude_risk` / Top5 缺省排除均只看 `risk`）。
+   *
+   * ## 不臆造信号
+   * 历史不足（少于所需窗口）/ 均量为 0 / 价格基准 ≤ 0 → 一律返回 `[]`。
+   */
+  definePlugin({
+    id: 'volume_stall',
+    name: '高位放量滞涨',
+    version: '1.0.0',
+    author: 'invest-core',
+    period: 'daily',
+    category: 'monitor',
+    subCategory: 'volume',
+    complexity: 'simple',
+    description:
+      '高位（近 highLookback 日最高价附近且近 riseLookback 日已明显上涨）出现放量但近 stallDays 日涨幅滞胀 → 卖出（减仓提示）信号',
+    chartOverlay: { position: 'main' },
+    paramSchema: [
+      {
+        key: 'symbol',
+        label: '标的代码',
+        type: 'string',
+        default: 'sh600000',
+        required: true,
+        runtimeInjected: true,
+      },
+      { key: 'volumePeriod', label: '均量周期', type: 'integer', default: 20, min: 5, max: 120 },
+      { key: 'volumeRatio', label: '放量倍数', type: 'number', default: 1.8, min: 1, max: 10 },
+      { key: 'stallDays', label: '滞胀观察天数', type: 'integer', default: 3, min: 1, max: 20 },
+      {
+        key: 'maxGain',
+        label: '滞胀涨幅上限',
+        type: 'number',
+        default: 0.02,
+        min: 0,
+        max: 0.2,
+        step: 0.01,
+        description: '近 stallDays 日累计涨幅 ≤ 该值才成立（0.02 = 2%，含下跌）；经验默认值，无优化依据',
+      },
+      { key: 'highLookback', label: '高点回溯天数', type: 'integer', default: 60, min: 20, max: 250 },
+      {
+        key: 'maxDrawdownFromHigh',
+        label: '距高点最大回撤',
+        type: 'number',
+        default: 0.05,
+        min: 0,
+        max: 0.5,
+        step: 0.01,
+        description: '现价距近 highLookback 日最高价回撤 ≤ 该值才算高位（0.05 = 5%）；经验默认值，无优化依据',
+      },
+      { key: 'riseLookback', label: '前置涨幅回溯天数', type: 'integer', default: 20, min: 5, max: 120 },
+      {
+        key: 'minRise',
+        label: '前置涨幅下限',
+        type: 'number',
+        default: 0.1,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        description:
+          '近 riseLookback 日累计涨幅 ≥ 该值才算「先涨上去的高位」（0.1 = 10%）；经验默认值，无优化依据',
+      },
+      { key: 'days', label: '回溯天数', type: 'integer', default: 120, min: 30, max: 365 },
+    ],
+    async execute(ctx, params) {
+      const symbol = params.symbol as string;
+      const volumePeriod = params.volumePeriod as number;
+      const volumeRatio = params.volumeRatio as number;
+      const stallDays = params.stallDays as number;
+      const maxGain = params.maxGain as number;
+      const highLookback = params.highLookback as number;
+      const maxDrawdownFromHigh = params.maxDrawdownFromHigh as number;
+      const riseLookback = params.riseLookback as number;
+      const minRise = params.minRise as number;
+      const days = params.days as number;
+
+      const klines = await ctx.getDailyKlines(symbol, days);
+      // 四个窗口取最长者：均量窗口 / 滞胀窗口 / 高点窗口 / 前置涨幅窗口
+      const need = Math.max(volumePeriod + 1, stallDays + 1, highLookback, riseLookback + 1);
+      if (klines.length < need) return [];
+
+      const n = klines.length;
+      const last = klines[n - 1];
+
+      // ① 量能放大：均量窗口必须排除当根，避免当根放量自己抬高基准
+      const volWindow = klines.slice(n - 1 - volumePeriod, n - 1);
+      if (volWindow.length < volumePeriod) return [];
+      const avgVolume = volWindow.reduce((acc, k) => acc + k.volume, 0) / volWindow.length;
+      if (!(avgVolume > 0)) return [];
+      const ratio = last.volume / avgVolume;
+      if (ratio < volumeRatio) return [];
+
+      // ② 价格滞胀：近 stallDays 日累计涨幅（可为负，含下跌）
+      const stallBase = klines[n - 1 - stallDays].close;
+      if (!(stallBase > 0)) return [];
+      const stallGain = last.close / stallBase - 1;
+      if (!(stallGain <= maxGain)) return [];
+
+      // ③ 位置条件（不可省）：距近 highLookback 日最高价回撤 + 近 riseLookback 日累计涨幅
+      const highWindow = klines.slice(n - highLookback);
+      const maxHigh = Math.max(...highWindow.map((k) => k.high));
+      if (!(maxHigh > 0)) return [];
+      const drawdown = (maxHigh - last.close) / maxHigh;
+      if (!(drawdown <= maxDrawdownFromHigh)) return [];
+
+      const riseBase = klines[n - 1 - riseLookback].close;
+      if (!(riseBase > 0)) return [];
+      const riseGain = last.close / riseBase - 1;
+      if (!(riseGain >= minRise)) return [];
+
+      // 量能强度口径与既有量价插件一致（唯一成分是实际量比，不掺经验权重）
+      const strength = Math.min(1, ratio / (volumeRatio * 2));
+
+      return [
+        {
+          symbol,
+          signalType: 'SELL' as const,
+          label: `高位放量滞涨（量比 ${ratio.toFixed(2)}，近 ${stallDays} 日 ${(stallGain * 100).toFixed(1)}%，距 ${highLookback} 日高回撤 ${(drawdown * 100).toFixed(1)}%）`,
+          strength,
+          pluginId: 'volume_stall',
+          timestamp: new Date().toISOString(),
+          metrics: {
+            volumeRatio: ratio,
+            avgVolume,
+            volumePeriod,
+            stallGain,
+            stallDays,
+            maxGain,
+            maxHigh,
+            drawdown,
+            maxDrawdownFromHigh,
+            riseGain,
+            riseLookback,
+            minRise,
+          },
+          detail: `当根量 ${last.volume} 为前 ${volumePeriod} 日均量 ${avgVolume.toFixed(0)} 的 ${ratio.toFixed(2)} 倍 ≥ ${volumeRatio}（放量）；近 ${stallDays} 日累计 ${(stallGain * 100).toFixed(2)}% ≤ ${(maxGain * 100).toFixed(2)}%（滞涨）；现价 ${last.close.toFixed(2)} 距近 ${highLookback} 日最高 ${maxHigh.toFixed(2)} 回撤 ${(drawdown * 100).toFixed(2)}% ≤ ${(maxDrawdownFromHigh * 100).toFixed(2)}%，近 ${riseLookback} 日累计 ${(riseGain * 100).toFixed(2)}% ≥ ${(minRise * 100).toFixed(2)}%（高位）——放量滞涨，减仓提示`,
+        },
+      ];
+    },
+  }),
+
   // ---------- 持仓风险提示（V3 六分类的 risk 代表） ----------
   /*
    * ## 边界：只做**快照级**规则，不复制组合风险呈现

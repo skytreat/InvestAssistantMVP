@@ -234,7 +234,9 @@ export function calcClosedTradePnLs(userId: number): ClosedTradePnl[] {
   const db = ConfigStore.getInstance().db;
   const rows = db
     .prepare(
-      `SELECT id, asset_code, trade_type, trade_date, quantity, price, fee
+      // 🔴 `id AS trade_id`：`ClosedTradePnl` 声明的是 `trade_id`，此前直接查 `id` + 断言，
+      //   运行时对象只有 `id` ⇒ 按 `trade_id` 取值永远是 undefined（F2 按信号查盈亏时暴露）。
+      `SELECT id AS trade_id, asset_code, trade_type, trade_date, quantity, price, fee
       FROM user_trade_record
       WHERE user_id = ? AND is_deleted = 0
         AND trade_type IN ('buy','add','reduce','clear','bonus','transfer')
