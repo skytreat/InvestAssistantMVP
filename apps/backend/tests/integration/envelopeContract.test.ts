@@ -186,6 +186,21 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/stockscan/plugins' },
   { method: 'GET', url: '/api/symbols/search', query: { q: '600000' }, timeout: 60_000 },
 
+  // ── K 线手工画线（独立 PR）──
+  { method: 'GET', url: '/api/kline-overlays', query: { symbol: 'sh600000', period: 'day' } },
+  {
+    method: 'POST',
+    url: '/api/kline-overlays',
+    payload: {
+      symbol: 'sh600000',
+      period: 'day',
+      name: 'horizontalStraightLine',
+      points: [{ timestamp: 1760000000000, value: 10 }],
+    },
+  },
+  // id=1 不存在 ⇒ 404 错误 envelope（只验形状，不验业务）
+  { method: 'DELETE', url: '/api/kline-overlays/:id' },
+
   // ── 信号 / 除权 ──
   { method: 'GET', url: '/api/signal' },
   { method: 'GET', url: '/api/signal/stats' },
