@@ -819,3 +819,64 @@ describe('T68 · 移动加权适配层的边界口径', () => {
     expect(TRADE_TYPE_DIRECTION.transfer).toBeNull();
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * F2 · 可选关联信号（交易录入 → 回填信号 linked_trade_id）
+ *
+ * 口径：关联**可选**，留空照常录入；填了必须是正整数；URL `?signal_id=` 可预填。
+ * ------------------------------------------------------------------ */
+
+describe('F2 · 可选关联信号', () => {
+  it('留空 → 提交 payload 不含 signal_id（不因缺关联被拒）', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await fillAssetCode();
+    fillNumbers('100', '10');
+    fillReason();
+
+    await user.click(submitButton());
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+
+    const payload = postMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('signal_id');
+  });
+
+  it('URL ?signal_id=42 预填，提交时转数字随 payload 下发', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<TradeInput />, { initialEntries: ['/trade?signal_id=42'] });
+
+    const input = screen.getByLabelText('关联信号') as HTMLInputElement;
+    expect(input.value).toBe('42');
+
+    await fillAssetCode();
+    fillNumbers('100', '10');
+    fillReason();
+
+    await user.click(submitButton());
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+
+    const payload = postMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.signal_id).toBe(42);
+  });
+
+  it('非法 signal_id → 红框 + 提示 + 提交禁用', () => {
+    renderPage();
+
+    fillNumbers('100', '10');
+    fillReason();
+
+    const input = screen.getByLabelText('关联信号') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '-1' } });
+
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(hasDangerBorder(input)).toBe(true);
+    expect(screen.getByTestId('trade-signal-hint')).toHaveTextContent('信号 id 必须是正整数');
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it('未填时提示说明关联后的展示效果', () => {
+    renderPage();
+    expect(screen.getByTestId('trade-signal-hint')).toHaveTextContent('关联后可在信号列表看到「已成交」');
+  });
+});
