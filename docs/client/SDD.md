@@ -1858,7 +1858,7 @@ export interface StrategyPlugin {
 
 | 规则 | 说明 |
 |------|------|
-| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **8 个**（monitor 6 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
+| 内置插件库 | 打包在 `@invest/core` 包内；MVP 共 **9 个**（monitor 7 + filter 2，明细见本节「MVP 内置插件清单」）；monitor 类默认启用 |
 | 用户自定义插件 | 放置在 `/opt/invol/IA_Prod/plugins/strategies/`，**仅支持 .js**（require() 加载） |
 | 加载时机 | Fastify 启动时扫描加载；【设置 → 策略插件管理】可手动热重载 |
 | 唯一键 | 以 `plugin.id` 为唯一键；内置与自定义插件 id 不可冲突 |
@@ -1894,6 +1894,7 @@ export interface StrategyPlugin {
 | `volume_breakout` | 放量突破 | filter | volume | lookback=20, volumeRatio=1.5, days=120, limit=50 | 收盘创前 lookback 日新高且成交量 ≥ lookback 日均量的 volumeRatio 倍 → 选股候选（BUY 方向） | 无指标依赖（直接读 K 线 high / volume） | ✅ 已实现（`builtinPlugins`），filter 类仅返回候选、不落 `user_strategy_signal` |
 | `engulfing_reversal` | 吞没反转形态 | monitor | pattern | maPeriod=20, volumePeriod=20, minVolumeRatio=1.2, days=120 | 下跌趋势（前收盘 < MA(maPeriod)）中出现放量看涨吞没 → buy；上涨趋势中出现放量看跌吞没 → sell；量比不足 / 无趋势背景不出信号 | `calculateSMA`（`@invest/core` 指标层）+ 前复权 OHLC 实体关系 | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
 | `volume_price_breakout` | 量价突破（信号版） | monitor | volume | lookback=20, volumeRatio=1.5, days=120 | 收盘放量突破前 lookback 日最高价 → buy；收盘放量跌破前 lookback 日最低价 → sell；均量为 0 / 量比不足不出信号 | 无指标依赖（直接读 K 线 high / low / volume） | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal` |
+| `volume_stall` | 高位放量滞涨 | monitor | volume | volumePeriod=20, volumeRatio=1.8, stallDays=3, maxGain=0.02, highLookback=60, maxDrawdownFromHigh=0.05, riseLookback=20, minRise=0.1, days=120 | **只输出 SELL（减仓提示）**，三组条件缺一不出信号：① 当根量 ≥ 前 volumePeriod 日均量的 volumeRatio 倍；② 近 stallDays 日累计涨幅 ≤ maxGain（含下跌）；③ 距近 highLookback 日最高价回撤 ≤ maxDrawdownFromHigh 且近 riseLookback 日累计涨幅 ≥ minRise（**位置条件不可省**，用于排除低位放量吸筹）。历史不足 / 均量为 0 / 量比不足不出信号 | 无指标依赖（直接读 K 线 high / close / volume）；阈值均为经验默认值、无优化依据 | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal`（`sub_category='volume'`，带 `strength`，参与 F1 分级） |
 | `position_risk_alert` | 持仓风险提示 | monitor | risk | maxPositionWeight=0.3, stopLossRatio=0.1, concentrationTopN=3, concentrationThreshold=0.6 | **只输出 HOLD、不带 strength**：单票市值占权益 > maxPositionWeight；浮亏（现价/成本-1）≤ -stopLossRatio；前 N 名市值合计占权益 > concentrationThreshold（仅标记前 N 名标的）。多规则命中**合并为一条**；`equity<=0` 或标的 `marketValue<=0` / `cash` 类持仓跳过；快照不可用 → SKIP `POSITION_UNAVAILABLE` | 持仓快照（`requiresPositions`，组合级插件，零行情 IO）；`asset_class` 分类 | ✅ 已实现（`builtinPlugins`），信号落 `user_strategy_signal`（`sub_category='risk'`、`strength=NULL`） |
 
 > **风险类边界（`position_risk_alert`）**：只承载**快照级**规则（单票占比 / 浮亏止损 / 仓位集中度）。
