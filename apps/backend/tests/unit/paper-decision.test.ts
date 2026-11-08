@@ -301,9 +301,9 @@ describe('日更段编排', () => {
     expect(count('paper_position')).toBe(0);
     expect(count('paper_equity')).toBe(0);
 
-    const ledger = db
-      .prepare(`SELECT status FROM paper_order WHERE account_id = ?`)
-      .get(a2.id) as { status: string };
+    const ledger = db.prepare(`SELECT status FROM paper_order WHERE account_id = ?`).get(a2.id) as {
+      status: string;
+    };
     expect(ledger.status).toBe('pending');
 
     const shadow = db.prepare('SELECT start_date FROM paper_account WHERE id = ?').get(a1.id) as any;

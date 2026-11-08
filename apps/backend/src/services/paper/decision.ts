@@ -258,9 +258,7 @@ export async function runPaperDecision(
   // 切换当日 `ledger_start_date = nextTradingDay(T)` 会晚于决策日 T，故取两者较小值，
   // 否则回放区间为空（§8.2 冷启动口径：水位重置，历史影子订单不补记）。
   const replayStart =
-    orderStatus === 'pending'
-      ? coldStartOf(account, decisionDate)
-      : account.start_date ?? decisionDate;
+    orderStatus === 'pending' ? coldStartOf(account, decisionDate) : (account.start_date ?? decisionDate);
   const positions = loadPositions(db, accountId);
 
   const data = await buildData({

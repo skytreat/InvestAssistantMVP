@@ -12,7 +12,11 @@ import type { Bar } from '../../src/services/backtest/types.js';
 import { changePaperPhase, createPaperAccount } from '../../src/services/paper/accountService.js';
 import { runPaperDecision } from '../../src/services/paper/decision.js';
 import type { PaperMarketData } from '../../src/services/paper/marketData.js';
-import { settleAccountPending, runPaperDailyStage, type PaperSettleDeps } from '../../src/services/paper/settle.js';
+import {
+  settleAccountPending,
+  runPaperDailyStage,
+  type PaperSettleDeps,
+} from '../../src/services/paper/settle.js';
 import { withBusyRetry } from '../../src/services/paper/retry.js';
 
 const DAYS = ['2026-11-05', '2026-11-06', '2026-11-09', '2026-11-10'];
@@ -131,8 +135,7 @@ function insertSell(accountId: number, tradeDate: string, qty: number, price: nu
   );
 }
 
-const count = (table: string) =>
-  (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 
 beforeEach(() => {
   db = new Database(':memory:');
@@ -160,7 +163,9 @@ describe('结算落账', () => {
     expect(order.filled_notional).toBeCloseTo(249_900 * 4.0004, 2);
     expect(order.fee).toBeCloseTo(Math.max(5, 249_900 * 4.0004 * 0.0001), 2);
 
-    const pos = db.prepare('SELECT * FROM paper_position WHERE account_id = ? AND is_deleted = 0').get(id) as any;
+    const pos = db
+      .prepare('SELECT * FROM paper_position WHERE account_id = ? AND is_deleted = 0')
+      .get(id) as any;
     expect(pos.qty).toBe(249_900);
     // 成交均价含佣金（costBasis = notional + fee）
     expect(pos.avg_cost).toBeCloseTo((order.filled_notional + order.fee) / order.filled_qty, 6);
@@ -199,7 +204,9 @@ describe('结算落账', () => {
       .get(id) as any;
     expect(sell.status).toBe('filled');
 
-    const rows = db.prepare('SELECT trade_date FROM paper_equity WHERE account_id = ? ORDER BY trade_date').all(id) as { trade_date: string }[];
+    const rows = db
+      .prepare('SELECT trade_date FROM paper_equity WHERE account_id = ? ORDER BY trade_date')
+      .all(id) as { trade_date: string }[];
     expect(rows.map((r) => r.trade_date)).toEqual([LEDGER_START, '2026-11-10']);
   });
 

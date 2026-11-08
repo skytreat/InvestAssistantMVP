@@ -21,9 +21,7 @@ export function isSqliteBusy(err: unknown): boolean {
 /** DuckDB 单文件锁被别的进程/句柄占用（回测批量任务与 17:04 段唯一可能冲突点） */
 export function isDuckDbBusy(err: unknown): boolean {
   const message = (err as { message?: string } | null)?.message ?? '';
-  return /Could not set lock on file|Conflicting lock is held|IO Error: Could not set lock/i.test(
-    message,
-  );
+  return /Could not set lock on file|Conflicting lock is held|IO Error: Could not set lock/i.test(message);
 }
 
 const DEFAULT_DELAYS_MS = [50, 200, 800] as const;
@@ -44,10 +42,7 @@ const defaultSleep = (ms: number): Promise<void> =>
  *
  * ⚠️ `fn` **必须幂等**（本模块只用于「单事务写」——事务失败整体回滚，重跑不会半提交）。
  */
-export async function withBusyRetry<T>(
-  fn: () => T | Promise<T>,
-  opts: BusyRetryOptions = {},
-): Promise<T> {
+export async function withBusyRetry<T>(fn: () => T | Promise<T>, opts: BusyRetryOptions = {}): Promise<T> {
   const delays = opts.delays ?? DEFAULT_DELAYS_MS;
   const sleep = opts.sleep ?? defaultSleep;
 
