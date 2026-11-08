@@ -12,6 +12,7 @@ import { calcAllPositions } from './positionCalculator.js';
 import { getAssetClass } from './assetClass.js';
 import type { DailyKline } from '@invest/core';
 import { writeSystemLog } from './logger.js';
+import { executeCombos, type ComboRunStats } from './comboStrategy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -2569,6 +2570,11 @@ export interface PluginBatchStats {
   noData: number;
   /** SKIP 中「需要持仓但快照不可用」的次数（`skipReason === 'POSITION_UNAVAILABLE'`） */
   positionUnavailable: number;
+  /**
+   * 组合策略（PA-06）执行统计 —— **与普通插件分列**，不并入上面的 total/success/skip。
+   * 无启用组合时该字段不出现（既有调用方/断言的形状保持不变）。
+   */
+  combo?: ComboRunStats;
 }
 
 export interface PluginBatchResult {
@@ -2833,10 +2839,39 @@ export async function executeAllPlugins(options: ExecuteAllPluginsOptions = {}):
       }
     }
 
+    // ── PA-06：组合策略（D1 仅 AND / D2 strength=min）──
+    // 复用同一批预取行情：条件执行直接走 `executePlugin(plugin, { ...params, symbol }, ctx)`，
+    // 不二次查库；组合结果（`plugin_id = combo:<id>`）与普通插件结果合并到同一 `results`，
+    // 由既有 persistSignals / 分级 / 冷却链路统一落库（D3：信号只有一份，回测只读不重算）。
+    try {
+      const comboOutcome = await executeCombos({
+        db: ConfigStore.getInstance().db,
+        userId,
+        symbols,
+        plugins: monitorPlugins,
+        runCondition: (plugin, params, symbol) => executePlugin(plugin, { ...params, symbol }, ctx),
+      });
+      results.push(...comboOutcome.results);
+      allSignals.push(...comboOutcome.signals);
+      stats.combo = comboOutcome.stats;
+    } catch (err) {
+      // 组合失败隔离：普通插件结果照常返回，不让组合配置问题拖垮整批执行
+      const message = err instanceof Error ? err.message : String(err);
+      writeSystemLog({
+        logType: 'plugin_execute',
+        level: 'WARN',
+        message: `组合策略执行失败（已隔离，不影响普通插件）：${message}`,
+      });
+    }
+
     writeSystemLog({
       logType: 'plugin_execute',
       level: 'INFO',
-      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData} positionUnavailable=${stats.positionUnavailable}`,
+      message: `批量执行完成（标的域 ${symbols.length} 只、插件 ${monitorPlugins.length} 个） total=${stats.total} success=${stats.success} timeout=${stats.timeout} error=${stats.error} skip=${stats.skip} noData=${stats.noData} positionUnavailable=${stats.positionUnavailable}${
+        stats.combo
+          ? ` | 组合 enabled=${stats.combo.enabled} ran=${stats.combo.ran} matched=${stats.combo.matchedSignals} failed=${stats.combo.failed}`
+          : ''
+      }`,
       detail: JSON.stringify({ ...stats, symbolCount: symbols.length, pluginCount: monitorPlugins.length }),
     });
 

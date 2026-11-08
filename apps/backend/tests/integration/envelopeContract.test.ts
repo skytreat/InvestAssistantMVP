@@ -226,6 +226,13 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'PUT', url: '/api/strategy/plugins/:id/toggle', payload: { enabled: 1 } },
   { method: 'POST', url: '/api/strategy/reload' },
   { method: 'POST', url: '/api/strategy/plugins/reload' },
+  // 组合策略（T133 / PA-07）：缺参返回 4xx 错误 envelope，形状仍可校验
+  { method: 'GET', url: '/api/strategy/combos' },
+  { method: 'GET', url: '/api/strategy/combos/:id' },
+  { method: 'POST', url: '/api/strategy/combos', payload: {} },
+  { method: 'PUT', url: '/api/strategy/combos/:id', payload: {} },
+  { method: 'PUT', url: '/api/strategy/combos/:id/toggle', payload: {} },
+  { method: 'DELETE', url: '/api/strategy/combos/:id' },
 
   // ── 券商对账（V3.1：T122 导入 + T126 对账）──
   // ⚠️ POST 路由读 request.body：至少给 `{}`（`toInput(undefined)` 会 500，非 envelope 体）。
