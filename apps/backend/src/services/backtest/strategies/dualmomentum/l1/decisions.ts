@@ -40,8 +40,12 @@ export interface L1Options {
 export interface L1FilterInput {
   inPool: boolean;
   hasBar: boolean;
-  /** T 日 raw 收盘（停牌为 null） */
-  closeRaw: number | null;
+  /**
+   * 快照价（步骤 4/5/6 用的 `price`）。
+   * 当日 bar 可成交 → 当日 raw 收盘；零成交量占位 / OHLC 非法 → **最近有效收盘**；
+   * 无 bar 或从未有过有效收盘 → null。
+   */
+  snapshotPrice: number | null;
   prevCloseAdj: number;
   ma5: number | null;
   ma10: number | null;
@@ -69,12 +73,12 @@ export interface L1FilterResult {
  */
 export function evaluateL1Filters(input: L1FilterInput): L1FilterResult {
   if (!input.inPool) return { pass: false, reason: 'POOL_ABSENT' };
-  if (!input.hasBar || input.closeRaw === null || !(input.closeRaw > 0)) {
+  if (!input.hasBar || input.snapshotPrice === null || !(input.snapshotPrice > 0)) {
     return { pass: false, reason: 'SUSPENDED' };
   }
   if (input.cooling) return { pass: false, reason: 'COOLDOWN' };
 
-  const price = input.closeRaw;
+  const price = input.snapshotPrice;
   const upLimit = input.prevCloseAdj * (1 + input.limitRatio);
   const downLimit = input.prevCloseAdj * (1 - input.limitRatio);
   if (price >= upLimit || price <= downLimit) return { pass: false, reason: 'AT_LIMIT' };
@@ -233,6 +237,10 @@ function buildRowDraft(
   const openRaw = hasBar ? bar.open : null;
 
   const tradableToday = hasBar && isUsableBar(bar);
+  // 快照价：不可成交日顺延「最近有效收盘」（与 Python `snapshot_prices` 一致）。
+  // 这是「跟 Python 保对齐」的选择，不是数学上唯一的做法（见对齐说明 D1）。
+  const snapshotPrice = tradableToday ? bar.close : lastUsableCloseOnOrBefore(bars, lastIndex);
+
   const primaryValue = slots.primary === 'wsm' ? ind.wsm : ind.nday;
   const secondaryValue = slots.secondary === 'rsrs' ? ind.rsrs : ind.wsm;
   const ma5 = ind.ma[5] ?? null;
@@ -246,7 +254,7 @@ function buildRowDraft(
   const filter = evaluateL1Filters({
     inPool: true,
     hasBar,
-    closeRaw,
+    snapshotPrice,
     prevCloseAdj,
     ma5,
     ma10,
@@ -293,6 +301,14 @@ function buildRowDraft(
 function isUsableBar(bar: PriceBar): boolean {
   if (!Number.isFinite(bar.volume) || bar.volume <= 0) return false;
   return [bar.open, bar.high, bar.low, bar.close].every((v) => Number.isFinite(v) && v > 0);
+}
+
+/** 截至 `lastIndex` 的最近一根**可成交** bar 的 raw 收盘（对齐 Python `last_valid_close`）。 */
+function lastUsableCloseOnOrBefore(bars: readonly PriceBar[], lastIndex: number): number | null {
+  for (let i = lastIndex; i >= 0; i--) {
+    if (isUsableBar(bars[i])) return bars[i].close;
+  }
+  return null;
 }
 
 function inClosedRange(value: number, range: readonly [number, number]): boolean {

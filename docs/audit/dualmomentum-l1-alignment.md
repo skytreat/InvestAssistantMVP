@@ -1,8 +1,9 @@
-# DualMomentum L1 实现说明（DAS-2 对齐核对）
+# DualMomentum L1 实现说明（DAS-2 / DAS-2.1 对齐核对）
 
-> 状态：L1 已实现并自测通过，**尚未接入任何注册点**（未改 `BUILTINS`、未改 `pluginEngine.ts` /
+> 状态：L1 已实现并自测通过（29/29），**尚未接入任何注册点**（未改 `BUILTINS`、未改 `pluginEngine.ts` /
 > `routes/signal.ts` / `signalService.ts` / `SDD.md`、未改现有策略）。
-> 规格权威源：`d:\workspace\QuantInvest\Strategy\DualMomentum\JointQuant\docs\decision_alignment_spec.md`（DAS-2）。
+> **对齐结论未成立**：指标 golden 只证明公式等价，数据源尚未同源（见 §4.5），需等 §5 快照。
+> 规格权威源：`d:\workspace\QuantInvest\Strategy\DualMomentum\JointQuant\docs\decision_alignment_spec.md`（DAS-2 → `DAS-2.1`）。
 > 记录时间：2026-11-08。
 
 ## 1. 交付物
@@ -74,7 +75,7 @@ BELOW_MA20 → MA_NOT_BULLISH → MOMENTUM_OUT_OF_RANGE → BELOW_BENCHMARK → 
 | §9.6 并列靠稳定排序 + 池内顺序 | `Array.prototype.sort((a,b)=>b.primary-a.primary)`（V8 稳定）+ 输入顺序即 `POOL_ORDER` |
 | 排名只给通过 1–9 步的行；`selected = rank ≤ 6` | 同 |
 | `RANK_TRUNCATED` 行仍 `filter_pass=1`、`rank` 有值、`selected=0` | 同（单测断言 `rows[0].filter_pass=true` 且 `selected=false`） |
-| 不得增加表外过滤（如「零成交量不得入选」） | 零量 bar **照常参与 L1**，只把 `tradable_today` 置 0 |
+| 不得增加表外过滤（如「零成交量不得入选」） | 零量 bar **照常参与 L1**：`tradable_today=0`，步骤 4/5/6 的 `price` 顺延「最近有效收盘」（D1） |
 
 ### 2.4 导出格式（§6.1 / §6.2）
 
@@ -125,7 +126,8 @@ BELOW_MA20 → MA_NOT_BULLISH → MOMENTUM_OUT_OF_RANGE → BELOW_BENCHMARK → 
 
 1. **唯一能证明「双方输入完全相同」的手段**：Python 参考端 `local_data.py` 当前从 **AKShare**
    （`fund_etf_hist_em` / `fund_etf_hist_sina`）下载并缓存到 `data_cache/daily/*.csv`，
-   与 MVP 的 DuckDB（tdx2db 来源）**非同源**。不导出同一份物理快照，逐位对齐的前提就不成立。
+   与 MVP 的 DuckDB（tdx2db 来源）不是同一份物理数据 —— 即使重叠区间数值一致（见 §4.5），
+   也无法覆盖全区间、无法给出可追溯的版本凭证。不导出同一份物理快照，逐位对齐的前提就不成立。
 2. 库内**没有**数据版本号/导出时间，无法事后追溯（见 4.2(2)）。
 3. §5.2 要求的 `calendar` / `holidays` / `bars` / `suspensions` 四份分离结构，
    是「停牌日不得从日历消失」的载体；直接从库里算「有效交易日」会把停牌合成掉，
@@ -142,34 +144,84 @@ L1 只消费注入的 MarketSlice：
 
 ⚠️ **待办（接入时必须做）**：`tradingDays` 应取「快照 calendar」而非「基准 bar 日期」。
 本地验证脚本临时用了 `sh000300` 的 bar 日期；当前库里 2019–2026 两者差 0（§5.2 已核对 1902=1902），
-但换标的/换区间后不等价，接入时不可沿用。
+但换标的/换区间后不等价 —— 已按 D3 裁定写进规格（`DAS-2.1` §5.2），接入时不可沿用。
 
-## 5. 与 Python 参考实现 / 规格的差异（需规格方裁定）
+### 4.5 golden 的来源，以及它能证明什么
 
-| # | 项 | 现状 | 影响 |
+| 问题 | 答案 |
+|---|---|
+| 谁生成的 | 我在 worktree 里用 `apps/backend/tests/fixtures/dualmomentum/gen_l1_golden.py` 生成，产物入库 |
+| 吃什么数据 | **确定性合成序列**（80 根，`3.0*exp(0.0006i + 0.03*sin(i/7))` 加 O/H/L 的确定性扰动），**不读任何真实行情源**，与 AKShare / DuckDB 都无关 |
+| 在什么环境跑出期望值 | 本机 Python + numpy，直接 import QuantInvest `indicators.py`（`calc_weighted_slope_momentum` / `calc_nday_return_momentum` / `calc_rsrs` / `calc_ma`） |
+| 它能证明什么 | **只证明公式等价**（w² 法方程权重、R² 一次方权重与未加权 `ȳ`、RSRS 总体矩、NDAY 年化、MA） |
+| 它不能证明什么 | **不能证明数据同源**，也不能替代端到端决策序列比对 |
+
+所以「单测全绿」和「L1 与 Python 端到端一致」是两件事。下面是对数据源的独立核对。
+
+**两源 bar 逐根核对（2026-11-08，`data_cache/daily/*.csv` vs `DuckDB raw_kline_daily`）**
+
+| 项 | 结果 |
+|---|---|
+| 缓存实际是 **raw，不是 hfq** | 逐根比对 csv 与 `raw_kline_daily`：7 只 ETF 在 **1138 个重叠日**上 OHLC **相对差 = 0**（逐位相同）。代码虽传 `adjust='hfq'`，落盘的是不复权价 |
+| 日期对齐 | 重叠 1138 = CSV 全部行数，**无缺日、无多余日** |
+| 成交量（ETF） | `db/csv` 中位数 = **1**（单位一致） |
+| 成交量（基准 `sh000300`） | `db/csv` 中位数 = **0.01** ⇒ **单位差 100×** |
+| 价格精度（基准 `sh000300`） | 相对差最大 **1.5e-6**（4511 个字段 > 1e-9）⇒ **逐位对齐会失败** |
+| 覆盖区间 | CSV 仅 **2022-01-04 ~ 2026-09-11**（1138 根）；DuckDB 自 2012 起、截至 **2026-11-06** ⇒ **Python 侧当前产不出 2019-01-02~2026-11-06 窗口** |
+
+结论：重叠区间内「日期 + ETF 的 OHLCV」确实逐根逐位相同（不是巧合），但：
+
+1. 缓存是 **raw**，而 DAS-2 要求指标用「前复权到当日」⇒ 在有公司行为的 4 只
+   （`sh510300` 年度分红、`sh510500`/`sh513100`/`sh513500` 份额折算）上，两侧指标**输入必然不同**，
+   端到端不可能一致。这是 Python 侧数据适配层的缺陷（`adjust='hfq'` 未落到缓存），
+   与他们切换到 §5 快照的工作正好一致。
+2. 覆盖区间不足 §7.6 的窗口。
+3. 基准有 1e-6 精度差 + 100× 成交量单位差。
+
+因此：**当前 golden 通过不等于 L1 对齐结论成立**；正式对齐必须等 §5 四文件快照 + `sha256`
+到手后两侧读同一份快照重做。在此之前不注册 `BUILTINS`。
+
+## 5. 三处差异的裁定结果与实现
+
+规格（DAS-2）已按裁定更新为 `DAS-2.1`（2026-11-08）：§3.2(a) 明确 `ȳ` = 未加权均值、
+§3.3 补充规定写入快照价口径、§5.2 写入「日历只取 `calendar.parquet`」、§10.1 记录数据源核对。
+
+| # | 项 | 裁定 | 本层实现 |
 |---|---|---|---|
-| D1 | **零成交量占位 bar 的「快照价」** | DAS-2 §3.3 明确「零成交量只影响执行层是否可成交，**不影响 L1 决策**」；本实现 `has_bar=1`、`close_raw`=当日 raw close、过滤照常、`tradable_today=0`。参考 Python 用 `last_valid_close` 当快照价 | 若占位 bar 满足 `O=H=L=C=前收`（库内池内仅 3 根，见 §5.2 样本）则无差别；若非此形态则会分歧。**本层按规格实现**，接入前需用真实快照核对这 3 根 |
-| D2 | **WSM R² 分母的 `ȳ`** | §3.2(a) 写 `Σ w_i(y_i−ȳ)²` 但未指明 `ȳ` 是否加权均值；Python 用**未加权** `np.mean(y)`。本实现照 Python | 若规格本意是加权均值，指标数值会变（对齐立刻失败）。建议在 DAS-2 里明确为「未加权均值」 |
-| D3 | 交易日历来源 | 见 §4.4 待办 | 接入期修正 |
-| D4 | `in_pool` 语义 | 本实现 = 「T 日或之前有 bar」；与 §6.2 列 4 注释（513000 于 2019-06-25 前为 0）一致 | 无 |
+| D1 | 零成交量占位 bar 的快照价 | 跟 Python：取 `last_valid_close`；`tradable_today=0` 控制可成交性；过滤照常。**规格标注为「对齐选择，非数学唯一解」** | `decisions.ts` 新增 `lastUsableCloseOnOrBefore`，`L1FilterInput.snapshotPrice` 承担步骤 4/5/6 的 `price`；列 8 `close_raw` 仍记当日 bar 自身收盘 |
+| D2 | WSM R² 分母 `ȳ` | 跟 Python：未加权均值。**规格标注为「已知偏差点」**，理由：现阶段对齐是唯一可验证判据 | 未改动（原本即如此），`indicators.ts` 注释保留该理由 |
+| D3 | 交易日历 | **必须取 `calendar.parquet`**，禁止由 `sh000300` bar 推断 | 代码已接受注入的 `tradingDays`（未自造日历）；接入时由快照 calendar 提供 |
+| D4 | `in_pool` 语义 | 采「T 日或之前有 bar」 | 与 §6.2 列 4 注释（513000 于 2019-06-25 前为 0）一致 |
+
+D1 的数据核对（本次实测）：池内零成交量 bar 恰好 **3 根** —— `sh510500 2015-04-13`、
+`sh513100 2022-01-13`、`sh513500 2022-03-29`，全部 `O=H=L=C` 且**收盘价等于前一有效收盘**。
+其中 2 根落在 2019-01-02~2026-11-06 区间内。因此两种口径在现有数据上**结果完全相同**，
+D1 是为「未来出现非 `O=H=L=C` 形态的占位 bar」预留的正确性，不是当前数值的修正。
+
+**残余差异（非本层职责）**：参考实现 `min_hold_days` 按**自然日**差计算（代码与注释都写「交易日」），
+属 L2；本层不产出该列，避免把该坑带进 L1。
 
 ## 6. 验证记录
 
 | 项 | 结果 |
 |---|---|
-| 单测 | `dualmomentumL1Indicators` 8 + `dualmomentumL1Decisions` 16 + `dualmomentumL1Csv` 4 = **28/28 PASS**（Prettier 后重跑仍全绿） |
+| 单测 | `dualmomentumL1Indicators` 8 + `dualmomentumL1Decisions` 17 + `dualmomentumL1Csv` 4 = **29/29 PASS**（Prettier 后重跑仍全绿） |
 | `npm run typecheck -w @invest/backend` | PASS（`tsc --noEmit`，无输出） |
 | 真实库切片（`2019-01-02 ~ 2026-11-06`，7 只 + 基准） | **13,314 行 = 1902 交易日 × 7 标的**，耗时 **916ms** |
 | 原因码分布 | `BELOW_MA20` 5571 / `MA_NOT_BULLISH` 3783 / `MOMENTUM_OUT_OF_RANGE` 1873 / `PASS` 1574 / `BELOW_BENCHMARK` 285 / `POOL_ABSENT` 114 / `DAILY_CHANGE_OUT_OF_RANGE` 105 / `AT_LIMIT` 8 / `SUSPENDED` 1 |
 | 每日选中数分布 | 1:550 / 2:277 / 3:107 / 4:23 / 5:9 / 6:2（有选中的交易日 968 天） |
 | 首条选中行 | `2019-01-02 sh518880`（`wsm_v2=0.52515…`，该日其余标的均 `BELOW_MA20`，符合 60 根预热后的首日行为） |
-| 边界单测覆盖 | 恰好 ±5%（含 `1e-9` 容差内/外）、涨跌停（3.3003 / 2.6997）、停牌、零量 bar、冷却、513000 未上市、不足 60 根、MA20 缺失、动量开闭区间、基准 ≥、7 只全通过时的排名与截断、序列乱序抛错 |
+| 边界单测覆盖 | 恰好 ±5%（含 `1e-9` 容差内/外）、涨跌停（3.3003 / 2.6997）、停牌、零量 bar（`tradable_today=0` + 快照价顺延）、冷却、513000 未上市、不足 60 根、MA20 缺失、动量开闭区间、基准 ≥、7 只全通过时的排名与截断、序列乱序抛错 |
+| **对齐结论状态** | **未成立**：golden 仅证明公式等价；数据源核对发现 Python 缓存为 raw（非 hfq）、区间不足、基准有 1e-6 精度差与 100× 成交量单位差（§4.5）。等 §5 快照到手后重做 |
 
 `POOL_ABSENT=114` ≈ 513000 上市前（2019-01-02 ~ 2019-06-24）的交易日数，与 §6.2 列 4 的说明一致。
+上表的切片结果在 D1 改动前后**不变** —— 区间内 2 根占位 bar 的收盘价等于前一有效收盘，
+两种口径同值（见 §5）。
 
 ## 7. 若要接入 `BUILTINS`（仅方案，未实施）
 
-用户要求「若需要注册进 `BUILTINS`，先单独说明方案」。当前**未注册**，L1 是纯函数库。接入需三步，
+用户要求「若需要注册进 `BUILTINS`，先单独说明方案」。当前**未注册**，L1 是纯函数库；
+且按裁定 **§5 快照到手、正式对齐通过之前不注册**。接入需三步，
 且**不在本次范围内**：
 
 1. **适配器**：`buildMarketSlice(cutoffDate)` —— 从快照/或锁 cutoff 的行情层一次 `IN (...)` 取

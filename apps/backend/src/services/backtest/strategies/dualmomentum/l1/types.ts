@@ -73,6 +73,11 @@ export interface L1DecisionRow {
   has_bar: boolean;
   tradable_today: boolean;
   hfq_factor: number | null;
+  /**
+   * 列 8：T 日 bar 的 raw 收盘（无 bar 为空）。
+   * ⚠️ 不可成交日（零成交量占位 bar）的过滤/规划价用「最近有效收盘」，
+   * 该值与本列不同，且不单独出列（见对齐说明 D1）。
+   */
   close_raw: number | null;
   prev_close_raw: number | null;
   open_raw: number | null;

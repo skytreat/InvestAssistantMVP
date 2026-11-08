@@ -44,7 +44,7 @@ function sliceOf(series: PriceBar[][], tradingDays: string[] = []): MarketSlice 
 const BASE_FILTER_INPUT: L1FilterInput = {
   inPool: true,
   hasBar: true,
-  closeRaw: 3.15,
+  snapshotPrice: 3.15,
   prevCloseAdj: 3,
   ma5: 3.2,
   ma10: 3.1,
@@ -62,7 +62,7 @@ const BASE_FILTER_INPUT: L1FilterInput = {
 describe('过滤链（§3.3 1–9 步）', () => {
   it('恰好 +5% 通过，+5.001% 被拒', () => {
     expect(evaluateL1Filters(BASE_FILTER_INPUT)).toEqual({ pass: true, reason: null });
-    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, closeRaw: 3.15003 })).toEqual({
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: 3.15003 })).toEqual({
       pass: false,
       reason: 'DAILY_CHANGE_OUT_OF_RANGE',
     });
@@ -71,29 +71,45 @@ describe('过滤链（§3.3 1–9 步）', () => {
   it('恰好 −5% 通过，−5.001% 被拒', () => {
     const downFive = {
       ...BASE_FILTER_INPUT,
-      closeRaw: 2.85,
+      snapshotPrice: 2.85,
       ma5: 2.95,
       ma10: 2.9,
       ma20: 2.8,
       ma60: 2.75,
     };
     expect(evaluateL1Filters(downFive).pass).toBe(true);
-    expect(evaluateL1Filters({ ...downFive, closeRaw: 2.84997 }).reason).toBe('DAILY_CHANGE_OUT_OF_RANGE');
-  });
-
-  it('触及涨跌停（≥+10% / ≤−10%）→ AT_LIMIT；9.99% 未触板但超 ±5%', () => {
-    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, closeRaw: 3.3003 }).reason).toBe('AT_LIMIT');
-    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, closeRaw: 2.6997 }).reason).toBe('AT_LIMIT');
-    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, closeRaw: 3.2997 }).reason).toBe(
+    expect(evaluateL1Filters({ ...downFive, snapshotPrice: 2.84997 }).reason).toBe(
       'DAILY_CHANGE_OUT_OF_RANGE',
     );
   });
 
-  it('停牌优先于冷却：无 bar / 空收盘价 → SUSPENDED', () => {
+  it('触及涨跌停（≥+10% / ≤−10%）→ AT_LIMIT；9.99% 未触板但超 ±5%', () => {
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: 3.3003 }).reason).toBe('AT_LIMIT');
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: 2.6997 }).reason).toBe('AT_LIMIT');
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: 3.2997 }).reason).toBe(
+      'DAILY_CHANGE_OUT_OF_RANGE',
+    );
+  });
+
+  it('快照价 = 最近有效收盘（占位 bar 自身收盘更低）→ 不按占位价拒绝', () => {
+    // 占位 bar 自身收盘 2.7（相对前收 −10%），但快照价顺延最近有效收盘 3.0
+    const placeholderDay = {
+      ...BASE_FILTER_INPUT,
+      snapshotPrice: 3.0,
+      ma5: 3.2,
+      ma10: 3.1,
+      ma20: 2.95,
+      ma60: 2.9,
+    };
+    expect(evaluateL1Filters(placeholderDay).pass).toBe(true);
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: 2.7 }).reason).toBe('AT_LIMIT');
+  });
+
+  it('停牌优先于冷却：无 bar / 无可用快照价 → SUSPENDED', () => {
     expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, hasBar: false, cooling: true }).reason).toBe(
       'SUSPENDED',
     );
-    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, closeRaw: null }).reason).toBe('SUSPENDED');
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: null }).reason).toBe('SUSPENDED');
   });
 
   it('冷却期 → COOLDOWN', () => {
@@ -102,7 +118,7 @@ describe('过滤链（§3.3 1–9 步）', () => {
 
   it('MA20 为空（预热短路）或价格不高于 MA20 → BELOW_MA20', () => {
     expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, ma20: null }).reason).toBe('BELOW_MA20');
-    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, closeRaw: 3.0 }).reason).toBe('BELOW_MA20');
+    expect(evaluateL1Filters({ ...BASE_FILTER_INPUT, snapshotPrice: 3.0 }).reason).toBe('BELOW_MA20');
   });
 
   it('MA 非多头排列 → MA_NOT_BULLISH', () => {
@@ -160,9 +176,19 @@ describe('逐日决策序列', () => {
     expect(truncated.filter_pass).toBe(true);
   });
 
-  it('零成交量占位 bar：tradable_today=0，但 L1 决策不受影响（§3.3）', () => {
+  it('零成交量占位 bar：tradable_today=0，快照价顺延最近有效收盘，L1 决策照常', () => {
     const bars = makeBars(80, 0.0008);
-    bars[79] = { ...bars[79], volume: 0, amount: 0 };
+    const prevClose = bars[78].close;
+    // 库内占位 bar 的实际形态：O=H=L=C=前收，成交量为 0
+    bars[79] = {
+      ...bars[79],
+      open: prevClose,
+      high: prevClose,
+      low: prevClose,
+      close: prevClose,
+      volume: 0,
+      amount: 0,
+    };
     const slice = {
       tradingDays: bars.map((b) => b.date),
       symbols: [makeSymbolSeries('sh510300', bars)],
@@ -175,6 +201,9 @@ describe('逐日决策序列', () => {
     });
     expect(row.tradable_today).toBe(false);
     expect(row.has_bar).toBe(true);
+    expect(row.close_raw).toBe(prevClose);
+    // 快照价 = 最近有效收盘（= 前收）⇒ 涨跌幅 0，不触发涨跌停/±5%
+    expect(row.reject_reason).toBeNull();
     expect(row.filter_pass).toBe(true);
   });
 
