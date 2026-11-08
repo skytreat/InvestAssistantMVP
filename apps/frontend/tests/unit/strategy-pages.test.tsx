@@ -66,6 +66,48 @@ const OUTCOME = {
   t10: null,
 };
 
+/** F4 Step B：样本不足时后端清空一切百分比，前端只显示 N */
+const EMPTY_STATS = {
+  horizon: 't5',
+  sampleSize: 3,
+  excessSampleSize: 3,
+  statusCounts: { ok: 3, incomplete: 0, suspended: 0, no_entry: 0, excluded: 0 },
+  insufficientSample: true,
+  winRateAbsolute: null,
+  winRateExcess: null,
+  avgNetReturn: null,
+  avgBenchmarkReturn: null,
+  avgExcessReturn: null,
+};
+
+const EFFECTIVENESS = {
+  meta: {
+    from: '2026-08-10',
+    to: '2026-11-08',
+    benchmark: 'sh510300',
+    benchmarkClass: 'etf',
+    groupBy: 'plugin',
+    horizons: ['t1', 't5', 't10'],
+    notional: 50000,
+    sampleSize: 3,
+    insufficientSample: true,
+    statusCounts: { ok: 3, incomplete: 0, suspended: 0, no_entry: 0, excluded: 0 },
+    fees: {
+      commissionRate: 0.0001,
+      minCommission: 5,
+      stampDutyRate: 0,
+      transferFeeRate: 0,
+      slippageRate: 0.0001,
+    },
+    feeModelLabel: 'ETF 口径（印花税 0 / 过户费 0）',
+    feeModels: [],
+    generatedAt: '2026-11-08T00:00:00.000Z',
+  },
+  summary: [EMPTY_STATS],
+  groups: [],
+  details: [],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   getMock.mockImplementation(async (url: string) => {
@@ -84,6 +126,8 @@ beforeEach(() => {
         ]);
       case '/strategy/signals/7/outcome':
         return mockResponse(OUTCOME);
+      case '/strategy/effectiveness':
+        return mockResponse(EFFECTIVENESS);
       case '/portfolio/risk-check':
         return mockResponse({
           singleStockMaxWeight: 12.5,
@@ -173,6 +217,16 @@ describe('T150 策略有效性页（/strategy/effectiveness）', () => {
     expect(screen.getByText('-2%（2024-01-09）')).toBeInTheDocument();
     // T+10 为 null → 占位
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('有效性统计：费率口径脚注常显；样本不足只显示 N 条、不显示百分比', async () => {
+    renderWithRouter(<StrategyEffectiveness />);
+    expect(
+      await screen.findByText(/本次结果基于 ETF 口径（印花税 0 \/ 过户费 0）/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/样本不足（3 条）/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导出汇总' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导出明细' })).toBeInTheDocument();
   });
 });
 

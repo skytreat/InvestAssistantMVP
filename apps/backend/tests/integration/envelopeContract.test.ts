@@ -197,6 +197,9 @@ const ROUTE_CASES: RouteCase[] = [
   // F2：按信号查关联成交
   { method: 'GET', url: '/api/signal/:id/linked-trade' },
   { method: 'GET', url: '/api/strategy/signals/:id/outcome' },
+  // F4 Step B：策略有效性统计与导出
+  { method: 'GET', url: '/api/strategy/effectiveness' },
+  { method: 'GET', url: '/api/strategy/effectiveness/export' },
   { method: 'GET', url: '/api/ex-dividend/imports' },
 
   // ── 插件 / 策略 ──
