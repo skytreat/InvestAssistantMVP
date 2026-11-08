@@ -65,13 +65,7 @@ const NEED_REASON_TYPES = new Set<TradeType>(['buy', 'add', 'reduce', 'clear']);
 const AUTO_IMPORT_TYPES = new Set<TradeType>(['dividend', 'bonus', 'transfer']);
 
 /** T131：情绪状态固定 5 档（与 DDL 的 CHECK 枚举严格一致，非法值返回 400 而非 500） */
-const EMOTION_STATUSES: ReadonlySet<string> = new Set([
-  '极度兴奋',
-  '兴奋',
-  '平静',
-  '焦虑',
-  '恐慌',
-]);
+const EMOTION_STATUSES: ReadonlySet<string> = new Set(['极度兴奋', '兴奋', '平静', '焦虑', '恐慌']);
 
 /**
  * T87：`trade_time` 格式校验（秒级 HH:mm:ss）
