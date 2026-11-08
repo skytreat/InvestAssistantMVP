@@ -91,6 +91,13 @@ function installApiMock(): void {
         return mockResponse(STAT);
       case '/signal':
         return mockResponse(SIGNALS);
+      // F3：概览卡走「今日 Top 5」单日端点（含日期来源元信息）
+      case '/signal/top5':
+        return mockResponse(SIGNALS, {
+          trade_date: '2026-10-20',
+          trade_date_source: 'signal',
+          latest_quote_date: null,
+        });
       case '/admin/system-log':
         return mockResponse(LOGS, { pagination: { total: 1, totalPages: 1 } });
       default:
@@ -121,17 +128,17 @@ describe('G3.5 · ① 表格容器化（文档级溢出归零的前提）', () =
     installApiMock();
   });
 
-  it('「最新信号」表被包在 overflow-x:auto 的滚动容器里', async () => {
+  it('「今日 Top 5」表被包在 overflow-x:auto 的滚动容器里', async () => {
     const { container } = renderWithRouter(<Dashboard />);
-    await screen.findByText('最新信号');
+    await screen.findByText('今日 Top 5');
 
-    const el = region(container, '最新信号表');
+    const el = region(container, '今日 Top 5 表');
     expect(el.style.overflowX).toBe('auto');
     // Grid/Flex 子项默认 min-width:auto → 不显式写 0，容器自己会撑破父级
     // ⚠️ CSSOM 会把 0 的单位规范化掉 → 读回来是 '0' 而不是 '0px'
     expect(el.style.minWidth).toBe('0');
     // 表格确实在这个容器**里面**
-    expect(el.querySelector('table[aria-label="最新信号"]')).not.toBeNull();
+    expect(el.querySelector('table[aria-label="今日 Top 5"]')).not.toBeNull();
   });
 
   it('「最近日志」表被包在 overflow-x:auto 的滚动容器里（admin 角色）', async () => {
@@ -150,7 +157,7 @@ describe('G3.5 · ① 表格容器化（文档级溢出归零的前提）', () =
     const { container } = renderWithRouter(<Dashboard />);
     await screen.findByText('最近日志');
 
-    // dashboard 的表格 = 最新信号 + 最近日志（持仓区已卡片化，见 F-D2）
+    // dashboard 的表格 = 今日 Top 5 + 最近日志（持仓区已卡片化，见 F-D2）
     expect(container.querySelectorAll('table').length).toBe(2);
     expect(scrollRegions(container).length).toBe(2);
   });

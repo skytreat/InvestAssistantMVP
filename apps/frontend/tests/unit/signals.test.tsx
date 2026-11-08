@@ -104,11 +104,14 @@ function installApiMock(rows: SignalFixture[] = [DEFAULT_ROW]): void {
     Promise.resolve(
       url === '/market/latest-date'
         ? mockResponse({ date: '2026-11-06' })
-        : mockResponse(rows, {
-            trade_date: '2026-10-12',
-            trade_date_source: 'signal',
-            latest_quote_date: null,
-          }),
+        : url === '/signal/top5'
+          ? // F3：摘要区默认返回空（避免与主列表的 pill / 进度条断言互相干扰）
+            mockResponse([])
+          : mockResponse(rows, {
+              trade_date: '2026-10-12',
+              trade_date_source: 'signal',
+              latest_quote_date: null,
+            }),
     ),
   );
 }
@@ -217,7 +220,8 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     // 进页自动加载已发过一次 → 这里应是第 2 次
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(signalCalls()[1]?.[0]).toBe('/signal');
-    expect(lastParams()).toEqual({ page: 1, page_size: 50 });
+    // F1：默认分级 tab = 强 → 固定带 grade=strong
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
   });
 
   it('「查询」按钮可用空格键触发', async () => {
@@ -301,6 +305,8 @@ describe('Signals · 查询参数组装', () => {
     expect(lastParams()).toEqual({
       page: 1,
       page_size: 50,
+      grade: 'strong',
+      dedupe: 1,
       trade_date: '2026-10-12',
       plugin_id: 'filter_v2',
       direction: 'buy',
@@ -317,7 +323,7 @@ describe('Signals · 查询参数组装', () => {
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     const params = lastParams();
-    expect(params).toEqual({ page: 1, page_size: 50 });
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
     expect(params).not.toHaveProperty('trade_date');
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
@@ -341,7 +347,7 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
-    expect(lastParams()).toEqual({ page: 1, page_size: 50 });
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
   });
 });
 
@@ -367,7 +373,7 @@ describe('Signals · 结果表可读性', () => {
     getMock.mockReset();
   });
 
-  it('查询成功后表头为 标的代码/策略/方向/强度/标签/交易日期', async () => {
+  it('查询成功后表头为 标的代码/策略/方向/分级/强度/标签/交易日期', async () => {
     installApiMock();
     const user = userEvent.setup();
     renderWithRouter(<Signals />);
@@ -378,10 +384,10 @@ describe('Signals · 结果表可读性', () => {
     await screen.findByRole('table');
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
     // V3.8 T149：新增「操作」列（采纳/忽略/关联交易）
-    expect(headers).toEqual(['标的代码', '策略', '方向', '强度', '标签', '交易日期', '操作']);
+    expect(headers).toEqual(['标的代码', '策略', '方向', '分级', '强度', '标签', '交易日期', '操作']);
   });
 
-  it('数据行按列顺序渲染（标的代码 / 策略 / 方向 / 强度 / 标签 / 交易日期）', async () => {
+  it('数据行按列顺序渲染（标的代码 / 策略 / 方向 / 分级 / 强度 / 标签 / 交易日期）', async () => {
     installApiMock();
     const user = userEvent.setup();
     renderWithRouter(<Signals />);
@@ -401,6 +407,8 @@ describe('Signals · 结果表可读性', () => {
       'sh600000',
       'filter_v2',
       '▲ 买入',
+      // F1：缺省分级的存量行显示「未分级」
+      '未分级',
       '--',
       '放量突破',
       '2026-10-12',
