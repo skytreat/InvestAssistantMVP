@@ -73,6 +73,8 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/review', label: '交易复盘', group: '交易与持仓' },
   { to: '/portfolio/return', label: '收益', group: '交易与持仓' },
   { to: '/candidates', label: '候选池', group: '交易与持仓' },
+  // PA-13/PA-14：纸面账户（与真实资产分区展示，不混入仪表盘）
+  { to: '/paper', label: '纸面账户', group: '交易与持仓' },
   // V3.8 T143/T144：券商对账域（PRD_v3 §3 导航「数据 → 券商对账」；仅 admin 可见，SDD_v3 §10.3）
   { to: '/broker/reconcile', label: '券商对账', group: '券商', adminOnly: true },
   { to: '/settings', label: '设置', group: '策略与设置' },
