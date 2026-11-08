@@ -86,7 +86,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         totalSkipped = 0;
       for (const p of result.results) {
         if (p.status !== 'SUCCESS' || p.signals.length === 0) continue;
-        const persist = persistSignals(p.signals, p.pluginId, 'monitor', tradeDate);
+        const persist = persistSignals(
+          p.signals,
+          p.pluginId,
+          'monitor',
+          tradeDate,
+          SIGNAL_USER_ID,
+          'live',
+          p.subCategory ?? null,
+        );
         totalInserted += persist.inserted;
         totalSkipped += persist.skipped;
       }

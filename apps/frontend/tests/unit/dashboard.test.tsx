@@ -278,7 +278,8 @@ describe('Dashboard · 双口径 Tab 切换', () => {
     expect(urls).toContain('/signal/top5');
     expect(urls).not.toContain('/admin/system-log');
 
-    expect(getMock).toHaveBeenCalledWith('/signal/top5');
+    // Top5 端点显式排除风险类（风险提示不挤占「今日最值得看的机会」）
+    expect(getMock).toHaveBeenCalledWith('/signal/top5', { params: { exclude_risk: 1 } });
     expect(screen.queryByText('最近日志')).not.toBeInTheDocument();
   });
 });

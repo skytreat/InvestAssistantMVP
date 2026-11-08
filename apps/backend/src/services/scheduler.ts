@@ -419,6 +419,9 @@ export function registerCronJobs(app: FastifyInstance): void {
                   pluginResult.pluginId,
                   'monitor',
                   tradeDate,
+                  SIGNAL_USER_ID,
+                  'live',
+                  pluginResult.subCategory ?? null,
                 );
                 totalInserted += persist.inserted;
                 totalSkipped += persist.skipped;
