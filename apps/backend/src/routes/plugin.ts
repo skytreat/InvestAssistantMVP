@@ -76,6 +76,10 @@ export async function registerPluginRoutes(app: FastifyInstance) {
           id: p.id,
           name: p.name,
           category: p.category,
+          // T133 / PA-08：前端组合条件候选必须排除风险类（`position_risk_alert`），
+          // 靠 `sub_category='risk'` 判据，不硬编码插件 id
+          subCategory: p.subCategory,
+          requiresPositions: p.requiresPositions === true,
           description: (p as any).description as string | undefined,
           paramSchema: p.paramSchema,
           enabled: cfg?.enabled ?? 1,

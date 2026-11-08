@@ -16,6 +16,7 @@ import { registerReviewRoutes } from './review.js';
 import { registerPortfolioRoutes } from './portfolio.js';
 import { registerPortfolioRiskRoutes } from './portfolioRisk.js';
 import { registerPluginRoutes } from './plugin.js';
+import { registerComboRoutes } from './combo.js';
 import { registerStrategyRoutes } from './strategy.js';
 import { registerExDividendRoutes } from './exDividend.js';
 import { registerBrokerImportRoutes } from './brokerImport.js';
@@ -104,6 +105,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerPortfolioRoutes(app);
   await registerPortfolioRiskRoutes(app);
   await registerPluginRoutes(app);
+  // T133 / PA-07：组合策略配置 CRUD（D1 仅 AND；配置变更不影响历史信号）
+  await registerComboRoutes(app);
   // T67：除权导入的**读取侧**（普通用户可读，Dashboard「今日除权导入」块用）
   await registerExDividendRoutes(app);
   await registerBrokerImportRoutes(app);
