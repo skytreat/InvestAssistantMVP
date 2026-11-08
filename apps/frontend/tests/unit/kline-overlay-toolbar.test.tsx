@@ -68,6 +68,7 @@ function makeBar(date: string, timestamp: number, close: number): ChartBar {
     j: 50,
     signal: null,
     trades: [],
+    patterns: [],
   };
 }
 

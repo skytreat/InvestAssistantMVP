@@ -37,6 +37,7 @@ import {
   type OverlaySaveResult,
   type StoredOverlay,
 } from '../indicators/klineOverlays';
+import type { PatternApiItem } from '../indicators/klinePatterns';
 
 /**
  * K 线页（T70 · 改接 `klinecharts@10.1.0` + 前端算指标；T71 · 指标参数实时生效）
@@ -203,6 +204,8 @@ export default function Kline() {
    * 每轮加载开始时清空 —— 服务端已软删除，新一轮快照不会再包含它。
    */
   const deletedOverlayIdsRef = useRef<Set<number>>(new Set());
+  /** 形态标注（后端按 qfq 日线识别；前端只按当前周期映射绘制，无形态时为空数组）*/
+  const [patterns, setPatterns] = useState<PatternApiItem[]>([]);
   /** 取数次数（每次成功加载 +1）—— 参与数据指纹，保证新数据一定重新灌进图表 */
   const [loadSeq, setLoadSeq] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -399,13 +402,56 @@ export default function Kline() {
   }, [symbol, period, fq]);
 
   /**
+   * K 线形态标注：按「当前标的 + 周期」取数据（**后端算、前端只画**）
+   *
+   * - 后端一律按 **qfq 日线**识别（设计文档 §2）；前端按当前周期把形态日期映射到桶，
+   *   几何价格取当前图表自己的 bar ⇒ 周/月与复权切换都不会漂移
+   * - 取数天数与 K 线主请求一致（`fetchDaysFor`），避免形态落在图表窗口之外
+   * - 形态只是增强信息 ⇒ 请求失败静默清空，不影响 K 线本身
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const target = symbol.trim().toLowerCase();
+    if (!target) {
+      setPatterns([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      try {
+        const res = await api.get<ApiEnvelopeBody>(`/quote/${target}/patterns`, {
+          params: { days: fetchDaysFor(days, period) },
+        });
+        if (cancelled) return;
+        const body = res.data;
+        const rows =
+          isOkEnvelope(body) &&
+          body.data !== null &&
+          typeof body.data === 'object' &&
+          Array.isArray((body.data as { patterns?: unknown }).patterns)
+            ? ((body.data as { patterns: PatternApiItem[] }).patterns ?? [])
+            : [];
+        setPatterns(rows);
+      } catch {
+        if (!cancelled) setPatterns([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, days, period]);
+
+  /**
    * 🔴 T71：指标 + 周期聚合的**派生值**
    *
    * 参数一变 → 这里重算 → 新的 `bars` 传给图表 → 图表只重算指标、**不取数**。
    */
   const bars = useMemo<ChartBar[]>(
-    () => buildChartBars(rawBars, period, signals, params, trades),
-    [rawBars, period, signals, params, trades],
+    () => buildChartBars(rawBars, period, signals, params, trades, patterns),
+    [rawBars, period, signals, params, trades, patterns],
   );
 
   /**

@@ -46,6 +46,7 @@ function makeBar(i: number): ChartBar {
     j: 50,
     signal: null,
     trades: [],
+    patterns: [],
   };
 }
 
