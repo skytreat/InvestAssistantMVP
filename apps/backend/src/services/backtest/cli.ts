@@ -36,6 +36,7 @@ import { momentumRawWindow } from './strategies/wufuRotation/filters.js';
 import { computeAttribution, toAttributionRows } from './attribution/index.js';
 import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';
 import { loadCorporateActions } from './corporateActions.js';
+import { assertBacktestWriteWindowOpen } from './writeWindow.js';
 import type { SweepResult } from './optimize/runner.js';
 import type { CorporateAction } from './account/portfolio.js';
 
@@ -609,6 +610,8 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
 
 /** 回测子命令（M2）：装载行情 + 跑引擎 + 落库 + 打印指标 */
 async function runCommand(argv: readonly string[]): Promise<void> {
+  // 17:00–17:10 是 tdx2db 写窗口 + 纸面日更窗口，禁止回测批量任务（方案 §7.1 / D1）
+  assertBacktestWriteWindowOpen();
   const startedAt = new Date().toISOString();
   const args = parseRunArgs(argv);
 
@@ -1000,6 +1003,8 @@ function reexecWithExposeGc(argv: readonly string[]): boolean {
 }
 
 async function sweepCommand(argv: readonly string[]): Promise<void> {
+  // 同上：写窗口内禁止 sweep（与 tdx2db / 纸面日更抢锁）
+  assertBacktestWriteWindowOpen();
   const args = parseSweepArgs(argv);
   const { runSweep } = await import('./optimize/runner.js');
   const store = new BacktestStore(args.dbPath);

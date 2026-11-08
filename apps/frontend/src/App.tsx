@@ -13,6 +13,7 @@ import PortfolioReturn from './pages/PortfolioReturn';
 import StrategyConfig from './pages/StrategyConfig';
 import StrategyEffectiveness from './pages/StrategyEffectiveness';
 import RiskCheck from './pages/RiskCheck';
+import PaperAccount from './pages/PaperAccount';
 import { useUserStore } from './store/user';
 import { NAV_ITEMS, Navbar, useIsDesktop } from './pages/_shared';
 import ComplianceFooter from './components/ComplianceFooter';
@@ -237,6 +238,8 @@ export default function App() {
             }
           />
           <Route path="/portfolio/return" element={<PortfolioReturn />} />
+          {/* PA-13/PA-14：纸面账户（只读账本 + 必须的手动切换阶段） */}
+          <Route path="/paper" element={<PaperAccount />} />
           {/* V3.8 T148/T150：策略配置 / 有效性 / 组合体检（PRD_v3 §4.1/§4.3/§5.3） */}
           <Route path="/strategy/config" element={<StrategyConfig />} />
           <Route path="/strategy/effectiveness" element={<StrategyEffectiveness />} />

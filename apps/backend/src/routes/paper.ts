@@ -26,6 +26,13 @@ import {
   type FeeConfigInput,
 } from '../services/paper/fees.js';
 import { listPaperStrategies } from '../services/paper/strategies.js';
+import {
+  getPaperReport,
+  listPaperEquity,
+  listPaperOrders,
+  listPaperPositions,
+  type PaperOrderDto,
+} from '../services/paper/report.js';
 
 function sendError(reply: FastifyReply, err: unknown) {
   if (err instanceof PaperError) {
@@ -153,6 +160,65 @@ export async function registerPaperRoutes(app: FastifyInstance) {
     try {
       const id = parseId((request.params as { id: string }).id);
       reply.send(ok(closePaperAccount(store().db, user.sub, id)));
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  // ── 只读报告（PA-09）：影子期看信号质量，落账期看净值 / 持仓 / 订单 ──
+  app.get('/api/paper/accounts/:id/orders', async (request, reply) => {
+    const user = (request as any).user;
+    try {
+      const id = parseId((request.params as { id: string }).id);
+      const q = request.query as { decisionDate?: string; status?: string; limit?: string };
+      const statuses = q.status
+        ? (q.status
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean) as PaperOrderDto['status'][])
+        : undefined;
+      reply.send(
+        ok(
+          listPaperOrders(store().db, user.sub, id, {
+            decisionDate: q.decisionDate,
+            statuses,
+            limit: q.limit ? Number(q.limit) : undefined,
+          }),
+        ),
+      );
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get('/api/paper/accounts/:id/positions', async (request, reply) => {
+    const user = (request as any).user;
+    try {
+      const id = parseId((request.params as { id: string }).id);
+      reply.send(ok(listPaperPositions(store().db, user.sub, id)));
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get('/api/paper/accounts/:id/equity', async (request, reply) => {
+    const user = (request as any).user;
+    try {
+      const id = parseId((request.params as { id: string }).id);
+      const q = request.query as { from?: string; to?: string };
+      reply.send(ok(listPaperEquity(store().db, user.sub, id, { from: q.from, to: q.to })));
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.get('/api/paper/accounts/:id/report', async (request, reply) => {
+    const user = (request as any).user;
+    try {
+      const id = parseId((request.params as { id: string }).id);
+      const q = request.query as { from?: string; to?: string };
+      const report = await getPaperReport(store().db, user.sub, id, { from: q.from, to: q.to });
+      reply.send(ok(report));
     } catch (err) {
       return sendError(reply, err);
     }

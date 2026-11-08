@@ -21,10 +21,10 @@
  *
  * 故本文件：
  *   - 用 `vi.setSystemTime()` 把系统时间拨到 16:59，再逐分钟 `advanceTimersByTimeAsync`，
- *     断言**每个时刻只触发该触发的那一段**（17:04 是空档，什么都不该发生）；
+ *     断言**每个时刻只触发该触发的那一段**（17:04 起是纸面账户日更，不再是空档）；
  *   - **不自造 mock 时钟机制** —— 直接用 cron 表达式 + fake timers 驱动**线上同一套**代码路径。
  *
- * ⚠️ 4 段任务体都会打 DuckDB / 落文件 ⇒ 本文件把重依赖（含日志）`vi.mock` 成假实现，
+ * ⚠️ 5 段任务体都会打 DuckDB / 落文件 ⇒ 本文件把重依赖（含日志）`vi.mock` 成假实现，
  *    **只记录调用顺序**，不改变被测的调度逻辑本身；
  *    ⇒ 本文件**完全不碰数据库、不碰行情库**，与其他 integration 测试文件零耦合。
  */
@@ -72,6 +72,8 @@ vi.mock('../../src/services/quoteUpdateStatus.js', () => ({
   reportTdx2dbRunOutcome: vi.fn(async () => ({ state: 'SUCCESS' as const, message: 'mock 更新成功' })),
 }));
 vi.mock('../../src/services/pluginEngine.js', () => ({
+  // S2 起 `paper/strategies` 会在模块加载期解析内置策略（`defineStrategy` 依赖本导出）
+  deriveDefaultParams: vi.fn(() => ({})),
   executeAllPlugins: vi.fn(async () => {
     fired.push('signal');
     return {
@@ -122,6 +124,24 @@ vi.mock('../../src/services/signalService.js', () => ({
 }));
 vi.mock('../../src/services/assetStat.js', () => ({
   insertAssetStatSnapshots: vi.fn(async () => ({ inserted: 0 })),
+}));
+// PA-08：纸面决策模块（`paper/strategies` 在加载期会调 `deriveDefaultParams`），这里一并 mock
+vi.mock('../../src/services/paper/store.js', () => ({
+  PaperStore: { getInstance: vi.fn(() => ({ db: {} })) },
+}));
+// PA-10：17:04 纸面账户日更（结算 + 决策）—— 同样 mock 掉（本文件**不碰数据库**）
+vi.mock('../../src/services/paper/settle.js', () => ({
+  runPaperDailyStage: vi.fn(async () => {
+    fired.push('paper');
+    return {
+      accounts: 0,
+      settled: 0,
+      decisions: 0,
+      failed: 0,
+      outcomes: [],
+      settleOutcomes: [],
+    };
+  }),
 }));
 vi.mock('../../src/services/quoteRerun.js', () => ({
   rerunQuoteUpdate: vi.fn(async () => ({
@@ -231,18 +251,20 @@ describe('cron_sequence_trigger — 5 段的触发时刻与顺序（配置层）
     expect(service).toMatch(/tdx2db cron --dburi/);
   });
 
-  it('cron_sequence_trigger: 4 段 Fastify cron 的注册顺序 = 17:01 校验 / 17:02 信号 / 17:03 除权 / 17:05 备份', () => {
+  it('cron_sequence_trigger: 5 段 Fastify cron 的注册顺序 = 17:01 校验 / 17:02 信号 / 17:03 除权 / 17:04 纸面日更 / 17:05 备份', () => {
     const registered = captureCronRegistrations();
     expect(registered.map((r) => r.id)).toEqual([
       'datacheck-c1-c12',
       'signal-generate',
       'dividend-import',
+      'paper-account-daily',
       'backup',
     ]);
     expect(registered.map((r) => r.expr)).toEqual([
       '1 17 * * 1-5',
       '2 17 * * 1-5',
       '3 17 * * 1-5',
+      '4 17 * * 1-5',
       '5 17 * * 1-5',
     ]);
     // T108：所有 cron 必须显式使用北京时间，不能依赖服务器本地时区（Etc/UTC）
@@ -251,14 +273,15 @@ describe('cron_sequence_trigger — 5 段的触发时刻与顺序（配置层）
       'Asia/Shanghai',
       'Asia/Shanghai',
       'Asia/Shanghai',
+      'Asia/Shanghai',
     ]);
   });
 
-  it('cron_sequence_trigger: 5 段时刻严格递增（17:00 < 17:01 < 17:02 < 17:03 < 17:05）', () => {
+  it('cron_sequence_trigger: 6 段时刻严格递增（17:00 < 17:01 < 17:02 < 17:03 < 17:04 < 17:05）', () => {
     const registered = captureCronRegistrations();
     const minutes = [timerMinuteOfDay(), ...registered.map((r) => cronMinuteOfDay(r.expr))];
-    // 折算成当天第几分钟：17:00=1020, 17:01=1021, 17:02=1022, 17:03=1023, 17:05=1025
-    expect(minutes).toEqual([1020, 1021, 1022, 1023, 1025]);
+    // 折算成当天第几分钟：17:00=1020, 17:01=1021, 17:02=1022, 17:03=1023, 17:04=1024, 17:05=1025
+    expect(minutes).toEqual([1020, 1021, 1022, 1023, 1024, 1025]);
     for (let i = 1; i < minutes.length; i++) {
       expect(minutes[i], `第 ${i} 段必须晚于第 ${i - 1} 段`).toBeGreaterThan(minutes[i - 1]);
     }
@@ -285,13 +308,14 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
         'datacheck-c1-c12',
         'signal-generate',
         'dividend-import',
+        'paper-account-daily',
         'backup',
       ]);
 
-      // 17:00 —— 行情更新段（systemd timer，Node 进程外）⇒ Node 侧 4 段都还没到点
+      // 17:00 —— 行情更新段（systemd timer，Node 进程外）⇒ Node 侧 5 段都还没到点
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(0);
-      expect(fired, '17:00 时 Node 侧的 4 段都未到点').toEqual([]);
+      expect(fired, '17:00 时 Node 侧的 5 段都未到点').toEqual([]);
 
       // 17:01 —— 数据校验
       await vi.advanceTimersByTimeAsync(60_000);
@@ -308,15 +332,15 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
       await vi.advanceTimersByTimeAsync(0);
       expect(fired).toEqual(['datacheck', 'signal', 'dividend']);
 
-      // 17:04 —— 空档（备份在 17:05，不在 17:04）
+      // 17:04 —— 纸面账户日更（PA-08 影子决策）
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(0);
-      expect(fired, '17:04 是空档，不应触发任何段').toEqual(['datacheck', 'signal', 'dividend']);
+      expect(fired, '17:04 应触发纸面日更').toEqual(['datacheck', 'signal', 'dividend', 'paper']);
 
       // 17:05 —— 双库备份
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(0);
-      expect(fired).toEqual(['datacheck', 'signal', 'dividend', 'backup']);
+      expect(fired).toEqual(['datacheck', 'signal', 'dividend', 'paper', 'backup']);
 
       scheduler.stop();
     } finally {
@@ -324,7 +348,7 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
     }
   });
 
-  it('cron_sequence_trigger: 写窗口结束前四段都不执行，结束后按序执行', async () => {
+  it('cron_sequence_trigger: 写窗口结束前五段都不执行，结束后按序执行', async () => {
     vi.useFakeTimers();
     let sentinelPresent = true;
     const sentinelSpy = vi
@@ -340,18 +364,18 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
       vi.setSystemTime(new Date('2026-10-20T08:59:00Z'));
       registerCronJobs({ scheduler } as any);
 
-      // 16:59 → 17:05：四段 Cron 都已到点，但 tdx2db 仍在写库
+      // 16:59 → 17:05：五段 Cron 都已到点，但 tdx2db 仍在写库
       await vi.advanceTimersByTimeAsync(6 * 60_000);
       await flush();
-      expect(fired, '写窗口内四段都不得执行').toEqual([]);
+      expect(fired, '写窗口内五段都不得执行').toEqual([]);
 
       // 模拟 tdx2db 完成（哨兵删除）
       sentinelPresent = false;
       await vi.advanceTimersByTimeAsync(1_000);
       await flush();
 
-      // 队列按 校验 → 信号 → 除权 → 备份 放行
-      expect(fired).toEqual(['datacheck', 'signal', 'dividend', 'backup']);
+      // 队列按 校验 → 信号 → 除权 → 纸面日更 → 备份 放行
+      expect(fired).toEqual(['datacheck', 'signal', 'dividend', 'paper', 'backup']);
     } finally {
       scheduler.stop();
       sentinelSpy.mockRestore();
