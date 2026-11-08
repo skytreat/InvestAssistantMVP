@@ -182,6 +182,122 @@ describe('Review · PATCH 复盘 4 字段', () => {
   });
 });
 
+describe('Review · PATCH 复盘字段对齐（T131 / 缺陷 C7）', () => {
+  const seedBuy = async (assetCode: string) => {
+    await postTrade({
+      asset_code: assetCode,
+      trade_type: 'buy',
+      trade_date: '2025-05-01',
+      trade_time: '09:00:01',
+      quantity: 10,
+      price: 10.0,
+      fee: 0,
+      trade_reason: 'T131 字段测试',
+    });
+    const list = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/trade?asset_code=${assetCode}&trade_type=buy`,
+      headers: authHeaders(),
+    });
+    return JSON.parse(list.body).data[0].id as number;
+  };
+
+  const readBack = async (assetCode: string) => {
+    const res = await bundle.app.inject({
+      method: 'GET',
+      url: `/api/trade?asset_code=${assetCode}&trade_type=buy`,
+      headers: authHeaders(),
+    });
+    return JSON.parse(res.body).data[0];
+  };
+
+  it('emotion_status / buy_reason / sell_reason / system_followed 写入后可原样读回', async () => {
+    const CODE_T131 = 'szREVIEWT131A';
+    const tradeId = await seedBuy(CODE_T131);
+
+    const patch = await bundle.app.inject({
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
+      payload: {
+        emotion_status: '焦虑',
+        buy_reason: '突破买入',
+        sell_reason: '止损离场',
+        system_followed: 1,
+      },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(JSON.parse(patch.body).code).toBe(0);
+
+    const row = await readBack(CODE_T131);
+    expect(row.emotion_status).toBe('焦虑');
+    expect(row.buy_reason).toBe('突破买入');
+    expect(row.sell_reason).toBe('止损离场');
+    expect(row.system_followed).toBe(1);
+  });
+
+  it('部分字段更新不影响其他字段（未传字段保持原值，不被覆写为 NULL）', async () => {
+    const CODE_T131 = 'szREVIEWT131B';
+    const tradeId = await seedBuy(CODE_T131);
+
+    // 先写满 4 个字段
+    await bundle.app.inject({
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
+      payload: {
+        emotion_status: '平静',
+        buy_reason: '回踩买入',
+        sell_reason: '计划止盈',
+        system_followed: 0,
+      },
+    });
+
+    // 只改 remark → 其余字段必须保持
+    const patch = await bundle.app.inject({
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
+      payload: { remark: '只改备注' },
+    });
+    expect(patch.statusCode).toBe(200);
+
+    const row = await readBack(CODE_T131);
+    expect(row.remark).toBe('只改备注');
+    expect(row.emotion_status).toBe('平静');
+    expect(row.buy_reason).toBe('回踩买入');
+    expect(row.sell_reason).toBe('计划止盈');
+    expect(row.system_followed).toBe(0);
+  });
+
+  it('PATCH 不存在的 id → 404（确实未写入时不返回 200）', async () => {
+    const patch = await bundle.app.inject({
+      method: 'PATCH',
+      url: '/api/trade/999999999',
+      headers: authHeaders(),
+      payload: { remark: '不应落库' },
+    });
+    expect(patch.statusCode).toBe(404);
+    expect(JSON.parse(patch.body).code).not.toBe(0);
+  });
+
+  it('emotion_status 非法枚举 → 400 PARAM_INVALID（不伪装成功）', async () => {
+    const CODE_T131 = 'szREVIEWT131C';
+    const tradeId = await seedBuy(CODE_T131);
+
+    const patch = await bundle.app.inject({
+      method: 'PATCH',
+      url: `/api/trade/${tradeId}`,
+      headers: authHeaders(),
+      payload: { emotion_status: '非常开心' },
+    });
+    expect(patch.statusCode).toBe(400);
+
+    const row = await readBack(CODE_T131);
+    expect(row.emotion_status).toBeNull();
+  });
+});
+
 describe('Review · strategy_match 筛选', () => {
   // 🔴 T81 顺序依赖修复：原实现依赖**兄弟用例**（上面的 PATCH 用例）先跑并留下
   //   strategy_match 标记 —— T81 的 `sequence.shuffle` 一开就随机失败

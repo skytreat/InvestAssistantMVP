@@ -104,6 +104,41 @@ describe('T64 · 会话过期 → 跳登录页（保留原路径）', () => {
     expect(store.useUserStore.getState().token).toBeNull();
   });
 
+  it('并发多个 401 → 只广播一次且 from 保持原始路径（绝不写入 /login）', async () => {
+    window.history.pushState({}, '', '/review?tab=pairs');
+    const { mod, store, App, inst } = await loadApp();
+    store.useUserStore.setState({ token: 'old-token', refreshToken: null, username: 'tester', role: 'user' });
+
+    const seen: string[] = [];
+    mod.onSessionExpired((from) => seen.push(from));
+
+    inst.handler = async () => {
+      throw httpError(401, failResponse('UNAUTHORIZED', 'token 无效或已过期'));
+    };
+
+    const r = renderWithRouter(<App />, { initialEntries: ['/review?tab=pairs'] });
+    await act(async () => {
+      await Promise.all([
+        mod.api.get('/holding').catch(() => undefined),
+        mod.api.get('/trade').catch(() => undefined),
+        mod.api.get('/candidate').catch(() => undefined),
+      ]);
+    });
+
+    await waitFor(() => expect(r.routerPath).toBe('/login'));
+    // 一轮并发 401 只广播一次，且来自原始路径
+    expect(seen).toEqual(['/review?tab=pairs']);
+    expect(r.routerState).toEqual({ from: '/review?tab=pairs' });
+
+    // 模拟浏览器已完成跳转：迟到的 401 不得把 from 覆盖成 /login
+    window.history.pushState({}, '', '/login');
+    await act(async () => {
+      await mod.api.get('/candidate').catch(() => undefined);
+    });
+    expect(seen).toEqual(['/review?tab=pairs']);
+    expect(r.routerState).toEqual({ from: '/review?tab=pairs' });
+  });
+
   it('过期提示条在登录页**仍然可见**（文案取自错误码表 UNAUTHORIZED）', async () => {
     window.history.pushState({}, '', '/trade');
     const { mod, store, App, inst } = await loadApp();
