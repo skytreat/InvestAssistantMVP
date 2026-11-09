@@ -111,11 +111,13 @@
 |---|---|---|
 | F1 分级未实现 | **成立** | `grade` 列仅 DDL（`configStore.ts:187`），业务代码零读写；INSERT 不含 `grade`（`signalService.ts:89`）；前端只有 `strength` 进度条（`SignalStrength.tsx`），无强/中/弱筛选。 |
 | F3 今日 Top 5 未实现 | **成立** | Dashboard 仅取最新 5 条（`Dashboard.tsx:491/940`），无今日过滤、无优先级排序、无摘要卡；T149 标 ⬜。 |
-| F4 有效性六项未实现 | **成立** | 仅有 T+1/5/10 原始涨跌（`StrategyEffectiveness.tsx:13/158-171`）；基准/扣费/胜率/采纳率/分组/导出均无代码，注释自认留给 T135（`:16`），但 T135 标 ✅ 却无实现。 |
+| F4 有效性六项未实现 | **已不成立（2026-11-09 更新）** | Step A/B/C 已合入：扣费 `#136`/`#137`、基准 / 胜率 / 分组下钻 / CSV 导出 `#137`、采纳率 `#141`；代码位置 `services/strategyEffectiveness.ts`（`computeFees:179`、`summarizeHorizon:545`、`GROUP_BYS:35`、`buildEffectivenessCsv:991`、`summarizeAdoption:333`）。原判据（`StrategyEffectiveness.tsx:13/158-171`、注释 `:16`）已过期。 |
 | 「关联链路」未实现 | **成立**（本表编号为 **F2**） | `PATCH /link-trade` 只写 `linked_trade_id`（`signal.ts:217-249`）；前端 prompt 手输（`Signals.tsx:175-187`），不展示、不跳转、无反向关联；T141 验收项「关联后可跳转复盘」未做。 |
 | F6 冷静期/跨境（补充复核） | **成立** | `cooldown_until` 仅 DDL（`configStore.ts:193/502`），零读写；无跨境提示（`StrategyConfig.tsx` 无相关文案）。 |
 
-**计划状态漂移（需登记）**：`code_implementation_plan_v3.md:81` 的 T134 标 ✅，但过期/冷却/分级/快照四项只有 DDL；`:82` 的 T135 标 ✅，但成本与基准未实现；`:87` 的 T141 标 ✅，但只落地了路由、缺跳转与采纳率分离。T149/T150 标 ⬜ 与实际页面存在部分实现。建议后续单独开任务修正计划状态，本文不修改计划文档。
+**计划状态漂移（2026-11-09 部分关闭）**：`:82` 的 T135 已于 2026-11-09 置 ✅ 并写明六项落地 PR（Step A `#136` / Step B `#137` / Step C `#141`），本条漂移**已关闭**；`:81` 的 T134（过期/冷却/分级/快照四项只有 DDL）、`:87` 的 T141（只落地路由、缺跳转）、T149/T150 标记偏差**仍存在**，不在本轮范围。
+
+> 注：§5 的合计口径（41/48、41/75 等）仍为 2026-11-07 基线，未因 F4 完成而重算。
 
 ---
 
