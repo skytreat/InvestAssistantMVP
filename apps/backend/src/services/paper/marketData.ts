@@ -96,10 +96,7 @@ export function universeModeForStrategy(strategyId: string): PaperUniverseMode {
  * `dualmomentum` 默认需要 60 根（`INDICATOR_LOOKBACK`），不足时 L1 整体短路返回 0 ⇒
  * 不装载预热段会让账户前 ~60 个交易日恒为空集。参数放大时按公式同步放大。
  */
-export function strategyWarmup(
-  strategyId: string,
-  params: Readonly<Record<string, unknown>>,
-): number {
+export function strategyWarmup(strategyId: string, params: Readonly<Record<string, unknown>>): number {
   if (strategyId === 'wufu-rotation') {
     return momentumRawWindow(resolveWufuRotationParams({ ...params }));
   }

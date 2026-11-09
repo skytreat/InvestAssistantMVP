@@ -405,7 +405,8 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       }
       // 候选人之外、且未到最短持有期的持仓：保持不动（不参与换手与资金分配）
       for (const pos of positions) {
-        if (selectedSet.has(pos.symbol) || sellAll.has(pos.symbol) || overweightTarget.has(pos.symbol)) continue;
+        if (selectedSet.has(pos.symbol) || sellAll.has(pos.symbol) || overweightTarget.has(pos.symbol))
+          continue;
         targets.push({ symbol: pos.symbol, hold: true, reason: 'holding-retained' });
       }
 

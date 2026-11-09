@@ -649,8 +649,7 @@ async function runCommand(argv: readonly string[]): Promise<void> {
   const dmParams = args.strategy === 'dualmomentum' ? resolveDualMomentumParams(args.params) : null;
   // dualmomentum 的市场过滤与超额基准都是 sh000300（DAS §2.1）；未显式指定 --benchmark 时用它
   const benchmark =
-    dmParams !== null &&
-    !argv.some((a) => a === '--benchmark' || a.startsWith('--benchmark='))
+    dmParams !== null && !argv.some((a) => a === '--benchmark' || a.startsWith('--benchmark='))
       ? BENCHMARK_SYMBOL
       : args.benchmark;
   const indexCodes =

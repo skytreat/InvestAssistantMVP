@@ -107,9 +107,7 @@ function snapshot(asOf: string): UniverseSnapshot {
   } as unknown as UniverseSnapshot;
 }
 
-const SIGNAL_BARS = new Map<string, Bar[]>(
-  POOL_ORDER.map((s) => [s, barsOf(POOL_CLOSES.get(s)!)]),
-);
+const SIGNAL_BARS = new Map<string, Bar[]>(POOL_ORDER.map((s) => [s, barsOf(POOL_CLOSES.get(s)!)]));
 const INDEX_BARS = new Map<string, Bar[]>([[BENCHMARK_SYMBOL, barsOf(risingCloses(3000, 0.002))]]);
 
 const lastDay = DAYS[DAYS.length - 1];
@@ -120,18 +118,18 @@ const lastDay = DAYS[DAYS.length - 1];
  */
 const DECIDE_PARAMS = { rsrsMin: -10, rsrsMax: 50 };
 
-function makeDecisionContext(overrides: {
-  params?: Record<string, unknown>;
-  portfolio?: Portfolio;
-  prices?: Map<string, number>;
-} = {}) {
+function makeDecisionContext(
+  overrides: {
+    params?: Record<string, unknown>;
+    portfolio?: Portfolio;
+    prices?: Map<string, number>;
+  } = {},
+) {
   const strategy = createDualMomentumStrategy();
   const params = { ...strategy.defaultParams, ...(overrides.params ?? {}) };
   strategy.init?.({ params });
   const portfolio = overrides.portfolio ?? new Portfolio(1_000_000);
-  const prices =
-    overrides.prices ??
-    new Map(POOL_ORDER.map((s) => [s, POOL_CLOSES.get(s)!.at(-1)!]));
+  const prices = overrides.prices ?? new Map(POOL_ORDER.map((s) => [s, POOL_CLOSES.get(s)!.at(-1)!]));
   const tags: Record<string, unknown> = {};
   const logs: { level: 'info' | 'warn'; message: string }[] = [];
   const ctx = makeContext({
