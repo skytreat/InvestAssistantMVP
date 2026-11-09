@@ -955,7 +955,7 @@ V3 **不改插件引擎**（50ms 预算、参数校验、沙箱约束全部沿�
 - `assetScope` 必须属于 6 档；名称非空；`enabled` 只接受布尔值或 `0/1`。
 - 错误码：400 `PARAM_INVALID`；404 `NOT_FOUND`（不存在或已软删）；500 `INTERNAL_ERROR`。
 - 端点：`GET /api/strategy/combos`（`include_disabled`）、`GET /api/strategy/combos/:id`、`POST /api/strategy/combos`、`PUT /api/strategy/combos/:id`、`PUT /api/strategy/combos/:id/toggle`、`DELETE /api/strategy/combos/:id`。
-- ⚠️ **实测偏差**：`cooldownBars` 目前**仅存储、校验、展示**，未参与组合信号生成或去重；信号页冷却使用全局 `SIGNAL_COOLDOWN_BARS`（展示层合并）。见计划 V3-B9。
+- ⚠️ **实测偏差**：`cooldownBars` 目前**仅存储、校验、展示**，未参与组合信号生成或去重；信号页冷却使用全局 `SIGNAL_COOLDOWN_BARS`（展示层合并）。见计划 V3-B9 / **T153（V3.10，待决策）**。
 
 #### 10.4.2 组合统计与插件统计分列
 
@@ -1204,7 +1204,7 @@ CREATE INDEX IF NOT EXISTS idx_strategy_combo_condition
 **语义说明**：
 
 - `combine_op` 物理上允许 `OR`，但服务层只写 `'AND'`（§10.4.1）；`period` 当前只允许 `daily`。
-- `cooldown_bars` 校验 1~20；当前仅存储/校验/展示，未参与生成或去重（§10.4.1、计划 V3-B9）。
+- `cooldown_bars` 校验 1~20；当前仅存储/校验/展示，未参与生成或去重（§10.4.1、计划 V3-B9 / T153）。
 - `config_version` 仅在请求体显式携带 `conditions` / `asset_scope` / `cooldown_bars` 时 +1（不做深比较）；改名与启停不递增。
 - 组合删除为软删（`is_deleted = 1, enabled = 0`）；更新条件时在同一事务内 `DELETE + INSERT` 条件行（仅配置行，不触碰信号历史）。
 - `asset_scope = 'cross_border' | 'exclude_cross_border'` 当前 fail-closed，不产出信号（§10.4.3）。
