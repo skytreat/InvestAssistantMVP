@@ -5,10 +5,37 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
+
+# 同一 PR/分支的新提交自动取消上一次运行，避免排队等待旧 run 跑完。
+# push 到 main/develop 不取消（保留完整历史），只在 PR 上取消。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# ============================================================================
+# 结构说明（2026-11-09 加速重构，Tier 1+2）
+#
+# 旧结构：coverage-gate（跑全量 test:coverage 5m）+ build-and-test（把同样的
+#   suite 又单独跑一遍 8m）⇒ 整套测试跑两遍，且所有 suite 在一个 job 内串行。
+#
+# 新结构（关键路径 = 最慢的单个 job，而不是所有步骤之和）：
+#   changes ─┬─ build                （仅构建）
+#            ├─ lint-and-typecheck   （lint / prettier / tsc）
+#            ├─ test-backend         （backend unit+integration+smoke + HTTP 子集，带 coverage）
+#            ├─ coverage-core        （core 测试 + coverage）
+#            ├─ coverage-frontend    （frontend 测试 + coverage，只跑一次）
+#            ├─ shuffle-guard        （backend unit 顺序依赖守卫，仅后端改动时跑）
+#            └─ coverage-gate        （仅下载 artifact 并解析判定，不再跑测试）
+#
+# 口径不变：三个 coverage job 各自执行的命令 == 原 `npm run test:coverage`
+#   的三段（backend / core / frontend），故 Gate 数字与本地 `npm run test:coverage`
+#   完全一致；coverage-gate 只做解析，不再重复跑测试。
+# ============================================================================
 
 jobs:
   # ============================================================================
-  # 非代码改动快速通道 —— 仅文档/脚本/部署资产改动时跳过三个全量 job
+  # 非代码改动快速通道 —— 仅文档/脚本/部署资产改动时跳过所有全量 job
   #
   # 🔴 **为什么用 job 级 if，而不是 workflow 级 paths / paths-ignore**：
   #    工作流被路径过滤跳过时 GitHub **不会创建 check run**，required check 会一直
@@ -20,12 +47,17 @@ jobs:
   # - 空变更 / 检测失败 / 新分支首次 push ⇒ 一律跑全量（安全侧）
   # - `.github/**`、源码、脚本改动都不算 docs-only
   # - `*.toml` 仅用于工具配置（当前为 `.pr_agent.toml`），不影响构建产物
+  #
+  # `backend_changed` 供 shuffle-guard 使用：只有后端/核心代码、依赖清单或
+  # CI 工作流本身变化时才跑顺序依赖守卫（守卫只测 backend unit，前端/文档改动与之无关；
+  # 工作流改动时也跑，以便改动能被本 PR 自验）。
   # ============================================================================
   changes:
     runs-on: ubuntu-latest
     name: Detect non-code change
     outputs:
       skip_full_ci: ${{ steps.detect.outputs.skip_full_ci }}
+      backend_changed: ${{ steps.detect.outputs.backend_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,6 +89,7 @@ jobs:
           mapfile -d '' -t files < "$changed_file"
 
           skip_full_ci=true
+          backend_changed=false
           count=0
           for file in "${files[@]}"; do
             [ -n "$file" ] || continue
@@ -65,11 +98,16 @@ jobs:
               docs/*|*.md|deploy/*|*.sh|*.bash|*.toml) ;;
               *) skip_full_ci=false ;;
             esac
+            case "$file" in
+              apps/backend/*|packages/core/*|package.json|package-lock.json|*tsconfig*.json|*vitest*.config.*|.github/workflows/*)
+                backend_changed=true ;;
+            esac
           done
 
           # 空变更 / 无法判定时走全量，避免误跳过
           if [ "$count" -eq 0 ]; then
             skip_full_ci=false
+            backend_changed=true
           fi
 
           # 脚本改动至少做语法检查；失败则本 job 失败，全量 CI 仍会运行
@@ -86,47 +124,25 @@ jobs:
           fi
 
           echo "skip_full_ci=$skip_full_ci" >> "$GITHUB_OUTPUT"
+          echo "backend_changed=$backend_changed" >> "$GITHUB_OUTPUT"
           echo "Changed files ($count):"
           if [ "$count" -gt 0 ]; then
             printf '  %s\n' "${files[@]}"
           fi
           echo "skip_full_ci=$skip_full_ci"
+          echo "backend_changed=$backend_changed"
 
   # ============================================================================
-  # Coverage Gate —— SDD §12.2（覆盖率目标）+ §12.6（CI 阻断点）
+  # 构建 —— 只验证三端产物可构建（core -> backend -> frontend）
   #
-  # 🔴 **这是 T86b 恢复的门禁**（SDD §12.2 的表 + §12.6 的「核心算法 + 插件引擎 <90% 阻断合入」）。
-  #    此前按 DEC-12 B-5 裁决**暂缓**（§12.4 E3 降为「frontend ≥60% / backend 不低于基线」，
-  #    `ci.yml` 无 gate 步骤）⇒ 覆盖率完全不受 CI 约束。T86b 已补齐测试存量并恢复本 job。
-  #
-  # 独立成 job（与 lint-and-typecheck 同理）：PR 页面上一眼可见红/绿，
-  #    且「覆盖率不达标」不会淹没在 build-and-test 的一堆步骤日志里。
-  #
-  # 🔴 **为什么自己跑 `npm run test:coverage` 而不是复用 build-and-test 的 coverage 产物**：
-  #    build-and-test 的后端 coverage 只覆盖 `tests/unit`（integration / smoke 分开跑、不带 coverage），
-  #    而 `npm run test:coverage` 覆盖 unit + integration + smoke ⇒ **两个口径的数字不同**。
-  #    ⇒ 门禁必须用**与本地 `npm run test:coverage` 完全一致**的口径，
-  #    否则会出现「本地全绿 / CI 全红」（AGENTS.md §CI 与本地不一致的三个陷阱 同类问题）。
-  #
-  # ⚠️ **v8 provider 的输出格式**（SDD §12.6 D14）：
-  #    `@vitest/coverage-v8` 输出 **v8 ICRCov**（`coverage-final.json`）——
-  #    **没有** Istanbul 的 `f.l.found` / `f.l.get` ⇒ 解析必须读 `.s`（语句执行次数）
-  #    与 `.b`（分支各路径执行次数）。
-  #    `packages/core` 的 vitest 配置只开了 `json` reporter（**没有** `json-summary`），
-  #    后端 / 前端开了 `json-summary` ⇒ 下面的脚本**两种格式都兼容**。
-  #
-  # 门槛（SDD §12.2 原值，T86b 恢复）：
-  #    核心算法层   行 ≥90% / 分支 ≥85%
-  #    插件引擎     行 ≥90% / 分支 ≥85%
-  #    C1-C12 校验  行 ≥85% / 分支 ≥80%
-  #    前端         行 ≥70% / 分支 ≥65%
+  # 与测试 job 并行，不占关键路径（~45s）。`typecheck` 已保证类型正确，
+  # 本 job 额外保证 vite/tsc 的生产构建不炸。
   # ============================================================================
-  coverage-gate:
+  build:
     needs: changes
-    # changes 失败时仍跑全量（不要把检测故障变成「静默跳过」）
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
     runs-on: ubuntu-latest
-    name: Coverage Gate — SDD §12.2 / §12.6
+    name: Build (core -> backend -> frontend)
 
     steps:
       - name: Checkout
@@ -141,14 +157,423 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      # ⚠️ 必须先 build core —— `apps/backend/tsconfig.json` 没有 paths 映射，
-      #    后端 tsc 走 `packages/core/dist`（gitignored）。
+      # ⚠️ 必须先 build core —— backend 的 tsc 走 packages/core/dist（无 paths 映射）
       - name: Build core
         run: npm run build -w @invest/core
 
-      # 与本地 `npm run test:coverage` 同一个脚本 ⇒ 门禁数字与本地一致
-      - name: Run coverage (backend unit+integration+smoke / core / frontend)
-        run: npm run test:coverage
+      - name: Build backend
+        run: npm run build -w @invest/backend
+
+      - name: Build frontend
+        run: npm run build -w @invest/frontend
+
+  # ============================================================================
+  # Stage 2 —— Lint + TypeScript Check（T86）
+  #
+  # 与测试 job **并行**跑，不是它们的后继步骤 —— 「lint 不过就别跑测试」是浪费 CI 时间。
+  # 独立成 job 的另一个原因：G2.5 要求「CI Stage 2 步骤存在**且失败会阻断**」，
+  # 独立 job 的红/绿在 PR 页面上一眼可见。
+  #
+  # ⚠️ 必须先 build core —— `apps/backend/tsconfig.json` 没有 paths 映射，
+  #    后端 tsc 走 `packages/core/dist`（gitignored）。不先构建 → core 的类型改动
+  #    不会传导到后端 → **tsc 红而 CI 绿**（这就是 AGENTS.md 记的 T86 盲区）。
+  # ============================================================================
+  lint-and-typecheck:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
+    runs-on: ubuntu-latest
+    name: Stage 2 — Lint + TypeScript Check
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      # ESLint（含 @typescript-eslint/no-explicit-any：前端与 core 生效）
+      - name: ESLint
+        run: npx eslint .
+
+      # Prettier 格式检查（与 eslint 串联，任一失败即 job 红）
+      - name: Prettier format check
+        run: npx prettier --check .
+
+      # 顺序依赖：core 类型 → core 产物 → backend → frontend
+      - name: Type check (core -> build core -> backend -> frontend)
+        run: npm run typecheck
+
+      # 🔴 反向验证（可选，手动触发）：在故意破坏的分支上跑，应失败
+      - name: Reverse check — lint must fail on injected violations
+        if: github.event_name == 'workflow_dispatch' || contains(github.head_ref, 'lint-reverse-check')
+        run: |
+          set -e
+          echo "const bad: any = 1;" >> apps/frontend/src/_lint_reverse_probe.ts
+          echo "const  x   =    1" >> apps/frontend/src/_lint_reverse_probe.ts
+          if npx eslint . ; then
+            echo "REVERSE CHECK FAILED: lint did not fail on injected violations"
+            exit 1
+          fi
+          echo "reverse check OK: lint failed as expected"
+
+  # ============================================================================
+  # Backend 全量测试 + coverage（原 build-and-test 的主体）
+  #
+  # 一条命令覆盖 unit + integration + smoke（`vitest.config.ts` 的 include 是
+  # `tests/**/*.test.ts`，已排除 scan5000 / tests/http / *.anchors.test.ts）：
+  #   npx vitest run --config apps/backend/vitest.config.ts --coverage ...
+  # 与本地 `npm run test:coverage` 的 backend 段**同一条命令** ⇒ Gate 口径一致。
+  #
+  # `--pool=forks --poolOptions.forks.singleFork=true` 是**故意的**：
+  #   Fastify 多实例并行 listen 会 EADDRINUSE；ConfigStore 单例 + DuckDB 句柄需要单进程。
+  #   ⇒ 不要为了提速在同一 job 内并行；要并行只能拆**独立 job**（独立进程）。
+  # ============================================================================
+  test-backend:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
+    runs-on: ubuntu-latest
+    name: build-and-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      # ⚠️ 必须先 build core —— 后端 tsc / 运行时可能走 packages/core/dist（无 paths 映射）
+      - name: Build core
+        run: npm run build -w @invest/core
+
+      # Backend unit + integration + smoke，带 coverage（输出到 apps/backend/coverage）
+      # 🔴 必须带 --config（在仓库根跑时根目录没有 vitest config ⇒ setupFiles 不加载 ⇒
+      #    env 守卫失效 + coverage.include 相对仓库根解析 ⇒ 后端覆盖率一直是 0%）。
+      - name: Run backend tests (unit+integration+smoke) with coverage
+        run: npx vitest run --config apps/backend/vitest.config.ts --coverage --pool=forks --poolOptions.forks.singleFork=true
+
+      # ============================================================================
+      # HTTP 层验收套件的**可离线子集**（T60 交付 / G8.3）
+      #
+      # ⚠️ `tests/http/` 共 7 个 `.test.ts`，**只接进 3 个** —— 这 3 个
+      #    **不依赖真行情库 / caddy / 真浏览器**，可在 CI 离线跑：
+      #      · cors.test.ts              → CORS 白名单（evil.com 必拒 / 127.0.0.1:5173 必放行）
+      #                                       + 「确实调了 listen()」守卫
+      #      · pe5-sqlite-concurrency.test.ts → PE5（SQLite WAL 10 并发读写，无 SQLITE_BUSY）
+      #      · holding-nplus1.test.ts    → N+1 消除（查询次数不随标的数线性增长）
+      #
+      # 🔴 **不接进 CI 的 4 个文件（诚实 > 凑绿）**：
+      #      · pe1-pe3-browser.test.ts   → 要**真浏览器**（Chromium）
+      #      · pe2-scan.test.ts          → 要**真库规模**（≥5000 标的；迷你库只有 250 只）
+      #      · pe4-holding-p99.test.ts   → 要**真库规模**
+      #      · https-se1.test.ts 的 HTTP 层 → 要**caddy 可执行文件**
+      #
+      # ⚠️ **不使用 `--coverage`**：本步骤只做门禁判定，覆盖率口径由上面那条命令负责。
+      # ⚠️ **端口**：三个文件各自独占一段（51200 / 51280 / 51320 起）⇒ 与其它步骤不冲突
+      # ============================================================================
+      - name: Run HTTP layer tests (offline subset — cors / pe5 / nplus1)
+        working-directory: apps/backend
+        run: >
+          npx vitest run --config vitest.http.config.ts
+          tests/http/cors.test.ts
+          tests/http/pe5-sqlite-concurrency.test.ts
+          tests/http/holding-nplus1.test.ts
+
+      - name: Upload backend coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-backend
+          path: apps/backend/coverage/
+          retention-days: 1
+
+  # ============================================================================
+  # Core 测试 + coverage（packages/core）
+  #
+  # 与本地 `npm run test:coverage` 的 core 段同一条命令 ⇒ Gate 口径一致。
+  # core 的 vitest 配置只开 `json` reporter（无 json-summary）⇒ Gate 走
+  # coverage-final.json 的 v8 ICRCov 回退路径。
+  # ============================================================================
+  coverage-core:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
+    runs-on: ubuntu-latest
+    name: Coverage — core
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build core
+        run: npm run build -w @invest/core
+
+      - name: Run core tests with coverage
+        run: npx vitest run --config packages/core/vitest.config.ts --coverage
+
+      # 🔴 反向验证（可选，手动触发）：在故意压低覆盖率的分支上跑，应失败。
+      #    必须在 upload 之前执行 —— 反向分支要上传「低覆盖率」artifact 让 Gate 判红。
+      - name: Reverse check — coverage gate must fail when coverage drops below 90%
+        if: github.event_name == 'workflow_dispatch' || contains(github.head_ref, 'coverage-reverse-check')
+        run: |
+          set -e
+          # 往核心算法层塞一个**完全不被覆盖**的文件 ⇒ 核心算法覆盖率被压到 90% 以下
+          cat > packages/core/src/_coverage_reverse_probe.ts <<'PROBE'
+          export function uncoveredProbe01(): number { return 1; }
+          export function uncoveredProbe02(): number { return 2; }
+          export function uncoveredProbe03(): number { return 3; }
+          export function uncoveredProbe04(): number { return 4; }
+          export function uncoveredProbe05(): number { return 5; }
+          export function uncoveredProbe06(): number { return 6; }
+          export function uncoveredProbe07(): number { return 7; }
+          export function uncoveredProbe08(): number { return 8; }
+          export function uncoveredProbe09(): number { return 9; }
+          export function uncoveredProbe10(): number { return 10; }
+          export function uncoveredProbe11(): number { return 11; }
+          export function uncoveredProbe12(): number { return 12; }
+          export function uncoveredProbe13(): number { return 13; }
+          export function uncoveredProbe14(): number { return 14; }
+          export function uncoveredProbe15(): number { return 15; }
+          export function uncoveredProbe16(): number { return 16; }
+          export function uncoveredProbe17(): number { return 17; }
+          export function uncoveredProbe18(): number { return 18; }
+          export function uncoveredProbe19(): number { return 19; }
+          export function uncoveredProbe20(): number { return 20; }
+          export function uncoveredProbe21(): number { return 21; }
+          export function uncoveredProbe22(): number { return 22; }
+          export function uncoveredProbe23(): number { return 23; }
+          export function uncoveredProbe24(): number { return 24; }
+          export function uncoveredProbe25(): number { return 25; }
+          export function uncoveredProbe26(): number { return 26; }
+          export function uncoveredProbe27(): number { return 27; }
+          export function uncoveredProbe28(): number { return 28; }
+          export function uncoveredProbe29(): number { return 29; }
+          export function uncoveredProbe30(): number { return 30; }
+          PROBE
+          npx vitest run --config packages/core/vitest.config.ts --coverage
+          # ⚠️ **注意**：vitest 本身**不会**因覆盖率低而失败（测试全绿）——
+          #    真正判红的是后面的「Coverage Gate」job。
+          #    ⇒ 这里用**与 Gate 完全相同的口径**重算核心算法层行覆盖率，
+          #      断言它**跌破 90%**（= Gate 会判 FAIL ⇒ job 红）。
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const cov = JSON.parse(
+            fs.readFileSync(path.join(process.cwd(), 'packages/core/coverage/coverage-final.json'), 'utf8'),
+          );
+          let total = 0;
+          let covered = 0;
+          for (const [p, c] of Object.entries(cov)) {
+            if (!p.replace(/\\/g, '/').includes('/packages/core/src/')) continue;
+            for (const cnt of Object.values(c.s || {})) {
+              total += 1;
+              if (cnt > 0) covered += 1;
+            }
+          }
+          const pct = total === 0 ? 100 : (covered / total) * 100;
+          console.log(`核心算法层行覆盖 ${covered}/${total} = ${pct.toFixed(2)}%（门槛 >=90%）`);
+          if (pct >= 90) {
+            console.error('REVERSE CHECK FAILED: 核心算法层覆盖率没有跌破 90% —— 反向验证不成立');
+            process.exit(1);
+          }
+          console.log('reverse check OK: 核心算法层覆盖率已跌破 90%（Coverage Gate 会判 FAIL ⇒ job 红）');
+          NODE
+
+      - name: Upload core coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-core
+          path: packages/core/coverage/
+          retention-days: 1
+
+  # ============================================================================
+  # Frontend 测试 + coverage（apps/frontend）
+  #
+  # 只跑一次（旧 build-and-test 里 `test` + `test:coverage` 跑了两次，后者是前者超集）。
+  # 与本地 `npm run test:coverage` 的 frontend 段同一条命令 ⇒ Gate 口径一致。
+  # ============================================================================
+  coverage-frontend:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
+    runs-on: ubuntu-latest
+    name: Coverage — frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Run frontend tests with coverage
+        run: npm run test:coverage -w @invest/frontend
+
+      - name: Upload frontend coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-frontend
+          path: apps/frontend/coverage/
+          retention-days: 1
+
+  # ============================================================================
+  # Shuffle Guard —— backend unit 顺序依赖检测（T81 / F-Q11）
+  #
+  # 打乱顺序连跑 2 次（seed 1 / seed 2），两次结果必须一致且全绿。
+  # 用例之间若存在隐式顺序依赖（env 泄漏 / ConfigStore 单例 / DuckDB 单例残留），
+  # 靠固定顺序侥幸通过的用例会在这里被随机顺序打出来。
+  #
+  # ⚠️ **抽样（每 6 个文件取 1 个）**：守卫的目的只是**发现顺序依赖** ——
+  #    两次跑的文件集合相同、只有 shuffle 顺序不同 ⇒ 抽样子集同样能检出顺序依赖。
+  #    （2026-11-09 从 1/3 降到 1/6，进一步压缩 CI 时间。）
+  # ⚠️ **仅在后端/核心代码或依赖清单变化时运行**（`changes.outputs.backend_changed`）。
+  # ⚠️ **独立 job**：与 test-backend 并行，不再占用主测试 job 的关键路径。
+  #    顺序跑两次（各 ~40s），不并行 —— 避免两个进程争用 DuckDB/临时库句柄。
+  # ============================================================================
+  shuffle-guard:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.skip_full_ci != 'true' && needs.changes.outputs.backend_changed == 'true' }}
+    runs-on: ubuntu-latest
+    name: Shuffle Guard — backend unit order-independence
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build core
+        run: npm run build -w @invest/core
+
+      - name: Shuffle guard - backend unit tests (seed 1)
+        run: >
+          FILES=$(ls apps/backend/tests/unit/*.test.ts | awk 'NR % 6 == 1' | tr '\n' ' ');
+          npx vitest run --config apps/backend/vitest.config.ts $FILES
+          --pool=forks --poolOptions.forks.singleFork=true
+          --sequence.shuffle --sequence.seed=1
+          --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed1.json
+
+      - name: Shuffle guard - backend unit tests (seed 2)
+        run: >
+          FILES=$(ls apps/backend/tests/unit/*.test.ts | awk 'NR % 6 == 1' | tr '\n' ' ');
+          npx vitest run --config apps/backend/vitest.config.ts $FILES
+          --pool=forks --poolOptions.forks.singleFork=true
+          --sequence.shuffle --sequence.seed=2
+          --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed2.json
+
+      # 两次运行必须跑出同一批用例、且全部通过（比对 用例名→状态 集合，忽略耗时）
+      - name: Shuffle guard - 两次结果必须一致
+        run: >
+          node -e "
+          const fs=require('fs');
+          const load=(p)=>{
+            const j=JSON.parse(fs.readFileSync(p,'utf8'));
+            const rows=(j.testResults||[]).flatMap(f=>(f.assertionResults||[]).map(a=>((a.fullName||a.ancestorTitles.join(' > ')+' > '+a.title))+'::'+a.status));
+            return {total:j.numTotalTests,failed:j.numFailedTests,passed:j.numPassedTests,rows:rows.sort()};
+          };
+          const a=load(process.argv[1]),b=load(process.argv[2]);
+          if(a.total!==b.total||a.failed!==b.failed||a.passed!==b.passed||a.rows.join('|')!==b.rows.join('|')){
+            console.error('SHUFFLE GUARD FAILED');
+            console.error('run1',JSON.stringify({total:a.total,failed:a.failed,passed:a.passed}));
+            console.error('run2',JSON.stringify({total:b.total,failed:b.failed,passed:b.passed}));
+            const s1=new Set(a.rows),s2=new Set(b.rows);
+            console.error('only in run1:',a.rows.filter(r=>!s2.has(r)).slice(0,20));
+            console.error('only in run2:',b.rows.filter(r=>!s1.has(r)).slice(0,20));
+            process.exit(1);
+          }
+          if(a.failed!==0){console.error('SHUFFLE GUARD FAILED: failed tests',a.failed);process.exit(1);}
+          console.log('shuffle guard OK: total='+a.total+' passed='+a.passed+' failed='+a.failed);
+          " ${{ runner.temp }}/shuffle-seed1.json ${{ runner.temp }}/shuffle-seed2.json
+
+  # ============================================================================
+  # Coverage Gate —— SDD §12.2（覆盖率目标）+ §12.6（CI 阻断点）
+  #
+  # 🔴 **这是 T86b 恢复的门禁**（SDD §12.2 的表 + §12.6 的「核心算法 + 插件引擎 <90% 阻断合入」）。
+  #
+  # 🔴 **为什么不再自己跑测试（2026-11-09 加速重构）**：
+  #    旧版自己跑 `npm run test:coverage`（5m），与 build-and-test 重复。
+  #    现在三个 coverage job 已各自产出与 `npm run test:coverage` **同口径**的
+  #    artifact（backend / core / frontend），本 job 只**下载 + 解析判定**（~15s）。
+  #
+  # ⚠️ **v8 provider 的输出格式**（SDD §12.6 D14）：
+  #    `@vitest/coverage-v8` 输出 **v8 ICRCov**（`coverage-final.json`）——
+  #    **没有** Istanbul 的 `f.l.found` / `f.l.get` ⇒ 解析必须读 `.s`（语句执行次数）
+  #    与 `.b`（分支各路径执行次数）。
+  #    `packages/core` 的 vitest 配置只开了 `json` reporter（**没有** `json-summary`），
+  #    后端 / 前端开了 `json-summary` ⇒ 下面的脚本**两种格式都兼容**。
+  #
+  # 门槛（SDD §12.2 原值，T86b 恢复）：
+  #    核心算法层   行 ≥90% / 分支 ≥85%
+  #    插件引擎     行 ≥90% / 分支 ≥85%
+  #    C1-C12 校验  行 ≥85% / 分支 ≥80%
+  #    前端         行 ≥70% / 分支 ≥65%
+  #
+  # 任一 coverage job 失败 ⇒ 对应 artifact 不存在 ⇒ 下载失败 ⇒ 本 job 红（正确）。
+  # ============================================================================
+  coverage-gate:
+    needs: [changes, test-backend, coverage-core, coverage-frontend]
+    # changes 失败时仍跑全量（不要把检测故障变成「静默跳过」）；
+    # 任一 coverage job 失败时本 job 仍需运行并判红（!cancelled() 允许继续）。
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
+    runs-on: ubuntu-latest
+    name: Coverage Gate — SDD §12.2 / §12.6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download backend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-backend
+          path: apps/backend/coverage
+
+      - name: Download core coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-core
+          path: packages/core/coverage
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-frontend
+          path: apps/frontend/coverage
 
       - name: Coverage Gate (低于 SDD §12.2 门槛 → exit 1)
         run: |
@@ -270,272 +695,3 @@ jobs:
           }
           console.log('\n覆盖率 Gate 通过（SDD §12.2 / §12.6）');
           NODE
-
-      # 🔴 反向验证（可选，手动触发）：在故意压低覆盖率的分支上跑，应失败
-      - name: Reverse check — coverage gate must fail when coverage drops below 90%
-        if: github.event_name == 'workflow_dispatch' || contains(github.head_ref, 'coverage-reverse-check')
-        run: |
-          set -e
-          # 往核心算法层塞一个**完全不被覆盖**的文件 ⇒ 核心算法覆盖率被压到 90% 以下
-          cat > packages/core/src/_coverage_reverse_probe.ts <<'PROBE'
-          export function uncoveredProbe01(): number { return 1; }
-          export function uncoveredProbe02(): number { return 2; }
-          export function uncoveredProbe03(): number { return 3; }
-          export function uncoveredProbe04(): number { return 4; }
-          export function uncoveredProbe05(): number { return 5; }
-          export function uncoveredProbe06(): number { return 6; }
-          export function uncoveredProbe07(): number { return 7; }
-          export function uncoveredProbe08(): number { return 8; }
-          export function uncoveredProbe09(): number { return 9; }
-          export function uncoveredProbe10(): number { return 10; }
-          export function uncoveredProbe11(): number { return 11; }
-          export function uncoveredProbe12(): number { return 12; }
-          export function uncoveredProbe13(): number { return 13; }
-          export function uncoveredProbe14(): number { return 14; }
-          export function uncoveredProbe15(): number { return 15; }
-          export function uncoveredProbe16(): number { return 16; }
-          export function uncoveredProbe17(): number { return 17; }
-          export function uncoveredProbe18(): number { return 18; }
-          export function uncoveredProbe19(): number { return 19; }
-          export function uncoveredProbe20(): number { return 20; }
-          export function uncoveredProbe21(): number { return 21; }
-          export function uncoveredProbe22(): number { return 22; }
-          export function uncoveredProbe23(): number { return 23; }
-          export function uncoveredProbe24(): number { return 24; }
-          export function uncoveredProbe25(): number { return 25; }
-          export function uncoveredProbe26(): number { return 26; }
-          export function uncoveredProbe27(): number { return 27; }
-          export function uncoveredProbe28(): number { return 28; }
-          export function uncoveredProbe29(): number { return 29; }
-          export function uncoveredProbe30(): number { return 30; }
-          PROBE
-          npx vitest run --config packages/core/vitest.config.ts --coverage
-          # ⚠️ **注意**：vitest 本身**不会**因覆盖率低而失败（测试全绿）——
-          #    真正判红的是上面的「Coverage Gate」步骤。
-          #    ⇒ 这里用**与 Gate 完全相同的口径**重算核心算法层行覆盖率，
-          #      断言它**跌破 90%**（= Gate 会判 FAIL ⇒ job 红）。
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const cov = JSON.parse(
-            fs.readFileSync(path.join(process.cwd(), 'packages/core/coverage/coverage-final.json'), 'utf8'),
-          );
-          let total = 0;
-          let covered = 0;
-          for (const [p, c] of Object.entries(cov)) {
-            if (!p.replace(/\\/g, '/').includes('/packages/core/src/')) continue;
-            for (const cnt of Object.values(c.s || {})) {
-              total += 1;
-              if (cnt > 0) covered += 1;
-            }
-          }
-          const pct = total === 0 ? 100 : (covered / total) * 100;
-          console.log(`核心算法层行覆盖 ${covered}/${total} = ${pct.toFixed(2)}%（门槛 >=90%）`);
-          if (pct >= 90) {
-            console.error('REVERSE CHECK FAILED: 核心算法层覆盖率没有跌破 90% —— 反向验证不成立');
-            process.exit(1);
-          }
-          console.log('reverse check OK: 核心算法层覆盖率已跌破 90%（Coverage Gate 会判 FAIL ⇒ job 红）');
-          NODE
-
-  # ============================================================================
-  # Stage 2 —— Lint + TypeScript Check（T86）
-  #
-  # 与 build-and-test **并行**跑，不是它的后继步骤 —— 「lint 不过就别跑测试」是浪费 CI 时间。
-  # 独立成 job 的另一个原因：G2.5 要求「CI Stage 2 步骤存在**且失败会阻断**」，
-  # 独立 job 的红/绿在 PR 页面上一眼可见。
-  #
-  # ⚠️ 必须先 build core —— `apps/backend/tsconfig.json` 没有 paths 映射，
-  #    后端 tsc 走 `packages/core/dist`（gitignored）。不先构建 → core 的类型改动
-  #    不会传导到后端 → **tsc 红而 CI 绿**（这就是 AGENTS.md 记的 T86 盲区）。
-  # ============================================================================
-  lint-and-typecheck:
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
-    runs-on: ubuntu-latest
-    name: Stage 2 — Lint + TypeScript Check
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: 'npm'
-
-      - name: npm ci
-        run: npm ci
-
-      # ESLint（含 @typescript-eslint/no-explicit-any：前端与 core 生效）
-      - name: ESLint
-        run: npx eslint .
-
-      # Prettier 格式检查（与 eslint 串联，任一失败即 job 红）
-      - name: Prettier format check
-        run: npx prettier --check .
-
-      # 顺序依赖：core 类型 → core 产物 → backend → frontend
-      - name: Type check (core -> build core -> backend -> frontend)
-        run: npm run typecheck
-
-      # 🔴 反向验证（可选，手动触发）：在故意破坏的分支上跑，应失败
-      - name: Reverse check — lint must fail on injected violations
-        if: github.event_name == 'workflow_dispatch' || contains(github.head_ref, 'lint-reverse-check')
-        run: |
-          set -e
-          echo "const bad: any = 1;" >> apps/frontend/src/_lint_reverse_probe.ts
-          echo "const  x   =    1" >> apps/frontend/src/_lint_reverse_probe.ts
-          if npx eslint . ; then
-            echo "REVERSE CHECK FAILED: lint did not fail on injected violations"
-            exit 1
-          fi
-          echo "reverse check OK: lint failed as expected"
-
-  build-and-test:
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.skip_full_ci != 'true') }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: 'npm'
-
-      - name: npm ci
-        run: npm ci
-
-      # ⚠️ 必须先 build core —— backend 的 tsc 走 packages/core/dist（无 paths 映射）
-      - name: Build core
-        run: npm run build -w @invest/core
-
-      - name: Build backend
-        run: npm run build -w @invest/backend
-
-      - name: Build frontend
-        run: npm run build -w @invest/frontend
-
-      # Core tests — 带 coverage，输出到 packages/core/coverage/
-      - name: Run core tests
-        run: npx vitest run --config packages/core/vitest.config.ts --coverage
-
-      # Backend unit tests — 带 coverage；--pool=forks + singleFork 保证 ConfigStore 单例隔离
-      - name: Run backend unit tests
-        # 🔴 必须带 --config（在仓库根跑时根目录没有 vitest config ⇒ setupFiles 不加载 ⇒
-        #    env 守卫失效 + coverage.include 相对仓库根解析 ⇒ 后端覆盖率一直是 0%）。
-        run: npx vitest run --config apps/backend/vitest.config.ts tests/unit --coverage --pool=forks --poolOptions.forks.singleFork=true
-
-      # 顺序敏感守卫（T81 / F-Q11）：打乱顺序连跑 2 次，两次结果必须一致且全绿。
-      # ⚠️ **抽样（每 3 个文件取 1 个）**（2026-10-21 决定）：守卫的目的只是**发现顺序依赖** ——
-      #    两次跑的文件集合相同、只有 shuffle 顺序不同 ⇒ 抽样子集同样能检出顺序依赖，
-      #    而 CI 时间从「2 × 全量 unit」降到「2 × 1/3 unit」。
-      #    文件集合用 `ls` 的**字典序**取（确定性 ⇒ 两次跑同一批文件）。
-      # 用例之间若存在隐式顺序依赖（env 泄漏 / ConfigStore 单例 / DuckDB 单例残留），
-      # 靠固定顺序侥幸通过的用例会在这里被随机顺序打出来。
-      - name: Shuffle guard - backend unit tests (seed 1)
-        run: >
-          FILES=$(ls apps/backend/tests/unit/*.test.ts | awk 'NR % 3 == 1' | tr '\n' ' ');
-          npx vitest run --config apps/backend/vitest.config.ts $FILES
-          --pool=forks --poolOptions.forks.singleFork=true
-          --sequence.shuffle --sequence.seed=1
-          --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed1.json
-
-      - name: Shuffle guard - backend unit tests (seed 2)
-        run: >
-          FILES=$(ls apps/backend/tests/unit/*.test.ts | awk 'NR % 3 == 1' | tr '\n' ' ');
-          npx vitest run --config apps/backend/vitest.config.ts $FILES
-          --pool=forks --poolOptions.forks.singleFork=true
-          --sequence.shuffle --sequence.seed=2
-          --reporter=json --outputFile=${{ runner.temp }}/shuffle-seed2.json
-
-      # 两次运行必须跑出同一批用例、且全部通过（比对 用例名→状态 集合，忽略耗时）
-      - name: Shuffle guard - 两次结果必须一致
-        run: >
-          node -e "
-          const fs=require('fs');
-          const load=(p)=>{
-            const j=JSON.parse(fs.readFileSync(p,'utf8'));
-            const rows=(j.testResults||[]).flatMap(f=>(f.assertionResults||[]).map(a=>((a.fullName||a.ancestorTitles.join(' > ')+' > '+a.title))+'::'+a.status));
-            return {total:j.numTotalTests,failed:j.numFailedTests,passed:j.numPassedTests,rows:rows.sort()};
-          };
-          const a=load(process.argv[1]),b=load(process.argv[2]);
-          if(a.total!==b.total||a.failed!==b.failed||a.passed!==b.passed||a.rows.join('|')!==b.rows.join('|')){
-            console.error('SHUFFLE GUARD FAILED');
-            console.error('run1',JSON.stringify({total:a.total,failed:a.failed,passed:a.passed}));
-            console.error('run2',JSON.stringify({total:b.total,failed:b.failed,passed:b.passed}));
-            const s1=new Set(a.rows),s2=new Set(b.rows);
-            console.error('only in run1:',a.rows.filter(r=>!s2.has(r)).slice(0,20));
-            console.error('only in run2:',b.rows.filter(r=>!s1.has(r)).slice(0,20));
-            process.exit(1);
-          }
-          if(a.failed!==0){console.error('SHUFFLE GUARD FAILED: failed tests',a.failed);process.exit(1);}
-          console.log('shuffle guard OK: total='+a.total+' passed='+a.passed+' failed='+a.failed);
-          " ${{ runner.temp }}/shuffle-seed1.json ${{ runner.temp }}/shuffle-seed2.json
-
-      # Backend integration tests — 同上 fork 策略
-      - name: Run backend integration tests
-        run: npx vitest run --config apps/backend/vitest.config.ts tests/integration --pool=forks --poolOptions.forks.singleFork=true
-
-      # Smoke tests — 只跑 m1；m2/m3 依赖 DuckDB 本地文件和 tdx2db init，CI 环境无法运行
-      - name: Run smoke tests (m1 only)
-        run: npx vitest run --config apps/backend/vitest.config.ts tests/smoke-m1.test.ts --pool=forks --poolOptions.forks.singleFork=true
-
-      # ============================================================================
-      # HTTP 层验收套件的**可离线子集**（T60 交付 / G8.3）
-      #
-      # ⚠️ `tests/http/` 共 7 个 `.test.ts`，**只接进 3 个** —— 这 3 个
-      #    **不依赖真行情库 / caddy / 真浏览器**，可在 CI 离线跑：
-      #      · cors.test.ts              → CORS 白名单（evil.com 必拒 / 127.0.0.1:5173 必放行）
-      #                                       + 「确实调了 listen()」守卫
-      #      · pe5-sqlite-concurrency.test.ts → PE5（SQLite WAL 10 并发读写，无 SQLITE_BUSY）
-      #      · holding-nplus1.test.ts    → N+1 消除（查询次数不随标的数线性增长）
-      #
-      # 🔴 **不接进 CI 的 4 个文件（诚实 > 凑绿）**：
-      #      · pe1-pe3-browser.test.ts   → 要**真浏览器**（Chromium）
-      #      · pe2-scan.test.ts          → 要**真库规模**（≥5000 标的；迷你库只有 250 只）
-      #      · pe4-holding-p99.test.ts   → 要**真库规模**
-      #      · https-se1.test.ts 的 HTTP 层 → 要**caddy 可执行文件**
-      #
-      # ⚠️ **前置依赖（必须已提交）**：`apps/backend/tests/http/` +
-      #    `apps/backend/vitest.http.config.ts` —— 未提交时本步骤会因找不到配置文件而红
-      #    （见 `docs/audit/fullstack-audit-v2.md` §13 M-3b）
-      # ⚠️ **端口**：三个文件各自独占一段（51200 / 51280 / 51320 起）⇒ 与其它步骤不冲突
-      # ⚠️ **不使用 `--coverage`**：本步骤只做门禁判定，覆盖率口径由 `coverage-gate` job 负责
-      # ============================================================================
-      - name: Run HTTP layer tests (offline subset — cors / pe5 / nplus1)
-        working-directory: apps/backend
-        run: >
-          npx vitest run --config vitest.http.config.ts
-          tests/http/cors.test.ts
-          tests/http/pe5-sqlite-concurrency.test.ts
-          tests/http/holding-nplus1.test.ts
-
-      # Frontend tests (T61) — jsdom 环境，不依赖后端与行情库
-      - name: Run frontend tests
-        run: npm run test -w @invest/frontend
-
-      # Frontend coverage — 与 G2.4（前端 coverage ≥60%）对齐
-      - name: Run frontend tests with coverage
-        run: npm run test:coverage -w @invest/frontend
-
-      # 合并 coverage 报告到根目录 coverage/ 下，方便上传和统一查看
-      # 各 workspace 各自生成，不会互相覆盖
-      - name: Consolidate coverage
-        run: |
-          mkdir -p coverage/core coverage/backend coverage/frontend
-          cp -r packages/core/coverage/* coverage/core/ 2>/dev/null || true
-          cp -r apps/backend/coverage/* coverage/backend/ 2>/dev/null || true
-          cp -r apps/frontend/coverage/* coverage/frontend/ 2>/dev/null || true
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage/
-          retention-days: 30
