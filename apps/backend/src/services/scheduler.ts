@@ -5,7 +5,7 @@
 import type { FastifyInstance } from 'fastify';
 import { CronJob, AsyncTask } from 'toad-scheduler';
 import { runAllChecks, hasQuoteDataOn } from './validator.js';
-import { executeAllPlugins } from './pluginEngine.js';
+import { executeAllPlugins, normalizeSubCategory } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
 import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from './signalService.js';
@@ -415,6 +415,11 @@ export function registerCronJobs(app: FastifyInstance): void {
                   pluginResult.pluginId,
                   'monitor',
                   tradeDate,
+                  SIGNAL_USER_ID,
+                  'live',
+                  // sub_category 读取侧用于判「风险信号」（NULL / 非 risk 即非风险），
+                  // 必须与 signalReplay 同口径经唯一归一口归一后再写。
+                  normalizeSubCategory(pluginResult.subCategory, pluginResult.pluginId),
                 );
                 totalInserted += persist.inserted;
                 totalSkipped += persist.skipped;
