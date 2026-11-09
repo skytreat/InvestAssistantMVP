@@ -91,7 +91,7 @@
 | | T145 | 补录对话框 | T129/T144 | ⬜ |
 | | T146 | 持仓页增强（券商列/现金类分区/手工成组） | T128/T120 | ⬜ |
 | | T147 | 收益页 /portfolio/return | T132/T144 | ⬜ |
-| | T148 | 策略配置页 /strategy/config | T133 | ⬜ |
+| | T148 | 策略配置页 /strategy/config | T133 | ✅ |
 | | T149 | 信号页增强（分级/过期/采纳/快照/关联） | T134/T141 | ⬜ |
 | | T150 | 有效性页+体检页+交易对视图 tab+复盘编辑页 | T130/T131/T135/T137 | ⬜ |
 | **V3.8a** | T151 | 券商域增强（券商标识/多文件/补录全选） | T143/T145 | ⬜ |
@@ -100,6 +100,8 @@
 **合计 33 个任务**（T119~T152；T139 manual_sheet 三方对账已移出 → V4 候选；T151/T152 为后续增补）。
 
 > ✅ **T131 状态说明（2026-11-08）**：C7 缺陷（`emotion_status` / `buy_reason` / `sell_reason` / `system_followed` 传入不落库）的修复见 PR #130，已合入 `main`（commit `46b25a7`）；并按 `docs/audit/acceptance-retest-c7-a5-2026-11-08.md` 在该 `main` 提交上复测通过。
+>
+> ✅ **T148 状态说明（2026-11-09）**：策略配置页（插件分类 / 组合编辑器 / 适用品种 / 冷却展示）已随 PR #135 合入 `main`，本行状态由 ⬜ 更正为 ✅。组合级 `cooldownBars` 当前只存储/校验/展示，未参与生成或去重（见 V3-B9）。
 
 ### 2.1 排期建议
 
@@ -302,6 +304,9 @@
 | **V3-B6** | V3 需求文档的 **186 条不变量**尚未全部映射到测试载体 | SDD §12 已给出首版映射 | 实施时逐条落测试 | SDD §12 |
 | **V3-B8** | **manual_sheet 三方对账（INV-S2-45~47）判定为 V4 候选**（2026-10-26 owner 裁决） | 原拟 T139；UI 入口未定稿、需求复杂度高，移出 V3 | `docs/audit/v3-pending-decisions.md` D-45 | Requirements §2.4.3/§2.6.3 |
 | **V3-B7** ⚠️新增 | V3.1 gate 依赖的 **6 份真实样本**未在仓库（owner 机器 `/home/ubuntu/brokertrades/成交交割单/`） | 2026-10-24 登记：样本入库路径 `tests/fixtures/broker-samples/`（repo 根，与 `tests/fixtures/golden` 同层），入库前脱敏（国泰 xlsx 前 4 行元数据：资金账号/用户名/营业部 → 占位值；数值列不动），grep 敏感 0 校验 | T121 前置提交（非 T 任务，随 V3.1 PR 落档） | G-D3 / G8 同标准 |
+| **V3-B9** ⚠️新增 | `strategy_combo.cooldown_bars` **已存储、校验、展示，但未参与组合信号生成或去重** | 2026-11-09 PA-10 核实（PR #135 代码）：`cooldownBars` 仅经 `routes/combo.ts#parseCooldownBars` / `comboRepo.assertCooldownBars` 校验后落库；信号页冷却为全局 `SIGNAL_COOLDOWN_BARS`（展示层合并） | SDD_v3 §10.4.1 / §11.1.7 明确标注实际语义；组合级冷却待 P1 接入 | T133 / T148 |
+| **V3-B10** ⚠️新增 | `user_strategy_signal.snapshot_json` **列存在但无写入方**；组合信号行不保存 `config_version` 或配置快照 | 2026-11-09 PA-10 核实：全仓无 `snapshot_json` 写入；仅 `system_log` 的 `plugin_execute` 明细带 `configVersion` | SDD_v3 §10.4.1 标注「未实现」；T134 快照能力补齐时回写，届时再定信号行版本字段 | T133 / T134 |
+| **V3-B11** ⚠️新增 | `PluginBatchStats.combo` 接口注释写「无启用组合时该字段不出现」，与实现不符 | 2026-11-09 PA-10 核实：标的域路径 `stats.combo = comboOutcome.stats` 无条件赋值 ⇒ 恒出现（零值）；仅旧行为路径（未传 `symbols`）不出现且不执行组合 | 以 SDD_v3 §10.4.2 为准；代码注释修正非本次文档任务范围 | T133 / F4 |
 
 ---
 
@@ -327,3 +332,4 @@
 | 2026-10-26 | V3.2 | **交叉审计补全**：V3.7（T138/T140/T141 后端缺口）+ V3.8（T142~T150 前端页面）登记；任务总数 19→31；**V3-B8 登记**（manual_sheet 三方对账 T139 → V4 候选） |
 | 2026-10-24 | V3.1 | **任务编号整体顺延 T119~T137**（ADR-017，解除与 v2 计划 T100~T111 撞号，全文 + traceability + ADR-013~016 关联行同步）；**V3-B1/Q7 关闭**（owner 确认 U15 5 档）；**V3-B7 登记**（V3.1 样本入库路径与脱敏标准） |
 | 2026-10-27 | V3.8a | **券商域增强（T151）**：owner 需求增补 —— 券商标识必填+文件内容自动推断、多文件导入不同券商提示分批、补录全选；登记为新任务卡 T151 |
+| 2026-11-09 | V3.8b | **PA-10 文档登记**：SDD_v3 新增 §10.4.1 组合策略契约、§10.4.2 组合统计与插件统计分列、§10.4.3 跨境两档 fail-closed、§11.1.7 组合策略配置 DDL；T148 状态由 ⬜ 更正为 ✅（PR #135）；登记 V3-B9（组合冷却未生效）、V3-B10（`snapshot_json` 无写入方）、V3-B11（`stats.combo` 注释与实现不符） |
