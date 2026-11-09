@@ -353,31 +353,76 @@ export async function registerSignalRoutes(app: FastifyInstance) {
     }
   });
 
-  // T134（V3.4）信号采纳/忽略标注
+  /**
+   * F4 Step C：采纳 / 忽略写路径（两个端点共用，行为严格对称）
+   *
+   * 口径：
+   *   ① **服务端强制互斥** —— 设一个即把另一个清 0，且把对方的 `*_at` 置 NULL。
+   *      选「静默覆盖」而不是「冲突返回 409」的理由：用户语义是「我现在怎么看这条信号」，
+   *      二选一是正常操作而非错误；返 409 会逼前端再发一次反向请求，多一次写且要处理两个状态机。
+   *   ② **幂等** —— 目标状态已成立（目标=1 且另一个=0）时**完全不写库**，
+   *      返回 `unchanged: true`，因此 `*_at` 不会漂移。
+   *   ③ `*_at` 用 `COALESCE(旧值, now)`：即使走到 UPDATE 分支，已有时间戳也不被覆盖。
+   */
+  const writeSignalFlag = (id: number, userId: number, flag: 'adopted' | 'ignored') => {
+    const db = ConfigStore.getInstance().db;
+    const other = flag === 'adopted' ? 'ignored' : 'adopted';
+    const before = db
+      .prepare(
+        `SELECT adopted, ignored FROM user_strategy_signal
+          WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+      )
+      .get(id, userId) as { adopted: number; ignored: number } | undefined;
+    if (!before) return null;
+
+    const unchanged = before[flag] === 1 && before[other] === 0;
+    if (!unchanged) {
+      // 列名来自上面的字面量联合类型，不含外部输入
+      db.prepare(
+        `UPDATE user_strategy_signal
+            SET ${flag} = 1,
+                ${flag}_at = COALESCE(${flag}_at, datetime('now','localtime')),
+                ${other} = 0,
+                ${other}_at = NULL
+          WHERE id = ? AND user_id = ? AND is_deleted = 0`,
+      ).run(id, userId);
+    }
+
+    const after = db
+      .prepare(`SELECT adopted, ignored, adopted_at, ignored_at FROM user_strategy_signal WHERE id = ?`)
+      .get(id) as {
+      adopted: number;
+      ignored: number;
+      adopted_at: string | null;
+      ignored_at: string | null;
+    };
+    return {
+      id,
+      adopted: after.adopted,
+      ignored: after.ignored,
+      adoptedAt: after.adopted_at,
+      ignoredAt: after.ignored_at,
+      unchanged,
+    };
+  };
+
+  // T134（V3.4）信号采纳/忽略标注；F4 Step C 补互斥与幂等
   app.patch('/api/signal/:id/adopt', async (request, reply) => {
     const user = (request as AuthedRequest).user;
     const id = Number((request.params as { id: string }).id);
     if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
-    const db = ConfigStore.getInstance().db;
-    const info = db
-      .prepare(
-        `UPDATE user_strategy_signal SET adopted = 1, adopted_at = datetime('now','localtime') WHERE id = ? AND user_id = ? AND is_deleted = 0`,
-      )
-      .run(id, user.sub);
-    if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
-    return reply.send(ok({ id, adopted: 1 }));
+    const result = writeSignalFlag(id, user.sub, 'adopted');
+    if (!result) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+    return reply.send(ok(result));
   });
 
   app.patch('/api/signal/:id/ignore', async (request, reply) => {
     const user = (request as AuthedRequest).user;
     const id = Number((request.params as { id: string }).id);
     if (!Number.isFinite(id) || id <= 0) return reply.code(400).send(fail(400, 'INVALID_ID', 'id 非法'));
-    const db = ConfigStore.getInstance().db;
-    const info = db
-      .prepare(`UPDATE user_strategy_signal SET ignored = 1 WHERE id = ? AND user_id = ? AND is_deleted = 0`)
-      .run(id, user.sub);
-    if (info.changes === 0) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
-    return reply.send(ok({ id, ignored: 1 }));
+    const result = writeSignalFlag(id, user.sub, 'ignored');
+    if (!result) return reply.code(404).send(fail(404, 'NOT_FOUND', '信号不存在'));
+    return reply.send(ok(result));
   });
   // T141（V3.7）信号↔交易手动关联（INV-S3-15/16、INV-S6-4）
   /**

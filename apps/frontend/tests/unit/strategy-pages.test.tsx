@@ -101,6 +101,15 @@ const EFFECTIVENESS = {
     },
     feeModelLabel: 'ETF 口径（印花税 0 / 过户费 0）',
     feeModels: [],
+    // F4 Step C：采纳/忽略三分口径（样本不足时不出百分比）
+    adoption: {
+      adopted: 1,
+      ignored: 1,
+      pending: 1,
+      processed: 2,
+      insufficientSample: true,
+      adoptionRate: null,
+    },
     generatedAt: '2026-11-08T00:00:00.000Z',
   },
   summary: [EMPTY_STATS],
