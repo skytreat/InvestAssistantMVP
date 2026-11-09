@@ -34,7 +34,7 @@ import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
 import { createWufuRotationStrategy, resolveWufuRotationParams } from './strategies/wufuRotation/index.js';
 import { momentumRawWindow } from './strategies/wufuRotation/filters.js';
 import { createDualMomentumStrategy } from './strategies/dualmomentum/index.js';
-import { BENCHMARK_SYMBOL } from './strategies/dualmomentum/l1/params.js';
+import { BENCHMARK_SYMBOL, POOL_ORDER } from './strategies/dualmomentum/l1/params.js';
 import { dualMomentumLookback, resolveDualMomentumParams } from './strategies/dualmomentum/params.js';
 import { computeAttribution, toAttributionRows } from './attribution/index.js';
 import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';
@@ -461,7 +461,7 @@ interface RunArgs {
   transferFeeRate: number;
 }
 
-const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak|dynamic] [--indexes sh000300,sh000510,sz399101,sz399006] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--stamp-duty-rate 0.001] [--transfer-fee-rate 0.00002] [--no-missing-bar] [--no-zero-volume]`;
+const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold|wufu-rotation|dualmomentum] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak|dynamic] [--indexes sh000300,sh000510,sz399101,sz399006] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--stamp-duty-rate 0.001] [--transfer-fee-rate 0.00002] [--no-missing-bar] [--no-zero-volume]`;
 
 function parseRunArgs(argv: readonly string[]): RunArgs {
   const options: RunArgs = {
@@ -496,8 +496,8 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
     switch (arg) {
       case '--strategy': {
         const v = readValue();
-        if (v !== 'buy-and-hold' && v !== 'wufu-rotation') {
-          throw new Error(`--strategy 只接受 buy-and-hold|wufu-rotation（收到 ${v}）`);
+        if (v !== 'buy-and-hold' && v !== 'wufu-rotation' && v !== 'dualmomentum') {
+          throw new Error(`--strategy 只接受 buy-and-hold|wufu-rotation|dualmomentum（收到 ${v}）`);
         }
         options.strategy = v;
         break;
@@ -676,8 +676,16 @@ async function runCommand(argv: readonly string[]): Promise<void> {
   const loadStart = calendar.lastN(args.start, warmup)[0] ?? args.start;
 
   // 固定池 / 防御 ETF / 用户标的 / 基准 —— 动态模式下必须仍在面板里（见 dynamicPanel 的 extraSymbols）
+  // dualmomentum 的 7 只池必须显式补：`FIXED_ETF_POOL` 不含 `sh513000`
   const extraSymbols = [
-    ...new Set([...FIXED_ETF_POOL, ...GLOBAL_ETF_POOL, DEFENSIVE_ETF, args.symbol, benchmark]),
+    ...new Set([
+      ...FIXED_ETF_POOL,
+      ...GLOBAL_ETF_POOL,
+      DEFENSIVE_ETF,
+      args.symbol,
+      benchmark,
+      ...(dmParams !== null ? POOL_ORDER : []),
+    ]),
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
 
