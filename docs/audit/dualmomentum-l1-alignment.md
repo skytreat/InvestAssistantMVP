@@ -1,10 +1,10 @@
 # DualMomentum L1 实现说明（DAS-2 / DAS-2.1 对齐核对）
 
-> 状态：L1 已实现并自测通过（29/29），**尚未接入任何注册点**（未改 `BUILTINS`、未改 `pluginEngine.ts` /
-> `routes/signal.ts` / `signalService.ts` / `SDD.md`、未改现有策略）。
+> 状态：L1 已实现并自测通过（29/29）。**2026-11-09 更新**：已接入 `Strategy` 适配器与纸面白名单，
+> 当前状态见 §8；纸面保真边界见 §9（方案 D 显式接受）；§7 保留为 L1 阶段的历史方案。
 > **对齐结论未成立**：指标 golden 只证明公式等价，数据源尚未同源（见 §4.5），需等 §5 快照。
-> 规格权威源：`d:\workspace\QuantInvest\Strategy\DualMomentum\JointQuant\docs\decision_alignment_spec.md`（DAS-2 → `DAS-2.1`）。
-> 记录时间：2026-11-08。
+> 规格权威源：`docs/audit/decision_alignment_spec.md`（DAS-3.1）。
+> 记录时间：2026-11-08（§8–§10 追加于 2026-11-09）。
 
 ## 1. 交付物
 
@@ -220,6 +220,8 @@ D1 是为「未来出现非 `O=H=L=C` 形态的占位 bar」预留的正确性�
 
 ## 7. 若要接入 `BUILTINS`（仅方案，未实施）
 
+> 2026-11-09：本节是 L1 阶段的留档；实际接入方式与状态见 §8，**不要按本节实施**。
+
 用户要求「若需要注册进 `BUILTINS`，先单独说明方案」。当前**未注册**，L1 是纯函数库；
 且按裁定 **§5 快照到手、正式对齐通过之前不注册**。接入需三步，
 且**不在本次范围内**：
@@ -232,3 +234,87 @@ D1 是为「未来出现非 `O=H=L=C` 形态的占位 bar」预留的正确性�
    单日约 0.48ms，50ms 余量充足；但**不能**把全量决策行塞进插件返回值，应只返回当日的行。
 
 在此之前不动 `BUILTINS`、`pluginEngine.ts`、`routes/signal.ts`、`signalService.ts`、`SDD.md`。
+
+## 8. 当前接入状态（Strategy 适配器 + 纸面白名单）
+
+| 位置 | 状态 |
+|---|---|
+| `apps/backend/src/services/backtest/strategies/dualmomentum/index.ts` | `Strategy` 适配器：`id=dualmomentum`、`version=das-3.1`、`priceMode=open`、`warmupDays=60` |
+| `apps/backend/src/services/backtest/strategies/dualmomentum/params.ts` | 参数 schema；默认值**引用** `l1/params.ts` 锁定常量，不另抄 |
+| `apps/backend/src/services/backtest/cli.ts` | 回测入口注册；fixed 模式装载池内 7 只 + `sh000300` 指数轨 |
+| `apps/backend/src/services/paper/strategies.ts` | 纸面白名单注册（方案 D 降级，见 §9） |
+| 信号侧 | **不实现**：不做 `Plugin`、不进 `builtinPlugins`、不碰 `routes/signal.ts` |
+
+DAS §4.3「停牌当日订单失效、不顺延」由执行层 `simulator` 的 `suspended` 分支实现，
+适配器不需要额外表达。
+
+## 9. 纸面账户已知不保真（方案 D：显式接受，不修公共回放）
+
+### 9.1 契约冲突
+
+`paper/decision.ts` 对纸面策略的契约（原文）：
+
+> 回放中间日使用空组合（只重建策略状态），最终日 T 才使用检查点组合。
+> 契约：**纸面策略的 `decide()` 内部状态不得依赖持仓**，否则回放会失真。
+
+DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表），这些状态只能由成交事件累积；
+回放期不产生成交、不调用 `onFill`，最终日 T 的持仓又是从检查点直接装入的 ⇒ 契约不成立。
+
+**方案 D 的处置**：`params.ts` 与适配器内的 L2 规则**全部保留**（回测需要），纸面只是跑不全；
+`paper/decision.ts` 的公共回放机制一行不改，wufu / combo 路径不受影响。
+
+### 9.2 四条永不触发的规则
+
+| 规则 | 纸面实际结果 | 原因 |
+|---|---|---|
+| 止盈（持有 ≥5 交易日且含费收益 ≥30%） | **永不触发** | `entryDate` 为空 → 兜底为 `asOf` → `days_since_entry=0` |
+| 再平衡（跌出候选且持有 ≥5 交易日） | **永不触发** | 同上，`days_since_entry` 恒为 0 |
+| 高水位止损（自持有期最高收盘回撤 ≥12%） | **永不触发** | `highWater` 为空 → 兜底取当日收盘 → 回撤恒为 0 |
+| 止损 / 止盈冷却（3 / 5 交易日） | **永不生效** | 回放不调用 `onFill` → 冷却表恒为空 |
+
+纸面仍可用的部分：成本止损（只读 `costBasis`）、超配减仓（只读持仓市值）、池内选股与权重分配。
+
+`paper_position` 现有列（`avg_cost` / `cost_basis` / `last_buy_date`）**不足以重建**上述状态：
+没有首次建仓日、没有高水位、没有冷却计数。
+
+### 9.3 结论与禁令
+
+- **纸面结果不得与回测结果互相校验** —— 两者口径不同，互相校验只会产出假缺陷。
+- 纸面仅用于验收三件事：能选中该策略、能读到参数 schema、能按当日上下文出一次决策。
+- 回测（`cli.ts backtest` + `optimize`）是 DAS 口径的唯一有效验收入口。
+- 若未来要求纸面保真，走 §10 的 A 方案，**不在适配器或 `decision.ts` 里打补丁**。
+
+### 9.4 两个「基准」不要合并
+
+| 字段 | 值 | 用途 |
+|---|---|---|
+| `paper_account.benchmark_asset_code` | `sh510300` | 账户层展示与超额口径（ETF，来自 `v_etf_*`） |
+| `params.benchmark`（策略内） | `sh000300` | DAS §3.3 市场过滤（指数，来自 `raw_kline_daily` 的 `class='index'`） |
+
+二者不是同一概念，**不要合并、不要当 bug 修**。
+
+## 10. 待立项：纸面回放改为全量成交模拟（方案 A）
+
+### 10.1 问题陈述
+
+纸面回放为了「重建策略状态」而使用空组合，导致任何**依赖持仓或成交历史**的策略在纸面上
+系统性失真（本文 §9.2 是 DualMomentum 的实例）。该问题不是 DualMomentum 独有，
+只是前两个内置策略（buy-and-hold / combo-signal）恰好无状态，所以一直没有暴露。
+
+### 10.2 影响面
+
+- `paper/decision.ts` 是同一条公共回放路径，wufu-rotation、combo-signal、dualmomentum **全部经过它**。
+- 改造会改变历史决策的可复现口径，已有纸面账户的历史 `paper_order` 不补记。
+
+### 10.3 为什么必须单独设计
+
+1. **语义**：回放期是否允许成交、成交价用哪个口径（T+1 开盘 / T 收盘）、滑点与费用是否叠加，
+   都会改变最终决策的目标权重，必须先定义。
+2. **性能**：把「单日重建」升级为「逐日带成交模拟」，回放长度直接决定单次决策耗时
+   （长生命周期账户可能需要重放数百个交易日），需评估是否引入状态快照。
+3. **兼容**：wufu / combo 的有状态字段（若有）与历史口径必须同时审计，不能只测 DualMomentum。
+4. **备选方案**：持久化策略状态（`paper_account` 增列）与全量模拟是两条不同路线，
+   前者受「DDL 已定稿」约束，后者改动面更大 —— 需要单独 ADR 裁定。
+
+> 本立项**只登记在此文件**；`docs/client/code_implementation_plan_v3.md` 有其它分支在改，
+> 正式条目待该分支合并后再安排。

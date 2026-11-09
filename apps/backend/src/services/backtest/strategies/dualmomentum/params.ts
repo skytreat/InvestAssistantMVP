@@ -1,0 +1,537 @@
+/**
+ * DualMomentum 可调参数（DAS-3.1 §2.2）。
+ *
+ * 约定：
+ * - **默认值一律引用 `l1/params.ts` 的锁定常量**，不在这里另抄一份数（避免双真值源）。
+ * - `initial_cash` 属运行层参数（回测 `--cash` / 纸面建户初始资金），不进策略 schema；
+ *   `price_model` 由 `Strategy.priceMode = 'open'` 表达，也不进 schema。
+ * - 均线价量比较固定用**第 3 条均线**（默认 20），即 DAS 的 `ma_for_price_check`；
+ *   这是 L1 过滤链的既有结构（`evaluateL1Filters` 的 `ma20` 槽位），不单独暴露。
+ */
+import type { ParamField } from '../../../pluginEngine.js';
+import {
+  BENCHMARK_SYMBOL,
+  DAILY_CHANGE_MAX,
+  DAILY_CHANGE_MIN,
+  MA_PERIODS,
+  MAX_HOLDINGS,
+  NDAY_RETURN_ANNUALIZE,
+  NDAY_RETURN_PERIOD,
+  RSRS_ENABLE_QUALITY_FILTER,
+  RSRS_MAX,
+  RSRS_MIN,
+  RSRS_PERIOD,
+  RSRS_STD_PERIOD,
+  USE_WSM_V2,
+  WSM_MAX,
+  WSM_MIN,
+  WSM_PERIOD,
+} from './l1/params.js';
+import type { MomentumCombo } from './l1/types.js';
+
+/** 执行层（成交/费用）默认值，DAS-3.1 §2.2。 */
+export const DEFAULT_COMMISSION_RATE = 0.00006;
+export const DEFAULT_MIN_COMMISSION = 5.0;
+export const DEFAULT_SLIPPAGE = 0.002;
+export const DEFAULT_LOT_SIZE = 100;
+export const DEFAULT_ETF_EXEMPT_TAX = true;
+
+/** 组合层（L2）默认值，DAS-3.1 §2.2。 */
+export const DEFAULT_SINGLE_POSITION_CAP = 0.33;
+export const DEFAULT_OVERWEIGHT_THRESHOLD = 0.4;
+export const DEFAULT_MIN_HOLD_DAYS = 5;
+export const DEFAULT_TAKE_PROFIT_THRESHOLD = 0.3;
+export const DEFAULT_TAKE_PROFIT_COOLDOWN = 5;
+export const DEFAULT_STOP_LOSS_DRAWDOWN = 0.1;
+export const DEFAULT_STOP_LOSS_HIGH = 0.12;
+export const DEFAULT_STOP_LOSS_COOLDOWN = 3;
+
+export interface DualMomentumParams {
+  /** §2.3 动量组合（主槽/次槽/基准算法） */
+  momentumCombo: MomentumCombo;
+  wsmPeriod: number;
+  useWsmV2: boolean;
+  ndayReturnPeriod: number;
+  ndayReturnAnnualize: boolean;
+  rsrsPeriod: number;
+  rsrsStdPeriod: number;
+  rsrsQualityFilter: boolean;
+  wsmMin: number;
+  wsmMax: number;
+  rsrsMin: number;
+  rsrsMax: number;
+  maPeriod1: number;
+  maPeriod2: number;
+  maPeriod3: number;
+  maPeriod4: number;
+  dailyChangeMin: number;
+  dailyChangeMax: number;
+  maxHoldings: number;
+  singlePositionCap: number;
+  overweightThreshold: number;
+  minHoldDays: number;
+  takeProfitThreshold: number;
+  takeProfitCooldown: number;
+  stopLossDrawdown: number;
+  stopLossHigh: number;
+  stopLossCooldown: number;
+  commissionRate: number;
+  minCommission: number;
+  slippage: number;
+  lotSize: number;
+  etfExemptTax: boolean;
+  benchmark: string;
+}
+
+export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
+  momentumCombo: 'wsm_v2_rsrs',
+  wsmPeriod: WSM_PERIOD,
+  useWsmV2: USE_WSM_V2,
+  ndayReturnPeriod: NDAY_RETURN_PERIOD,
+  ndayReturnAnnualize: NDAY_RETURN_ANNUALIZE,
+  rsrsPeriod: RSRS_PERIOD,
+  rsrsStdPeriod: RSRS_STD_PERIOD,
+  rsrsQualityFilter: RSRS_ENABLE_QUALITY_FILTER,
+  wsmMin: WSM_MIN,
+  wsmMax: WSM_MAX,
+  rsrsMin: RSRS_MIN,
+  rsrsMax: RSRS_MAX,
+  maPeriod1: MA_PERIODS[0],
+  maPeriod2: MA_PERIODS[1],
+  maPeriod3: MA_PERIODS[2],
+  maPeriod4: MA_PERIODS[3],
+  dailyChangeMin: DAILY_CHANGE_MIN,
+  dailyChangeMax: DAILY_CHANGE_MAX,
+  maxHoldings: MAX_HOLDINGS,
+  singlePositionCap: DEFAULT_SINGLE_POSITION_CAP,
+  overweightThreshold: DEFAULT_OVERWEIGHT_THRESHOLD,
+  minHoldDays: DEFAULT_MIN_HOLD_DAYS,
+  takeProfitThreshold: DEFAULT_TAKE_PROFIT_THRESHOLD,
+  takeProfitCooldown: DEFAULT_TAKE_PROFIT_COOLDOWN,
+  stopLossDrawdown: DEFAULT_STOP_LOSS_DRAWDOWN,
+  stopLossHigh: DEFAULT_STOP_LOSS_HIGH,
+  stopLossCooldown: DEFAULT_STOP_LOSS_COOLDOWN,
+  commissionRate: DEFAULT_COMMISSION_RATE,
+  minCommission: DEFAULT_MIN_COMMISSION,
+  slippage: DEFAULT_SLIPPAGE,
+  lotSize: DEFAULT_LOT_SIZE,
+  etfExemptTax: DEFAULT_ETF_EXEMPT_TAX,
+  benchmark: BENCHMARK_SYMBOL,
+};
+
+export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
+  {
+    key: 'momentumCombo',
+    label: '动量组合',
+    type: 'select',
+    default: DUALMOMENTUM_DEFAULTS.momentumCombo,
+    options: ['wsm_v2_rsrs', 'nday_return_rsrs', 'nday_return_wsm_v2'],
+    description: 'DAS §2.3：主槽/次槽指标组合；默认 wsm_v2_rsrs',
+  },
+  {
+    key: 'wsmPeriod',
+    label: '加权斜率动量周期',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.wsmPeriod,
+    min: 2,
+    max: 250,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 wsm_period',
+  },
+  {
+    key: 'useWsmV2',
+    label: '启用 WSM V2（加权 R²）',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.useWsmV2,
+    description: 'DAS §2.2 use_wsm_v2',
+  },
+  {
+    key: 'ndayReturnPeriod',
+    label: 'N 日涨幅周期',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.ndayReturnPeriod,
+    min: 2,
+    max: 250,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 nday_return_period',
+  },
+  {
+    key: 'ndayReturnAnnualize',
+    label: 'N 日涨幅年化',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.ndayReturnAnnualize,
+    description: 'DAS §2.2 nday_return_annualize',
+  },
+  {
+    key: 'rsrsPeriod',
+    label: 'RSRS 回归窗口',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.rsrsPeriod,
+    min: 2,
+    max: 250,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 rsrs_period',
+  },
+  {
+    key: 'rsrsStdPeriod',
+    label: 'RSRS 标准化窗口',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.rsrsStdPeriod,
+    min: 2,
+    max: 500,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 rsrs_std_period',
+  },
+  {
+    key: 'rsrsQualityFilter',
+    label: 'RSRS 质量过滤',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.rsrsQualityFilter,
+    description: 'DAS §2.2 rsrs_enable_quality_filter（锁定关闭）',
+  },
+  {
+    key: 'wsmMin',
+    label: '主槽动量下限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.wsmMin,
+    min: -10,
+    max: 10,
+    step: 0.1,
+    description: 'DAS §2.2 wsm_min（作用在动量槽位）',
+  },
+  {
+    key: 'wsmMax',
+    label: '主槽动量上限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.wsmMax,
+    min: -10,
+    max: 50,
+    step: 0.1,
+    description: 'DAS §2.2 wsm_max',
+  },
+  {
+    key: 'rsrsMin',
+    label: '次槽动量下限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.rsrsMin,
+    min: -10,
+    max: 10,
+    step: 0.1,
+    description: 'DAS §2.2 rsrs_min（作用在次槽，combo 3 下即 WSM 下限）',
+  },
+  {
+    key: 'rsrsMax',
+    label: '次槽动量上限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.rsrsMax,
+    min: -10,
+    max: 50,
+    step: 0.1,
+    description: 'DAS §2.2 rsrs_max',
+  },
+  {
+    key: 'maPeriod1',
+    label: '均线 1 周期',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.maPeriod1,
+    min: 2,
+    max: 250,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 ma_periods[0]（最短均线）',
+  },
+  {
+    key: 'maPeriod2',
+    label: '均线 2 周期',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.maPeriod2,
+    min: 2,
+    max: 250,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 ma_periods[1]',
+  },
+  {
+    key: 'maPeriod3',
+    label: '均线 3 周期（兼价格比较）',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.maPeriod3,
+    min: 2,
+    max: 250,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 ma_periods[2]；同时充当 ma_for_price_check',
+  },
+  {
+    key: 'maPeriod4',
+    label: '均线 4 周期',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.maPeriod4,
+    min: 2,
+    max: 500,
+    step: 1,
+    unit: '根',
+    description: 'DAS §2.2 ma_periods[3]（最长均线）',
+  },
+  {
+    key: 'dailyChangeMin',
+    label: '当日涨跌幅下限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.dailyChangeMin,
+    min: -0.5,
+    max: 0.5,
+    step: 0.005,
+    description: 'DAS §2.2 daily_change_min（-0.05 = -5%）',
+  },
+  {
+    key: 'dailyChangeMax',
+    label: '当日涨跌幅上限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.dailyChangeMax,
+    min: -0.5,
+    max: 0.5,
+    step: 0.005,
+    description: 'DAS §2.2 daily_change_max（0.05 = +5%）',
+  },
+  {
+    key: 'maxHoldings',
+    label: '最大持仓只数',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.maxHoldings,
+    min: 1,
+    max: 20,
+    step: 1,
+    unit: '只',
+    description: 'DAS §2.2 max_holdings（同时也是排名截断只数）',
+  },
+  {
+    key: 'singlePositionCap',
+    label: '单标的上限',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.singlePositionCap,
+    min: 0.05,
+    max: 1,
+    step: 0.01,
+    description: 'DAS §2.2 single_position_cap（0.33 = 33% 总权益）',
+  },
+  {
+    key: 'overweightThreshold',
+    label: '超配阈值',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.overweightThreshold,
+    min: 0.1,
+    max: 1,
+    step: 0.01,
+    description: 'DAS §2.2 overweight_threshold（0.40，分母不含现金）',
+  },
+  {
+    key: 'minHoldDays',
+    label: '最短持有天数',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.minHoldDays,
+    min: 0,
+    max: 250,
+    step: 1,
+    unit: '自然日',
+    description: 'DAS §2.2 min_hold_days（DAS §9.1：自然日差，不是交易日）',
+  },
+  {
+    key: 'takeProfitThreshold',
+    label: '止盈阈值',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.takeProfitThreshold,
+    min: 0.01,
+    max: 5,
+    step: 0.01,
+    description: 'DAS §2.2 take_profit_threshold（含费后收益率）',
+  },
+  {
+    key: 'takeProfitCooldown',
+    label: '止盈冷却',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.takeProfitCooldown,
+    min: 0,
+    max: 60,
+    step: 1,
+    unit: '交易日',
+    description: 'DAS §2.2 take_profit_cooldown',
+  },
+  {
+    key: 'stopLossDrawdown',
+    label: '成本止损线',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.stopLossDrawdown,
+    min: 0.01,
+    max: 1,
+    step: 0.01,
+    description: 'DAS §2.2 stop_loss_drawdown（相对持仓成本）',
+  },
+  {
+    key: 'stopLossHigh',
+    label: '高水位止损线',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.stopLossHigh,
+    min: 0.01,
+    max: 1,
+    step: 0.01,
+    description: 'DAS §2.2 stop_loss_high（相对建仓后最高价）',
+  },
+  {
+    key: 'stopLossCooldown',
+    label: '止损冷却',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.stopLossCooldown,
+    min: 0,
+    max: 60,
+    step: 1,
+    unit: '交易日',
+    description: 'DAS §2.2 stop_loss_cooldown',
+  },
+  {
+    key: 'commissionRate',
+    label: '佣金费率',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.commissionRate,
+    min: 0,
+    max: 0.01,
+    step: 0.00001,
+    description: 'DAS §2.2 commission_rate（回测执行层；纸面账户以账户费用快照为准）',
+  },
+  {
+    key: 'minCommission',
+    label: '最低佣金',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.minCommission,
+    min: 0,
+    max: 100,
+    step: 0.5,
+    unit: '元',
+    description: 'DAS §2.2 min_commission（回测执行层）',
+  },
+  {
+    key: 'slippage',
+    label: '滑点',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.slippage,
+    min: 0,
+    max: 0.05,
+    step: 0.0005,
+    description: 'DAS §2.2 slippage（回测执行层；买卖各让价一次）',
+  },
+  {
+    key: 'lotSize',
+    label: '最小交易单位',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.lotSize,
+    min: 1,
+    max: 1000,
+    step: 1,
+    unit: '股',
+    description: 'DAS §2.2 lot_size（回测执行层）',
+  },
+  {
+    key: 'etfExemptTax',
+    label: 'ETF 免印花税',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.etfExemptTax,
+    description: 'DAS §2.2 etf_exempt_tax（回测执行层：true 时卖出不缴印花税）',
+  },
+  {
+    key: 'benchmark',
+    label: '基准指数',
+    type: 'select',
+    default: DUALMOMENTUM_DEFAULTS.benchmark,
+    options: [BENCHMARK_SYMBOL],
+    description: 'DAS §2.1/§2.2 benchmark；用于市场过滤与超额基准',
+  },
+];
+
+function num(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
+  const v = raw[key];
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return fallback;
+}
+
+function int(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
+  return Math.round(num(raw, key, fallback));
+}
+
+function bool(raw: Readonly<Record<string, unknown>>, key: string, fallback: boolean): boolean {
+  const v = raw[key];
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+  }
+  return fallback;
+}
+
+/** 合并默认值 + 用户参数，并做最小合法性收敛（不抛错，避免回测因单个参数中断）。 */
+export function resolveDualMomentumParams(
+  raw: Readonly<Record<string, unknown>> | undefined,
+): DualMomentumParams {
+  const src = raw ?? {};
+  const d = DUALMOMENTUM_DEFAULTS;
+  const comboRaw = typeof src.momentumCombo === 'string' ? src.momentumCombo : d.momentumCombo;
+  const combo: MomentumCombo =
+    comboRaw === 'nday_return_rsrs' || comboRaw === 'nday_return_wsm_v2' ? comboRaw : 'wsm_v2_rsrs';
+
+  return {
+    momentumCombo: combo,
+    wsmPeriod: Math.max(2, int(src, 'wsmPeriod', d.wsmPeriod)),
+    useWsmV2: bool(src, 'useWsmV2', d.useWsmV2),
+    ndayReturnPeriod: Math.max(2, int(src, 'ndayReturnPeriod', d.ndayReturnPeriod)),
+    ndayReturnAnnualize: bool(src, 'ndayReturnAnnualize', d.ndayReturnAnnualize),
+    rsrsPeriod: Math.max(2, int(src, 'rsrsPeriod', d.rsrsPeriod)),
+    rsrsStdPeriod: Math.max(2, int(src, 'rsrsStdPeriod', d.rsrsStdPeriod)),
+    rsrsQualityFilter: bool(src, 'rsrsQualityFilter', d.rsrsQualityFilter),
+    wsmMin: num(src, 'wsmMin', d.wsmMin),
+    wsmMax: num(src, 'wsmMax', d.wsmMax),
+    rsrsMin: num(src, 'rsrsMin', d.rsrsMin),
+    rsrsMax: num(src, 'rsrsMax', d.rsrsMax),
+    maPeriod1: Math.max(2, int(src, 'maPeriod1', d.maPeriod1)),
+    maPeriod2: Math.max(2, int(src, 'maPeriod2', d.maPeriod2)),
+    maPeriod3: Math.max(2, int(src, 'maPeriod3', d.maPeriod3)),
+    maPeriod4: Math.max(2, int(src, 'maPeriod4', d.maPeriod4)),
+    dailyChangeMin: num(src, 'dailyChangeMin', d.dailyChangeMin),
+    dailyChangeMax: num(src, 'dailyChangeMax', d.dailyChangeMax),
+    maxHoldings: Math.max(1, int(src, 'maxHoldings', d.maxHoldings)),
+    singlePositionCap: num(src, 'singlePositionCap', d.singlePositionCap),
+    overweightThreshold: num(src, 'overweightThreshold', d.overweightThreshold),
+    minHoldDays: Math.max(0, int(src, 'minHoldDays', d.minHoldDays)),
+    takeProfitThreshold: num(src, 'takeProfitThreshold', d.takeProfitThreshold),
+    takeProfitCooldown: Math.max(0, int(src, 'takeProfitCooldown', d.takeProfitCooldown)),
+    stopLossDrawdown: num(src, 'stopLossDrawdown', d.stopLossDrawdown),
+    stopLossHigh: num(src, 'stopLossHigh', d.stopLossHigh),
+    stopLossCooldown: Math.max(0, int(src, 'stopLossCooldown', d.stopLossCooldown)),
+    commissionRate: num(src, 'commissionRate', d.commissionRate),
+    minCommission: num(src, 'minCommission', d.minCommission),
+    slippage: num(src, 'slippage', d.slippage),
+    lotSize: Math.max(1, int(src, 'lotSize', d.lotSize)),
+    etfExemptTax: bool(src, 'etfExemptTax', d.etfExemptTax),
+    benchmark: typeof src.benchmark === 'string' && src.benchmark !== '' ? src.benchmark : d.benchmark,
+  };
+}
+
+/**
+ * 指标预热所需 bar 根数（不足则整体短路）。
+ *
+ * 默认参数下等于 `INDICATOR_LOOKBACK = 60`；参数放大时同步放大，避免「参数变了但预热没变」
+ * 导致的隐性短窗口。
+ */
+export function dualMomentumLookback(p: DualMomentumParams): number {
+  return Math.max(
+    p.wsmPeriod,
+    p.ndayReturnPeriod,
+    p.rsrsPeriod + p.rsrsStdPeriod,
+    p.maPeriod1,
+    p.maPeriod2,
+    p.maPeriod3,
+    p.maPeriod4,
+  );
+}

@@ -120,7 +120,7 @@ async function loadEtfBars(view: string, start: string, end: string): Promise<Ma
  * `preclose` 用 `lag(close)` 补：区间首根的 preclose 退化为自身收盘（已知小偏差，
  * 策略只用 `indexSeries` 的收盘序列，不读这根 preclose）。
  */
-async function loadIndexBars(
+export async function loadIndexBars(
   codes: readonly string[],
   start: string,
   end: string,

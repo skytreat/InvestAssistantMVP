@@ -16,7 +16,7 @@
 import { BacktestInvariantError } from '../backtest/engine.js';
 import { loadTradingCalendar, type TradingCalendar } from '../backtest/calendar.js';
 import { getBars } from '../backtest/marketPanel.js';
-import { loadUniversePanel } from '../backtest/universe/dynamicPanel.js';
+import { loadUniversePanel, loadIndexBars } from '../backtest/universe/dynamicPanel.js';
 import {
   loadUniverseProvider,
   type InMemoryUniverseProvider,
@@ -26,6 +26,14 @@ import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from '../backtest/univ
 import { WEAK_PERIOD_INDEXES } from '../backtest/universe/pointInTime.js';
 import { resolveWufuRotationParams } from '../backtest/strategies/wufuRotation/index.js';
 import { momentumRawWindow } from '../backtest/strategies/wufuRotation/filters.js';
+import {
+  BENCHMARK_SYMBOL as DM_BENCHMARK_SYMBOL,
+  POOL_ORDER as DM_POOL_ORDER,
+} from '../backtest/strategies/dualmomentum/l1/params.js';
+import {
+  dualMomentumLookback,
+  resolveDualMomentumParams,
+} from '../backtest/strategies/dualmomentum/params.js';
 import { DEFAULT_DYNAMIC_TOP_N, DEFAULT_LIQUIDITY_DIVISOR } from '../backtest/universe/pointInTime.js';
 import type { Bar } from '../backtest/types.js';
 
@@ -82,11 +90,38 @@ export function universeModeForStrategy(strategyId: string): PaperUniverseMode {
   return strategyId === 'wufu-rotation' ? 'dynamic' : 'fixed';
 }
 
-function strategyWarmup(strategyId: string, params: Readonly<Record<string, unknown>>): number {
+/**
+ * 策略预热根数（与回测 CLI 的 `strategyWarmup` 同口径）。
+ *
+ * `dualmomentum` 默认需要 60 根（`INDICATOR_LOOKBACK`），不足时 L1 整体短路返回 0 ⇒
+ * 不装载预热段会让账户前 ~60 个交易日恒为空集。参数放大时按公式同步放大。
+ */
+export function strategyWarmup(
+  strategyId: string,
+  params: Readonly<Record<string, unknown>>,
+): number {
   if (strategyId === 'wufu-rotation') {
     return momentumRawWindow(resolveWufuRotationParams({ ...params }));
   }
+  if (strategyId === 'dualmomentum') {
+    return dualMomentumLookback(resolveDualMomentumParams({ ...params }));
+  }
   return 1;
+}
+
+/**
+ * 策略自带的固定标的（只影响装载范围，不影响 `asOf` 时点判定）。
+ *
+ * `FIXED_ETF_POOL` 是 v5.2 的 114 只名单，**不含 `sh513000`**；dualmomentum 的 7 只池
+ * 必须显式补上，否则该标的永远没有 bar（L1 会判 `POOL_ABSENT`）。
+ */
+export function paperStrategySymbols(strategyId: string): readonly string[] {
+  return strategyId === 'dualmomentum' ? DM_POOL_ORDER : [];
+}
+
+/** 策略需要的**指数**轨（`v_etf_*` 不含指数，必须走 `raw_kline_daily` 的 index 行） */
+export function paperStrategyIndexCodes(strategyId: string): readonly string[] {
+  return strategyId === 'dualmomentum' ? [DM_BENCHMARK_SYMBOL] : [];
 }
 
 /** 装载纸面决策所需的全部行情（一次区间批量取数，禁止逐标的循环） */
@@ -104,6 +139,7 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
       ...GLOBAL_ETF_POOL,
       DEFENSIVE_ETF,
       input.benchmark,
+      ...paperStrategySymbols(input.strategyId),
       ...(userSymbol ? [userSymbol] : []),
       ...(input.heldSymbols ?? []),
       ...(input.extraSymbols ?? []),
@@ -145,16 +181,22 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
     };
   }
 
-  const [sig, exe, provider] = await Promise.all([
+  const indexCodes = paperStrategyIndexCodes(input.strategyId);
+  const [sig, exe, provider, realIndex] = await Promise.all([
     getBars(symbols, loadStart, end, { adjust: 'qfq' }),
     getBars(symbols, loadStart, end, { adjust: 'bfq' }),
     providerPromise,
+    indexCodes.length > 0 ? loadIndexBars([...indexCodes], loadStart, end) : Promise.resolve(null),
   ]);
+  const indexBars = new Map(WEAK_PERIOD_INDEXES.map((code) => [code, sig.get(code) ?? []]));
+  if (realIndex) {
+    for (const [code, bars] of realIndex) indexBars.set(code, bars);
+  }
   return {
     calendar,
     signalBars: sig,
     execBars: exe,
-    indexBars: new Map(WEAK_PERIOD_INDEXES.map((code) => [code, sig.get(code) ?? []])),
+    indexBars,
     benchmarkBars: exe.get(input.benchmark) ?? [],
     universe: universeOf(provider),
     loadStart,

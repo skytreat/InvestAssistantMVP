@@ -58,6 +58,10 @@ export interface L1FilterInput {
   secondaryRange: readonly [number, number];
   cooling: boolean;
   limitRatio: number;
+  /** 当日涨跌幅允许区间下限（缺省用 DAS 锁定值 `DAILY_CHANGE_MIN`） */
+  dailyChangeMin?: number;
+  /** 当日涨跌幅允许区间上限（缺省用 DAS 锁定值 `DAILY_CHANGE_MAX`） */
+  dailyChangeMax?: number;
 }
 
 export interface L1FilterResult {
@@ -84,10 +88,12 @@ export function evaluateL1Filters(input: L1FilterInput): L1FilterResult {
   if (price >= upLimit || price <= downLimit) return { pass: false, reason: 'AT_LIMIT' };
 
   const change = input.prevCloseAdj > 0 ? price / input.prevCloseAdj - 1 : Number.NaN;
+  const dailyChangeMin = input.dailyChangeMin ?? DAILY_CHANGE_MIN;
+  const dailyChangeMax = input.dailyChangeMax ?? DAILY_CHANGE_MAX;
   if (
     !Number.isFinite(change) ||
-    change < DAILY_CHANGE_MIN - DAILY_CHANGE_EPSILON ||
-    change > DAILY_CHANGE_MAX + DAILY_CHANGE_EPSILON
+    change < dailyChangeMin - DAILY_CHANGE_EPSILON ||
+    change > dailyChangeMax + DAILY_CHANGE_EPSILON
   ) {
     return { pass: false, reason: 'DAILY_CHANGE_OUT_OF_RANGE' };
   }

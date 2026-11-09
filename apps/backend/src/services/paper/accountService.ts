@@ -15,6 +15,7 @@ import { loadHolidayList, nextTradingDay } from '../backtest/calendar.js';
 import { PaperError } from './errors.js';
 import { resolveFeeConfig, type FeeSnapshot } from './fees.js';
 import { resolvePaperStrategy } from './strategies.js';
+import type { ParamField } from '../pluginEngine.js';
 
 export type PaperPhase = 'shadow' | 'ledger';
 export type PaperStatus = 'active' | 'paused' | 'closed';
@@ -85,6 +86,62 @@ export function todayLocalDate(now: Date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+/**
+ * 建户参数校验（PA-07 补口）：按策略声明的 `paramSchema` 检查类型 / 范围 / 枚举。
+ *
+ * 只校验**声明过的**字段：`runtimeInjected` 与 schema 外字段跳过（各策略可能携带内部参数）；
+ * `undefined` / `null` 视为「未提供」，由 `defaultParams` 兜底。
+ */
+function validateStrategyParams(
+  schema: readonly ParamField[],
+  params: Readonly<Record<string, unknown>>,
+): void {
+  const fail = (msg: string): never => {
+    throw new PaperError('PARAM_INVALID', 400, msg);
+  };
+  for (const field of schema) {
+    const value = params[field.key];
+    if (value === undefined || value === null) continue;
+    const name = `${field.label}(${field.key})`;
+    switch (field.type) {
+      case 'number':
+      case 'integer': {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          fail(`${name} 必须是${field.type === 'integer' ? '整数' : '数字'}`);
+        }
+        const num = value as number;
+        if (field.type === 'integer' && !Number.isInteger(num)) {
+          fail(`${name} 必须是整数（当前 ${String(num)}）`);
+        }
+        if (field.min !== undefined && num < field.min) {
+          fail(`${name} 不能小于 ${field.min}（当前 ${String(num)}）`);
+        }
+        if (field.max !== undefined && num > field.max) {
+          fail(`${name} 不能大于 ${field.max}（当前 ${String(num)}）`);
+        }
+        break;
+      }
+      case 'boolean':
+        if (typeof value !== 'boolean') fail(`${name} 必须是 true / false`);
+        break;
+      case 'string':
+        if (typeof value !== 'string' || value.trim() === '') {
+          fail(`${name} 必须是非空字符串`);
+        }
+        break;
+      case 'select': {
+        const options = field.options ?? [];
+        if (typeof value !== 'string' || !options.includes(value)) {
+          fail(`${name} 必须是以下之一：${options.join(' / ')}（当前 ${String(value)}）`);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
 export function createPaperAccount(
   db: Database.Database,
   businessDb: Database.Database,
@@ -105,6 +162,7 @@ export function createPaperAccount(
 
   const strategy = resolvePaperStrategy(input.strategyId, input.strategyVersion);
   const params = { ...strategy.defaultParams, ...(input.params ?? {}) };
+  validateStrategyParams(strategy.paramSchema, params);
   const feeSnapshot = resolveFeeConfig(db, { userId: input.userId, feeConfigId: input.feeConfigId });
   // 「其它交易规则」快照：先卖后买口径 + 涨跌停幅度（费用快照之外的部分）
   const rules = {

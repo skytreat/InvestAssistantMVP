@@ -7,9 +7,11 @@
  *
  * 目前只登记仓库内置策略；插件策略接入属 S2 起的扩展项。
  */
+import type { ParamField } from '../pluginEngine.js';
 import type { Strategy } from '../backtest/strategy/types.js';
 import { buyAndHoldStrategy } from '../backtest/strategies/buyAndHold.js';
 import { createWufuRotationStrategy } from '../backtest/strategies/wufuRotation/index.js';
+import { createDualMomentumStrategy } from '../backtest/strategies/dualmomentum/index.js';
 import {
   COMBO_SIGNAL_STRATEGY_ID,
   COMBO_SIGNAL_STRATEGY_VERSION,
@@ -30,6 +32,18 @@ const BUILTINS: readonly BuiltinEntry[] = [
     id: 'wufu-rotation',
     version: '5.2.0-m3',
     create: () => createWufuRotationStrategy(),
+  },
+  {
+    // DualMomentum（DAS-3.1）：池内轮动、多标的，与 wufu 同类；
+    // id/version 必须与 `strategies/dualmomentum/index.ts` 的 `defineStrategy` 声明逐字一致。
+    //
+    // ⚠️ 纸面账户**已知不保真**：回放期用空组合且不产生成交（`onFill` 不调用），
+    // 止盈 / 再平衡 / 高水位止损 / 止损止盈冷却在本策略下永不触发。
+    // 纸面结果不得与回测结果互相校验。详见 `docs/audit/dualmomentum-l1-alignment.md` 的
+    // 「纸面账户已知不保真」一节（方案 D 显式接受）。
+    id: 'dualmomentum',
+    version: 'das-3.1',
+    create: () => createDualMomentumStrategy(),
   },
   {
     // T133 / PA-09：组合信号跟随 —— 只读已预生成的 `combo:<id>` 信号（D3：判据只有一份），
@@ -56,10 +70,15 @@ export function resolvePaperStrategy(id: string, version: string): Strategy {
   return entry.create();
 }
 
-/** 供建户 / 前端展示使用：可绑定策略清单 */
-export function listPaperStrategies(): { id: string; version: string; name: string }[] {
+/** 供建户 / 前端展示使用：可绑定策略清单（含参数 schema） */
+export function listPaperStrategies(): {
+  id: string;
+  version: string;
+  name: string;
+  paramSchema: ParamField[];
+}[] {
   return BUILTINS.map((e) => {
     const s = e.create();
-    return { id: s.id, version: s.version, name: s.name };
+    return { id: s.id, version: s.version, name: s.name, paramSchema: s.paramSchema };
   });
 }
