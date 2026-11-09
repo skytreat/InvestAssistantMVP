@@ -787,6 +787,21 @@ transfer         -> 忽略（转托管不改变总持仓）
 **实现约束**：必须扣**真实交易成本**（含最低佣金）；必须与基准对比；
 信号若在生效前已失效（如止损触发）按**实际可成交价**评估。
 
+**响应契约（`GET /api/strategy/effectiveness`，2026-11-09 定稿；F4 Step B `#137` / Step C `#141`）**：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `meta` | object | 口径快照：`from` / `to` / `benchmark` / `benchmarkClass` / `groupBy` / `horizons` / `notional` / `sampleSize` / `insufficientSample` / `statusCounts` / `fees` / `feeModelLabel` / `feeModels[]` / `adoption` / `generatedAt` |
+| `summary` | `HorizonStats[]` | 全样本按周期（t1 / t5 / t10）汇总 |
+| `groups` | array | 每组 `{ groupBy, value, stats: HorizonStats[], feeModels[], adoption }` |
+| `details` | array | 逐信号 × 周期明细（CSV `detail` 同源） |
+| `HorizonStats` | object | `horizon` / `sampleSize` / `excessSampleSize` / `statusCounts` / `insufficientSample` / `winRateAbsolute` / `winRateExcess` / `avgNetReturn` / `avgBenchmarkReturn` / `avgExcessReturn` |
+| `AdoptionStats` | object | `adopted` / `ignored` / `pending` / `processed` / `insufficientSample` / `adoptionRate` |
+
+**采纳率口径（D8）**：分母 = **已处理 = `adopted + ignored`**；「未处理」只展示、不进分母；
+`processed < MIN_SAMPLE_SIZE(20)` ⇒ `insufficientSample=true`、`adoptionRate=null`（JSON 与 CSV 均不输出百分比）。
+计数**按信号去重**（同一信号的多周期 outcome 不重复计入）。
+
 ### 9.7 复盘与交易对视图
 
 | 端点 | 方法 | 用途 |
@@ -1280,10 +1295,12 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | `adopted` | `INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))` | T134 | 采纳标注 |
 | `ignored` | `INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))` | T134 | 忽略标注 |
 | `adopted_at` | `TEXT` | T134 | 采纳时间 |
+| `ignored_at` | `TEXT` | T135（F4 Step C `#141`） | 忽略时间（`datetime('now','localtime')`，与 `adopted_at` 同口径）；**NULL = 未被忽略**。与 `adopted` 互斥：设一个即清另一个及其时间戳（`routes/signal.ts` 的 `writeSignalFlag`）；存量「双 1」由 `normalizeSignalAdoptionFlags()` 按「采纳优先」归一 |
 | `cooldown_until` | `TEXT` | T134 | 冷却期（同策略 / 同标的 / 同方向至此不重复出信号；MVP 先按日线） |
 | `linked_trade_id` | `INTEGER REFERENCES user_trade_record(id)` | T141 | 手动关联交易记录（跳转复盘，INV-S3-15/16） |
 
 > 迁移：存量表逐列 `ALTER TABLE ADD COLUMN` 由 `_ensureSignalLifecycleColumns()` 补齐（幂等，不重建表）。
+> `ignored_at` 走同一段 `PRAGMA table_info` + `ADD COLUMN` 路径（老库升级与新库初始化同一代码），补列后立即执行双 1 归一。
 
 ---
 

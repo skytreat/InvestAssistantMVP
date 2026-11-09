@@ -79,7 +79,7 @@
 | | T132 | 三口径收益率 | T127 | ✅ |
 | **V3.4** | T133 | 策略分类 / 组合 / 适用品种维度 | T132 | ✅ |
 | | T134 | 信号生命周期（过期 / 冷却 / 分级 / 快照） | T133 | ⚠️ 部分（快照未落地，见 V3.4 备注） |
-| | T135 | 策略有效性评估 | T134 | ⚠️ 部分（见 V3.4 备注） |
+| | T135 | 策略有效性评估 | T134 | ✅（六项落地见 V3.4 备注） |
 | **V3.5** | T136 | 标的字典快照 + 联想增强（拼音 / 免前缀） | T120 | ✅ |
 | **V3.6** | T137 | 组合风控体检 | T132 | ✅ |
 | **V3.7** | T138 | 字段归一化不变量落地 | T121 | ✅ |
@@ -165,16 +165,15 @@
 | 🔒 **T134** | 🟠 | **信号生命周期** | ① 过期语义（过期标灰不删）；② **冷却期**（同策略同标的同方向 N 根 K 线内不重复）；③ 分级（强/中/弱）+ 每日 Top N 摘要；④ **触发快照**（当时 K 线与指标值）；⑤ 采纳/忽略标注 | ① 冷却期生效；② 过期信号被标灰；③ 快照可回看；④ 标注**被保留**并可用于评估 | 🔴 分钟线周期**不在 V3 范围** → 冷却期与过期语义**先按日线实现** |
 | 🔒 **T135** | 🟠 | **策略有效性评估** | ① 单信号后续表现（T+1/T+5/T+10）；② 分组评估（策略/参数/品种/周期）；③ **扣真实成本（含最低佣金）**；④ **与基准对比**；⑤ 采纳率**与量化结果分开呈现** | ① 评估基于**真实历史信号**与真实后续行情（不用模拟成交）；② 成本已扣；③ 有基准；④ 信号若已失效按**实际可成交价**评估 | 🟡 基准标的选取；🟡 「已失效」判定规则（止损触发等） |
 
-> **T135 实际状态复核（2026-11-08，实测基线 `3816dd3`）**：标记由 ✅ 更正为 **⚠️ 部分完成**。
-> - **已实现**：① 单信号后续表现 T+1/T+5/T+10 —— `GET /api/strategy/signals/:id/outcome`（`apps/backend/src/routes/strategy.ts:159-210`），仅返回原始收盘价与涨跌幅。
-> - **未实现 / 部分**：
->   - ② **分组评估（策略/参数/品种/周期）与分组下钻**：接口无分组参数、无聚合结果。
->   - ③ **扣真实成本（含最低佣金）**：outcome 无 fee / 净收益字段，`strategy.ts` 无成本扣减逻辑。
->   - ④ **与基准对比**：无基准标的、无超额收益字段；本文 §Q5「策略评估的基准标的」仍为「待定」。
->   - ⑤ **采纳率与量化结果分开呈现**：仅有 F2 的 `trade_status` 派生（`signalService.ts:568-591`），未与量化结果分列。
->   - **胜率**：策略有效性接口不返回胜率（现有胜率只在复盘页 `routes/review.ts:59-83`，与信号效果无关）。
->   - **CSV 导出**：`/api/strategy/**` 无 CSV 端点（对照 `I8` 已有 `/api/broker-reconcile/diff/export`）。
-> - 依据与实测读数见 `docs/audit/acceptance-retest-23-2026-11-08.md` §6 与 §8。
+> **T135 完成状态（2026-11-09 更新）**：标 ✅。六项落地对照（2026-11-08「⚠️ 部分完成」复核以 `3816dd3` 为基线，已被 Step A/B/C 覆盖）：
+> - ① 单信号后续表现（T+1/T+5/T+10）：`GET /api/strategy/signals/:id/outcome`（`routes/strategy.ts:274-324`）。
+> - ② 分组评估与下钻（策略 / 品种 / 分级 / 行业）：`GROUP_BYS` + `buildReport`（`services/strategyEffectiveness.ts:35/651`）；「参数」维度因 `snapshot_json` 从未写入而缺失，登记为 §5 **V3-B12**。
+> - ③ 扣真实成本（含最低佣金）：`computeFees` / `feeRatesForClass`（`services/strategyEffectiveness.ts:179/86`）—— Step A `#136` 落地回测印花税 / 过户费费率，Step B `#137` 落地有效性口径。
+> - ④ 与基准对比：`benchmarkReturn` / `excessReturn`（`services/strategyEffectiveness.ts:520-536`），默认基准 `sh510300`（§6 Q5）。
+> - ⑤ 采纳率与量化结果分列：`summarizeAdoption` + `meta.adoption` / `groups[].adoption` + CSV 六列（Step C `#141`）。
+> - 胜率（绝对 / 超额双口径）与 CSV 导出：`summarizeHorizon` / `buildEffectivenessCsv`（`services/strategyEffectiveness.ts:545/991`），Step B `#137`。
+>
+> 落地 PR：Step A `#136`、Step B `#137`、Step C `#141`。验收要点④「已失效按实际可成交价评估」仍无判定规则，与「参数」维度一并登记为 §5 **V3-B12**。
 
 > ⚠️ **T134 快照能力现状（2026-11-09，PA-10 核实）**：`user_strategy_signal.snapshot_json` 列已建，但**全仓无写入方**；`config_version` 只存在于 `strategy_combo` 配置表，**不落信号行**。⇒ 信号无法还原「当时生效的组合参数 / 指标快照」。该缺口**并入 T134**（不单独立项），待快照能力补齐时一并回写；在此之前 SDD_v3 §10.4.1 明确标注「未实现」。因此 T134 状态由 ✅ 调整为 **⚠️ 部分**（生命周期其余能力已落地，触发快照未落地）。
 
@@ -320,6 +319,13 @@
 | **V3-B9** ⚠️新增 | `strategy_combo.cooldown_bars` **已存储、校验、展示，但未参与组合信号生成或去重** | 2026-11-09 PA-10 核实（PR #135 代码）：`cooldownBars` 仅经 `routes/combo.ts#parseCooldownBars` / `comboRepo.assertCooldownBars` 校验后落库；信号页冷却为全局 `SIGNAL_COOLDOWN_BARS`（展示层合并） | SDD_v3 §10.4.1 / §11.1.7 明确标注实际语义；**已立项 T153（V3.10，待决策 A/B）** | T133 / T148 / T153 |
 | **V3-B10** ⚠️新增 | `user_strategy_signal.snapshot_json` **列存在但无写入方**；组合信号行不保存 `config_version` 或配置快照 | 2026-11-09 PA-10 核实：全仓无 `snapshot_json` 写入；仅 `system_log` 的 `plugin_execute` 明细带 `configVersion` | SDD_v3 §10.4.1 标注「未实现」；**并入 T134（不单独立项）**，待快照能力补齐时一并回写 | T133 / T134 |
 | **V3-B11** ⚠️新增 | `PluginBatchStats.combo` 接口注释写「无启用组合时该字段不出现」，与实现不符 | 2026-11-09 PA-10 核实：标的域路径 `stats.combo = comboOutcome.stats` 无条件赋值 ⇒ 恒出现（零值）；仅旧行为路径（未传 `symbols`）不出现且不执行组合 | 以 SDD_v3 §10.4.2 为准；代码注释修正非本次文档任务范围 | T133 / F4 |
+| **V3-B12** ⚠️新增 | **T135 残留两项：无「参数」分组维度、无「已失效」判定**（六项主链路已由 Step A/B/C 补齐） | 2026-11-09 复核：`GROUP_BYS` 仅 plugin / asset_type / grade / industry（`services/strategyEffectiveness.ts:35`），无「参数」；`snapshot_json` 从未写入（T134 仅 DDL），参数分组无数据源。验收要点④「信号失效按实际可成交价」无止损/失效判定规则 | 参数维度待 `snapshot_json` 写入链路落地；失效判定待需求给出规则。其余六项已完成（见 V3.4 T135 备注） | T135 / T134；`docs/audit/proposal-strategy-effectiveness-f4.md` §6.2 D9 |
+| **V3-B13** ⚠️新增 | **胜率「按笔 vs 按金额加权」口径未在需求中定义** | 2026-11-08 同数据同参数 A/B（400 回合）：按笔 **48.75%** vs 按成本金额加权 **49.52%**（差 0.77pp）；持仓周期分桶 **46.02% → 70.00%**（跨度 24pp）。有效性接口统一采用**按笔等权**（每信号 × 每周期一笔） | 不回填需求；接口与 CSV 标注分母（`sampleSize` / `statusCounts`），不与回测的金额加权胜率直接比较。证据见 `proposal-strategy-effectiveness-f4.md` §11.1（已归档） | Requirements INV-S5-*；T135 |
+| **V3-B14** ⚠️新增 | **采纳率无单独的样本门槛定义** | 2026-11-09 定：分母 = 已处理 = `adopted + ignored`，「未处理」只展示不入分母；`processed < 20`（与其余五项同一 `MIN_SAMPLE_SIZE`）时 `insufficientSample=true`、`adoptionRate=null`，JSON 与 CSV 均不输出百分比 | 已按此实现（Step C `#141`），常量 `MIN_SAMPLE_SIZE` 在 `services/strategyEffectiveness.ts` | T135 / T134 |
+| **V3-B15** ⚠️新增 | **存量库迁移未完成：列在、数据不在** | 2026-11-09 只读实测 `data/business.db`：`user_strategy_signal` 共 **3** 行，`sub_category` 列**存在**但 **3/3 行为 NULL**（`macd_cross`/buy 1 行、`rsi_oversold`/buy 2 行，均 NULL）⇒ 幂等 ALTER 已执行、**数据未回填**，按「不算已迁移」处理。同次实测该库**尚无 `ignored_at` 列**（#141 合并后未启动过后端），下次启动将补列并执行双 1 归一（`normalizeSignalAdoptionFlags`） | 启动一次后端完成补列与归一；`sub_category` 回填随插件引擎下一次写入或单独回填脚本（另行派单） | T134 / T135；`proposal-strategy-effectiveness-f4.md` §11.2 |
+| **V3-B16** ⚠️新增 ✅ **已关闭** | **0 信号时有效性接口仍读 DuckDB，新装环境返回 500** | 已修：`bf68638` —— 0 信号直接返回 200 空报告（`insufficientSample=true`、`adoptionRate=null`），费率口径从配置取，不打开 DuckDB。回归用例 `tests/integration/strategyEffectiveness-empty.test.ts`（`DUCKDB_PATH` 指向不存在库仍 200） | 已关闭；后续新增统计 / 导出路径须沿用「无信号不读行情库」的短路 | PR `#137` |
+
+> V3-B9 / B10 / B11 由组合策略批（T133/T148）占用；F4 条目按 owner 指定从 **B12** 起编号。
 
 ---
 
@@ -331,7 +337,7 @@
 | **Q2** | 逆回购品种段与期限清单 | T127 实施细节 | 实施时实测 |
 | **Q3** | 标的字典快照的同步策略（增量/全量/触发时机） | T136 实施细节 | 待定 |
 | **Q4** | 拼音库选型 | T136 依赖 | 待定 |
-| **Q5** | 策略评估的基准标的 | T135 实施细节 | 待定 |
+| **Q5** | 策略评估的基准标的 | T135 实施细节 | ✅ 已定（2026-11-09）：信号有效性默认基准 **`sh510300`（沪深300ETF）**，缺省值见 `apps/backend/src/routes/strategy.ts:205`，超额计算见 `services/strategyEffectiveness.ts:520-536`。⚠️ 与**策略内市场过滤**用的 `sh000300`（沪深300指数，如组合策略批 DualMomentum 的择时过滤）**用途不同**：前者是「信号 vs 可交易 ETF」的基准对比，后者是策略内部开关，两者不可互换，勿当 bug 合并 |
 | **Q6** | 净值曲线的数据来源与频率 | T132 / T137 | 待定 |
 | **Q7** | ~~情绪状态枚举最终取值~~ ✅ **已关闭（2026-10-24）** | T131 按 5 档默认值落库（极度兴奋/兴奋/平静/焦虑/恐慌；落库后不可改语义，新增档位可以） | owner 确认（`v3-pending-decisions.md` D-2） |
 
