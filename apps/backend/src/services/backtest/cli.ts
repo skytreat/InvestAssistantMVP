@@ -776,6 +776,9 @@ async function runCommand(argv: readonly string[]): Promise<void> {
       initialCash: args.cash,
       universeMode: args.universeMode,
       priceMode: args.priceMode,
+      // 记录「实际使用的基准」，不要落在引擎缺省值上：dualmomentum 未显式传 --benchmark 时
+      // 基准是 sh000300（上面 `benchmark` 变量），若写缺省 'sh510300' 会让复现记录与权益曲线不符。
+      benchmarkSymbol: benchmark,
       suspension: args.suspension,
       universeParams: { divisor: args.divisor, topN: args.topN },
       // D1（F4）：印花税（仅卖出）/ 过户费（双边）；缺省 0 ⇒ ETF 口径与旧结果一致
