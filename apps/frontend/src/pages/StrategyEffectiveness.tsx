@@ -75,6 +75,22 @@ interface EffectivenessGroup {
   value: string;
   stats: HorizonStats[];
   feeModels: FeeModelInfo[];
+  adoption: AdoptionStats;
+}
+
+/**
+ * 采纳率（F4 Step C 第 ⑤ 项）
+ *
+ * 分母 = 已处理 = 已采纳 + 已忽略；「未处理」只展示、不进分母。
+ * `insufficientSample` 时后端把 `adoptionRate` 置 null ⇒ 前端只显示「样本不足」，绝不显示百分比。
+ */
+interface AdoptionStats {
+  adopted: number;
+  ignored: number;
+  pending: number;
+  processed: number;
+  insufficientSample: boolean;
+  adoptionRate: number | null;
 }
 
 interface EffectivenessReport {
@@ -92,6 +108,7 @@ interface EffectivenessReport {
     fees: FeeRates;
     feeModelLabel: string;
     feeModels: FeeModelInfo[];
+    adoption: AdoptionStats;
     generatedAt: string;
   };
   summary: HorizonStats[];
@@ -344,6 +361,35 @@ export default function StrategyEffectiveness() {
               </p>
             )}
 
+            {/* F4 Step C：采纳率（分母 = 已处理 = 采纳 + 忽略） */}
+            <table style={{ ...tableStyle, marginBottom: 16 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>已采纳</th>
+                  <th style={thStyle}>已忽略</th>
+                  <th style={thStyle}>未处理</th>
+                  <th style={thStyle}>已处理（分母）</th>
+                  <th style={thStyle}>采纳率</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={tdStyle}>{report.meta.adoption.adopted}</td>
+                  <td style={tdStyle}>{report.meta.adoption.ignored}</td>
+                  <td style={tdStyle}>{report.meta.adoption.pending}</td>
+                  <td style={tdStyle}>{report.meta.adoption.processed}</td>
+                  <td style={tdStyle}>
+                    {report.meta.adoption.insufficientSample
+                      ? `样本不足（${report.meta.adoption.processed} 条已处理）`
+                      : pctText(report.meta.adoption.adoptionRate)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p style={hintStyle}>
+              采纳率分母 = 已处理（已采纳 + 已忽略）；未处理不计入分母，也不计入分母的样本门槛。
+            </p>
+
             <table style={tableStyle}>
               <thead>
                 <tr>
@@ -406,14 +452,15 @@ export default function StrategyEffectiveness() {
                   <th style={thStyle}>超额胜率</th>
                   <th style={thStyle}>平均净收益</th>
                   <th style={thStyle}>平均超额</th>
+                  <th style={thStyle}>采纳率</th>
                   <th style={thStyle}>口径</th>
                 </tr>
               </thead>
               <tbody>
                 {report.groups.flatMap((g) =>
-                  g.stats.map((s) => (
+                  g.stats.map((s, idx) => (
                     <tr key={`${g.value}-${s.horizon}`}>
-                      <td style={tdStyle}>{g.value}</td>
+                      <td style={tdStyle}>{idx === 0 ? g.value : ''}</td>
                       <td style={tdStyle}>{s.horizon.toUpperCase()}</td>
                       <td style={tdStyle}>
                         {s.sampleSize}
@@ -423,6 +470,13 @@ export default function StrategyEffectiveness() {
                       <td style={tdStyle}>{pctText(s.winRateExcess)}</td>
                       <td style={tdStyle}>{pctText(s.avgNetReturn)}</td>
                       <td style={tdStyle}>{pctText(s.avgExcessReturn)}</td>
+                      {idx === 0 && (
+                        <td style={tdStyle} rowSpan={g.stats.length}>
+                          {g.adoption.insufficientSample
+                            ? `样本不足（${g.adoption.processed}）`
+                            : pctText(g.adoption.adoptionRate)}
+                        </td>
+                      )}
                       <td style={tdStyle}>
                         {g.feeModels.length === 1 ? g.feeModels[0].label : '混合口径（见明细）'}
                       </td>
@@ -431,7 +485,7 @@ export default function StrategyEffectiveness() {
                 )}
                 {report.groups.length === 0 && (
                   <tr>
-                    <td colSpan={8} style={{ ...tdStyle, color: COLORS.textMuted }}>
+                    <td colSpan={9} style={{ ...tdStyle, color: COLORS.textMuted }}>
                       无分组数据
                     </td>
                   </tr>

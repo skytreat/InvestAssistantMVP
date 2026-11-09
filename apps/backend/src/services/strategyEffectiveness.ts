@@ -121,6 +121,10 @@ export interface SignalRecord {
   /** F1 分级（只读，不参与分级逻辑） */
   grade: string | null;
   origin: string;
+  /** F4 Step C：已采纳（与 `ignored` 互斥，服务端保证） */
+  adopted: boolean;
+  /** F4 Step C：已忽略（与 `adopted` 互斥，服务端保证） */
+  ignored: boolean;
 }
 
 /** 计算需要的行情上下文（装载层与纯计算层之间的唯一边界） */
@@ -256,6 +260,27 @@ export interface EffectivenessGroup {
   stats: HorizonStats[];
   /** 组内出现过的费率口径（混合品种时会有多项） */
   feeModels: FeeModelInfo[];
+  /** F4 Step C：组内采纳口径（按信号去重，与周期无关） */
+  adoption: AdoptionStats;
+}
+
+/**
+ * 采纳率口径（F4 Step C 第 ⑤ 项）
+ *
+ * - 三类互斥：已采纳 / 已忽略 / 未处理（`pending` 只展示，**不进分母**）
+ * - **分母 = 已处理 = adopted + ignored**（D8 定稿）
+ * - 与其余五项同一门槛：`processed < MIN_SAMPLE_SIZE` ⇒ `insufficientSample = true`，
+ *   `adoptionRate` 为 `null`，对外与 CSV 都不输出百分比
+ */
+export interface AdoptionStats {
+  adopted: number;
+  ignored: number;
+  pending: number;
+  /** 分母：adopted + ignored */
+  processed: number;
+  insufficientSample: boolean;
+  /** adopted / processed；样本不足或分母为 0 时为 null */
+  adoptionRate: number | null;
 }
 
 /** 接口返回体（`GET /api/strategy/effectiveness`） */
@@ -277,6 +302,8 @@ export interface EffectivenessReport {
     feeModelLabel: string;
     /** 本次实际出现过的口径列表 */
     feeModels: FeeModelInfo[];
+    /** F4 Step C：整体采纳口径（按信号去重，与周期无关） */
+    adoption: AdoptionStats;
     generatedAt: string;
   };
   summary: HorizonStats[];
@@ -296,6 +323,42 @@ function mean(values: number[]): number | null {
   if (values.length === 0) return null;
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
+
+/**
+ * 采纳口径汇总（纯函数，**按信号计数，不按 outcome 计数**）
+ *
+ * 互斥历史遗留：迁移已把「双 1」归一为采纳优先，这里仍按「先 adopted 后 ignored」
+ * 判定，保证即使读到未迁移的库也不会把同一条信号算进两个桶。
+ */
+export function summarizeAdoption(signals: Array<Pick<SignalRecord, 'adopted' | 'ignored'>>): AdoptionStats {
+  let adopted = 0;
+  let ignored = 0;
+  let pending = 0;
+  for (const s of signals) {
+    if (s.adopted) adopted += 1;
+    else if (s.ignored) ignored += 1;
+    else pending += 1;
+  }
+  const processed = adopted + ignored;
+  const insufficientSample = processed < MIN_SAMPLE_SIZE;
+  return {
+    adopted,
+    ignored,
+    pending,
+    processed,
+    insufficientSample,
+    adoptionRate: insufficientSample || processed === 0 ? null : adopted / processed,
+  };
+}
+
+const EMPTY_ADOPTION: AdoptionStats = {
+  adopted: 0,
+  ignored: 0,
+  pending: 0,
+  processed: 0,
+  insufficientSample: true,
+  adoptionRate: null,
+};
 
 /**
  * 开盘涨停判定（买不进）
@@ -571,6 +634,7 @@ export function emptyReport(
       fees: rates,
       feeModelLabel: feeModelLabel(rates),
       feeModels: [],
+      adoption: { ...EMPTY_ADOPTION },
       generatedAt: new Date().toISOString(),
     },
     summary: options.horizons.map((h) => finalizeHorizonStats(summarizeHorizon([], h))),
@@ -612,6 +676,14 @@ export function buildReport(input: {
     feeModels.length > 1 ? feeModels.map((m) => m.label).join(' + ') : feeModelLabel(dominantFees);
 
   const groups: EffectivenessGroup[] = [];
+  // 采纳口径按**信号**去重（每个信号会产出 N 个周期的 outcome，不能按 outcome 计数）
+  const signalById = new Map(signals.map((s) => [s.id, s]));
+  const adoptionOfRows = (rows: SignalOutcome[]): AdoptionStats =>
+    summarizeAdoption(
+      [...new Set(rows.map((r) => r.signalId))]
+        .map((id) => signalById.get(id))
+        .filter((s): s is SignalRecord => s !== undefined),
+    );
   const values = [...new Set(all.map((o) => groupValueOf(o, options.groupBy)))].sort((a, b) =>
     a.localeCompare(b, 'zh-CN'),
   );
@@ -622,6 +694,7 @@ export function buildReport(input: {
       value,
       stats: options.horizons.map((h) => finalizeHorizonStats(summarizeHorizon(rows, h))),
       feeModels: collectFeeModels(rows),
+      adoption: adoptionOfRows(rows),
     });
   }
 
@@ -640,6 +713,7 @@ export function buildReport(input: {
       fees: dominantFees,
       feeModelLabel: dominantLabel,
       feeModels,
+      adoption: summarizeAdoption(signals),
       generatedAt: new Date().toISOString(),
     },
     summary,
@@ -669,6 +743,8 @@ interface SignalRowDb {
   trade_date: string;
   grade: string | null;
   origin: string;
+  adopted: number;
+  ignored: number;
 }
 
 async function fetchClassMap(symbols: string[]): Promise<Map<string, AssetClass>> {
@@ -779,7 +855,7 @@ export function loadSignals(
   }
   const rows = db
     .prepare(
-      `SELECT id, asset_code, plugin_id, trade_date, grade, origin
+      `SELECT id, asset_code, plugin_id, trade_date, grade, origin, adopted, ignored
          FROM user_strategy_signal
         WHERE ${clauses.join(' AND ')}
         ORDER BY trade_date ASC, id ASC`,
@@ -793,6 +869,8 @@ export function loadSignals(
     tradeDate: String(r.trade_date).slice(0, 10),
     grade: r.grade ?? null,
     origin: String(r.origin),
+    adopted: Number(r.adopted) === 1,
+    ignored: Number(r.ignored) === 1,
   }));
 }
 
@@ -928,6 +1006,13 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
         'suspended',
         'no_entry',
         'excluded',
+        // F4 Step C 采纳率（分母 = processed = adopted + ignored；样本不足时占比留空）
+        'adopted_count',
+        'ignored_count',
+        'pending_count',
+        'processed_count',
+        'adoption_insufficient_sample',
+        'adoption_rate_pct',
         'win_rate_absolute_pct',
         'win_rate_excess_pct',
         'avg_net_return_pct',
@@ -941,6 +1026,7 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
       groupBy: string,
       groupValue: string,
       stats: HorizonStats,
+      adoption: AdoptionStats,
       rates: FeeRates,
       label: string,
     ) => {
@@ -958,6 +1044,12 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
           csvCell(stats.statusCounts.suspended),
           csvCell(stats.statusCounts.no_entry),
           csvCell(stats.statusCounts.excluded),
+          csvCell(adoption.adopted),
+          csvCell(adoption.ignored),
+          csvCell(adoption.pending),
+          csvCell(adoption.processed),
+          csvCell(adoption.insufficientSample ? 1 : 0),
+          csvCell(pct(adoption.adoptionRate)),
           csvCell(pct(stats.winRateAbsolute)),
           csvCell(pct(stats.winRateExcess)),
           csvCell(pct(stats.avgNetReturn)),
@@ -969,7 +1061,7 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
       );
     };
     for (const s of report.summary) {
-      emit(report.meta.groupBy, '全部', s, report.meta.fees, report.meta.feeModelLabel);
+      emit(report.meta.groupBy, '全部', s, report.meta.adoption, report.meta.fees, report.meta.feeModelLabel);
     }
     for (const g of report.groups) {
       for (const s of g.stats) {
@@ -978,6 +1070,7 @@ export function buildEffectivenessCsv(report: EffectivenessReport, level: Export
           g.groupBy,
           g.value,
           s,
+          g.adoption,
           model?.rates ?? report.meta.fees,
           model?.label ?? report.meta.feeModelLabel,
         );

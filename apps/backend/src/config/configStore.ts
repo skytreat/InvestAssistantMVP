@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS user_strategy_signal (
     adopted INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1)),
     ignored INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1)),
     adopted_at TEXT,
+    -- F4 Step C：忽略时刻。与 adopted_at 同口径（datetime('now','localtime')，TEXT）。
+    -- NULL = 未被忽略；忽略被「采纳」覆盖时必须同步置 NULL（两状态互斥，见 routes/signal.ts）
+    ignored_at TEXT,
     cooldown_until TEXT,
     linked_trade_id INTEGER REFERENCES user_trade_record(id),
     is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
@@ -420,6 +423,43 @@ interface LogBatchEntry {
   logDate?: string;
 }
 
+/**
+ * F4 Step C：存量「双 1」归一 —— 采纳优先
+ *
+ * 旧路由两个 PATCH 各写各的、没有互斥约束，历史数据可能同时 `adopted=1` 且 `ignored=1`。
+ * 裁定：**保留 adopted=1，ignored 清 0 且 `ignored_at` 置 NULL**。
+ *
+ * - 幂等：WHERE 只命中双 1 行，第二次运行 0 行受影响；
+ * - 可观测：返回实际影响行数，有改动时打印，不静默改数据。
+ *
+ * 调用方必须保证 `ignored_at` 列已存在（构造函数中 `_ensureSignalLifecycleColumns()` 之后）。
+ */
+export function normalizeSignalAdoptionFlags(db: Database.Database): number {
+  try {
+    const table = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_strategy_signal'")
+      .get();
+    if (!table) return 0;
+    const info = db
+      .prepare(
+        `UPDATE user_strategy_signal
+            SET ignored = 0,
+                ignored_at = NULL
+          WHERE adopted = 1 AND ignored = 1`,
+      )
+      .run();
+    if (info.changes > 0) {
+      console.log(
+        `[ConfigStore] 采纳/忽略互斥归一：${info.changes} 行按「采纳优先」处理（ignored→0, ignored_at→NULL）`,
+      );
+    }
+    return info.changes;
+  } catch (err) {
+    console.error('[ConfigStore] 采纳/忽略归一失败（不阻塞启动）:', err);
+    return 0;
+  }
+}
+
 export class ConfigStore {
   private static _instance: ConfigStore | null = null;
   private _db: Database.Database;
@@ -461,6 +501,9 @@ export class ConfigStore {
 
     // T134（V3.4）：信号生命周期列补齐
     this._ensureSignalLifecycleColumns();
+
+    // F4 Step C：采纳/忽略互斥归一（必须在 `ignored_at` 补列之后执行）
+    this._normalizeSignalAdoptionFlags();
 
     // T133（PA-06）：组合策略配置表（`strategy_combo` / `strategy_combo_condition`，幂等建表）
     ensureComboTables(this._db);
@@ -530,6 +573,9 @@ export class ConfigStore {
       adopted: 'INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))',
       ignored: 'INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))',
       adopted_at: 'TEXT',
+      // F4 Step C：与 adopted_at 同口径（TEXT，localtime）；NULL = 未被忽略。
+      // 走与新建库完全相同的 `PRAGMA table_info` + ADD COLUMN 幂等路径（老库/新库同一段代码）。
+      ignored_at: 'TEXT',
       cooldown_until: 'TEXT',
       linked_trade_id: 'INTEGER REFERENCES user_trade_record(id)',
       // F 域区间回放：来源标记。既有行必须落 'live'（回放能力上线前不存在 replay 信号），
@@ -556,6 +602,13 @@ export class ConfigStore {
     } catch (err) {
       console.error('[ConfigStore] 信号生命周期列补齐失败（不阻塞启动）:', err);
     }
+  }
+
+  /**
+   * F4 Step C：存量「双 1」归一 —— 采纳优先（实现在模块级 `normalizeSignalAdoptionFlags`）
+   */
+  private _normalizeSignalAdoptionFlags(): void {
+    normalizeSignalAdoptionFlags(this._db);
   }
 
   /**
