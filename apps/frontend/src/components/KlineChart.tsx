@@ -93,6 +93,9 @@ import {
   drawRsiThresholds,
   findTradeMarkerAtPoint,
   maFigures,
+  PATTERN_INDICATOR_NAME,
+  calcPatterns,
+  createPatternIndicator,
   type TradeMarkerGeometry,
 } from '../indicators/chartIndicators';
 
@@ -183,6 +186,8 @@ function registerCustomIndicators(
   kc.registerIndicator(SIGNAL_INDICATOR);
   // T152：交易标记也必须注册（未注册时 createIndicator 会静默返回 null）
   kc.registerIndicator(TRADE_INDICATOR);
+  // K 线形态标注（双顶/双底，后端算、前端只画；无形态时不画任何占位）
+  kc.registerIndicator(createPatternIndicator(getBars));
 }
 
 /** 创建一个指标（若已存在则先移除，保证幂等）*/
@@ -386,6 +391,23 @@ export default function KlineChart({
           showTrades,
         );
 
+        // 形态标注（双顶/双底；由 bars[].patterns 驱动，无形态时不绘制）
+        ensureIndicator(
+          chart,
+          PATTERN_INDICATOR_NAME,
+          (c) => {
+            c.createIndicator(
+              {
+                name: PATTERN_INDICATOR_NAME,
+                paneId: CANDLE_PANE_ID,
+                series: 'price',
+              },
+              true,
+            );
+          },
+          true,
+        );
+
         // 副图（MACD / RSI / KDJ 三选一）
         ensureIndicator(
           chart,
@@ -521,6 +543,12 @@ export default function KlineChart({
       chart.overrideIndicator({
         name: KDJ_INDICATOR.name,
         calc: (dataList: KLineData[]) => calcKdj(dataList, barsRef.current),
+      });
+      // 形态标注：形态请求**晚于** K 线返回，不会改变数据指纹（不触发 `resetData`），
+      // 故必须在这里用新闭包覆盖 calc 触发重算 + 重绘（`draw` 内部读 `getBars` 取最新形态）。
+      chart.overrideIndicator({
+        name: PATTERN_INDICATOR_NAME,
+        calc: (dataList: KLineData[]) => calcPatterns(dataList, barsRef.current),
       });
     },
     [getBars],

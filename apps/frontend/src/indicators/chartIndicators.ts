@@ -34,6 +34,7 @@ import type { DeepPartial, IndicatorFigure, IndicatorTemplate, KLineData } from 
 import { COLORS } from '../theme/tokens';
 import type { ChartBar, TradeMarker } from './chartBars';
 import { MA_FIELD_KEYS } from './chartParams';
+import { toPatternGeometry, type ChartPattern } from './klinePatterns';
 
 /* ------------------------------------------------------------------ *
  * 结果类型
@@ -364,6 +365,129 @@ export const TRADE_INDICATOR: IndicatorTemplate<TradeMarkerIndicatorResult> = {
     return false;
   },
 };
+
+/* ------------------------------------------------------------------ *
+ * K 线形态标注（双顶 / 双底）—— 后端算、前端只画
+ * ------------------------------------------------------------------ */
+
+/** 形态点标记半径（px） */
+export const PATTERN_MARKER_RADIUS = 3;
+/** 颈线虚线节奏（px） */
+export const PATTERN_LINE_DASH: [number, number] = [4, 3];
+/** 形态标注颜色（中性 info，不暗示买卖方向） */
+export const PATTERN_COLOR = COLORS.info;
+
+/** 形态结果类型（calc 只搬运，不在前端计算） */
+export interface PatternIndicatorResult {
+  patterns: ChartPattern[];
+}
+
+/** 指标名（注册 / 覆盖 / 移除都用它） */
+export const PATTERN_INDICATOR_NAME = 'APP_PATTERN';
+
+/** 从 K 线数组里取形态（**字段搬运**，形态由后端算好、`buildChartBars` 映射到桶） */
+export function calcPatterns(dataList: KLineData[], bars: readonly ChartBar[]): PatternIndicatorResult[] {
+  return dataList.map((bar, i) => ({
+    patterns: bars[i]?.patterns ?? (bar as unknown as ChartBar).patterns ?? [],
+  }));
+}
+
+/**
+ * `APP_PATTERN`：把后端识别好的双顶/双底画到主图
+ *
+ * 画什么：两个顶/底的圆点、中间谷/峰的圆点、水平颈线（虚线到确认 bar）、文字标签。
+ * 没有形态时**不画任何占位**（`draw` 直接遍历到空数组）。
+ *
+ * ⚠️ `draw` 必须从 `getBars` 取**最新** bars，而不是 `chart.getDataList()`：
+ *    形态请求晚于 K 线请求返回，图表内部数据列表不会因此刷新
+ *    （`resetData` 只由数据指纹触发）⇒ 读 dataList 会一直画「还没有形态」的旧快照。
+ */
+export function createPatternIndicator(getBars?: BarsProvider): IndicatorTemplate<PatternIndicatorResult> {
+  return {
+    name: PATTERN_INDICATOR_NAME,
+    shortName: 'PATTERN',
+    series: 'price',
+    figures: [],
+    calc: (dataList: KLineData[]) => calcPatterns(dataList, getBars?.() ?? barsFromDataList(dataList)),
+    draw: ({ ctx, chart, xAxis, yAxis }) => {
+      const list = getBars ? getBars() : (chart.getDataList() as unknown as ChartBar[]);
+      const seen = new Set<string>();
+
+      for (const bar of list) {
+        const patterns = bar.patterns;
+        if (!patterns || patterns.length === 0) continue;
+
+        for (const pattern of patterns) {
+          // 同一形态只画一次（形态统一挂在 confirm bar 上，扫全量时兜底去重）
+          const key = `${pattern.kind}:${pattern.firstIndex}:${pattern.secondIndex}:${pattern.confirmIndex}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const geometry = toPatternGeometry(pattern);
+          const [p1, p2, p3] = geometry.points;
+          const x1 = xAxis.convertToPixel(p1.index);
+          const x2 = xAxis.convertToPixel(p2.index);
+          const x3 = xAxis.convertToPixel(p3.index);
+          const xc = xAxis.convertToPixel(geometry.neckline.toIndex);
+          const y1 = yAxis.convertToPixel(p1.price);
+          const y2 = yAxis.convertToPixel(p2.price);
+          const y3 = yAxis.convertToPixel(p3.price);
+          const yNeck = yAxis.convertToPixel(geometry.neckline.price);
+          if (![x1, x2, x3, xc, y1, y2, y3, yNeck].every((v) => Number.isFinite(v))) continue;
+
+          // 视口外整体跳过（避免每帧画不可见形态）
+          const width = ctx.canvas?.width ?? 0;
+          if (Math.max(x1, x2, x3, xc) < -20 || Math.min(x1, x2, x3, xc) > width + 20) continue;
+
+          ctx.save();
+
+          // 颈线：水平虚线，从第一根顶/底延伸到确认 bar
+          ctx.strokeStyle = PATTERN_COLOR;
+          ctx.lineWidth = 1;
+          ctx.setLineDash(PATTERN_LINE_DASH);
+          ctx.beginPath();
+          ctx.moveTo(x1, yNeck);
+          ctx.lineTo(xc, yNeck);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // 三个关键点：小圆点（外描边压住 K 线）
+          ctx.fillStyle = PATTERN_COLOR;
+          ctx.strokeStyle = COLORS.cardBg;
+          ctx.lineWidth = 1;
+          for (const [x, y] of [
+            [x1, y1],
+            [x2, y2],
+            [x3, y3],
+          ]) {
+            ctx.beginPath();
+            ctx.arc(x, y, PATTERN_MARKER_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+
+          // 文字标签（半透明底色，避免压在蜡烛上读不清）
+          const label = geometry.label;
+          const labelX = (x1 + xc) / 2;
+          const labelY = pattern.kind === 'double_top' ? yNeck - 7 : yNeck + 7;
+          ctx.font = '11px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = pattern.kind === 'double_top' ? 'bottom' : 'top';
+          const textWidth = ctx.measureText(label).width;
+          ctx.globalAlpha = 0.82;
+          ctx.fillStyle = COLORS.chartBg;
+          ctx.fillRect(labelX - textWidth / 2 - 2, labelY - 12, textWidth + 4, 14);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = PATTERN_COLOR;
+          ctx.fillText(label, labelX, labelY);
+
+          ctx.restore();
+        }
+      }
+      return false;
+    },
+  };
+}
 
 /* ------------------------------------------------------------------ *
  * 交易标记几何计算（可单测的纯函数）

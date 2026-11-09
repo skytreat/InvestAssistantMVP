@@ -9,6 +9,7 @@ import { registerWatchRoutes } from './watch.js';
 import { registerCandidateRoutes } from './candidate.js';
 import { registerBatchCandidateRoutes } from './candidates.js';
 import { registerKlineRoutes } from './kline.js';
+import { registerPatternRoutes } from './pattern.js';
 import { registerKlineOverlayRoutes } from './klineOverlay.js';
 import { registerStockScanRoutes } from './stockscan.js';
 import { registerSymbolSearchRoutes } from './symbolSearch.js';
@@ -99,6 +100,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await registerCandidateRoutes(app);
   await registerBatchCandidateRoutes(app);
   await registerKlineRoutes(app);
+  // K 线形态标注（双顶/双底，只画图不产信号）
+  await registerPatternRoutes(app);
   // K 线手工画线（独立 PR）：overlay 持久化（bfq 口径）
   await registerKlineOverlayRoutes(app);
   await registerStockScanRoutes(app);

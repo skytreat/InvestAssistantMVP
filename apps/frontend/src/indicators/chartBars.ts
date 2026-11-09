@@ -43,6 +43,7 @@
 import { calculateKDJ } from './kdj';
 import { calculateMACD, calculateRSI, calculateSMA } from './technical';
 import { DEFAULT_INDICATOR_PARAMS, type IndicatorParams } from './chartParams';
+import { mapPatternsToBars, type ChartPattern, type PatternApiItem } from './klinePatterns';
 
 /** 后端 `klines[]` 的原始形状 */
 export interface RawBar {
@@ -127,6 +128,13 @@ export interface ChartBar extends RawBar {
    *    周/月 K 下该数组包含**整根周期 K 线内**的全部交易（桶映射）。
    */
   trades: TradeMarker[];
+  /**
+   * 该 K 线上挂载的形态标注（双顶 / 双底）
+   *
+   * ⚠️ 形态是**跨多根 K 线**的，这里统一挂在 `confirmIndex` 那根上，
+   *    由 `APP_PATTERN` 指标的 `draw` 扫全量数据收集后自绘（不重复绘制）。
+   */
+  patterns: ChartPattern[];
   /** 相对前一根 K 线收盘价的涨跌幅（%），第一根为 null */
   changePct?: number | null;
 }
@@ -315,9 +323,11 @@ export function buildChartBars(
   signals: SignalMarker[] = [],
   params: IndicatorParams = DEFAULT_INDICATOR_PARAMS,
   trades: TradeMarker[] = [],
+  patterns: PatternApiItem[] = [],
 ): ChartBar[] {
   const aggregated = aggregateBars(bars, period);
   const tradesByBar = mapTradesToBars(bars, period, trades);
+  const patternsByBar = mapPatternsToBars(buildBarBuckets(bars, period), aggregated, patterns);
 
   const closes = aggregated.map((b) => b.close);
   const highs = aggregated.map((b) => b.high);
@@ -351,6 +361,7 @@ export function buildChartBars(
     j: kdj.j[i] ?? NaN,
     signal: signalByDate.get(bar.date) ?? null,
     trades: tradesByBar[i] ?? [],
+    patterns: patternsByBar[i] ?? [],
     changePct:
       i > 0 && aggregated[i - 1].close
         ? ((bar.close - aggregated[i - 1].close) / aggregated[i - 1].close) * 100
