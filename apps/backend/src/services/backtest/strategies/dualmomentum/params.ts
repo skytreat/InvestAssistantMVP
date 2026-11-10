@@ -97,6 +97,10 @@ export interface DualMomentumParams {
   benchmarkGateMode: 'hard' | 'soft';
   /** 档 3：AND→评分制（缺省 `and` = DAS 基线；`scored` = 次槽降为打分不拦截） */
   scoreMode: 'and' | 'scored';
+  /** 动量衰减退出（§12.5 第 5 条；缺省 false = DAS 基线，不新增退出路径） */
+  momentumDecayExit: boolean;
+  /** 衰减退出排名阈值：当日主槽排名（相对全池）> 该值即触发退出（缺省 = maxHoldings + 2） */
+  decayRankThreshold: number;
 }
 
 export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
@@ -141,6 +145,9 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   rsrsMaxResearch: RSRS_MAX,
   benchmarkGateMode: 'hard',
   scoreMode: 'and',
+  momentumDecayExit: false,
+  /** 缺省 = maxHoldings + 2；显式传小值（如 3）可收紧排名触发 */
+  decayRankThreshold: 8,
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -624,6 +631,8 @@ export function resolveDualMomentumParams(
     rsrsMaxResearch: Math.max(d.rsrsMax, num(src, 'rsrsMaxResearch', d.rsrsMaxResearch)),
     benchmarkGateMode: src.benchmarkGateMode === 'soft' ? 'soft' : 'hard',
     scoreMode: src.scoreMode === 'scored' ? 'scored' : 'and',
+    momentumDecayExit: bool(src, 'momentumDecayExit', d.momentumDecayExit),
+    decayRankThreshold: Math.max(1, int(src, 'decayRankThreshold', d.decayRankThreshold)),
   };
 }
 

@@ -208,6 +208,8 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         const p = state.params;
         if (notice.reason === 'stop-loss') startCooldown(state, notice.symbol, p.stopLossCooldown);
         else if (notice.reason === 'take-profit') startCooldown(state, notice.symbol, p.takeProfitCooldown);
+        // 衰减退出开止损冷却（§12.5 第 4 条：止盈后不冷却，衰减是「动量转弱」而非止盈）
+        else if (notice.reason === 'momentum-decay') startCooldown(state, notice.symbol, p.stopLossCooldown);
         return;
       }
       // 买入成交 → 新建仓（加仓不改建仓日与高水位）
@@ -368,6 +370,10 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
           }
         }
 
+        // 持仓的主槽动量 + 排名（衰减退出用；缺省开关关闭时零开销——仍算了但不判定）
+        const ind = calcIndicators(day.bars, p);
+        const primaryNow = slots.primary === 'wsm' ? ind.wsm : ind.nday;
+
         const daysSinceEntry = calendarDaysBetween(state.entryDate.get(pos.symbol) ?? asOf, asOf);
         // 成本止损：(unit_cost − price)/unit_cost ≥ stopLossDrawdown
         const costDrawdown = pos.costBasis > 0 ? 1 - pos.marketValue / pos.costBasis : 0;
@@ -386,6 +392,17 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         }
         if (!selectedSet.has(pos.symbol) && daysSinceEntry >= p.minHoldDays) {
           sellAll.set(pos.symbol, 'out-of-candidate');
+          continue;
+        }
+        // 动量衰减退出（§12.5 第 5 条；可绕过 minHoldDays，缺省关闭 = DAS 基线）：
+        // 主槽动量转负 / 排名跌出 decayRankThreshold，两者任一触发即清仓
+        if (p.momentumDecayExit && selectedSet.has(pos.symbol)) {
+          const rankNow = filtered.filter((c) => c.primary > primaryNow).length + 1;
+          const decayByMomentum = primaryNow < 0;
+          const decayByRank = rankNow > p.decayRankThreshold;
+          if (decayByMomentum || decayByRank) {
+            sellAll.set(pos.symbol, 'momentum-decay');
+          }
         }
       }
       for (const [symbol, reason] of sellAll) exitReasons[symbol] = reason;

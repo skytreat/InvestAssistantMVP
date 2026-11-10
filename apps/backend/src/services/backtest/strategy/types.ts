@@ -51,6 +51,7 @@ export type ExitReason =
   | 'out-of-candidate'
   | 'stop-loss'
   | 'take-profit'
+  | 'momentum-decay'
   | 'rebalance-replace'
   | 'defensive-fallback'
   | 'end-of-backtest';
