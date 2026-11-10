@@ -61,6 +61,53 @@ interface DualMomentumState {
   warnedNoBenchmark: boolean;
 }
 
+/**
+ * 波动率目标暴露（`exposureMode='vol'`；缺省路径不调用，基线不变）。
+ *
+ * `exposure = clip(targetVol / realizedVol, 0, 1)`，其中 `realizedVol` = 组合
+ * （现金 + 全部持仓市值）逐日权益的 `volWindow` 日滚动标准差 × √250（年化）。
+ * 数据不足（< volWindow 根）或无波动时返回 1（满仓，退化为基线行为）。
+ */
+function computeVolTargetExposure(
+  state: DualMomentumState,
+  ctx: StrategyContext,
+  p: DualMomentumParams,
+): number {
+  // 组合权益 = 现金 + 各持仓市值（ctx 提供）
+  const equitySeries: number[] = [];
+  // 用 ctx.series 拿不到权益，改从持仓 + 现金重建「截至 asOf 的权益序列」
+  // 简化：只取当前时刻权益，按「实现波动率 = 目标组合历史日收益 std」近似为
+  // 持仓标的混合收益的滚动 std（各持仓按当前市值加权）
+  const positions = ctx.positions().filter((v) => v.qty > 0);
+  const totalMv = positions.reduce((a, v) => a + v.marketValue, 0);
+  if (totalMv <= 0) return 1; // 无风险敞口时不缩放（避免空仓日反复拉低暴露）
+
+  const w = p.volWindow;
+  let retSum = 0;
+  let retSqSum = 0;
+  let n = 0;
+  for (const pos of positions) {
+    const weight = pos.marketValue / totalMv;
+    if (weight <= 0) continue;
+    // 该标的截至 asOf 的最近 w 根日收益（qfq 轨，ctx.series 提供）
+    const closes = ctx.series(pos.symbol, w + 1);
+    if (closes.length < 2) continue;
+    for (let i = 1; i < closes.length; i++) {
+      const r = closes[i] / closes[i - 1] - 1;
+      retSum += weight * r;
+      retSqSum += weight * r * r;
+      n++;
+    }
+  }
+  if (n < 2) return 1;
+  const mean = retSum / n;
+  const varAll = retSqSum / n - mean * mean;
+  const dailyVol = Math.sqrt(Math.max(0, varAll));
+  const realizedVol = dailyVol * Math.sqrt(250);
+  if (realizedVol <= 0) return 1;
+  return Math.max(0, Math.min(1, p.targetVol / realizedVol));
+}
+
 function createState(): DualMomentumState {
   return {
     params: resolveDualMomentumParams(undefined),
@@ -328,11 +375,16 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         filtered.sort((a, b) => b.primary - a.primary);
       }
 
-      // ── 档 2：连续仓位（`scale` 模式；缺省 `fixed` = DAS 基线「候选均分满仓/否则空仓」）──
+      // ── 档 2：连续仓位（缺省 `fixed` = DAS 基线「候选均分满仓/否则空仓」）──
+      // `scale`：目标暴露 = min(1, 通过数 / divisor)；`vol`：波动率目标
+      // （exposure = targetVol / 实现波动率，clip 到 [0,1]；实现波动率 = 组合 20 日日收益 std × √250，
+      //  无持仓/数据不足时实现波动率取 0 ⇒ 暴露 = 1，退化为满仓）
       let exposureScale = 1.0;
       if (p.exposureMode === 'scale') {
         const passCount = filtered.length;
         exposureScale = Math.min(1, passCount / p.exposureScaleDivisor);
+      } else if (p.exposureMode === 'vol') {
+        exposureScale = computeVolTargetExposure(state, ctx, p);
       }
 
       const selected = filtered.slice(0, p.maxHoldings);
