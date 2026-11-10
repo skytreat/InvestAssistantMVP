@@ -128,6 +128,7 @@ beforeEach(() => {
           {
             id: 7,
             asset_code: 'sh600000',
+            asset_name: '浦发银行',
             plugin_id: 'rsi_oversold',
             direction: 'buy',
             trade_date: '2024-01-02',
@@ -234,6 +235,13 @@ describe('T150 策略有效性页（/strategy/effectiveness）', () => {
     expect(screen.getByText(/样本不足（3 条）/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出汇总' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出明细' })).toBeInTheDocument();
+  });
+
+  it('标的列展示「名称(代码)」并链接到 K 线页', async () => {
+    renderWithRouter(<StrategyEffectiveness />);
+
+    const link = await screen.findByRole('link', { name: '浦发银行(sh600000)' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
   });
 });
 

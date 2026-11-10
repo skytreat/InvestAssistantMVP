@@ -5,6 +5,7 @@ import { extractErrorMessage } from '../api/errors';
 import { COLORS, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } from './_shared';
 import Spinner from '../components/Spinner';
+import AssetLink from '../components/AssetLink';
 
 /**
  * StrategyEffectiveness.tsx —— 策略有效性页 `/strategy/effectiveness`（V3.8 T150 · PRD_v3 §4.3）
@@ -23,6 +24,8 @@ import Spinner from '../components/Spinner';
 interface SignalRow {
   id?: number;
   asset_code?: string;
+  /** 标的名称（后端 `raw_symbol_name`；缺失是常态，缺省回退为仅显示代码）*/
+  asset_name?: string | null;
   symbol?: string;
   plugin_id?: string;
   direction?: string;
@@ -543,7 +546,17 @@ export default function StrategyEffectiveness() {
                 {signals.map((s, i) => (
                   <tr key={s.id ?? i}>
                     <td style={tdStyle}>{s.id}</td>
-                    <td style={tdStyle}>{s.asset_code ?? s.symbol ?? '—'}</td>
+                    <td style={tdStyle}>
+                      {(s.asset_code ?? s.symbol) ? (
+                        <AssetLink
+                          assetCode={(s.asset_code ?? s.symbol)!}
+                          assetName={s.asset_name}
+                          variant="inline"
+                        />
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td style={tdStyle}>{s.plugin_id ?? '—'}</td>
                     <td style={tdStyle}>{s.direction ?? '—'}</td>
                     <td style={tdStyle}>{s.trade_date ?? '—'}</td>
@@ -575,7 +588,17 @@ export default function StrategyEffectiveness() {
           {outcomeFor !== null && (
             <div style={cardStyle}>
               <h2 style={subtitleStyle}>
-                #{outcomeFor} 后续表现（{outcome ? outcome.asset_code : '加载中'}）
+                #{outcomeFor} 后续表现（
+                {outcome ? (
+                  <AssetLink
+                    assetCode={outcome.asset_code}
+                    assetName={signals.find((s) => s.id === outcomeFor)?.asset_name}
+                    variant="inline"
+                  />
+                ) : (
+                  '加载中'
+                )}
+                ）
               </h2>
               {outcome ? (
                 <table style={tableStyle}>

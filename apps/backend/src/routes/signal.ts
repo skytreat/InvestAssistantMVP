@@ -11,12 +11,42 @@ import {
   resolveSignalCooldownBars,
 } from '../services/signalService.js';
 import type { CooldownRowFields, SignalLinkFields } from '../services/signalService.js';
+import { batchGetSymbolNames } from '../services/marketData.js';
 import { ok, fail } from '../lib/envelope.js';
 
 type AuthedRequest = FastifyRequest & { user: JwtPayload };
 
 /** F3：今日 Top 5 摘要的固定条数（PRD_v3 §4.2「今日 Top 5 摘要」） */
 const TOP_SIGNALS_LIMIT = 5;
+
+/**
+ * 为信号行补充标的名称（来源 `raw_symbol_name`，1 次 IN 查询）
+ *
+ * 名称是装饰信息：行情库不可用 / 该标的无名称时 `asset_name = null`，
+ * 前端回退为仅显示代码，**不让整个信号列表 500**。
+ */
+async function attachAssetNames<T extends object>(
+  rows: T[],
+): Promise<Array<T & { asset_name: string | null }>> {
+  let names = new Map<string, string>();
+  const codeOf = (row: T): string | null => {
+    const code = (row as { asset_code?: unknown }).asset_code;
+    return typeof code === 'string' ? code : null;
+  };
+  try {
+    const codes = rows.map(codeOf).filter((code): code is string => code !== null);
+    names = await batchGetSymbolNames(codes);
+  } catch {
+    // 行情库不可用时仅显示代码
+  }
+  return rows.map((row) => {
+    const code = codeOf(row);
+    return {
+      ...row,
+      asset_name: code === null ? null : (names.get(code) ?? null),
+    };
+  });
+}
 
 /**
  * 策略信号查询 API（T28 + T54）
@@ -214,9 +244,11 @@ export async function registerSignalRoutes(app: FastifyInstance) {
 
       // F2：列表行补「已成交 / 已忽略 / 已采纳 / 未处理」派生状态（批量判定，不逐行查）
       const annotated = annotateSignalTradeStatus(rows, user.sub);
+      // 标的名称（名称(代码) 展示用；缺失时前端回退为代码）
+      const named = await attachAssetNames(annotated);
 
       reply.send(
-        ok(annotated, {
+        ok(named, {
           pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
           // F 域 P0-1：把「实际生效的交易日 + 来源 + 行情最新日」下发，前端不再自己猜今天
           trade_date: effectiveTradeDate,
@@ -338,10 +370,13 @@ export async function registerSignalRoutes(app: FastifyInstance) {
                      id DESC
             LIMIT ?`,
         )
-        .all(user.sub, tradeDate, TOP_SIGNALS_LIMIT);
+        .all(user.sub, tradeDate, TOP_SIGNALS_LIMIT) as Array<Record<string, unknown>>;
+
+      // 标的名称（名称(代码) 展示用；缺失时前端回退为代码）
+      const named = await attachAssetNames(rows);
 
       return reply.send(
-        ok(rows, {
+        ok(named, {
           trade_date: tradeDate,
           trade_date_source: dateSource,
           latest_quote_date: latestQuoteDate,

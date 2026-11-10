@@ -9,6 +9,7 @@ import {
   truncatedTextStyle,
 } from '../theme/styles';
 import ScrollableTable from './ScrollableTable';
+import AssetLink from './AssetLink';
 import EmptyState from './EmptyState';
 import Spinner from './Spinner';
 import { SignalDirectionPill, SignalLabelTag } from './SignalPills';
@@ -21,8 +22,7 @@ import { fmt, fmtPct } from './positionDomain';
  *
  * | 列 | 来源字段 | 口径 |
  * |---|---|---|
- * | 标的代码 | `asset_code` | 原样 |
- * | 名称 | `name` | `raw_symbol_name.name`；查不到 → `--`（实测覆盖率约 70%，缺失是常态）|
+ * | 标的 | `asset_code` + `name` | `名称(代码)`，超链接到 K 线；`name` 查不到 → 仅代码（实测覆盖率约 70%，缺失是常态）|
  * | 基准价 | `candidate_base_price` | **加入日**的前复权收盘价（Requirements §5.7 #2）|
  * | 现价 | `current_close` | 最新前复权收盘价；无行情 → `--` |
  * | 相对收益 | `relative_return` | (现价 − 基准价) / 基准价；缺任一端 → `--`（**不显示 0**）|
@@ -194,10 +194,7 @@ export default function CandidateTable({
               />
             </th>
             <th scope="col" style={thStyle}>
-              标的代码
-            </th>
-            <th scope="col" style={thStyle}>
-              名称
+              标的
             </th>
             <th scope="col" style={thStyle}>
               基准价
@@ -239,19 +236,16 @@ export default function CandidateTable({
                   />
                 </td>
                 <td style={thTdStyle}>
-                  <code>{code}</code>
-                  {Number(row.migrated_from_candidate) === 1 && (
-                    <MigratedBadge priceMode={row.migrated_price_mode} />
-                  )}
-                </td>
-                <td style={thTdStyle}>
-                  {/* 名称查不到时回退显示代码（`raw_symbol_name` 覆盖率约 70%，缺失是常态）*/}
+                  {/* 名称查不到时 AssetLink 回退为仅显示代码（`raw_symbol_name` 覆盖率约 70%）*/}
                   <span
                     style={truncatedTextStyle}
                     title={row.candidate_reason ? `加入理由：${row.candidate_reason}` : undefined}
                   >
-                    {row.name ? row.name : '--'}
+                    <AssetLink assetCode={code} assetName={row.name} variant="inline" />
                   </span>
+                  {Number(row.migrated_from_candidate) === 1 && (
+                    <MigratedBadge priceMode={row.migrated_price_mode} />
+                  )}
                 </td>
                 <td style={thTdStyle}>{fmt(row.candidate_base_price)}</td>
                 <td style={thTdStyle}>{fmt(row.current_close)}</td>
