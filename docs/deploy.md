@@ -59,7 +59,7 @@ sudo CADDY_DOMAIN=invest.example.com \
 2. 创建 `invol` 用户和 `/opt/invol/IA_Prod/{data,backup,secrets,plugins,frontend}` 目录
 3. 校验 `/opt/invol/IA_Prod/.env.local`（不覆盖生产文件，不复制开发机配置）
 4. `npm ci` → 根目录 `npm run build`（core → backend → frontend）→ `npm prune --omit=dev`
-   （构建前会先停止 `invest-assistant`，避免 `npm ci` 删除运行中进程依赖的 `node_modules`；构建期间 API 不可用）
+   （在仓库目录构建，不触碰 `/opt/invol/IA_Prod/app` 的运行副本，构建期间服务照常可用）
 5. 组装 `/opt/invol/IA_Prod/app`，验证所有生产依赖（含 native 模块）可加载
 6. 原子切换后端与前端产物
 7. 安装 systemd units、启动 timer、首次初始化 DuckDB（如缺库）
@@ -302,8 +302,8 @@ sudo bash deploy/install-cd-host.sh --public-key-file /tmp/cd-invest.pub
 ## 升级与回滚
 
 日常升级由 CD 完成（合入 main 后次日 02:00 Asia/Shanghai 自动部署，或手动 dispatch 立即部署）。
-手工升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会停止服务、构建新产物，
-切换后端目录并重启；健康检查失败会自动恢复 `app.old`。
+手工升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会构建新产物，
+切换后端目录并重启（仅在切换瞬间短暂停服）；健康检查失败会自动恢复 `app.old`。
 
 手工回滚（也可在 `CD Production` 里 dispatch 上一版 CI 已绿的完整 SHA）：
 
