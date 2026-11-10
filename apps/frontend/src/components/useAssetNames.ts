@@ -16,9 +16,27 @@ const inflight = new Set<string>();
 const listeners = new Set<() => void>();
 
 const BATCH_SIZE = 200;
+/** 名称是装饰性数据，缓存按 FIFO 限量，避免长期驻留无限增长（全市场约 5.6k）。 */
+const MAX_TRACKED_CODES = 10_000;
 
 function notifyAll(): void {
   for (const listener of listeners) listener();
+}
+
+function rememberName(code: string, name: string): void {
+  if (!nameCache.has(code) && nameCache.size >= MAX_TRACKED_CODES) {
+    const oldest = nameCache.keys().next().value;
+    if (oldest !== undefined) nameCache.delete(oldest);
+  }
+  nameCache.set(code, name);
+}
+
+function markAttempted(code: string): void {
+  if (!attempted.has(code) && attempted.size >= MAX_TRACKED_CODES) {
+    const oldest = attempted.values().next().value;
+    if (oldest !== undefined) attempted.delete(oldest);
+  }
+  attempted.add(code);
 }
 
 async function fetchBatch(codes: string[]): Promise<void> {
@@ -29,7 +47,7 @@ async function fetchBatch(codes: string[]): Promise<void> {
     const data = body.data;
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return;
     for (const [code, name] of Object.entries(data as Record<string, unknown>)) {
-      if (typeof name === 'string' && name.trim().length > 0) nameCache.set(code, name.trim());
+      if (typeof name === 'string' && name.trim().length > 0) rememberName(code, name.trim());
     }
   } catch {
     // 名称加载失败不影响页面：保持代码回退
@@ -43,7 +61,7 @@ function scheduleFetch(codes: readonly string[]): void {
   const missing = codes.filter((code) => !attempted.has(code) && !inflight.has(code));
   if (missing.length === 0) return;
   for (const code of missing) {
-    attempted.add(code);
+    markAttempted(code);
     inflight.add(code);
   }
   for (let i = 0; i < missing.length; i += BATCH_SIZE) {

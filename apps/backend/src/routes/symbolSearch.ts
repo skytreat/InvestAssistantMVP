@@ -67,7 +67,8 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
    * 任一来源不可用 / 代码无名称时该 key 缺省，前端回退为仅显示代码，**不返回 500**。
    *
    * 先查 `symbol_dict` 快照（快、覆盖有名称的全市场）；仍缺的代码再回退一次行情库
-   * （快照为空 / 新股未同步的场景）。
+   * （快照为空 / 查询异常 / 新股未同步的场景）。名称是装饰信息，宁可多一次兜底，
+   * 也不要因快照暂时不可用而整批缺名称。
    */
   app.get('/api/symbols/names', async (request, reply) => {
     const raw = (request.query as { symbols?: string }).symbols ?? '';
@@ -97,7 +98,9 @@ export async function registerSymbolSearchRoutes(app: FastifyInstance) {
         if (name.length > 0) names[row.symbol] = name;
       }
     } catch {
-      // 快照不可用时走行情库兜底
+      // 快照查询失败（表缺失 / 库锁 / 参数异常）时复位，确保随后走行情库兜底。
+      // 注意：`SELECT 1` 成功但 IN 查询失败也会落到这里，此时同样应兜底。
+      snapshotReady = false;
     }
 
     const missing = symbols.filter((symbol) => names[symbol] === undefined);
