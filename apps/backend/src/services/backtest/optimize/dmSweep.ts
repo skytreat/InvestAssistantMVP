@@ -52,6 +52,12 @@ interface Spec {
 /** 阶段 0 的一维参数表（顺序即报告顺序） */
 const STAGE0_DIMS: Spec[] = [
   {
+    key: 'cashInterestRate',
+    label: '闲置现金年化利率（引擎 opt-in；0 = 基线）',
+    values: [0.0, 0.01, 0.02, 0.03],
+    override: (v) => ({ cashInterestRate: v }),
+  },
+  {
     key: 'wsmMax',
     label: '主槽上限 wsmMax',
     values: [3, 5, 8, 12, 20, 100],
@@ -215,6 +221,7 @@ function runTrial(data: BacktestData, params: DualMomentumParams, start = START,
       stampDutyRate: params.etfExemptTax ? 0 : 0.001,
       transferFeeRate: 0,
     },
+    cashInterestRate: params.cashInterestRate,
   });
 }
 

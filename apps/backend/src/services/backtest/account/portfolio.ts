@@ -151,6 +151,14 @@ export class Portfolio {
     return this.cashAmount;
   }
 
+  /**
+   * 现金直接入账（闲置现金计息用；**不产生成交记录、不进回合统计**）。
+   * 与 `applyFill` 卖出分支不同：无手续费、不影响 `tradesBySymbol`。
+   */
+  creditCash(amount: number): void {
+    if (amount > 0 && Number.isFinite(amount)) this.cashAmount += amount;
+  }
+
   /** 某个标的的 core 状态（qty/avgCost/costBasis/realizedPnL） */
   private stateOf(symbol: string) {
     const trades = this.tradesBySymbol.get(symbol) ?? [];
