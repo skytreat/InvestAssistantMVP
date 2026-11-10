@@ -84,9 +84,13 @@ export interface DualMomentumParams {
   /** 闲置现金年化利率（÷250 日计提；缺省 0 = 引擎不计息，基线不变；研究口径） */
   cashInterestRate: number;
   /** 档 2：暴露模式（缺省 `fixed` = DAS 基线「候选均分满仓 / 否则空仓」） */
-  exposureMode: 'fixed' | 'scale';
+  exposureMode: 'fixed' | 'scale' | 'vol';
   /** 档 2：`scale` 模式下目标暴露 = min(1, 通过数 / 该值) */
   exposureScaleDivisor: number;
+  /** 档 2：`vol` 模式下目标年化波动率（如 0.12 = 12%） */
+  targetVol: number;
+  /** 档 2：`vol` 模式下实现波动率估计窗口（交易日） */
+  volWindow: number;
   /** 档 2：候选数 < 该值时放开单标的 cap（0 = 不放开；缺省 0） */
   capRelaxBelow: number;
   /** 档 3：主槽上界研究值（缺省 = DAS `wsmMax`；传更大值才放宽） */
@@ -140,6 +144,8 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   cashInterestRate: 0,
   exposureMode: 'fixed',
   exposureScaleDivisor: 3,
+  targetVol: 0.12,
+  volWindow: 20,
   capRelaxBelow: 0,
   wsmMaxResearch: WSM_MAX,
   rsrsMaxResearch: RSRS_MAX,
@@ -148,6 +154,9 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   momentumDecayExit: false,
   /** 缺省 = maxHoldings + 2；显式传小值（如 3）可收紧排名触发 */
   decayRankThreshold: 8,
+  momentumDecayExit: false,
+  targetVol: 0.12,
+  volWindow: 20,
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -494,8 +503,9 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     label: '暴露模式（档 2）',
     type: 'select',
     default: DUALMOMENTUM_DEFAULTS.exposureMode,
-    options: ['fixed', 'scale'],
-    description: 'fixed = DAS 基线（候选均分满仓/否则空仓）；scale = 目标暴露 = min(1, 通过数 / divisor)',
+    options: ['fixed', 'scale', 'vol'],
+    description:
+      'fixed = DAS 基线（候选均分满仓/否则空仓）；scale = 目标暴露 = min(1, 通过数 / divisor)；vol = 波动率目标（targetVol / 实现波动率）',
   },
   {
     key: 'exposureScaleDivisor',
@@ -506,6 +516,27 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     max: 10,
     step: 0.5,
     description: 'scale 模式下目标暴露 = min(1, 通过数 / 该值)',
+  },
+  {
+    key: 'targetVol',
+    label: '目标年化波动率（档 2 vol 模式）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.targetVol,
+    min: 0.01,
+    max: 1,
+    step: 0.01,
+    description: 'vol 模式下目标暴露 = clip(targetVol / 实现波动率, 0, 1)',
+  },
+  {
+    key: 'volWindow',
+    label: '实现波动率估计窗口（档 2 vol 模式）',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.volWindow,
+    min: 5,
+    max: 120,
+    step: 5,
+    unit: '交易日',
+    description: 'vol 模式下滚动实现波动率的窗口长度',
   },
   {
     key: 'capRelaxBelow',
@@ -552,6 +583,24 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     default: DUALMOMENTUM_DEFAULTS.scoreMode,
     options: ['and', 'scored'],
     description: 'and = DAS 基线（次槽 + 基准 AND）；scored = 次槽降为打分不拦截（§12.5 第 3 条）',
+  },
+  {
+    key: 'momentumDecayExit',
+    label: '动量衰减退出（§12.5 第 5 条；缺省 false = DAS 基线）',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.momentumDecayExit,
+    description:
+      '开启后：主槽动量转负或全池排名 > decayRankThreshold 即清仓，可绕过 minHoldDays，触发后开 stopLoss 冷却',
+  },
+  {
+    key: 'decayRankThreshold',
+    label: '衰减退出排名阈值（§12.5 第 5 条）',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.decayRankThreshold,
+    min: 1,
+    max: 50,
+    step: 1,
+    description: '动量衰减退出：当日主槽全池排名 > 该值即触发退出（缺省 8 = 7 只池下几乎不触发）',
   },
 ];
 
@@ -623,8 +672,10 @@ export function resolveDualMomentumParams(
     // 档 1：缺省 0 = 引擎不计息，基线不变
     cashInterestRate: Math.max(0, num(src, 'cashInterestRate', d.cashInterestRate)),
     // 档 2：缺省 fixed + 0 ⇒ 基线路径逐位不变
-    exposureMode: src.exposureMode === 'scale' ? 'scale' : 'fixed',
+    exposureMode: src.exposureMode === 'scale' || src.exposureMode === 'vol' ? src.exposureMode : 'fixed',
     exposureScaleDivisor: Math.max(1, num(src, 'exposureScaleDivisor', d.exposureScaleDivisor)),
+    targetVol: Math.max(0.01, num(src, 'targetVol', d.targetVol)),
+    volWindow: Math.max(5, int(src, 'volWindow', d.volWindow)),
     capRelaxBelow: Math.max(0, int(src, 'capRelaxBelow', d.capRelaxBelow)),
     // 档 3：缺省 = DAS 锁定值（wsmMax=5 / rsrsMax=2），research 上界只放宽不收窄
     wsmMaxResearch: Math.max(d.wsmMax, num(src, 'wsmMaxResearch', d.wsmMaxResearch)),
