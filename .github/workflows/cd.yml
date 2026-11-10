@@ -3,8 +3,8 @@ name: CD Production
 # 每日定时 CD：把 main 上「CI 全绿」的提交部署到 OCI ARM 生产机。
 #
 # 设计要点（详见 docs/deploy.md「CD（每日定时部署）」）：
-# - 定时点 11:00 UTC = 19:00 Asia/Shanghai，避开 17:00-17:45 的行情更新链路；
-#   进程内 cron 在重启后会丢失当段任务，故不在该窗口内部署。
+# - 定时点 18:00 UTC = 次日 02:00 Asia/Shanghai，天然避开 17:00-17:45 的行情更新链路；
+#   窗口避让仍保留，用于兜底手动 dispatch（进程内 cron 重启会丢失当段任务）。
 # - 构建只在 ARM 机器上做（better-sqlite3 / DuckDB 是平台原生模块，
 #   ubuntu-latest 的 x86 node_modules 不能用于 ARM）。
 # - CI 未绿不部署；同一 SHA 已部署则服务端直接 no-op，不构建、不重启。
@@ -12,7 +12,7 @@ name: CD Production
 # - 服务端 deploy/deploy.sh 自带健康检查与 app.old 自动回滚。
 on:
   schedule:
-    - cron: '0 11 * * *'
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       sha:
@@ -34,7 +34,7 @@ jobs:
   #
   # - schedule 事件下 github.sha 是默认分支触发时的 HEAD；
   # - 手动回滚可传旧 SHA，但同样要求该 SHA 存在成功的 CI 运行记录；
-  # - CI 还在跑时最多等 20 分钟，避免「18:59 合入、19:00 跳过」。
+  # - CI 还在跑时最多等 20 分钟，避免「刚合入、CI 未跑完就跳过」。
   # ============================================================================
   gate:
     runs-on: ubuntu-latest

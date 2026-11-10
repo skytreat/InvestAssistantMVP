@@ -238,7 +238,7 @@ Node 自己触发补跑时走 `rerunQuoteUpdate()` 的主动让锁路径（ADR-0
 ### 架构
 
 ```text
-GitHub Actions  schedule 11:00 UTC（19:00 Asia/Shanghai）+ workflow_dispatch
+GitHub Actions  schedule 18:00 UTC（次日 02:00 Asia/Shanghai）+ workflow_dispatch
   ├─ gate：解析目标 SHA，要求该 SHA 的 CI 运行结论为 success（未完成时最多等 20 分钟）
   └─ deploy：SSH 到生产机执行 /usr/local/sbin/invest-deploy <sha>
        ├─ flock 串行；工作日 16:55-17:45 与 .tdx2db-writing 期间拒绝
@@ -252,7 +252,7 @@ GitHub Actions  schedule 11:00 UTC（19:00 Asia/Shanghai）+ workflow_dispatch
   不能在 x86 runner 上构建后搬运 `node_modules`。
 - 仓库为 public，生产机 `git fetch` 无需额外凭证。
 - scheduled workflow 连续 60 天无仓库活动会被 GitHub 自动禁用，重新启用即可。
-- GitHub 的 cron 可能延迟数分钟，19:00 只是目标时刻。
+- GitHub 的 cron 可能延迟数分钟，02:00（Asia/Shanghai）只是目标时刻。
 
 ### 一次性配置
 
@@ -279,7 +279,7 @@ sudo bash deploy/install-cd-host.sh --public-key-file /tmp/cd-invest.pub
 
 | 项 | 说明 |
 |---|---|
-| 触发 | 每天 19:00（Asia/Shanghai），或手动 dispatch |
+| 触发 | 每天 02:00（Asia/Shanghai，前一日 18:00 UTC），或手动 dispatch |
 | 门禁 | 目标 SHA 必须存在 `CI` 成功运行记录；失败/取消/超时都不部署 |
 | 幂等 | `.deployed-sha` 相同直接退出，不构建、不重启 |
 | 并发 | GitHub `concurrency: cd-production` + 服务端 `flock` 双保险 |
@@ -301,7 +301,7 @@ sudo bash deploy/install-cd-host.sh --public-key-file /tmp/cd-invest.pub
 
 ## 升级与回滚
 
-日常升级由 CD 完成（合入 main 后次日 19:00 自动部署，或手动 dispatch 立即部署）。
+日常升级由 CD 完成（合入 main 后次日 02:00 Asia/Shanghai 自动部署，或手动 dispatch 立即部署）。
 手工升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会停止服务、构建新产物，
 切换后端目录并重启；健康检查失败会自动恢复 `app.old`。
 
