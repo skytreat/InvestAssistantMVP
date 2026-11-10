@@ -32,6 +32,7 @@ SKIP_BUILD=0
 CURRENT_STEP="初始化"
 APP_PORT=8080
 CADDY_CONFIGURED=0
+SERVICE_STOPPED=0
 TEMP_DIR=""
 
 usage() {
@@ -58,7 +59,15 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-trap 'echo "❌ 部署失败：${CURRENT_STEP}（行 ${LINENO}）" >&2' ERR
+
+on_error() {
+    echo "❌ 部署失败：${CURRENT_STEP}（行 $1）" >&2
+    if [ "${SERVICE_STOPPED:-0}" -eq 1 ]; then
+        echo "↩️  构建/部署中断，尝试用现有 app 目录恢复服务..." >&2
+        systemctl start invest-assistant.service >/dev/null 2>&1 || true
+    fi
+}
+trap 'on_error "$LINENO"' ERR
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -314,6 +323,12 @@ if [ "$SKIP_BUILD" -eq 1 ]; then
     echo "✅ 复用已有构建产物"
 else
     CURRENT_STEP="构建 core / backend / frontend"
+    # npm ci 会删除 node_modules；运行中的 Node 进程延迟加载模块时会崩，故构建前先停服。
+    if systemctl is-active --quiet invest-assistant.service; then
+        echo "停止 invest-assistant.service（构建期间 API 不可用）..."
+        systemctl stop invest-assistant.service
+        SERVICE_STOPPED=1
+    fi
     cd "$PROJECT_ROOT"
     npm ci
     npm run build
@@ -435,6 +450,7 @@ fi
 # ---------------------------------------------------------------------------
 CURRENT_STEP="切换后端运行目录"
 systemctl stop invest-assistant.service >/dev/null 2>&1 || true
+SERVICE_STOPPED=1
 rm -rf "$APP_DIR.old"
 if [ -d "$APP_DIR" ]; then
     mv "$APP_DIR" "$APP_DIR.old"
@@ -449,6 +465,7 @@ rollback_app() {
         mv "$APP_DIR.old" "$APP_DIR"
     fi
     systemctl start invest-assistant.service >/dev/null 2>&1 || true
+    SERVICE_STOPPED=0
 }
 
 CURRENT_STEP="启动 Fastify"
@@ -457,6 +474,7 @@ if ! systemctl restart invest-assistant.service; then
     rollback_app
     exit 1
 fi
+SERVICE_STOPPED=0
 
 CURRENT_STEP="健康检查"
 HEALTHY=0
@@ -525,6 +543,17 @@ else
     systemctl restart caddy
     CADDY_CONFIGURED=1
     echo "✅ Caddy 已配置并重启"
+fi
+
+# ---------------------------------------------------------------------------
+# 12. 记录已部署版本（CD 幂等标记，见 deploy/invest-deploy.sh）
+# ---------------------------------------------------------------------------
+CURRENT_STEP="记录部署版本"
+DEPLOYED_SHA="$(git -C "$PROJECT_ROOT" -c safe.directory="$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$DEPLOYED_SHA" ]; then
+    printf '%s\n' "$DEPLOYED_SHA" > "$DEPLOY_DIR/.deployed-sha"
+    chown "$USERNAME:$USERNAME" "$DEPLOY_DIR/.deployed-sha" 2>/dev/null || true
+    echo "✅ 已部署版本：$DEPLOYED_SHA"
 fi
 
 echo ""

@@ -59,6 +59,7 @@ sudo CADDY_DOMAIN=invest.example.com \
 2. 创建 `invol` 用户和 `/opt/invol/IA_Prod/{data,backup,secrets,plugins,frontend}` 目录
 3. 校验 `/opt/invol/IA_Prod/.env.local`（不覆盖生产文件，不复制开发机配置）
 4. `npm ci` → 根目录 `npm run build`（core → backend → frontend）→ `npm prune --omit=dev`
+   （构建前会先停止 `invest-assistant`，避免 `npm ci` 删除运行中进程依赖的 `node_modules`；构建期间 API 不可用）
 5. 组装 `/opt/invol/IA_Prod/app`，验证所有生产依赖（含 native 模块）可加载
 6. 原子切换后端与前端产物
 7. 安装 systemd units、启动 timer、首次初始化 DuckDB（如缺库）
@@ -95,6 +96,7 @@ sudo TDX2DB_VERSION=v2026.8.12 TDX2DB_SHA256=<sha256> bash deploy/deploy.sh
     ├── frontend/dist.old/   # 上一版本前端
     ├── quotes.duckdb        # tdx2db 写入，Fastify 只读
     ├── .tdx2db-writing      # tdx2db 写窗口哨兵（运行中存在）
+    ├── .deployed-sha        # 最近一次成功部署的 commit（CD 幂等标记）
     └── .env.local           # 生产环境变量（600 invol）
 ```
 
@@ -229,12 +231,81 @@ Node 自己触发补跑时走 `rerunQuoteUpdate()` 的主动让锁路径（ADR-0
 失败或未触发时校验会跳过，但会写 `datacheck/ERROR`，不会再出现「无数据却 ERROR=0 WARN=0」。
 若更新状态为成功但当日无数据，会先自动补跑一次；补跑后仍无数据才判 ERROR。
 
+## CD（每日定时部署）
+
+> 2026-11-10 新增。日常发布走 GitHub Actions `CD Production`；手工升级仍可用 `deploy/deploy.sh`。
+
+### 架构
+
+```text
+GitHub Actions  schedule 11:00 UTC（19:00 Asia/Shanghai）+ workflow_dispatch
+  ├─ gate：解析目标 SHA，要求该 SHA 的 CI 运行结论为 success（未完成时最多等 20 分钟）
+  └─ deploy：SSH 到生产机执行 /usr/local/sbin/invest-deploy <sha>
+       ├─ flock 串行；工作日 16:55-17:45 与 .tdx2db-writing 期间拒绝
+       ├─ .deployed-sha 相同 -> no-op（不构建、不重启）
+       ├─ git fetch origin main -> 校验 SHA 在 main 上 -> git reset --hard
+       ├─ deploy/deploy.sh（构建 / 原子切换 / 健康检查 / 失败自动回滚 app.old）
+       └─ 成功后才更新 .deployed-sha
+```
+
+- 构建必须在 ARM 生产机执行：`better-sqlite3`、DuckDB 是平台原生模块，
+  不能在 x86 runner 上构建后搬运 `node_modules`。
+- 仓库为 public，生产机 `git fetch` 无需额外凭证。
+- scheduled workflow 连续 60 天无仓库活动会被 GitHub 自动禁用，重新启用即可。
+- GitHub 的 cron 可能延迟数分钟，19:00 只是目标时刻。
+
+### 一次性配置
+
+1. 生成 CD 专用密钥（私钥只放 GitHub secret）：
+
+```bash
+ssh-keygen -t ed25519 -C "cd-invest" -f cd-invest -N ""
+```
+
+2. 在生产机安装接收端（创建 `deployer` 用户、wrapper、sudoers、authorized_keys）：
+
+```bash
+cd /opt/invol/InvestAssistantMVP
+sudo bash deploy/install-cd-host.sh --public-key-file /tmp/cd-invest.pub
+```
+
+3. GitHub：`Settings -> Environments -> production`
+   - secrets：`DEPLOY_SSH_KEY`（私钥全文）、`DEPLOY_KNOWN_HOSTS`（`ssh-keyscan -t ed25519 <host>` 输出）
+   - variables：`DEPLOY_HOST`、`DEPLOY_USER`（默认 `deployer`）
+
+4. 手动演练：`Actions -> CD Production -> Run workflow`，SHA 留空即部署 main HEAD。
+
+### 行为与安全
+
+| 项 | 说明 |
+|---|---|
+| 触发 | 每天 19:00（Asia/Shanghai），或手动 dispatch |
+| 门禁 | 目标 SHA 必须存在 `CI` 成功运行记录；失败/取消/超时都不部署 |
+| 幂等 | `.deployed-sha` 相同直接退出，不构建、不重启 |
+| 并发 | GitHub `concurrency: cd-production` + 服务端 `flock` 双保险 |
+| 权限 | SSH 用户 `deployer` 只能运行 root 所有的 `/usr/local/sbin/invest-deploy`；`restrict` 禁 pty/转发 |
+| 回滚 | 部署失败由 `deploy.sh` 自动恢复 `app.old`；手动回滚用 dispatch 填上一版 CI 已绿的 SHA |
+
+安全边界：拿到 `DEPLOY_SSH_KEY` 等价于「可把 origin/main 上任意提交部署到生产」，
+但无法执行任意 shell；密钥只存于 `production` environment，建议定期轮换。
+
+### 故障排查（CD）
+
+| 症状 | 排查 |
+|---|---|
+| `缺少 secret DEPLOY_SSH_KEY` | environment `production` 未配置 secret |
+| SSH `Permission denied` | `authorized_keys` 是否含 forced command；`sudo -l -U deployer` 是否只有一条 |
+| `inside market-data window` / `tdx2db write window` | 正常避让；在窗口外手动 dispatch |
+| `commit is not on origin/main` | 目标 SHA 未合入 main（或被 force-push），拒绝部署 |
+| `deploy finished but marker is ...` | `deploy.sh` 未走到成功结尾；查 `journalctl -u invest-assistant` |
+
 ## 升级与回滚
 
-正常升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会构建新产物，
+日常升级由 CD 完成（合入 main 后次日 19:00 自动部署，或手动 dispatch 立即部署）。
+手工升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会停止服务、构建新产物，
 切换后端目录并重启；健康检查失败会自动恢复 `app.old`。
 
-手工回滚：
+手工回滚（也可在 `CD Production` 里 dispatch 上一版 CI 已绿的完整 SHA）：
 
 ```bash
 sudo systemctl stop invest-assistant

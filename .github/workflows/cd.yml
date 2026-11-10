@@ -1,0 +1,147 @@
+name: CD Production
+
+# 每日定时 CD：把 main 上「CI 全绿」的提交部署到 OCI ARM 生产机。
+#
+# 设计要点（详见 docs/deploy.md「CD（每日定时部署）」）：
+# - 定时点 11:00 UTC = 19:00 Asia/Shanghai，避开 17:00-17:45 的行情更新链路；
+#   进程内 cron 在重启后会丢失当段任务，故不在该窗口内部署。
+# - 构建只在 ARM 机器上做（better-sqlite3 / DuckDB 是平台原生模块，
+#   ubuntu-latest 的 x86 node_modules 不能用于 ARM）。
+# - CI 未绿不部署；同一 SHA 已部署则服务端直接 no-op，不构建、不重启。
+# - SSH 使用专用密钥 + forced command，远端只接受 40 位 commit SHA。
+# - 服务端 deploy/deploy.sh 自带健康检查与 app.old 自动回滚。
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: '目标 commit SHA（留空 = main HEAD；回滚时填上一版完整 SHA）'
+        required: false
+        type: string
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # ============================================================================
+  # 门禁：只允许 CI 已成功的提交进入生产
+  #
+  # - schedule 事件下 github.sha 是默认分支触发时的 HEAD；
+  # - 手动回滚可传旧 SHA，但同样要求该 SHA 存在成功的 CI 运行记录；
+  # - CI 还在跑时最多等 20 分钟，避免「18:59 合入、19:00 跳过」。
+  # ============================================================================
+  gate:
+    runs-on: ubuntu-latest
+    name: Gate - CI must be green
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+    steps:
+      - name: Resolve commit and wait for CI
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WANT: ${{ inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          case "$WANT" in
+            ''|*[!0-9a-f]*) echo "::error::sha 必须是 7-40 位十六进制 commit SHA：$WANT"; exit 1 ;;
+          esac
+          if [ "${#WANT}" -lt 7 ] || [ "${#WANT}" -gt 40 ]; then
+            echo "::error::sha 长度非法：$WANT"
+            exit 1
+          fi
+
+          SHA="$(gh api "repos/$REPO/commits/$WANT" --jq .sha)"
+          if [ "${#SHA}" -ne 40 ] || [ -n "${SHA//[0-9a-f]/}" ]; then
+            echo "::error::无法解析完整 commit SHA：$SHA"
+            exit 1
+          fi
+          echo "target=$SHA"
+
+          for i in $(seq 1 20); do
+            line="$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" \
+              --jq '.workflow_runs[0] // empty | "\(.status) \(.conclusion // "-")"')"
+            if [ -z "$line" ]; then
+              echo "第 $i/20 次：尚未找到 $SHA 的 CI 运行，等待 60s..."
+            else
+              status="${line%% *}"
+              conclusion="${line#* }"
+              echo "第 $i/20 次：CI status=$status conclusion=$conclusion"
+              if [ "$status" = "completed" ]; then
+                if [ "$conclusion" != "success" ]; then
+                  echo "::error::$SHA 的 CI 结论为 $conclusion，拒绝部署"
+                  exit 1
+                fi
+                echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+            sleep 60
+          done
+
+          echo "::error::等待 $SHA 的 CI 超时（20 分钟）"
+          exit 1
+
+  # ============================================================================
+  # 部署：SSH 到生产机，把 SHA 交给 /usr/local/sbin/invest-deploy
+  # ============================================================================
+  deploy:
+    needs: gate
+    runs-on: ubuntu-latest
+    name: Deploy - ${{ needs.gate.outputs.sha }}
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [ -n "$SSH_KEY" ] || { echo "::error::缺少 secret DEPLOY_SSH_KEY"; exit 1; }
+          [ -n "$KNOWN_HOSTS" ] || { echo "::error::缺少 secret DEPLOY_KNOWN_HOSTS"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        env:
+          HOST: ${{ vars.DEPLOY_HOST }}
+          DUSER: ${{ vars.DEPLOY_USER }}
+          TARGET: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ -n "$HOST" ] && [ -n "$DUSER" ] || {
+            echo "::error::缺少 environment variable DEPLOY_HOST / DEPLOY_USER"
+            exit 1
+          }
+
+          RESULT="$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            "$DUSER@$HOST" "$TARGET")"
+          printf '%s\n' "$RESULT"
+
+          case "$RESULT" in
+            *"deployed $TARGET"*|*"already deployed $TARGET"*) ;;
+            *) echo "::error::服务端未确认部署 $TARGET"; exit 1 ;;
+          esac
+
+          {
+            echo "### 部署成功"
+            echo ""
+            echo "- commit: \`$TARGET\`"
+            echo "- host: \`$HOST\`"
+            echo ""
+            echo '```'
+            echo "$RESULT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
