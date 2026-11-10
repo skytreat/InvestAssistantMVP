@@ -6,6 +6,7 @@ import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, ghostButtonStyle } from '../theme/styles';
 import Spinner from './Spinner';
+import AssetLink from './AssetLink';
 import { SignalDirectionPill, SignalLabelTag } from './SignalPills';
 import { fmt } from './positionDomain';
 
@@ -14,7 +15,7 @@ import { fmt } from './positionDomain';
  *
  * 默认折叠成一条窄条「候选池 N 只 · M 只有信号」，点击展开 Top 5：
  * - 排序：**有信号优先 → 跟踪天数长优先**（再按代码字典序兜底，保证顺序确定）；
- * - 每条：代码 + 名称 + 跟踪天数 + 现价 + 信号 +【买入】；
+ * - 每条：标的（`名称(代码)`，可点进 K 线）+ 跟踪天数 + 现价 + 信号 +【买入】；
  * - 【买入】通过 `onBuy` 交给父级打开 `TradeFormModal`，并预填现价 / 操作理由。
  *
  * ## 数据与降级
@@ -203,14 +204,7 @@ export default function CandidatePoolPanel({ onBuy, defaultExpanded = false }: C
                         minWidth: 0,
                       }}
                     >
-                      <code style={{ fontFamily: TYPO.monoFamily, fontSize: TYPO.bodySize }}>
-                        {row.asset_code}
-                      </code>
-                      {row.name ? (
-                        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textSecondary }}>
-                          {row.name}
-                        </span>
-                      ) : null}
+                      <AssetLink assetCode={row.asset_code} assetName={row.name} variant="inline" />
                       <span style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>
                         跟踪 {row.tracked_days ?? '--'} 天
                       </span>

@@ -4,6 +4,8 @@ import { isFailedEnvelope } from '../api/envelope';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import EmptyState from './EmptyState';
 import Spinner from './Spinner';
+import AssetLink from './AssetLink';
+import { useAssetNames } from './useAssetNames';
 import { type Position } from './positionDomain';
 
 /**
@@ -122,6 +124,8 @@ interface SignalStatsEnvelope extends ApiEnvelope<TodaySignalStats> {
 /** 一条策略信号（`GET /api/signal` 的行）*/
 interface SignalRow {
   asset_code: string;
+  /** 中文名（`/api/signal` 已 enrich；缺失时为 null）*/
+  asset_name?: string | null;
   plugin_id: string;
   direction: string;
   label: string;
@@ -368,11 +372,13 @@ function NoteText({ text }: { text: string }) {
 function FocusItem({
   source,
   code,
+  name,
   direction,
   label,
 }: {
   source: string;
   code: string;
+  name?: string | null;
   direction: string;
   label?: string;
 }) {
@@ -387,7 +393,7 @@ function FocusItem({
       }}
     >
       <span style={{ fontSize: TYPO.captionSize, color: COLORS.textMuted }}>{source}</span>
-      <code style={{ fontFamily: TYPO.monoFamily, fontSize: TYPO.smallSize }}>{code}</code>
+      <AssetLink assetCode={code} assetName={name} variant="inline" />
       <span style={{ fontSize: TYPO.smallSize, color: directionColor(direction) }}>
         {DIRECTION_SYMBOL[direction] ?? '·'} {DIRECTION_TEXT[direction] ?? '持有'}
       </span>
@@ -661,6 +667,14 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
   const dividendItems = asArray(dividends?.items);
   const dividendTotal = dividends?.summary?.total ?? 0;
 
+  /* ── 标的名称（「名称(代码)」+ K 线链接）：本卡所有会出现的代码一次批量取 ── */
+  const getAssetName = useAssetNames([
+    ...trades.map((t) => t.asset_code),
+    ...(dividendItems[0] ? [dividendItems[0].asset_code] : []),
+    ...focusHoldings.map((p) => p.asset_code),
+    ...focusCandidates.map((row) => row.asset_code),
+  ]);
+
   return (
     <section
       aria-label="今日动态"
@@ -819,9 +833,11 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                   key={`${t.asset_code}-${t.trade_type}-${i}`}
                   style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}
                 >
-                  <code style={{ fontFamily: TYPO.monoFamily, fontSize: TYPO.smallSize }}>
-                    {t.asset_code}
-                  </code>
+                  <AssetLink
+                    assetCode={t.asset_code}
+                    assetName={getAssetName(t.asset_code)}
+                    variant="inline"
+                  />
                   <span style={{ fontSize: TYPO.smallSize, color: COLORS.textPrimary }}>
                     {TRADE_TYPE_LABEL[t.trade_type] ?? t.trade_type}
                   </span>
@@ -854,7 +870,11 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                   fontSize: TYPO.smallSize,
                 }}
               >
-                <code style={{ fontFamily: TYPO.monoFamily }}>{dividendItems[0].asset_code}</code>
+                <AssetLink
+                  assetCode={dividendItems[0].asset_code}
+                  assetName={getAssetName(dividendItems[0].asset_code)}
+                  variant="inline"
+                />
                 <span style={{ color: COLORS.textPrimary }}>
                   {DIVIDEND_TYPE_LABEL[dividendItems[0].trade_type] ?? dividendItems[0].trade_type}
                 </span>
@@ -874,6 +894,7 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                   key={`holding-${p.asset_code}`}
                   source="持仓"
                   code={p.asset_code}
+                  name={p.name ?? getAssetName(p.asset_code)}
                   direction={p.signal?.direction ?? 'hold'}
                   label={p.signal?.label}
                 />
@@ -895,6 +916,7 @@ export default function TodayActivityCard({ tradeDate: tradeDateProp }: TodayAct
                   key={`candidate-${row.asset_code}-${row.plugin_id}-${i}`}
                   source="候选"
                   code={row.asset_code}
+                  name={row.asset_name ?? getAssetName(row.asset_code)}
                   direction={row.direction}
                   label={row.label}
                 />

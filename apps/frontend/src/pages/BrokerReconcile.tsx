@@ -4,6 +4,8 @@ import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import ConfirmDialog from '../components/ConfirmDialog';
+import AssetLink from '../components/AssetLink';
+import { useAssetNames } from '../components/useAssetNames';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, successStyle, titleStyle } from './_shared';
 
@@ -223,6 +225,13 @@ export default function BrokerReconcile() {
   const [extraError, setExtraError] = useState<string | null>(null);
   const [extraPage, setExtraPage] = useState(1);
   const [extraTotal, setExtraTotal] = useState(0);
+
+  /* 对账页展示的标的一律「名称(代码)」并链接 K 线（未匹配 / 无名称时回退代码）*/
+  const getAssetName = useAssetNames([
+    ...diffRows.map((r) => r.asset_code),
+    ...extraRows.map((r) => r.asset_code),
+    ...Array.from(selected.values()).map((r) => r.asset_code),
+  ]);
 
   /** 券商下拉 = 「已导入过流水的券商」，排除已撤销批次与未识别编码，标签带批次文件名（Q8） */
   useEffect(() => {
@@ -924,7 +933,13 @@ export default function BrokerReconcile() {
                       {extraRows.map((r) => (
                         <tr key={r.id}>
                           <td style={tdStyle}>{r.id}</td>
-                          <td style={tdStyle}>{r.asset_code}</td>
+                          <td style={tdStyle}>
+                            <AssetLink
+                              assetCode={r.asset_code}
+                              assetName={getAssetName(r.asset_code)}
+                              variant="inline"
+                            />
+                          </td>
                           <td style={tdStyle}>{TRADE_TYPE_LABELS[r.trade_type] ?? r.trade_type}</td>
                           <td style={tdStyle}>{r.trade_date}</td>
                           <td style={tdStyle}>{r.quantity ?? '—'}</td>
@@ -1170,7 +1185,17 @@ export default function BrokerReconcile() {
                     ) : null}
                     <td style={tdStyle}>{r.id}</td>
                     <td style={tdStyle}>{r.raw_event_type ?? r.event_type}</td>
-                    <td style={tdStyle}>{r.asset_code ?? '—'}</td>
+                    <td style={tdStyle}>
+                      {r.asset_code ? (
+                        <AssetLink
+                          assetCode={r.asset_code}
+                          assetName={getAssetName(r.asset_code)}
+                          variant="inline"
+                        />
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td style={tdStyle}>
                       {r.trade_date ?? '—'}
                       {r.trade_time ? ` ${r.trade_time}` : ''}
@@ -1253,7 +1278,17 @@ export default function BrokerReconcile() {
                     {[...selected.values()].map((x) => (
                       <tr key={x.sourceId}>
                         <td style={tdStyle}>#{x.sourceId}</td>
-                        <td style={tdStyle}>{x.asset_code ?? '—'}</td>
+                        <td style={tdStyle}>
+                          {x.asset_code ? (
+                            <AssetLink
+                              assetCode={x.asset_code}
+                              assetName={getAssetName(x.asset_code)}
+                              variant="inline"
+                            />
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                         <td style={tdStyle}>{x.trade_date ?? '—'}</td>
                         <td style={tdStyle}>
                           {NON_TRADE_TYPE_LABELS[x.event_type] ? (

@@ -7,6 +7,7 @@ import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import { ghostButtonStyle, truncatedTextStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
+import AssetLink from '../components/AssetLink';
 import PositionCard from '../components/PositionCard';
 import PositionToolbar from '../components/PositionToolbar';
 import PositionDetailModal from '../components/PositionDetailModal';
@@ -71,6 +72,8 @@ interface PositionSummary {
 interface Signal {
   id?: number;
   asset_code: string;
+  /** 中文名（`/api/signal/top5` 已 enrich；缺失时为 null）*/
+  asset_name?: string | null;
   plugin_id: string;
   direction: string;
   label: string;
@@ -1035,7 +1038,7 @@ export default function Dashboard() {
                         排名
                       </th>
                       <th scope="col" style={thStyle}>
-                        代码
+                        标的
                       </th>
                       <th scope="col" style={thStyle}>
                         策略
@@ -1065,7 +1068,9 @@ export default function Dashboard() {
                       signals.map((s, i) => (
                         <tr key={typeof s.id === 'number' ? s.id : i}>
                           <td style={thTdStyle}>{i + 1}</td>
-                          <td style={thTdStyle}>{s.asset_code}</td>
+                          <td style={thTdStyle}>
+                            <AssetLink assetCode={s.asset_code} assetName={s.asset_name} variant="inline" />
+                          </td>
                           <td style={thTdStyle}>{s.plugin_id}</td>
                           <td style={thTdStyle}>
                             <span

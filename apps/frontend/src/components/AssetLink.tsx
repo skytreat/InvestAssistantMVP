@@ -16,10 +16,23 @@ export function klineHref(assetCode: string): string {
 export interface AssetLinkProps {
   assetCode: string;
   assetName?: string | null;
+  /**
+   * `stacked`（默认）= 名称主行 + 代码副行；
+   * `inline` = 名称(代码) 单行，用于信号 / 有效性等表格。
+   */
+  variant?: 'stacked' | 'inline';
 }
 
-export default function AssetLink({ assetCode, assetName }: AssetLinkProps) {
+export default function AssetLink({ assetCode, assetName, variant = 'stacked' }: AssetLinkProps) {
   const name = typeof assetName === 'string' ? assetName.trim() : '';
+  if (variant === 'inline') {
+    const label = name ? `${name}(${assetCode})` : assetCode;
+    return (
+      <Link to={klineHref(assetCode)} title={`查看 ${label} K线`} style={inlineLinkStyle}>
+        {label}
+      </Link>
+    );
+  }
   const label = name || assetCode;
   return (
     <Link to={klineHref(assetCode)} title={`查看 ${label}（${assetCode}）K线`} style={linkStyle}>
@@ -33,6 +46,11 @@ const linkStyle: React.CSSProperties = {
   color: COLORS.brandLink,
   textDecoration: 'none',
   display: 'inline-block',
+};
+
+const inlineLinkStyle: React.CSSProperties = {
+  color: COLORS.brandLink,
+  textDecoration: 'none',
 };
 
 const nameStyle: React.CSSProperties = {

@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import ConfirmDialog from '../components/ConfirmDialog';
+import AssetLink from '../components/AssetLink';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, successStyle, titleStyle } from './_shared';
 
@@ -744,7 +745,12 @@ export default function BrokerImport() {
           {pendingUnknown.entries.map((e) => (
             <div key={e.filename} style={{ fontSize: TYPO.smallSize, marginBottom: 8 }}>
               <strong>{e.filename}</strong>：
-              {e.assetCodes.map((c, i) => (e.assetNames[i] ? `${c}（${e.assetNames[i]}）` : c)).join('、')}
+              {e.assetCodes.map((c, i) => (
+                <React.Fragment key={`${c}-${i}`}>
+                  {i > 0 ? '、' : null}
+                  <AssetLink assetCode={c} assetName={e.assetNames[i]} variant="inline" />
+                </React.Fragment>
+              ))}
             </div>
           ))}
           <div style={{ display: 'flex', gap: 8 }}>
