@@ -83,6 +83,13 @@ export interface BacktestRequest {
    * **不是策略参数**：策略从不读取，仅作为审计元数据写入 `bt_run.universe_params_json`。
    */
   universeParams?: { divisor: number; topN: number };
+  /**
+   * 闲置现金年化利率（÷250 日计提；**缺省 0 = 不计息，基线逐位不变**）。
+   *
+   * 语义：每日收盘估值前对 `portfolio.cash` 计提 `cash × rate / 250`（只增不减；
+   * 现金为负时不记息）。研究口径（档 1「闲置现金收益」），不影响 DAS 对齐基线。
+   */
+  cashInterestRate?: number;
 }
 
 /** 单日决策留痕（前视探针逐条比对它） */
@@ -413,6 +420,10 @@ export interface BacktestRunState {
   readonly roundTripNotified: Set<number>;
   readonly universeStats: UniverseStats;
   tradedNotional: number;
+  /** 闲置现金日利率（`request.cashInterestRate / 250`；缺省 0） */
+  cashInterestDaily: number;
+  /** 累计计息（审计用） */
+  interestAccrued: number;
 }
 
 /**
@@ -631,7 +642,14 @@ export function stepBacktestDay(state: BacktestRunState, args: StepBacktestDayAr
     if (CASH_BUCKET_SYMBOLS.has(pos.symbol)) cashMv += mv;
     else riskMv += mv;
   }
-  const cash = portfolio.cash;
+  let cash = portfolio.cash;
+  // 闲置现金计息（缺省 0 ⇒ 基线逐位不变）：每日收盘对正现金计提，只增不减
+  if (state.cashInterestDaily > 0 && cash > 0) {
+    const interest = cash * state.cashInterestDaily;
+    portfolio.creditCash(interest);
+    state.interestAccrued += interest;
+    cash = portfolio.cash;
+  }
   const totalEquity = cash + riskMv + cashMv;
 
   const benchIdx = lastIndexAtOrBefore(data.benchmarkBars, execDate);
@@ -722,6 +740,8 @@ export function runBacktest(data: BacktestData, request: BacktestRequest): Backt
       fallbackPoolMemberMax: 0,
     },
     tradedNotional: 0,
+    cashInterestDaily: (request.cashInterestRate ?? 0) / 250,
+    interestAccrued: 0,
   };
 
   for (let dayIndex = 0; dayIndex < dates.length; dayIndex++) {

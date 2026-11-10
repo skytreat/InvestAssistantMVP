@@ -116,7 +116,64 @@ function runBaseline(data: BacktestData) {
       stampDutyRate: DUALMOMENTUM_DEFAULTS.etfExemptTax ? 0 : 0.001,
       transferFeeRate: 0,
     },
+    cashInterestRate: params.cashInterestRate,
   });
+}
+
+/** 档 3 对照（§13.7 用）：放宽上界 / 基准软化 / 评分制 + 暴露/换手/摩擦/超额四数 */
+function runResearchCase(data: BacktestData, label: string, overrides: Record<string, unknown>) {
+  const params = resolveDualMomentumParams(overrides);
+  const result = runBacktest(data, {
+    strategy: createDualMomentumStrategy(),
+    params: params as unknown as Record<string, unknown>,
+    start: START,
+    end: END,
+    initialCash: INITIAL_CASH,
+    universeMode: 'fixed',
+    priceMode: 'open',
+    benchmarkSymbol: BENCHMARK_SYMBOL,
+    suspension: { missingBar: true, zeroVolume: true },
+    universeParams: { divisor: 20000, topN: 300 },
+    rules: {
+      commissionRate: DUALMOMENTUM_DEFAULTS.commissionRate,
+      minCommission: DUALMOMENTUM_DEFAULTS.minCommission,
+      slippageRate: DUALMOMENTUM_DEFAULTS.slippage,
+      lotSize: DUALMOMENTUM_DEFAULTS.lotSize,
+      stampDutyRate: DUALMOMENTUM_DEFAULTS.etfExemptTax ? 0 : 0.001,
+      transferFeeRate: 0,
+    },
+    cashInterestRate: params.cashInterestRate,
+  });
+  const m = result.metrics;
+  const fees = result.trades.reduce((a, t) => a + t.fee, 0);
+  const slip = result.trades.reduce((a, t) => a + t.slippageCost, 0);
+  const years = result.equity.length / 250;
+  const friction = ((fees + slip) / INITIAL_CASH / years) * 100;
+  console.log(
+    `${label.padEnd(28)} cagr=${(m.cagr * 100).toFixed(2)}% mdd=${(m.maxDrawdownRatio * 100).toFixed(2)}% ` +
+      `expo=${(m.averageExposure * 100).toFixed(2)}% turnover=${m.turnoverAnnualized.toFixed(2)} ` +
+      `friction=${friction.toFixed(2)}%/yr trades=${result.trades.length}`,
+  );
+  return {
+    label,
+    overrides,
+    cagr: m.cagr,
+    mdd: m.maxDrawdownRatio,
+    exposure: m.averageExposure,
+    turnover: m.turnoverAnnualized,
+    friction,
+    trades: result.trades.length,
+  };
+}
+
+/** 基准 CAGR（sh510300 前复权，用于超额对照） */
+function benchCagr(data: BacktestData): number {
+  const bars = data.signalBars.get('sh510300') ?? [];
+  const from = bars.find((b) => b.date >= START) ?? bars[0];
+  const to = bars[bars.length - 1];
+  if (!from || !to) return NaN;
+  const days = (Date.parse(to.date) - Date.parse(from.date)) / 86_400_000;
+  return days > 0 ? (to.close / from.close) ** (365.25 / days) - 1 : NaN;
 }
 
 /** 诊断 1：摩擦拆账（fees = 佣金+印花税+过户；slippage_cost 独立列） */
@@ -613,6 +670,7 @@ async function main(): Promise<void> {
     d2Ablation: d2,
     d3RejectReason: d3,
     d4CorrelationIc: d4,
+    tierResearch: [] as Record<string, unknown>[],
   };
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -695,6 +753,51 @@ async function main(): Promise<void> {
       `IC(h=${h})：均值=${(ic.mean * 100).toFixed(2)} std=${(ic.std * 100).toFixed(2)} ICIR=${ic.icir.toFixed(2)} t=${Number.isFinite(tStat) ? tStat.toFixed(1) : 'n/a'} 正占比=${(ic.positiveRatio * 100).toFixed(1)}% 有效截面=${ic.validSections}`,
     );
   }
+
+  // ── 档 2/3 对照（§13.7）：连续仓位 + 过滤重构，逐项记「暴露/换手/摩擦/超额」四数 ──
+  console.log(`\n── 档 2/3 对照（基线对照；超额 = 账户 CAGR − sh510300 qfq CAGR）──`);
+  const bCagr = benchCagr(data);
+  console.log(`基准 sh510300 qfq CAGR = ${(bCagr * 100).toFixed(2)}%/年`);
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['B 基线（默认）', {}],
+    ['T2 scale(div=3)', { exposureMode: 'scale', exposureScaleDivisor: 3 }],
+    ['T2b scale+capRelax=3', { exposureMode: 'scale', exposureScaleDivisor: 3, capRelaxBelow: 3 }],
+    ['T3a 放宽上界(100/100)', { wsmMaxResearch: 100, rsrsMaxResearch: 100 }],
+    ['T3b +基准软化', { wsmMaxResearch: 100, rsrsMaxResearch: 100, benchmarkGateMode: 'soft' }],
+    [
+      'T3c +评分制',
+      { wsmMaxResearch: 100, rsrsMaxResearch: 100, benchmarkGateMode: 'soft', scoreMode: 'scored' },
+    ],
+    [
+      'T4 scale+放宽+软化+评分+现金2%+关超配',
+      {
+        exposureMode: 'scale',
+        exposureScaleDivisor: 3,
+        wsmMaxResearch: 100,
+        rsrsMaxResearch: 100,
+        benchmarkGateMode: 'soft',
+        scoreMode: 'scored',
+        cashInterestRate: 0.02,
+        overweightThreshold: 1.0,
+        minHoldDays: 20,
+      },
+    ],
+  ];
+  const researchRows: Array<Record<string, unknown>> = [];
+  for (const [label, overrides] of cases) {
+    const base = runResearchCase(data, label, overrides);
+    const row: Record<string, unknown> = {
+      ...base,
+      excess: base.cagr - bCagr,
+      benchCagr: bCagr,
+    };
+    researchRows.push(row);
+    console.log(`  超额=${(((base.cagr - bCagr) * 100).toFixed(2))}pp`);
+  }
+
+  report.tierResearch = researchRows;
+  fs.writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf8');
+  console.log(`档 2/3/4 对照已追加进 ${outPath}`);
 }
 
 main().catch((err) => {

@@ -296,8 +296,52 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       }
       // 稳定降序：并列保持 POOL_ORDER（JS sort 自 ES2019 起稳定）
       passed.sort((a, b) => b.primary - a.primary);
-      const selected = passed.slice(0, p.maxHoldings);
+
+      // ── 档 3：放宽上界 / 基准软化 / 评分制（全部缺省 = DAS 锁定语义，逐位不变）──
+      // 触发条件：任一研究开关偏离缺省。缺省时走基线路径（`filtered = passed`）。
+      const wsmRelaxed = p.wsmMaxResearch > p.wsmMax;
+      const rsrsRelaxed = p.rsrsMaxResearch > p.rsrsMax;
+      let filtered = passed;
+      if (wsmRelaxed || rsrsRelaxed || p.benchmarkGateMode === 'soft' || p.scoreMode === 'scored') {
+        filtered = [];
+        for (const symbol of POOL_ORDER) {
+          const day = dayBySymbol.get(symbol);
+          if (!day || day.bars.length === 0) continue;
+          const ind = calcIndicators(day.bars, p);
+          const primary = slots.primary === 'wsm' ? ind.wsm : ind.nday;
+          const secondary = slots.secondary === 'rsrs' ? ind.rsrs : ind.wsm;
+          const primaryInRange = primary >= p.wsmMin && primary <= p.wsmMaxResearch;
+          // 评分制：次槽不再拦截（`scored` 时 `secondaryInRange` 恒 true）
+          const secondaryInRange =
+            p.scoreMode === 'scored' ? true : secondary >= p.rsrsMin && secondary <= p.rsrsMaxResearch;
+          // 基准软化：`soft` 时仅当基准动量 > 0 才启用第 9 步
+          const benchGate =
+            p.benchmarkGateMode === 'soft'
+              ? benchmarkPrimary > 0
+                ? primary >= benchmarkPrimary
+                : true
+              : primary >= benchmarkPrimary;
+          if (primaryInRange && secondaryInRange && benchGate) filtered.push({ symbol, primary });
+        }
+        filtered.sort((a, b) => b.primary - a.primary);
+      }
+
+      // ── 档 2：连续仓位（`scale` 模式；缺省 `fixed` = DAS 基线「候选均分满仓/否则空仓」）──
+      let exposureScale = 1.0;
+      if (p.exposureMode === 'scale') {
+        const passCount = filtered.length;
+        exposureScale = Math.min(1, passCount / p.exposureScaleDivisor);
+      }
+
+      const selected = filtered.slice(0, p.maxHoldings);
       const selectedSet = new Set(selected.map((s) => s.symbol));
+
+      // 档 2 cap 条件化：候选数 < capRelaxBelow 时允许单只接近满仓（0 = 不放开）
+      const capRelaxed =
+        p.exposureMode === 'scale' && p.capRelaxBelow > 0 && filtered.length < p.capRelaxBelow;
+      const effectiveCap = capRelaxed ? 1.0 : p.singlePositionCap;
+      const selectedSetForCap = selectedSet; // 语义不变，别名仅供阅读
+      void selectedSetForCap;
 
       // ── 3) L2 卖出：止损 > 止盈 > 再平衡 > 超配（§3.4）──
       const totalValue = ctx.equity;
@@ -370,9 +414,12 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         return sum + gross * (1 - p.slippage) - fee;
       }, 0);
       const cashAfterSells = ctx.cash + sellProceeds;
-      const capAmount = totalValue * p.singlePositionCap;
+      // 档 2：目标敞口 = 现金可用额度 × exposureScale（缺省 1.0 = 基线「候选均分满仓」）
+      const deployBudget = cashAfterSells * exposureScale;
+      const capAmount = totalValue * effectiveCap;
       const candidates = selected.filter((s) => !sellAll.has(s.symbol) && !overweightTarget.has(s.symbol));
-      const perTarget = candidates.length > 0 ? cashAfterSells / candidates.length : 0;
+      // 档 2：每只目标 = 部署预算（已含 exposureScale）÷ 候选数（缺省 exposureScale=1 ⇒ 与基线一致）
+      const perTarget = candidates.length > 0 ? deployBudget / candidates.length : 0;
 
       const targets: TargetPosition[] = [];
       for (const cand of candidates) {
