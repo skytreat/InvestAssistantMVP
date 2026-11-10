@@ -248,7 +248,7 @@ BASELINE final=1189224.15  cum=18.92%  cagr=2.23%  mdd=13.11%  trades=1780  equi
 
 ## 10. 逻辑层的问题与优化方向
 
-> 本节为**实测结论**。数据来源：独立诊断脚本 `apps/backend/src/services/backtest/optimize/dmDiagnose.ts`（只做纯诊断，不碰策略主路径；**暂不入库**，工作区未跟踪）。为排除复刻偏差，脚本内置一致性自证：全开模式下与生产 `evaluateL1Filters` 的 **13,314 次逐日逐标的判定完全一致**；基线自证亦通过（`final=1189224.15 / trades=1780`）。重跑命令：`DUCKDB_PATH=<真实行情库> npx tsx apps/backend/src/services/backtest/optimize/dmDiagnose.ts`，单次约 103 秒。
+> 本节为**实测结论**。数据来源：独立诊断脚本 [dmDiagnose.ts](../../apps/backend/src/services/backtest/optimize/dmDiagnose.ts)（只做纯诊断，不碰策略主路径、不改 L1 口径；独立进程运行，不参与默认回测路径与线上调用链）。为排除复刻偏差，脚本内置一致性自证：全开模式下与生产 `evaluateL1Filters` 的 **13,314 次逐日逐标的判定完全一致**；基线自证亦通过（`final=1189224.15 / trades=1780`）。重跑：在仓库根目录执行 `DUCKDB_PATH=<真实行情库> npx tsx apps/backend/src/services/backtest/optimize/dmDiagnose.ts`，结果写入 `data/dm-diagnose/diagnose.json`（`data/` 已被 `.gitignore` 覆盖），单次约 103 秒。
 
 ### 10.1 总判断
 
