@@ -243,11 +243,11 @@ GitHub Actions  schedule 18:00 UTC（次日 02:00 Asia/Shanghai）+ workflow_dis
   └─ deploy：SSH 到生产机执行 /usr/local/sbin/invest-deploy <sha>
        ├─ setsid 脱离 SSH 会话，日志写 /var/log/invest-deploy/
        ├─ flock 串行（与手工 deploy.sh 共用 /run/invest-deploy.lock）
+       ├─ .deployed-sha 相同 -> no-op（不构建、不重启，窗口内也直接成功）
        ├─ 工作日 16:55-17:45 与 .tdx2db-writing 期间拒绝
-       ├─ .deployed-sha 相同 -> no-op（不构建、不重启）
        ├─ git fetch origin main -> 校验 SHA 在 main 上 -> git reset --hard
        ├─ deploy/deploy.sh（构建 / 原子切换 / 健康检查 / 失败自恢复 app.old）
-       └─ 成功后才更新 .deployed-sha
+       └─ 应用+前端切换成功即写 .deployed-sha；Caddy 在其后，配置失败不改 marker
 ```
 
 - **只部署 main HEAD**：schedule 的目标是触发时刻的 main HEAD；dispatch 留空也是「运行时刻的 main HEAD」。

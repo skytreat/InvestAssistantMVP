@@ -2643,7 +2643,7 @@ WantedBy=timers.target
 | `restore_sqlite.sh` | 手动 | 从远程下载 → 直接替换文件 → 启动验证 |
 | `verify_backup.sh` | 每月 cron 自动 | 下载备份 → 校验 schema → 抽样数据完整性 |
 | `deploy/deploy.sh` | 部署时手动 / CI | git pull → npm ci → build → 原子切换 `/opt/invol/IA_Prod/app` → 健康检查失败自动回滚 |
-| `deploy/healthcheck.sh` | 手动 / CI | `curl -sf http://127.0.0.1:8080/api/health`（端口可读 `/opt/invol/IA_Prod/.env.local`） |
+| `deploy/healthcheck.sh` | 手动 | `curl -sf http://127.0.0.1:8080/api/health`（端口可读 `/opt/invol/IA_Prod/.env.local`） |
 
 ### 7.5 监控与告警（最小化）
 
