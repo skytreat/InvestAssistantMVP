@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: '目标 commit SHA（留空 = main HEAD；回滚时填上一版完整 SHA）'
+        description: '目标 commit SHA（留空 = main HEAD；临时回滚填上一版完整 SHA，次日会重新部署 main HEAD）'
         required: false
         type: string
 
