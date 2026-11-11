@@ -104,6 +104,10 @@ if [ "$REPO_OWNER" != "root" ]; then
         echo "cannot run commands as repository owner: $REPO_OWNER" >&2
         exit 5
     fi
+    if ! runuser -u "$REPO_OWNER" -- test -w "$REPO_DIR/.git"; then
+        echo "repository owner $REPO_OWNER cannot write $REPO_DIR/.git" >&2
+        exit 5
+    fi
 fi
 GIT_BIN="$(command -v git)"
 run_as_owner() {
