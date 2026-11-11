@@ -50,6 +50,7 @@ export type ExitReason =
   | 'drop-from-pool'
   | 'out-of-candidate'
   | 'stop-loss'
+  | 'take-profit'
   | 'rebalance-replace'
   | 'defensive-fallback'
   | 'end-of-backtest';

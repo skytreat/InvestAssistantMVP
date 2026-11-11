@@ -28,11 +28,14 @@ import {
 } from './universe/pointInTime.js';
 import type { Bar, SuspensionOptions } from './types.js';
 import { loadUniverseProvider, type UniverseResolver } from './universe/provider.js';
-import { loadUniversePanel } from './universe/dynamicPanel.js';
+import { loadUniversePanel, loadIndexBars } from './universe/dynamicPanel.js';
 import { runBacktest } from './engine.js';
 import { buyAndHoldStrategy } from './strategies/buyAndHold.js';
 import { createWufuRotationStrategy, resolveWufuRotationParams } from './strategies/wufuRotation/index.js';
 import { momentumRawWindow } from './strategies/wufuRotation/filters.js';
+import { createDualMomentumStrategy } from './strategies/dualmomentum/index.js';
+import { BENCHMARK_SYMBOL, POOL_ORDER } from './strategies/dualmomentum/l1/params.js';
+import { dualMomentumLookback, resolveDualMomentumParams } from './strategies/dualmomentum/params.js';
 import { computeAttribution, toAttributionRows } from './attribution/index.js';
 import { BacktestStore, resolveBacktestDbPath } from './store/backtestDb.js';
 import { loadCorporateActions } from './corporateActions.js';
@@ -458,7 +461,7 @@ interface RunArgs {
   transferFeeRate: number;
 }
 
-const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak|dynamic] [--indexes sh000300,sh000510,sz399101,sz399006] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--stamp-duty-rate 0.001] [--transfer-fee-rate 0.00002] [--no-missing-bar] [--no-zero-volume]`;
+const RUN_USAGE = `用法: tsx apps/backend/src/services/backtest/cli.ts run --start <YYYY-MM-DD> --end <YYYY-MM-DD> [--strategy buy-and-hold|wufu-rotation|dualmomentum] [--symbol sh510300] [--weight 1] [--rebalance] [--cash 100000] [--universe fixed|weak|dynamic] [--indexes sh000300,sh000510,sz399101,sz399006] [--price open|close] [--benchmark sh510300] [--db <path>|--no-db] [--divisor 20000] [--top-n 300] [--stamp-duty-rate 0.001] [--transfer-fee-rate 0.00002] [--no-missing-bar] [--no-zero-volume]`;
 
 function parseRunArgs(argv: readonly string[]): RunArgs {
   const options: RunArgs = {
@@ -493,8 +496,8 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
     switch (arg) {
       case '--strategy': {
         const v = readValue();
-        if (v !== 'buy-and-hold' && v !== 'wufu-rotation') {
-          throw new Error(`--strategy 只接受 buy-and-hold|wufu-rotation（收到 ${v}）`);
+        if (v !== 'buy-and-hold' && v !== 'wufu-rotation' && v !== 'dualmomentum') {
+          throw new Error(`--strategy 只接受 buy-and-hold|wufu-rotation|dualmomentum（收到 ${v}）`);
         }
         options.strategy = v;
         break;
@@ -610,9 +613,10 @@ function parseRunArgs(argv: readonly string[]): RunArgs {
   if (
     options.strategy !== 'buy-and-hold' &&
     options.strategy !== 'ref-buy-and-hold' &&
-    options.strategy !== 'wufu-rotation'
+    options.strategy !== 'wufu-rotation' &&
+    options.strategy !== 'dualmomentum'
   ) {
-    throw new Error(`--strategy 只接受 buy-and-hold|wufu-rotation；收到 ${options.strategy}`);
+    throw new Error(`--strategy 只接受 buy-and-hold|wufu-rotation|dualmomentum；收到 ${options.strategy}`);
   }
   if (!(options.cash > 0)) throw new Error(`--cash 必须 > 0（收到 ${options.cash}）`);
   if (!Number.isFinite(options.weight) || options.weight < 0 || options.weight > 1) {
@@ -631,18 +635,31 @@ async function runCommand(argv: readonly string[]): Promise<void> {
   const startedAt = new Date().toISOString();
   const args = parseRunArgs(argv);
 
-  const strategy = args.strategy === 'wufu-rotation' ? createWufuRotationStrategy() : buyAndHoldStrategy;
+  const strategy =
+    args.strategy === 'wufu-rotation'
+      ? createWufuRotationStrategy()
+      : args.strategy === 'dualmomentum'
+        ? createDualMomentumStrategy()
+        : buyAndHoldStrategy;
   if (args.strategy === 'wufu-rotation' && args.universeMode !== 'dynamic') {
     throw new Error(
       'wufu-rotation 必须配 --universe dynamic：动态池候选来自全市场 ETF，固定池面板里没有它们',
     );
   }
+  const dmParams = args.strategy === 'dualmomentum' ? resolveDualMomentumParams(args.params) : null;
+  // dualmomentum 的市场过滤与超额基准都是 sh000300（DAS §2.1）；未显式指定 --benchmark 时用它
+  const benchmark =
+    dmParams !== null && !argv.some((a) => a === '--benchmark' || a.startsWith('--benchmark='))
+      ? BENCHMARK_SYMBOL
+      : args.benchmark;
   const indexCodes =
     args.indexes.length > 0
       ? args.indexes
       : args.strategy === 'wufu-rotation'
         ? [...WEAK_PERIOD_INDEXES]
-        : [];
+        : dmParams !== null
+          ? [BENCHMARK_SYMBOL]
+          : [];
 
   // 装载区间：向前多取几根 bar，保证决策上下文/估值在起点前有价可依。
   // warmup 必须按**本次实际参数**推导（`--params` 的 lookbackDays 可能大于默认 25），
@@ -651,13 +668,23 @@ async function runCommand(argv: readonly string[]): Promise<void> {
   const strategyWarmup =
     args.strategy === 'wufu-rotation'
       ? momentumRawWindow(resolveWufuRotationParams(args.params))
-      : strategy.warmupDays;
+      : dmParams !== null
+        ? dualMomentumLookback(dmParams)
+        : strategy.warmupDays;
   const warmup = Math.max(5, strategyWarmup + 1);
   const loadStart = calendar.lastN(args.start, warmup)[0] ?? args.start;
 
   // 固定池 / 防御 ETF / 用户标的 / 基准 —— 动态模式下必须仍在面板里（见 dynamicPanel 的 extraSymbols）
+  // dualmomentum 的 7 只池必须显式补：`FIXED_ETF_POOL` 不含 `sh513000`
   const extraSymbols = [
-    ...new Set([...FIXED_ETF_POOL, ...GLOBAL_ETF_POOL, DEFENSIVE_ETF, args.symbol, args.benchmark]),
+    ...new Set([
+      ...FIXED_ETF_POOL,
+      ...GLOBAL_ETF_POOL,
+      DEFENSIVE_ETF,
+      args.symbol,
+      benchmark,
+      ...(dmParams !== null ? POOL_ORDER : []),
+    ]),
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
 
@@ -714,6 +741,13 @@ async function runCommand(argv: readonly string[]): Promise<void> {
     corporateActions = ca;
     // ⚠️ 逐字节保持 M2 口径：指数轨取自信号轨（`v_etf_*` 不含指数 ⇒ 实际为空 Map 值）
     indexBars = new Map(WEAK_PERIOD_INDEXES.map((code) => [code, sig.get(code) ?? []]));
+    // 策略显式要指数时（dualmomentum 的市场过滤/超额基准 = sh000300）走指数真实表；
+    // 不需要指数的既有路径不做这次查询，保持 M2 行为不变。
+    if (indexCodes.length > 0) {
+      const realIndex = await loadIndexBars(indexCodes, loadStart, args.end);
+      for (const [code, bars] of realIndex) indexBars.set(code, bars);
+      console.log(`指数轨（fixed）：${realIndex.size} 只 / 区间 ${loadStart} ~ ${args.end}`);
+    }
   }
 
   const universe: UniverseResolver = (asOf) => provider.snapshotAt(asOf);
@@ -723,7 +757,7 @@ async function runCommand(argv: readonly string[]): Promise<void> {
       calendar,
       signalBars,
       execBars,
-      benchmarkBars: execBars.get(args.benchmark) ?? [],
+      benchmarkBars: execBars.get(benchmark) ?? indexBars.get(benchmark) ?? [],
       indexBars,
       universe,
       corporateActions,
@@ -733,19 +767,35 @@ async function runCommand(argv: readonly string[]): Promise<void> {
       params:
         args.strategy === 'wufu-rotation'
           ? args.params
-          : { symbol: args.symbol, weight: args.weight, rebalance: args.rebalance },
+          : dmParams !== null
+            ? (args.params ?? {})
+            : { symbol: args.symbol, weight: args.weight, rebalance: args.rebalance },
       start: args.start,
       end: args.end,
       initialCash: args.cash,
       universeMode: args.universeMode,
       priceMode: args.priceMode,
+      // 记录「实际使用的基准」，不要落在引擎缺省值上：dualmomentum 未显式传 --benchmark 时
+      // 基准是 sh000300（上面 `benchmark` 变量），若写缺省 'sh510300' 会让复现记录与权益曲线不符。
+      benchmarkSymbol: benchmark,
       suspension: args.suspension,
       universeParams: { divisor: args.divisor, topN: args.topN },
       // D1（F4）：印花税（仅卖出）/ 过户费（双边）；缺省 0 ⇒ ETF 口径与旧结果一致
-      rules: {
-        stampDutyRate: args.stampDutyRate,
-        transferFeeRate: args.transferFeeRate,
-      },
+      // dualmomentum：执行层费率取策略参数（DAS §2.2），避免「参数可调但成交不认」
+      rules:
+        dmParams !== null
+          ? {
+              commissionRate: dmParams.commissionRate,
+              minCommission: dmParams.minCommission,
+              slippageRate: dmParams.slippage,
+              lotSize: dmParams.lotSize,
+              stampDutyRate: dmParams.etfExemptTax ? 0 : 0.001,
+              transferFeeRate: 0,
+            }
+          : {
+              stampDutyRate: args.stampDutyRate,
+              transferFeeRate: args.transferFeeRate,
+            },
     },
   );
 
