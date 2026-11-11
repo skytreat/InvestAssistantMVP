@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { runAllChecks } from '../services/validator.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from '../services/marketData.js';
-import { executeAllPlugins } from '../services/pluginEngine.js';
+import { executeAllPlugins, normalizeSubCategory } from '../services/pluginEngine.js';
 import {
   persistSignals,
   getTradeDate,
@@ -84,7 +84,17 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         totalSkipped = 0;
       for (const p of result.results) {
         if (p.status !== 'SUCCESS' || p.signals.length === 0) continue;
-        const persist = persistSignals(p.signals, p.pluginId, 'monitor', tradeDate);
+        // sub_category 读取侧用于判「风险信号」（NULL / 非 risk 即非风险），
+        // 必须与 signalReplay 同口径经唯一归一口归一后再写。
+        const persist = persistSignals(
+          p.signals,
+          p.pluginId,
+          'monitor',
+          tradeDate,
+          SIGNAL_USER_ID,
+          'live',
+          normalizeSubCategory(p.subCategory, p.pluginId),
+        );
         totalInserted += persist.inserted;
         totalSkipped += persist.skipped;
       }

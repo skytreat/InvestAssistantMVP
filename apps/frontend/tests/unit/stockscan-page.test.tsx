@@ -420,18 +420,17 @@ describe('F-S5 · 结果表含 名称 / 现价 / 涨跌幅 / 成交额 + 分页'
     const headers = within(table)
       .getAllByRole('columnheader')
       .map((h) => h.textContent);
-    expect(headers).toEqual(expect.arrayContaining(['名称', '现价', '涨跌幅', '成交额（万）']));
+    expect(headers).toEqual(expect.arrayContaining(['标的', '现价', '涨跌幅', '成交额（万）']));
 
     const firstRow = within(table).getAllByRole('row')[1];
     const cells = within(firstRow)
       .getAllByRole('cell')
       .map((c) => c.textContent);
-    // 代码 / 名称 / 现价 / 涨跌幅 / 成交额（万元）
-    expect(cells[2]).toContain('sh600001');
-    expect(cells[3]).toBe('测试股1');
-    expect(cells[4]).toBe('10.10');
-    expect(cells[5]).toBe('+1.25%');
-    expect(cells[6]).toBe('1234.57');
+    // 标的（名称(代码)）/ 现价 / 涨跌幅 / 成交额（万元）
+    expect(cells[2]).toContain('测试股1(sh600001)');
+    expect(cells[3]).toBe('10.10');
+    expect(cells[4]).toBe('+1.25%');
+    expect(cells[5]).toBe('1234.57');
   });
 
   it('缺字段时降级显示 `--`（不显示 NaN / undefined）', async () => {
@@ -455,10 +454,10 @@ describe('F-S5 · 结果表含 名称 / 现价 / 涨跌幅 / 成交额 + 分页'
     const cells = within(firstRow)
       .getAllByRole('cell')
       .map((c) => c.textContent);
+    expect(cells[2]).toContain('sh600009');
     expect(cells[3]).toBe('--');
     expect(cells[4]).toBe('--');
     expect(cells[5]).toBe('--');
-    expect(cells[6]).toBe('--');
   });
 
   it('分页：结果超过一页时可翻页，且每页只渲染 PAGE_SIZE 行', async () => {

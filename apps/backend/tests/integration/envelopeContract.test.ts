@@ -186,6 +186,12 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'POST', url: '/api/stockscan', payload: { asset_type: 'stock' }, timeout: 60_000 },
   { method: 'GET', url: '/api/stockscan/plugins' },
   { method: 'GET', url: '/api/symbols/search', query: { q: '600000' }, timeout: 60_000 },
+  {
+    method: 'GET',
+    url: '/api/symbols/names',
+    query: { symbols: 'sh600000' },
+    timeout: 60_000,
+  },
 
   // ── K 线手工画线（独立 PR）──
   { method: 'GET', url: '/api/kline-overlays', query: { symbol: 'sh600000', period: 'day' } },

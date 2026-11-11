@@ -326,8 +326,10 @@ describe('Review · 编辑复盘 3 态弹窗', () => {
     renderWithRouter(<Review />);
     await openEditModal(user);
 
-    // 标题形如「编辑复盘 — sh600000 (2026-10-17)」
-    expect(screen.getByText('编辑复盘 — sh600000 (2026-10-17)')).toBeInTheDocument();
+    // 标题形如「编辑复盘 — sh600000 (2026-10-17)」，代码链接到 K 线
+    const title = screen.getByText(/^编辑复盘 — /);
+    expect(title).toHaveTextContent('编辑复盘 — sh600000 (2026-10-17)');
+    expect(title.querySelector('a')?.getAttribute('href')).toBe('/kline?symbol=sh600000');
 
     // 「是否符合策略」组：未标记选中（灰 #f3f4f6），是 / 否 未选中（#fff）
     expect(bg(strategyButton('未标记'))).toBe('#f3f4f6');

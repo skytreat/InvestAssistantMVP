@@ -33,4 +33,20 @@ describe('AssetLink 标的名称 + K 线超链接', () => {
     expect(link).toHaveTextContent('sh600519');
     expect(link.title).toContain('sh600519');
   });
+
+  it('inline：标的名(代码) 单行展示，并链接 K 线页', () => {
+    renderWithRouter(<AssetLink assetCode="sh600519" assetName="贵州茅台" variant="inline" />);
+
+    const link = screen.getByRole('link', { name: '贵州茅台(sh600519)' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600519');
+    expect(link).toHaveTextContent('贵州茅台(sh600519)');
+  });
+
+  it('inline：无名称时回退为代码，仍链接 K 线页', () => {
+    renderWithRouter(<AssetLink assetCode="sz000001" assetName={null} variant="inline" />);
+
+    const link = screen.getByRole('link', { name: 'sz000001' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sz000001');
+    expect(link).toHaveTextContent('sz000001');
+  });
 });

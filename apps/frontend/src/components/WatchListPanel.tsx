@@ -2,7 +2,9 @@ import React from 'react';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import { tableStyle, thStyle, thTdStyle } from '../theme/styles';
 import ScrollableTable from './ScrollableTable';
+import AssetLink from './AssetLink';
 import EmptyState from './EmptyState';
+import { useAssetNames } from './useAssetNames';
 
 /**
  * WatchListPanel.tsx —— 候选池页的「自选列表」分区（T74 · 实施计划 T74 卡片）
@@ -49,6 +51,7 @@ function datePart(value: string | null | undefined): string | null {
 }
 
 export default function WatchListPanel({ rows, loading, error }: WatchListPanelProps) {
+  const getAssetName = useAssetNames(rows.map((row) => row.asset_code));
   return (
     <div style={{ marginTop: SPACING.gapRelaxed }} data-testid="watch-list-panel">
       <div
@@ -88,7 +91,7 @@ export default function WatchListPanel({ rows, loading, error }: WatchListPanelP
             <thead>
               <tr>
                 <th scope="col" style={thStyle}>
-                  标的代码
+                  标的
                 </th>
                 <th scope="col" style={thStyle}>
                   加入日期
@@ -99,7 +102,11 @@ export default function WatchListPanel({ rows, loading, error }: WatchListPanelP
               {rows.map((row, index) => (
                 <tr key={typeof row.id === 'number' ? row.id : `${row.asset_code}-${index}`}>
                   <td style={thTdStyle}>
-                    <code>{row.asset_code}</code>
+                    <AssetLink
+                      assetCode={row.asset_code}
+                      assetName={getAssetName(row.asset_code)}
+                      variant="inline"
+                    />
                   </td>
                   <td style={thTdStyle}>{datePart(row.created_at) ?? datePart(row.watch_date) ?? '--'}</td>
                 </tr>

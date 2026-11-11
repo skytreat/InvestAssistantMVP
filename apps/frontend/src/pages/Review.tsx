@@ -1170,7 +1170,13 @@ export default function Review() {
                 }}
               >
                 <div id={editDialogTitleId} style={cardTitleStyle}>
-                  编辑复盘 — {editingTrade.asset_code} ({editingTrade.trade_date})
+                  编辑复盘 —{' '}
+                  <AssetLink
+                    assetCode={editingTrade.asset_code}
+                    assetName={editingTrade.asset_name ?? editingTrade.name}
+                    variant="inline"
+                  />{' '}
+                  ({editingTrade.trade_date})
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div>

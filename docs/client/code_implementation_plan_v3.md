@@ -78,8 +78,8 @@
 | | T131 | 复盘字段对齐（情绪状态 / 买入卖出逻辑分离） | T130 | ✅ |
 | | T132 | 三口径收益率 | T127 | ✅ |
 | **V3.4** | T133 | 策略分类 / 组合 / 适用品种维度 | T132 | ✅ |
-| | T134 | 信号生命周期（过期 / 冷却 / 分级 / 快照） | T133 | ✅ |
-| | T135 | 策略有效性评估 | T134 | ⚠️ 部分（见 V3.4 备注） |
+| | T134 | 信号生命周期（过期 / 冷却 / 分级 / 快照） | T133 | ⚠️ 部分（快照未落地，见 V3.4 备注） |
+| | T135 | 策略有效性评估 | T134 | ✅（六项落地见 V3.4 备注） |
 | **V3.5** | T136 | 标的字典快照 + 联想增强（拼音 / 免前缀） | T120 | ✅ |
 | **V3.6** | T137 | 组合风控体检 | T132 | ✅ |
 | **V3.7** | T138 | 字段归一化不变量落地 | T121 | ✅ |
@@ -91,15 +91,18 @@
 | | T145 | 补录对话框 | T129/T144 | ⬜ |
 | | T146 | 持仓页增强（券商列/现金类分区/手工成组） | T128/T120 | ⬜ |
 | | T147 | 收益页 /portfolio/return | T132/T144 | ⬜ |
-| | T148 | 策略配置页 /strategy/config | T133 | ⬜ |
+| | T148 | 策略配置页 /strategy/config | T133 | ✅ |
 | | T149 | 信号页增强（分级/过期/采纳/快照/关联） | T134/T141 | ⬜ |
 | | T150 | 有效性页+体检页+交易对视图 tab+复盘编辑页 | T130/T131/T135/T137 | ⬜ |
 | **V3.8a** | T151 | 券商域增强（券商标识/多文件/补录全选） | T143/T145 | ⬜ |
 | **V3.9** | T152 | K 线交易记录标记（4 类 + 复权价） | T70/T71、T119 | ⬜ |
+| **V3.10** | T153 | 组合 `cooldownBars` 生效（待决策：接入去重 / 移除字段） | T133/T148 | ⬜ |
 
-**合计 33 个任务**（T119~T152；T139 manual_sheet 三方对账已移出 → V4 候选；T151/T152 为后续增补）。
+**合计 34 个任务**（T119~T153；T139 manual_sheet 三方对账已移出 → V4 候选；T151/T152/T153 为后续增补）。
 
 > ✅ **T131 状态说明（2026-11-08）**：C7 缺陷（`emotion_status` / `buy_reason` / `sell_reason` / `system_followed` 传入不落库）的修复见 PR #130，已合入 `main`（commit `46b25a7`）；并按 `docs/audit/acceptance-retest-c7-a5-2026-11-08.md` 在该 `main` 提交上复测通过。
+>
+> ✅ **T148 状态说明（2026-11-09）**：策略配置页（插件分类 / 组合编辑器 / 适用品种 / 冷却展示）已随 PR #135 合入 `main`，本行状态由 ⬜ 更正为 ✅。组合级 `cooldownBars` 当前只存储/校验/展示，未参与生成或去重（见 V3-B9）。
 
 ### 2.1 排期建议
 
@@ -162,16 +165,17 @@
 | 🔒 **T134** | 🟠 | **信号生命周期** | ① 过期语义（过期标灰不删）；② **冷却期**（同策略同标的同方向 N 根 K 线内不重复）；③ 分级（强/中/弱）+ 每日 Top N 摘要；④ **触发快照**（当时 K 线与指标值）；⑤ 采纳/忽略标注 | ① 冷却期生效；② 过期信号被标灰；③ 快照可回看；④ 标注**被保留**并可用于评估 | 🔴 分钟线周期**不在 V3 范围** → 冷却期与过期语义**先按日线实现** |
 | 🔒 **T135** | 🟠 | **策略有效性评估** | ① 单信号后续表现（T+1/T+5/T+10）；② 分组评估（策略/参数/品种/周期）；③ **扣真实成本（含最低佣金）**；④ **与基准对比**；⑤ 采纳率**与量化结果分开呈现** | ① 评估基于**真实历史信号**与真实后续行情（不用模拟成交）；② 成本已扣；③ 有基准；④ 信号若已失效按**实际可成交价**评估 | 🟡 基准标的选取；🟡 「已失效」判定规则（止损触发等） |
 
-> **T135 实际状态复核（2026-11-08，实测基线 `3816dd3`）**：标记由 ✅ 更正为 **⚠️ 部分完成**。
-> - **已实现**：① 单信号后续表现 T+1/T+5/T+10 —— `GET /api/strategy/signals/:id/outcome`（`apps/backend/src/routes/strategy.ts:159-210`），仅返回原始收盘价与涨跌幅。
-> - **未实现 / 部分**：
->   - ② **分组评估（策略/参数/品种/周期）与分组下钻**：接口无分组参数、无聚合结果。
->   - ③ **扣真实成本（含最低佣金）**：outcome 无 fee / 净收益字段，`strategy.ts` 无成本扣减逻辑。
->   - ④ **与基准对比**：无基准标的、无超额收益字段；本文 §Q5「策略评估的基准标的」仍为「待定」。
->   - ⑤ **采纳率与量化结果分开呈现**：仅有 F2 的 `trade_status` 派生（`signalService.ts:568-591`），未与量化结果分列。
->   - **胜率**：策略有效性接口不返回胜率（现有胜率只在复盘页 `routes/review.ts:59-83`，与信号效果无关）。
->   - **CSV 导出**：`/api/strategy/**` 无 CSV 端点（对照 `I8` 已有 `/api/broker-reconcile/diff/export`）。
-> - 依据与实测读数见 `docs/audit/acceptance-retest-23-2026-11-08.md` §6 与 §8。
+> **T135 完成状态（2026-11-09 更新）**：标 ✅。六项落地对照（2026-11-08「⚠️ 部分完成」复核以 `3816dd3` 为基线，已被 Step A/B/C 覆盖）：
+> - ① 单信号后续表现（T+1/T+5/T+10）：`GET /api/strategy/signals/:id/outcome`（`routes/strategy.ts:274-324`）。
+> - ② 分组评估与下钻（策略 / 品种 / 分级 / 行业）：`GROUP_BYS` + `buildReport`（`services/strategyEffectiveness.ts:35/651`）；「参数」维度因 `snapshot_json` 从未写入而缺失，登记为 §5 **V3-B12**。
+> - ③ 扣真实成本（含最低佣金）：`computeFees` / `feeRatesForClass`（`services/strategyEffectiveness.ts:179/86`）—— Step A `#136` 落地回测印花税 / 过户费费率，Step B `#137` 落地有效性口径。
+> - ④ 与基准对比：`benchmarkReturn` / `excessReturn`（`services/strategyEffectiveness.ts:520-536`），默认基准 `sh510300`（§6 Q5）。
+> - ⑤ 采纳率与量化结果分列：`summarizeAdoption` + `meta.adoption` / `groups[].adoption` + CSV 六列（Step C `#141`）。
+> - 胜率（绝对 / 超额双口径）与 CSV 导出：`summarizeHorizon` / `buildEffectivenessCsv`（`services/strategyEffectiveness.ts:545/991`），Step B `#137`。
+>
+> 落地 PR：Step A `#136`、Step B `#137`、Step C `#141`。验收要点④「已失效按实际可成交价评估」仍无判定规则，与「参数」维度一并登记为 §5 **V3-B12**。
+
+> ⚠️ **T134 快照能力现状（2026-11-09，PA-10 核实）**：`user_strategy_signal.snapshot_json` 列已建，但**全仓无写入方**；`config_version` 只存在于 `strategy_combo` 配置表，**不落信号行**。⇒ 信号无法还原「当时生效的组合参数 / 指标快照」。该缺口**并入 T134**（不单独立项），待快照能力补齐时一并回写；在此之前 SDD_v3 §10.4.1 明确标注「未实现」。因此 T134 状态由 ✅ 调整为 **⚠️ 部分**（生命周期其余能力已落地，触发快照未落地）。
 
 ---
 
@@ -214,13 +218,23 @@
 | **T150** | 🟠 | 有效性页 + 体检页 + 交易对 tab + 复盘编辑 | `/strategy/effectiveness`（多周期/基准/评估表/导出 CSV）；`/portfolio/risk-check`（四指标卡片+行业分布标注）；Review 页「流水/交易对」tab + 未平仓分组；复盘编辑（买入/卖出逻辑两列 + 情绪状态下拉） | PRD §4.3/§5.1/§5.2/§5.3 |
 | **T151** | 🟠 | 券商域增强（V3.8a） | ① 导入向导：券商标识**必填**（红星标记）+ 解析器从元数据行推断券商名（`brokerNameHint`）自动填入；② **多文件导入**：按推断券商分组，检测到 ≥2 个不同券商时提示**分批导入**（逐组确认）；③ 补录对话框：**全选**当前页可补录行（表头 checkbox，含 indeterminate） | PRD_v3 §3.1/§3.3 owner 2026-10-27 增补；`GET /symbols` 无关，端点扩展：POST /api/broker-import/upload 响应 +`brokerNameHint` |
 
-> **PR 策略**：V3.8 按「券商域（T143~T145）/ 组合域（T146~T147）/ 策略域（T148~T150）/ 联想（T142）」分 4 个 PR，避免单 PR 过大；每个 PR 挂对应 gate。V3.9（T152）独立 1 个 PR。
+> **PR 策略**：V3.8 按「券商域（T143~T145）/ 组合域（T146~T147）/ 策略域（T148~T150）/ 联想（T142）」分 4 个 PR，避免单 PR 过大；每个 PR 挂对应 gate。V3.9（T152）、V3.10（T153）各独立 1 个 PR。
 
 ### V3.9 阶段 —— 图表增强（2026-10-30 增补）
 
 | 任务 | 优先级 | 名称 | 交付物 | 验收要点 | 备注 |
 |---|---|---|---|---|---|
 | **T152** | 🟠 | K 线交易记录标记（4 类 + 复权价） | ① 后端：`GET /api/quote/:symbol/kline` 响应新增 `trades[]`（见 SDD_v3 §9.9），仅 `buy/add/reduce/clear`，`is_deleted=0`，`user_id` 从 JWT；② **跨券商合并持仓**全历史回放推导 `marker_type=open/add/reduce/close`；③ 按 `fq` 计算 `adj_price`（qfq/hfq/bfq/raw），前端只显示复权价；④ 只返回当前 K 线窗口内、≤500 日交易；同日多笔逐笔返回；⑤ 前端新增 `APP_TRADE` 自定义 draw + 图例/开关 + 明细面板；同日聚合、周/月桶映射；⑥ 交易查询异常降级 `trades: []`，K 线不 500 | ① 4 类标记正确：空仓买入=建仓、有仓买入=加仓、卖光=清仓、部分卖=减仓；② 窗口首日买入仍判建仓（全历史回放）；③ qfq/hfq/bfq/raw 的 `adj_price` 正确；④ 分红/送股/转增不画；⑤ 软删除不画；⑥ 同日多笔可查看全部明细；⑦ 周/月 K 不丢点；⑧ 无交易/查询异常时 `trades: []` 且 K 线正常；⑨ 前端单测 + 后端单测/集成测试 | PRD_v3 §5.4 / Requirements §6.3；无 DDL 变更；⚠️ `trade_type` 不改写，标记类型是展示推导值；⚠️ 兼容 T129 券商导入的 `trade_time` 可空；⚠️ 不修 `transfer` 与持仓口径的既有偏差（如有，另行登记）；⚠️ 周/月聚合需保留桶起止日期，不能只按 `bar.date` 精确匹配 |
+
+### V3.10 阶段 —— 组合冷却参数收尾（2026-11-09 增补）
+
+> 来源：PA-10 文档登记时核实的实现偏差（V3-B9）。本条**只登记问题与待决策项，不预设实现方案**。
+
+| 任务 | 优先级 | 名称 | 问题陈述 | 待决策（只列不定） | 影响面 / 风险 |
+|---|---|---|---|---|---|
+| **T153** | 🟠 | 组合 `cooldownBars` 生效 | ① 参数已存在：前后端均校验 1~20 整数、DDL `CHECK` 兜底、非法返回 400 `PARAM_INVALID`；② 但该值**不参与组合信号生成或去重**；③ 信号页冷却实际使用全局 `SIGNAL_COOLDOWN_BARS`；④ 后果：用户在组合编辑页调整 `cooldownBars` **没有任何效果**（“假参数”），且两套冷却语义容易被误解 | **二选一**：<br>A. 让 `cooldownBars` 真正接入组合信号去重（届时需明确：按 N 根 K 线、同组合同标的同方向？与全局 `SIGNAL_COOLDOWN_BARS` 的优先级/叠加规则）；<br>B. 从编辑器移除该字段，避免误导（届时需明确：DDL 列保留还是后续清理、API 兼容与历史值处理） | `comboEvaluator` / 组合信号落库去重链路 / 前端 `ComboEditor.tsx` / SDD_v3 §10.4.1、§11.1.7。风险：两套冷却叠加导致信号被过度抑制；或移除字段时未处理历史配置与 API 兼容。 |
+
+**验收点（待方案定稿后细化）**：① A/B 方案由 owner 定稿并回写 SDD_v3；② 若接入：同组合同标的同方向在 N 根 K 线内不重复产出/展示，与 `SIGNAL_COOLDOWN_BARS` 的职责边界有明确口径与测试；③ 若移除：编辑器不再出现该字段，DDL/API/历史值处理有明确结论；④ 不再存在「调了没效果」的假参数。
 
 ---
 
@@ -302,6 +316,20 @@
 | **V3-B6** | V3 需求文档的 **186 条不变量**尚未全部映射到测试载体 | SDD §12 已给出首版映射 | 实施时逐条落测试 | SDD §12 |
 | **V3-B8** | **manual_sheet 三方对账（INV-S2-45~47）判定为 V4 候选**（2026-10-26 owner 裁决） | 原拟 T139；UI 入口未定稿、需求复杂度高，移出 V3 | `docs/audit/v3-pending-decisions.md` D-45 | Requirements §2.4.3/§2.6.3 |
 | **V3-B7** ⚠️新增 | V3.1 gate 依赖的 **6 份真实样本**未在仓库（owner 机器 `/home/ubuntu/brokertrades/成交交割单/`） | 2026-10-24 登记：样本入库路径 `tests/fixtures/broker-samples/`（repo 根，与 `tests/fixtures/golden` 同层），入库前脱敏（国泰 xlsx 前 4 行元数据：资金账号/用户名/营业部 → 占位值；数值列不动），grep 敏感 0 校验 | T121 前置提交（非 T 任务，随 V3.1 PR 落档） | G-D3 / G8 同标准 |
+| **V3-B9** ⚠️新增 | `strategy_combo.cooldown_bars` **已存储、校验、展示，但未参与组合信号生成或去重** | 2026-11-09 PA-10 核实（PR #135 代码）：`cooldownBars` 仅经 `routes/combo.ts#parseCooldownBars` / `comboRepo.assertCooldownBars` 校验后落库；信号页冷却为全局 `SIGNAL_COOLDOWN_BARS`（展示层合并） | SDD_v3 §10.4.1 / §11.1.7 明确标注实际语义；**已立项 T153（V3.10，待决策 A/B）** | T133 / T148 / T153 |
+| **V3-B10** ⚠️新增 | `user_strategy_signal.snapshot_json` **列存在但无写入方**；组合信号行不保存 `config_version` 或配置快照 | 2026-11-09 PA-10 核实：全仓无 `snapshot_json` 写入；仅 `system_log` 的 `plugin_execute` 明细带 `configVersion` | SDD_v3 §10.4.1 标注「未实现」；**并入 T134（不单独立项）**，待快照能力补齐时一并回写 | T133 / T134 |
+| **V3-B11** ⚠️新增 | `PluginBatchStats.combo` 接口注释写「无启用组合时该字段不出现」，与实现不符 | 2026-11-09 PA-10 核实：标的域路径 `stats.combo = comboOutcome.stats` 无条件赋值 ⇒ 恒出现（零值）；仅旧行为路径（未传 `symbols`）不出现且不执行组合 | 以 SDD_v3 §10.4.2 为准；代码注释修正非本次文档任务范围 | T133 / F4 |
+| **V3-B12** ⚠️新增 | **T135 残留两项：无「参数」分组维度、无「已失效」判定**（六项主链路已由 Step A/B/C 补齐） | 2026-11-09 复核：`GROUP_BYS` 仅 plugin / asset_type / grade / industry（`services/strategyEffectiveness.ts:35`），无「参数」；`snapshot_json` 从未写入（T134 仅 DDL），参数分组无数据源。验收要点④「信号失效按实际可成交价」无止损/失效判定规则 | 参数维度待 `snapshot_json` 写入链路落地；失效判定待需求给出规则。其余六项已完成（见 V3.4 T135 备注） | T135 / T134；`docs/audit/proposal-strategy-effectiveness-f4.md` §6.2 D9 |
+| **V3-B13** ⚠️新增 | **胜率「按笔 vs 按金额加权」口径未在需求中定义** | 2026-11-08 同数据同参数 A/B（400 回合）：按笔 **48.75%** vs 按成本金额加权 **49.52%**（差 0.77pp）；持仓周期分桶 **46.02% → 70.00%**（跨度 24pp）。有效性接口统一采用**按笔等权**（每信号 × 每周期一笔） | 不回填需求；接口与 CSV 标注分母（`sampleSize` / `statusCounts`），不与回测的金额加权胜率直接比较。证据见 `proposal-strategy-effectiveness-f4.md` §11.1（已归档） | Requirements INV-S5-*；T135 |
+| **V3-B14** ⚠️新增 | **采纳率无单独的样本门槛定义** | 2026-11-09 定：分母 = 已处理 = `adopted + ignored`，「未处理」只展示不入分母；`processed < 20`（与其余五项同一 `MIN_SAMPLE_SIZE`）时 `insufficientSample=true`、`adoptionRate=null`，JSON 与 CSV 均不输出百分比 | 已按此实现（Step C `#141`），常量 `MIN_SAMPLE_SIZE` 在 `services/strategyEffectiveness.ts` | T135 / T134 |
+| **V3-B15** ⚠️新增 | **存量库 `sub_category` 未回填；且写入链路存在缺口** | **语义**：`sub_category` = 插件子分类（六分类 `trend/momentum/volatility/volume/pattern/risk` + `custom` 兜底），唯一归一出口 `normalizeSubCategory`（`pluginEngine.ts:308-331`，旧口径 `breakout→volume`、`mean_reversion→volatility`），**刻意不加 CHECK**（`configStore.ts:181-185`）；读取侧统一按 `(sub_category IS NULL OR sub_category <> 'risk')` 判「非风险」（`routes/signal.ts:156/325`、`todaySignals.ts:96`、`strategyEffectiveness.ts:844`）。<br>**写入链路**：`signalReplay.ts:312-320` 正确传 `pluginResult.subCategory`；**`scheduler.ts:413-418`（17:02 定时 / 手动生成）与 `routes/admin.ts:87` 未传该参数 ⇒ 恒落 NULL**，风险类插件（`pluginEngine.ts:1665-1672`，HOLD 提示）经此路径产生时会被读取侧当作非风险，可能抢占持仓卡徽标（`todaySignals.ts:88-97`）。<br>**存量实测**（2026-11-09 只读）：`data/business.db` 共 **3** 行、3/3 NULL（`rsi_oversold`/buy ×2、`macd_cross`/buy ×1，均 sh510760，`created_at` 集中在 2026-11-07 12:42:06~12:42:18，`trade_date` 为 2026-10-15/22、11-04）；判定为**本机生成/回放的联调数据**（单 admin 账户、12 秒内 3 条、标签取自内置插件模板），非生产历史。同库无 `ignored_at` 列（#141 后未启动过后端，下次启动补列并跑双 1 归一）。 | **暂不回填**：① 回填只影响按子分类的统计可读性，不改变过滤行为（NULL 与「非 risk」等价），而**写入缺口不修则回填后新行继续 NULL**；② 内置插件可按 `plugin_id→subCategory` 确定性映射（`rsi_oversold→momentum`、`macd_cross→trend`，`pluginEngine.ts:425/431、522/528`），自定义/已下线插件的历史行无法回溯，只能 `custom` 或留 NULL；③ 组合策略行按 SDD_v3 §10.4 明确写 NULL，不属漏填；④ **生产库规模未知** —— 本机 3 行不足以推断，回填前须在生产快照统计 NULL 行数与 `plugin_id` 分布，不得以「只有 3 行」为据随意改数。**处置**：先修写入链路（另立任务），再按 `plugin_id` 映射做一次性回填；修好前保持 NULL 并在本节说明 | T134 / T135；`proposal-strategy-effectiveness-f4.md` §11.2 |
+| **V3-B16** ⚠️新增 ✅ **已关闭** | **0 信号时有效性接口仍读 DuckDB，新装环境返回 500** | 已修：`bf68638` —— 0 信号直接返回 200 空报告（`insufficientSample=true`、`adoptionRate=null`），费率口径从配置取，不打开 DuckDB。回归用例 `tests/integration/strategyEffectiveness-empty.test.ts`（`DUCKDB_PATH` 指向不存在库仍 200） | 已关闭；后续新增统计 / 导出路径须沿用「无信号不读行情库」的短路 | PR `#137` |
+
+> V3-B9 / B10 / B11 由组合策略批（T133/T148）占用；F4 条目按 owner 指定从 **B12** 起编号。
+
+> 📌 **待办（双动量策略 #143 合入后补记）**：#143 落地时须在本节补一句「该策略的市场过滤用 `sh000300`」，
+> 并说明其与信号有效性基准 `sh510300`（`routes/strategy.ts:205`）**用途不同** —— 前者是策略内部择时开关，
+> 后者是「信号 vs 可交易 ETF」的基准对比，**不要当成同一个标的去合并或"修正"**。
 
 ---
 
@@ -313,7 +341,7 @@
 | **Q2** | 逆回购品种段与期限清单 | T127 实施细节 | 实施时实测 |
 | **Q3** | 标的字典快照的同步策略（增量/全量/触发时机） | T136 实施细节 | 待定 |
 | **Q4** | 拼音库选型 | T136 依赖 | 待定 |
-| **Q5** | 策略评估的基准标的 | T135 实施细节 | 待定 |
+| **Q5** | 策略评估的基准标的 | T135 实施细节 | ✅ 已定（2026-11-09）：信号有效性默认基准 **`sh510300`（沪深300ETF）**，缺省值见 `apps/backend/src/routes/strategy.ts:205`，超额计算见 `services/strategyEffectiveness.ts:520-536` |
 | **Q6** | 净值曲线的数据来源与频率 | T132 / T137 | 待定 |
 | **Q7** | ~~情绪状态枚举最终取值~~ ✅ **已关闭（2026-10-24）** | T131 按 5 档默认值落库（极度兴奋/兴奋/平静/焦虑/恐慌；落库后不可改语义，新增档位可以） | owner 确认（`v3-pending-decisions.md` D-2） |
 
@@ -327,3 +355,5 @@
 | 2026-10-26 | V3.2 | **交叉审计补全**：V3.7（T138/T140/T141 后端缺口）+ V3.8（T142~T150 前端页面）登记；任务总数 19→31；**V3-B8 登记**（manual_sheet 三方对账 T139 → V4 候选） |
 | 2026-10-24 | V3.1 | **任务编号整体顺延 T119~T137**（ADR-017，解除与 v2 计划 T100~T111 撞号，全文 + traceability + ADR-013~016 关联行同步）；**V3-B1/Q7 关闭**（owner 确认 U15 5 档）；**V3-B7 登记**（V3.1 样本入库路径与脱敏标准） |
 | 2026-10-27 | V3.8a | **券商域增强（T151）**：owner 需求增补 —— 券商标识必填+文件内容自动推断、多文件导入不同券商提示分批、补录全选；登记为新任务卡 T151 |
+| 2026-11-09 | V3.8b | **PA-10 文档登记**：SDD_v3 新增 §10.4.1 组合策略契约、§10.4.2 组合统计与插件统计分列、§10.4.3 跨境两档 fail-closed、§11.1.7 组合策略配置 DDL；T148 状态由 ⬜ 更正为 ✅（PR #135）；登记 V3-B9（组合冷却未生效）、V3-B10（`snapshot_json` 无写入方）、V3-B11（`stats.combo` 注释与实现不符） |
+| 2026-11-09 | V3.8c | **PA-10 收尾**：新增 T153（V3.10，组合 `cooldownBars` 生效，待决策 A/B，不预设实现）；`snapshot_json` 无写入方**并入 T134（不单独立项）**，T134 状态由 ✅ 调整为 ⚠️ 部分；V3-B9 处置指向 T153，V3-B10 处置明确并入 T134；任务总数 33→34 |
