@@ -110,7 +110,8 @@ jobs:
             backend_changed=true
           fi
 
-          # 脚本改动至少做语法检查；失败则本 job 失败，全量 CI 仍会运行
+          # 脚本改动做语法检查 + shellcheck；失败则本 job 失败，全量 CI 仍会运行。
+          # 这些脚本合并后会被 CD 以 root 部署到生产，不能只靠 bash -n。
           shell_files=()
           for file in "${files[@]}"; do
             case "$file" in
@@ -121,6 +122,11 @@ jobs:
             for file in "${shell_files[@]}"; do
               bash -n "$file"
             done
+            if ! command -v shellcheck >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq shellcheck
+            fi
+            shellcheck --severity=warning "${shell_files[@]}"
           fi
 
           echo "skip_full_ci=$skip_full_ci" >> "$GITHUB_OUTPUT"
