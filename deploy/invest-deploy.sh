@@ -60,6 +60,14 @@ if ! flock -n 9; then
     exit 3
 fi
 
+# 幂等检查必须在行情窗口之前：目标 SHA 已经部署时，窗口内重试也应
+# 返回 already deployed，而不是 exit 4（无任何实际动作，不存在重启风险）。
+DEPLOYED="$(cat "$MARKER" 2>/dev/null || true)"
+if [ "$DEPLOYED" = "$SHA" ]; then
+    echo "already deployed $SHA"
+    exit 0
+fi
+
 # 行情链路避让：17:00 tdx2db 最长跑 30 分钟，17:01-17:05 的 Fastify 进程内 cron
 # 在重启后会丢失当段任务，故窗口内一律不部署。
 hhmm="$(TZ=Asia/Shanghai date +%H%M)"
@@ -78,17 +86,9 @@ if [ ! -d "$REPO_DIR/.git" ]; then
     echo "not a git repository: $REPO_DIR" >&2
     exit 5
 fi
-for required in "$REPO_DIR/deploy/deploy.sh" "$REPO_DIR/deploy/healthcheck.sh"; do
-    if [ ! -f "$required" ]; then
-        echo "missing deploy asset: $required" >&2
-        exit 5
-    fi
-done
-
-DEPLOYED="$(cat "$MARKER" 2>/dev/null || true)"
-if [ "$DEPLOYED" = "$SHA" ]; then
-    echo "already deployed $SHA"
-    exit 0
+if [ ! -f "$REPO_DIR/deploy/deploy.sh" ]; then
+    echo "missing deploy asset: $REPO_DIR/deploy/deploy.sh" >&2
+    exit 5
 fi
 
 # 仓库可能属于 invol/ubuntu 等非 root 用户；git 操作以属主身份执行，
@@ -133,10 +133,10 @@ fi
 echo "deploying $SHA..."
 run_as_owner "$GIT_BIN" -C "$REPO_DIR" -c safe.directory="$REPO_DIR" reset --hard "$SHA"
 
-# deploy.sh 内含构建、原子切换、健康检查与 app.old 自动回滚；失败即非 0 退出。
+# deploy.sh 内含构建、原子切换、健康检查、失败自恢复与 marker 写入；
+# 健康检查只做一次（deploy.sh 内置 60 次重试），不再重复调用 healthcheck.sh。
 # 本进程已持有 /run/invest-deploy.lock，用环境变量让 deploy.sh 跳过重复加锁。
 IA_DEPLOY_LOCK_HELD=1 bash "$REPO_DIR/deploy/deploy.sh"
-bash "$REPO_DIR/deploy/healthcheck.sh"
 
 MARKED="$(cat "$MARKER" 2>/dev/null || true)"
 if [ "$MARKED" != "$SHA" ]; then
