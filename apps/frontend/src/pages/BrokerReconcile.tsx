@@ -186,6 +186,19 @@ const CONFIRM_BATCH_LIMIT = 500;
 /** 拉取待补录清单时每页条数（与 /diff 的 pageSize 上限一致） */
 const PENDING_PAGE_SIZE = 200;
 
+/**
+ * 可补录判据（行级 checkbox 与跨页「全选全部页」共用）：
+ * - 成交族：必须有股数与标的；
+ * - 非成交族：有股数或有现金流/金额即可（现金分红常无股数）。
+ */
+function isSelectableDiffRow(r: DiffRow, category: string): boolean {
+  if (r.match_status !== 'MISSING' || !r.asset_code) return false;
+  if (category === 'nonTrade') {
+    return (r.quantity ?? 0) > 0 || (r.cash_flow ?? 0) > 0 || (r.amount ?? 0) > 0;
+  }
+  return Boolean(r.quantity);
+}
+
 export default function BrokerReconcile() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -210,6 +223,11 @@ export default function BrokerReconcile() {
   const [selected, setSelected] = useState<Map<number, ConfirmItem>>(new Map());
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmResult, setConfirmResult] = useState<ConfirmBatchResult | null>(null);
+  /** 跨页全选的作用域：当前分类下已拉取的全部可补录行 id */
+  const [allScope, setAllScope] = useState<{ category: string; ids: number[] } | null>(null);
+  const [allScopeBusy, setAllScopeBusy] = useState(false);
+  /** 手动多选超过单次上限（500）时，分批提交的聚合结果 */
+  const [bulkConfirmResult, setBulkConfirmResult] = useState<OneClickResult | null>(null);
 
   // ── 一键全部补录（非成交族，仍为显式人工确认）──
   const [oneClickPlan, setOneClickPlan] = useState<{ items: ConfirmItem[]; fuzzyCount: number } | null>(null);
@@ -352,6 +370,8 @@ export default function BrokerReconcile() {
     setDiffTotal(0);
     setDiffError(null);
     setSelected(new Map());
+    setAllScope(null);
+    setBulkConfirmResult(null);
     setOneClickPlan(null);
     setOneClickResult(null);
     setExtraOpen(false);
@@ -418,21 +438,81 @@ export default function BrokerReconcile() {
    * - 成交族：必须有股数与标的；
    * - 非成交族：**有股数或有现金流**即可 —— 现金分红常无股数（quantity=0），只给发生金额。
    */
-  const isSelectable = useCallback(
-    (r: DiffRow): boolean => {
-      if (r.match_status !== 'MISSING' || !r.asset_code) return false;
-      if (category === 'nonTrade') {
-        return (r.quantity ?? 0) > 0 || (r.cash_flow ?? 0) > 0 || (r.amount ?? 0) > 0;
-      }
-      return Boolean(r.quantity);
-    },
-    [category],
-  );
+  const isSelectable = useCallback((r: DiffRow): boolean => isSelectableDiffRow(r, category), [category]);
 
   /** T151③：当前页可补录行 */
   const selectableRows = useMemo(() => diffRows.filter(isSelectable), [diffRows, isSelectable]);
   const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.id));
   const someSelected = !allSelected && selectableRows.some((r) => selected.has(r.id));
+
+  /** 跨页全选：作用域必须属于当前分类，否则视为未选中任何行 */
+  const allScopeIds = allScope?.category === category ? allScope.ids : [];
+  const allPagesSelected = allScopeIds.length > 0 && allScopeIds.every((id) => selected.has(id));
+  const allPagesPartial = !allPagesSelected && allScopeIds.some((id) => selected.has(id));
+
+  /** 翻页拉全「当前分类」的可补录行（跨页全选） */
+  const fetchAllSelectableRows = async (bc: string, cat: string): Promise<DiffRow[]> => {
+    const rows: DiffRow[] = [];
+    let pageNo = 1;
+    let total = Number.POSITIVE_INFINITY;
+    // 上限兜底，避免后端 total 异常导致死循环
+    while (pageNo <= 100 && (pageNo - 1) * PENDING_PAGE_SIZE < total) {
+      const res = await api.get('/broker-reconcile/diff', {
+        params: { brokerCode: bc, category: cat, page: pageNo, pageSize: PENDING_PAGE_SIZE },
+      });
+      if (!isOkEnvelope(res.data)) {
+        throw new Error(String(res.data?.message ?? '可补录清单加载失败'));
+      }
+      const pageRows = (res.data.data as { rows?: DiffRow[] }).rows ?? [];
+      total = (res.data as { pagination?: { total?: number } }).pagination?.total ?? pageRows.length;
+      rows.push(...pageRows.filter((r) => isSelectableDiffRow(r, cat)));
+      if (pageRows.length === 0) break;
+      pageNo += 1;
+    }
+    return rows;
+  };
+
+  /** 跨页全选 / 取消全选（当前分类全部页） */
+  const toggleSelectAllPages = async (checked: boolean) => {
+    if (!brokerCode || allScopeBusy) return;
+    setError(null);
+    if (!checked) {
+      setSelected((prev) => {
+        const next = new Map(prev);
+        for (const id of allScopeIds) next.delete(id);
+        return next;
+      });
+      setAllScope(null);
+      return;
+    }
+    setAllScopeBusy(true);
+    try {
+      const rows = await fetchAllSelectableRows(brokerCode, category);
+      setAllScope({ category, ids: rows.map((r) => r.id) });
+      setSelected((prev) => {
+        const next = new Map(prev);
+        for (const r of rows) {
+          next.set(r.id, {
+            sourceId: r.id,
+            event_type: r.event_type,
+            asset_code: r.asset_code,
+            trade_date: r.trade_date,
+            trade_time: r.trade_time,
+          });
+        }
+        return next;
+      });
+      setNotice(
+        rows.length > 0
+          ? `已选中「${ATTR_LABELS[category] ?? category}」全部页 ${rows.length} 笔可补录行`
+          : `「${ATTR_LABELS[category] ?? category}」没有可补录行`,
+      );
+    } catch (e) {
+      setError(extractErrorMessage(e, '可补录清单加载失败'));
+    } finally {
+      setAllScopeBusy(false);
+    }
+  };
 
   /** T151③：全选 / 取消全选（当前页） */
   const toggleSelectAll = (checked: boolean) => {
@@ -453,19 +533,38 @@ export default function BrokerReconcile() {
     });
   };
 
-  /** 确认补录（整体事务；失败全回滚，PRD §3.3.1） */
+  /** 确认补录（单批整体事务；超过 500 笔自动分批，PRD §3.3.1） */
   const confirmSupplement = async () => {
     setConfirmBusy(true);
     setConfirmResult(null);
+    setBulkConfirmResult(null);
     try {
-      const items = [...selected.values()].map((x) =>
-        x.tradeType ? { sourceId: x.sourceId, tradeType: x.tradeType } : { sourceId: x.sourceId },
-      );
-      const res = await api.post('/broker-reconcile/confirm', { brokerCode, items });
+      const items = [...selected.values()];
+      if (items.length > CONFIRM_BATCH_LIMIT) {
+        const agg = await submitConfirmBatches(items);
+        setBulkConfirmResult(agg);
+        setSelected(new Map());
+        setAllScope(null);
+        setNotice(
+          agg.failedBatches > 0
+            ? `补录完成：成功 ${agg.imported} 条，${agg.failedBatches} 批失败（可重试，不会重复写入）`
+            : `补录完成：成功 ${agg.imported} 条`,
+        );
+        await loadReport(brokerCode);
+        void loadDiff(brokerCode, category, page);
+        return;
+      }
+      const res = await api.post('/broker-reconcile/confirm', {
+        brokerCode,
+        items: items.map((x) =>
+          x.tradeType ? { sourceId: x.sourceId, tradeType: x.tradeType } : { sourceId: x.sourceId },
+        ),
+      });
       if (isOkEnvelope(res.data)) {
         const r = res.data.data as typeof confirmResult;
         setConfirmResult(r);
         setSelected(new Map());
+        setAllScope(null);
         // U12：补录后自动重跑对账并提示
         await loadReport(brokerCode);
         void loadDiff(brokerCode, category, page);
@@ -554,14 +653,11 @@ export default function BrokerReconcile() {
   };
 
   /**
-   * 确认后按 CONFIRM_BATCH_LIMIT 分批提交（复用 /broker-reconcile/confirm）：
+   * 按 CONFIRM_BATCH_LIMIT 分批提交（复用 /broker-reconcile/confirm）：
    * - 每批一个整体事务（后端保证），跨批可能部分成功
-   * - 某批失败不回滚其他批，逐批记录原因并继续，最终汇总「成功 / 已存在 / 不可补 / 失败批次」
+   * - 某批失败不阻塞后续批，逐批记录原因并继续，最终汇总「成功 / 已存在 / 不可补 / 失败批次」
    */
-  const runOneClick = async () => {
-    if (!oneClickPlan || oneClickBusy) return;
-    const items = oneClickPlan.items;
-    setOneClickBusy(true);
+  const submitConfirmBatches = async (items: ConfirmItem[]): Promise<OneClickResult> => {
     const agg: OneClickResult = {
       imported: 0,
       already: 0,
@@ -570,35 +666,44 @@ export default function BrokerReconcile() {
       errors: [],
       rows: [],
     };
-    try {
-      for (let i = 0; i < items.length; i += CONFIRM_BATCH_LIMIT) {
-        const batch = items.slice(i, i + CONFIRM_BATCH_LIMIT);
-        const batchNo = Math.floor(i / CONFIRM_BATCH_LIMIT) + 1;
-        try {
-          const res = await api.post('/broker-reconcile/confirm', {
-            brokerCode,
-            items: batch.map((x) =>
-              x.tradeType ? { sourceId: x.sourceId, tradeType: x.tradeType } : { sourceId: x.sourceId },
-            ),
-          });
-          if (!isOkEnvelope(res.data)) {
-            agg.failedBatches += 1;
-            agg.errors.push(`第 ${batchNo} 批：${String(res.data?.message ?? '后端返回失败')}`);
-            continue;
-          }
-          const r = res.data.data as ConfirmBatchResult;
-          agg.imported += r.imported;
-          agg.already += r.already;
-          agg.invalid += r.invalid;
-          agg.rows.push(...r.rows);
-        } catch (e) {
+    for (let i = 0; i < items.length; i += CONFIRM_BATCH_LIMIT) {
+      const batch = items.slice(i, i + CONFIRM_BATCH_LIMIT);
+      const batchNo = Math.floor(i / CONFIRM_BATCH_LIMIT) + 1;
+      try {
+        const res = await api.post('/broker-reconcile/confirm', {
+          brokerCode,
+          items: batch.map((x) =>
+            x.tradeType ? { sourceId: x.sourceId, tradeType: x.tradeType } : { sourceId: x.sourceId },
+          ),
+        });
+        if (!isOkEnvelope(res.data)) {
           agg.failedBatches += 1;
-          agg.errors.push(`第 ${batchNo} 批：${extractErrorMessage(e, '请求失败')}`);
+          agg.errors.push(`第 ${batchNo} 批：${String(res.data?.message ?? '后端返回失败')}`);
+          continue;
         }
+        const r = res.data.data as ConfirmBatchResult;
+        agg.imported += r.imported;
+        agg.already += r.already;
+        agg.invalid += r.invalid;
+        agg.rows.push(...r.rows);
+      } catch (e) {
+        agg.failedBatches += 1;
+        agg.errors.push(`第 ${batchNo} 批：${extractErrorMessage(e, '请求失败')}`);
       }
+    }
+    return agg;
+  };
+
+  /** 一键全部补录（非成交族）：确认后分批提交并汇总结果 */
+  const runOneClick = async () => {
+    if (!oneClickPlan || oneClickBusy) return;
+    setOneClickBusy(true);
+    try {
+      const agg = await submitConfirmBatches(oneClickPlan.items);
       setOneClickResult(agg);
       setOneClickPlan(null);
       setSelected(new Map());
+      setAllScope(null);
       setNotice(
         agg.failedBatches > 0
           ? `一键补录完成：成功 ${agg.imported} 条，${agg.failedBatches} 批失败（可重试，不会重复写入）`
@@ -1143,18 +1248,37 @@ export default function BrokerReconcile() {
                 <tr>
                   {confirmable && (
                     <th style={thStyle}>
-                      补录
+                      <div>补录</div>
                       {/* T151③：全选当前页可补录行（全选/部分 → indeterminate） */}
-                      <input
-                        type="checkbox"
-                        aria-label="全选本页可补录"
-                        checked={allSelected}
-                        ref={(el) => {
-                          if (el) el.indeterminate = someSelected;
-                        }}
-                        onChange={(e) => toggleSelectAll(e.target.checked)}
-                        style={{ marginLeft: 6 }}
-                      />
+                      <label title="全选本页可补录行" style={bulkCheckLabelStyle}>
+                        <input
+                          type="checkbox"
+                          aria-label="全选本页可补录"
+                          checked={allSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someSelected;
+                          }}
+                          onChange={(e) => toggleSelectAll(e.target.checked)}
+                        />
+                        本页
+                      </label>
+                      {/* 跨页：拉全当前分类所有页的可补录行 */}
+                      <label
+                        title={`全选「${ATTR_LABELS[category] ?? category}」全部页的可补录行`}
+                        style={bulkCheckLabelStyle}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label="全选全部页可补录"
+                          checked={allPagesSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = allPagesPartial;
+                          }}
+                          onChange={(e) => void toggleSelectAllPages(e.target.checked)}
+                          disabled={allScopeBusy}
+                        />
+                        全部页{allScopeBusy ? '…' : ''}
+                      </label>
                     </th>
                   )}
                   <th style={thStyle}>id</th>
@@ -1175,6 +1299,7 @@ export default function BrokerReconcile() {
                       <td style={tdStyle}>
                         <input
                           type="checkbox"
+                          aria-label={`选择补录 #${r.id}`}
                           checked={selected.has(r.id)}
                           onChange={(e) => toggleSelect(r, e.target.checked)}
                           disabled={!isSelectable(r)}
@@ -1263,7 +1388,9 @@ export default function BrokerReconcile() {
               <div style={{ ...cardStyle, marginTop: 12, border: `1px solid ${COLORS.brand}` }}>
                 <h3 style={subtitleStyle}>补录：{selected.size} 笔</h3>
                 <p style={{ ...warningBar, margin: '4px 0 8px' }}>
-                  这将写入你的交易记录，可撤销（业务层软删，事实层保留）
+                  {selected.size > CONFIRM_BATCH_LIMIT
+                    ? `超过 ${CONFIRM_BATCH_LIMIT} 笔：将按每 ${CONFIRM_BATCH_LIMIT} 笔分批提交（每批整体事务，跨批可能部分成功；可重试，不会重复写入）`
+                    : '这将写入你的交易记录，可撤销（业务层软删，事实层保留）'}
                 </p>
                 <table style={tableStyle}>
                   <thead>
@@ -1342,6 +1469,29 @@ export default function BrokerReconcile() {
                   {confirmResult.invalid}（整体事务，失败全回滚）
                 </div>
                 {confirmResult.rows
+                  .filter((r) => r.status === 'invalid' || r.status === 'manual_sheet')
+                  .slice(0, 5)
+                  .map((r) => (
+                    <div key={r.sourceId} style={{ color: COLORS.danger, fontSize: TYPO.captionSize }}>
+                      #{r.sourceId}：{r.reason ?? r.status}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {bulkConfirmResult && (
+              <div data-testid="confirm-batch-result" style={{ ...cardStyle, marginTop: 12 }}>
+                <h3 style={subtitleStyle}>补录结果（分批提交 · {CONFIRM_BATCH_LIMIT} 笔/批）</h3>
+                <div style={{ fontSize: TYPO.smallSize }}>
+                  成功 {bulkConfirmResult.imported} · 已存在 {bulkConfirmResult.already} · 不可补{' '}
+                  {bulkConfirmResult.invalid} · 失败批次 {bulkConfirmResult.failedBatches}
+                </div>
+                {bulkConfirmResult.errors.map((msg) => (
+                  <div key={msg} style={{ color: COLORS.danger, fontSize: TYPO.captionSize }}>
+                    {msg}
+                  </div>
+                ))}
+                {bulkConfirmResult.rows
                   .filter((r) => r.status === 'invalid' || r.status === 'manual_sheet')
                   .slice(0, 5)
                   .map((r) => (
@@ -1475,4 +1625,14 @@ const warningBar: React.CSSProperties = {
   borderRadius: 6,
   padding: '6px 10px',
   fontSize: TYPO.captionSize,
+};
+const bulkCheckLabelStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 2,
+  marginRight: 8,
+  fontSize: TYPO.captionSize,
+  color: COLORS.textSecondary,
+  whiteSpace: 'nowrap',
+  fontWeight: 400,
 };
