@@ -154,9 +154,6 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   momentumDecayExit: false,
   /** 缺省 = maxHoldings + 2；显式传小值（如 3）可收紧排名触发 */
   decayRankThreshold: 8,
-  momentumDecayExit: false,
-  targetVol: 0.12,
-  volWindow: 20,
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [

@@ -108,9 +108,10 @@ function runTrial(
   params: DualMomentumParams,
   overrides: Record<string, unknown> = {},
 ): BacktestResult {
+  const resolved: DualMomentumParams = { ...params, ...resolveDualMomentumParams(overrides) };
   return runBacktest(data, {
     strategy: createDualMomentumStrategy(),
-    params: { ...(params as unknown as Record<string, unknown>), ...overrides },
+    params: resolved as unknown as Record<string, unknown>,
     start: START,
     end: END,
     initialCash: INITIAL_CASH,
@@ -120,13 +121,14 @@ function runTrial(
     suspension: { missingBar: true, zeroVolume: true },
     universeParams: { divisor: 20000, topN: 300 },
     rules: {
-      commissionRate: params.commissionRate,
-      minCommission: params.minCommission,
-      slippageRate: params.slippage,
-      lotSize: params.lotSize,
-      stampDutyRate: params.etfExemptTax ? 0 : 0.001,
+      commissionRate: resolved.commissionRate,
+      minCommission: resolved.minCommission,
+      slippageRate: resolved.slippage,
+      lotSize: resolved.lotSize,
+      stampDutyRate: resolved.etfExemptTax ? 0 : 0.001,
       transferFeeRate: 0,
     },
+    cashInterestRate: resolved.cashInterestRate,
   });
 }
 
@@ -485,6 +487,45 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
       dailyChangeMax: 1e9,
     },
   },
+  // ── §13.13 档 2/3/4 对照（opt-in 研究参数；overrides 经 runBacktest 的 `params` 透传，
+  //    策略 init 内 resolveDualMomentumParams 会解析；基线组缺省全部关闭，逐位不变）──
+  {
+    key: 'bt-t3c',
+    label: '档3 放宽+评分（T3c）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+    },
+  },
+  {
+    key: 'bt-t3c-win',
+    label: '跑赢档 T3c+mh20+cash2%',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+    },
+  },
+  {
+    key: 'bt-t3c-win-vol',
+    label: '跑赢档+波动率目标（vol 0.12）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+    },
+  },
 ];
 
 function cagrBetween(first: number, last: number, fromDate: string, toDate: string): number {
@@ -505,8 +546,17 @@ interface BacktestRow {
   turnover: number;
   volatility: number;
   finalEquity: number;
+  frictionPctPerYear: number;
   segACagr: number;
   segBCagr: number;
+}
+
+/** 档 1-4 对照组的摩擦拆账（fees + slippage 占初始本金年化比；§13.6/13.13 口径） */
+function frictionOf(r: BacktestResult): number {
+  const fees = r.trades.reduce((a, t) => a + t.fee, 0);
+  const slip = r.trades.reduce((a, t) => a + t.slippageCost, 0);
+  const years = r.equity.length / 250;
+  return years > 0 ? ((fees + slip) / INITIAL_CASH / years) * 100 : 0;
 }
 
 function summarizeBacktest(key: string, label: string, r: BacktestResult): BacktestRow {
@@ -527,6 +577,7 @@ function summarizeBacktest(key: string, label: string, r: BacktestResult): Backt
     turnover: m.turnoverAnnualized,
     volatility: m.annualizedVolatility,
     finalEquity: m.finalEquity,
+    frictionPctPerYear: frictionOf(r),
     segACagr:
       segA.length > 1
         ? cagrBetween(segA[0].equity, segA[segA.length - 1].equity, segA[0].date, segA[segA.length - 1].date)
@@ -805,7 +856,7 @@ async function main(): Promise<void> {
     btRows.push(row);
     console.log(
       `BT ${g.label}: cagr=${pct(row.cagr)} mdd=${pct(row.maxDrawdown)} expo=${pct(row.avgExposure)} ` +
-        `allCash=${pct(row.allCashRatio)} trades=${row.trades}`,
+        `allCash=${pct(row.allCashRatio)} fric=${row.frictionPctPerYear.toFixed(2)}%/yr trades=${row.trades}`,
     );
   }
 
