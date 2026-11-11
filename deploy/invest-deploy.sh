@@ -20,6 +20,7 @@ DEPLOY_DIR="${IA_DEPLOY_DIR:-/opt/invol/IA_Prod}"
 MARKER="$DEPLOY_DIR/.deployed-sha"
 SENTINEL="$DEPLOY_DIR/.tdx2db-writing"
 LOCK_FILE="/run/invest-deploy.lock"
+LOG_DIR="/var/log/invest-deploy"
 
 SHA="${SSH_ORIGINAL_COMMAND:-${1:-}}"
 
@@ -31,6 +32,26 @@ fi
 if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
     echo "usage: ssh <host> '<40-hex commit sha>'" >&2
     exit 2
+fi
+
+# 让部署脱离 SSH 会话：连接断开时 sshd 的 SIGHUP 不会杀掉切换中的部署。
+# 子进程写日志，结束后由父进程回传；断线后部署继续，下一次 CD 靠 marker 幂等。
+if [ "${IA_INVEST_DEPLOY_DETACHED:-0}" != "1" ]; then
+    if ! command -v setsid >/dev/null 2>&1; then
+        echo "warn: setsid 不可用，部署无法与 SSH 会话解耦" >&2
+    else
+        install -d -m 0750 "$LOG_DIR"
+        LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${SHA:0:7}.log"
+        export IA_INVEST_DEPLOY_DETACHED=1
+        nohup setsid -w bash "$0" "$SHA" >"$LOG_FILE" 2>&1 &
+        CHILD_PID=$!
+        RC=0
+        wait "$CHILD_PID" || RC=$?
+        # 部署结束后一次性回传完整日志；断线时父进程死亡，子进程继续。
+        cat "$LOG_FILE"
+        echo "deploy log: $LOG_FILE" >&2
+        exit "$RC"
+    fi
 fi
 
 exec 9>"$LOCK_FILE"
@@ -73,6 +94,19 @@ fi
 # 仓库可能属于 invol/ubuntu 等非 root 用户；git 操作以属主身份执行，
 # 避免 root 在 .git 里留下混合属主。
 REPO_OWNER="$(stat -c '%U' "$REPO_DIR")"
+if [ "$REPO_OWNER" != "root" ]; then
+    if ! id -u "$REPO_OWNER" >/dev/null 2>&1; then
+        echo "repository owner is not a valid user: $REPO_OWNER" >&2
+        exit 5
+    fi
+    OWNER_SHELL="$(getent passwd "$REPO_OWNER" | cut -d: -f7 || true)"
+    case "$OWNER_SHELL" in
+        ''|*/nologin|*/false)
+            echo "repository owner $REPO_OWNER has no usable shell: ${OWNER_SHELL:-<empty>}" >&2
+            exit 5
+            ;;
+    esac
+fi
 GIT_BIN="$(command -v git)"
 run_as_owner() {
     if [ "$REPO_OWNER" = "root" ]; then
@@ -98,7 +132,8 @@ echo "deploying $SHA..."
 run_as_owner "$GIT_BIN" -C "$REPO_DIR" -c safe.directory="$REPO_DIR" reset --hard "$SHA"
 
 # deploy.sh 内含构建、原子切换、健康检查与 app.old 自动回滚；失败即非 0 退出。
-bash "$REPO_DIR/deploy/deploy.sh"
+# 本进程已持有 /run/invest-deploy.lock，用环境变量让 deploy.sh 跳过重复加锁。
+IA_DEPLOY_LOCK_HELD=1 bash "$REPO_DIR/deploy/deploy.sh"
 bash "$REPO_DIR/deploy/healthcheck.sh"
 
 MARKED="$(cat "$MARKER" 2>/dev/null || true)"

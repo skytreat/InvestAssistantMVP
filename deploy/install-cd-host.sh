@@ -23,18 +23,19 @@ SUDOERS_FILE="/etc/sudoers.d/invest-deploy"
 DEPLOY_USER="deployer"
 REPO_DIR="/opt/invol/InvestAssistantMVP"
 PUBKEY_FILE=""
-FORCE=0
 
 usage() {
     cat <<'EOF'
 用法：
-  sudo bash deploy/install-cd-host.sh --public-key-file <path> [--user deployer] [--force]
+  sudo bash deploy/install-cd-host.sh --public-key-file <path> [--user deployer]
 
 选项：
   --public-key-file <path>  CD 专用 SSH 公钥文件（必填，仅取第一行）
   --user <name>             运行部署的专用用户（默认 deployer）
-  --force                   覆盖该用户已有的 authorized_keys
   -h, --help                显示本帮助
+
+说明：
+  重复执行时只替换本脚本管理的 authorized_keys 条目，其他手工添加的 key 保留。
 
 前置条件：
   - 仓库已克隆到 /opt/invol/InvestAssistantMVP
@@ -51,10 +52,6 @@ while [ "$#" -gt 0 ]; do
         --user)
             DEPLOY_USER="${2:-}"
             shift 2
-            ;;
-        --force)
-            FORCE=1
-            shift
             ;;
         -h|--help)
             usage
@@ -133,6 +130,9 @@ echo "✅ 安装 $WRAPPER_DST"
 #
 # sudo 默认 env_reset 会丢掉 sshd 注入的 SSH_ORIGINAL_COMMAND，
 # 若不 env_keep，wrapper 收不到目标 SHA。
+#
+# 命令末尾的 "" 是「只允许无参数调用」的 sudoers 写法（已由生产负责人确认），
+# wrapper 的 SHA 通过 SSH_ORIGINAL_COMMAND 传入，不要改成允许任意参数。
 # ---------------------------------------------------------------------------
 SUDOERS_TMP="$(mktemp)"
 cat >"$SUDOERS_TMP" <<EOF
@@ -158,18 +158,29 @@ fi
 install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$HOME_DIR/.ssh"
 AUTHORIZED_KEYS="$HOME_DIR/.ssh/authorized_keys"
 
-if [ -s "$AUTHORIZED_KEYS" ] && ! grep -q "invest-deploy" "$AUTHORIZED_KEYS" && [ "$FORCE" -ne 1 ]; then
-    echo "$AUTHORIZED_KEYS 已存在其他密钥；确认可覆盖后加 --force" >&2
-    exit 1
-fi
-
-cat >"$AUTHORIZED_KEYS" <<EOF
+if [ -s "$AUTHORIZED_KEYS" ]; then
+    # 只替换本脚本管理的条目，保留手工添加的其他 key；重复执行必须幂等。
+    TMP_KEYS="$(mktemp)"
+    awk -v cmd="command=\"sudo -n $WRAPPER_DST\"" '
+        $0 == "# Managed by InvestAssistantMVP deploy/install-cd-host.sh" { next }
+        index($0, cmd) > 0 { next }
+        { print }
+    ' "$AUTHORIZED_KEYS" >"$TMP_KEYS"
+    {
+        echo "# Managed by InvestAssistantMVP deploy/install-cd-host.sh"
+        echo "restrict,command=\"sudo -n $WRAPPER_DST\" $PUBKEY"
+    } >>"$TMP_KEYS"
+    install -m 0600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$TMP_KEYS" "$AUTHORIZED_KEYS"
+    rm -f "$TMP_KEYS"
+else
+    cat >"$AUTHORIZED_KEYS" <<EOF
 # Managed by InvestAssistantMVP deploy/install-cd-host.sh
 restrict,command="sudo -n $WRAPPER_DST" $PUBKEY
 EOF
-chown "$DEPLOY_USER:$DEPLOY_USER" "$AUTHORIZED_KEYS"
-chmod 0600 "$AUTHORIZED_KEYS"
-echo "✅ 写入 $AUTHORIZED_KEYS"
+    chown "$DEPLOY_USER:$DEPLOY_USER" "$AUTHORIZED_KEYS"
+    chmod 0600 "$AUTHORIZED_KEYS"
+fi
+echo "✅ 写入 $AUTHORIZED_KEYS（其他手工 key 已保留）"
 
 echo ""
 echo "=== CD 接收端配置完成 ==="

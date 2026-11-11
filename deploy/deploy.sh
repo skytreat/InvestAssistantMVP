@@ -33,6 +33,8 @@ CURRENT_STEP="初始化"
 APP_PORT=8080
 CADDY_CONFIGURED=0
 TEMP_DIR=""
+LOCK_FILE="/run/invest-deploy.lock"
+ROLLBACK_ARMED=0
 
 usage() {
     cat <<'EOF'
@@ -54,10 +56,33 @@ EOF
 
 cleanup() {
     if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
-        rm -rf "$TEMP_DIR"
+        rm -rf "$TEMP_DIR" || true
     fi
 }
-trap cleanup EXIT
+
+# 切换阶段的安全网：一旦停服，任何未预料的失败（mv / enable / 磁盘满等）
+# 都必须把上一版本恢复并重新拉起，避免服务停到下一次人工介入。
+rollback_app() {
+    ROLLBACK_ARMED=0
+    echo "↩️  回滚后端到上一版本..." >&2
+    systemctl stop invest-assistant.service >/dev/null 2>&1 || true
+    if [ -d "$APP_DIR.old" ]; then
+        rm -rf "$APP_DIR" || true
+        mv "$APP_DIR.old" "$APP_DIR" || true
+    fi
+    systemctl start invest-assistant.service >/dev/null 2>&1 || true
+}
+
+on_exit() {
+    local rc=$?
+    if [ "$ROLLBACK_ARMED" -eq 1 ]; then
+        rollback_app || true
+    fi
+    cleanup
+    exit "$rc"
+}
+
+trap on_exit EXIT
 trap 'echo "❌ 部署失败：${CURRENT_STEP}（行 ${LINENO}）" >&2' ERR
 
 while [ "$#" -gt 0 ]; do
@@ -88,6 +113,16 @@ if [ ! -f "$PROJECT_ROOT/package.json" ]; then
     exit 1
 fi
 
+# 与 deploy/invest-deploy.sh 共用同一把锁：手工部署与 CD 不允许同时进行，
+# 否则会互踩 .app.new / .dist.new / app 目录。wrapper 已持锁时通过环境变量声明。
+if [ "${IA_DEPLOY_LOCK_HELD:-0}" != "1" ]; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        echo "❌ 另一个部署正在进行（锁：$LOCK_FILE）" >&2
+        exit 3
+    fi
+fi
+
 echo "=== InvestAssistant MVP 生产部署 ==="
 echo "项目目录：$PROJECT_ROOT"
 echo "部署目录：$DEPLOY_DIR"
@@ -98,9 +133,20 @@ echo "运行用户：$USERNAME"
 # ---------------------------------------------------------------------------
 CURRENT_STEP="安装系统依赖"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl wget gnupg sqlite3
-echo "✅ 系统依赖就绪"
+NEED_APT=0
+for cmd in curl wget gpg sqlite3; do
+    command -v "$cmd" >/dev/null 2>&1 || NEED_APT=1
+done
+[ -f /etc/ssl/certs/ca-certificates.crt ] || NEED_APT=1
+if [ "$NEED_APT" -eq 1 ]; then
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates curl wget gnupg sqlite3
+    echo "✅ 系统依赖已安装"
+else
+    # 02:00 的定时部署可能撞上 unattended-upgrades 持有 dpkg 锁；
+    # 依赖齐全时跳过 apt，避免当晚部署因抢锁失败。
+    echo "✅ 系统依赖已存在，跳过 apt"
+fi
 
 CURRENT_STEP="检查 Node.js"
 if ! command -v node >/dev/null 2>&1; then
@@ -434,22 +480,14 @@ fi
 # 9. 原子切换后端并启动
 # ---------------------------------------------------------------------------
 CURRENT_STEP="切换后端运行目录"
+# 从停服到健康检查通过之间，任何失败都交给 EXIT trap 恢复 app.old。
+ROLLBACK_ARMED=1
 systemctl stop invest-assistant.service >/dev/null 2>&1 || true
 rm -rf "$APP_DIR.old"
 if [ -d "$APP_DIR" ]; then
     mv "$APP_DIR" "$APP_DIR.old"
 fi
 mv "$APP_STAGE" "$APP_DIR"
-
-rollback_app() {
-    echo "↩️  回滚后端到上一版本..." >&2
-    systemctl stop invest-assistant.service >/dev/null 2>&1 || true
-    rm -rf "$APP_DIR"
-    if [ -d "$APP_DIR.old" ]; then
-        mv "$APP_DIR.old" "$APP_DIR"
-    fi
-    systemctl start invest-assistant.service >/dev/null 2>&1 || true
-}
 
 CURRENT_STEP="启动 Fastify"
 systemctl enable invest-assistant.service
@@ -474,6 +512,7 @@ if [ "$HEALTHY" -ne 1 ]; then
     rollback_app
     exit 1
 fi
+ROLLBACK_ARMED=0
 echo "✅ Fastify 健康检查通过"
 
 # ---------------------------------------------------------------------------
