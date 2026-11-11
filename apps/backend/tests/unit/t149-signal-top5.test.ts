@@ -118,6 +118,8 @@ afterAll(async () => {
 interface SignalRow {
   id: number;
   asset_code: string;
+  /** 标的名称（`raw_symbol_name`；行情库不可用 / 无名称时为 null）*/
+  asset_name: string | null;
   trade_date: string;
   grade: string | null;
   strength: number | null;
@@ -155,6 +157,9 @@ describe('F3 今日 Top 5', () => {
     const { rows, meta } = await top5();
     expect(rows).toHaveLength(5);
     expect(meta.limit).toBe(5);
+    // 名称是装饰字段：必须存在；有行情库时为字符串，不可用时降级为 null
+    expect(rows.every((r) => 'asset_name' in r)).toBe(true);
+    expect(rows.every((r) => r.asset_name === null || typeof r.asset_name === 'string')).toBe(true);
   });
 
   it('显式 trade_date 生效', async () => {

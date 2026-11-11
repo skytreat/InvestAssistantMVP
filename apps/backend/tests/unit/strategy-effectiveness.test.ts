@@ -9,6 +9,7 @@ import {
   feeModelLabel,
   feeRatesForClass,
   finalizeHorizonStats,
+  summarizeAdoption,
   summarizeHorizon,
   type EvaluateOptions,
   type MarketContext,
@@ -43,6 +44,8 @@ function mkSignal(overrides: Partial<SignalRecord> = {}): SignalRecord {
     tradeDate: '2026-01-05',
     grade: 'medium',
     origin: 'replay',
+    adopted: false,
+    ignored: false,
     ...overrides,
   };
 }
@@ -344,6 +347,8 @@ describe('buildReport：分组 / 混合口径 / CSV', () => {
       tradeDate: '2026-01-05',
       grade: 'medium',
       origin: 'replay',
+      adopted: false,
+      ignored: false,
     }));
     const report = buildReport({ signals, context: makeContext(), options: mkOptions() });
 
@@ -370,6 +375,8 @@ describe('buildReport：分组 / 混合口径 / CSV', () => {
       tradeDate: '2026-01-05',
       grade: null,
       origin: 'replay',
+      adopted: false,
+      ignored: false,
     }));
     const report = buildReport({ signals, context: makeContext(), options: mkOptions() });
     expect(report.meta.insufficientSample).toBe(true);
@@ -398,5 +405,107 @@ describe('buildReport：分组 / 混合口径 / CSV', () => {
     expect(row).toContain('0.001');
     expect(row).toContain('0.00002');
     expect(row).toContain('0.0001'); // 滑点
+  });
+});
+
+describe('F4 Step C · 采纳率口径', () => {
+  it('三类互斥计数，分母 = 已处理（采纳 + 忽略），未处理不进分母', () => {
+    const signals = [
+      ...Array.from({ length: 12 }, () => mkSignal({ adopted: true })),
+      ...Array.from({ length: 8 }, () => mkSignal({ ignored: true })),
+      ...Array.from({ length: 5 }, () => mkSignal({ adopted: false, ignored: false })),
+    ];
+    const a = summarizeAdoption(signals);
+    expect(a.adopted).toBe(12);
+    expect(a.ignored).toBe(8);
+    expect(a.pending).toBe(5);
+    expect(a.processed).toBe(20);
+    expect(a.insufficientSample).toBe(false);
+    expect(a.adoptionRate).toBeCloseTo(0.6, 10);
+  });
+
+  it('已处理 19 条 < 门槛 20 → 样本不足且不输出百分比', () => {
+    const a = summarizeAdoption([
+      ...Array.from({ length: 10 }, () => mkSignal({ adopted: true })),
+      ...Array.from({ length: 9 }, () => mkSignal({ ignored: true })),
+      ...Array.from({ length: 30 }, () => mkSignal()),
+    ]);
+    expect(a.processed).toBe(19);
+    expect(a.insufficientSample).toBe(true);
+    expect(a.adoptionRate).toBeNull();
+  });
+
+  it('全部未处理 → 分母 0，样本不足且不出百分比', () => {
+    const a = summarizeAdoption([mkSignal(), mkSignal()]);
+    expect(a.processed).toBe(0);
+    expect(a.insufficientSample).toBe(true);
+    expect(a.adoptionRate).toBeNull();
+  });
+
+  it('历史「双 1」行只算采纳（采纳优先），不会同时计入两个桶', () => {
+    const a = summarizeAdoption([mkSignal({ adopted: true, ignored: true })]);
+    expect(a.adopted).toBe(1);
+    expect(a.ignored).toBe(0);
+    expect(a.pending).toBe(0);
+  });
+
+  it('报告 meta 与分组都带采纳口径，且按信号去重（不随周期放大）', () => {
+    const signals: SignalRecord[] = Array.from({ length: 25 }, (_, i) => ({
+      id: i + 1,
+      assetCode: 'sh510300',
+      pluginId: i % 2 === 0 ? 'macd_cross' : 'rsi_oversold',
+      tradeDate: '2026-01-05',
+      grade: 'medium',
+      origin: 'replay',
+      adopted: i < 15,
+      ignored: i >= 15 && i < 20,
+    }));
+    const report = buildReport({ signals, context: mkContext(), options: mkOptions() });
+
+    expect(report.meta.adoption.adopted).toBe(15);
+    expect(report.meta.adoption.ignored).toBe(5);
+    expect(report.meta.adoption.pending).toBe(5);
+    expect(report.meta.adoption.processed).toBe(20);
+    expect(report.meta.adoption.adoptionRate).toBeCloseTo(0.75, 10);
+
+    // 两个分组各自按信号去重：合计 20 条已处理，而不是 20 × 3 个周期
+    const groupProcessed = report.groups.reduce((sum, g) => sum + g.adoption.processed, 0);
+    expect(groupProcessed).toBe(20);
+    for (const g of report.groups) {
+      expect(g.adoption.adopted + g.adoption.ignored + g.adoption.pending).toBe(
+        signals.filter((s) => s.pluginId === g.value).length,
+      );
+    }
+  });
+
+  it('CSV 汇总含采纳列，样本不足时占比留空', () => {
+    const signals: SignalRecord[] = Array.from({ length: 3 }, (_, i) => ({
+      id: i + 1,
+      assetCode: 'sh510300',
+      pluginId: 'rsi_oversold',
+      tradeDate: '2026-01-05',
+      grade: null,
+      origin: 'replay',
+      adopted: i === 0,
+      ignored: i === 1,
+    }));
+    const report = buildReport({ signals, context: mkContext(), options: mkOptions() });
+    const csv = buildEffectivenessCsv(report, 'summary');
+    const header = csv.split('\r\n')[0];
+    for (const col of [
+      'adopted_count',
+      'ignored_count',
+      'pending_count',
+      'processed_count',
+      'adoption_insufficient_sample',
+      'adoption_rate_pct',
+    ]) {
+      expect(header).toContain(col);
+    }
+    const cols = csv.split('\r\n')[1].split(',');
+    const at = header.split(',').indexOf('processed_count');
+    expect(cols[at]).toBe('2');
+    expect(cols[header.split(',').indexOf('adoption_insufficient_sample')]).toBe('1');
+    expect(cols[header.split(',').indexOf('adoption_rate_pct')]).toBe('');
   });
 });

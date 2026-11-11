@@ -750,6 +750,14 @@ transfer         -> 忽略（转托管不改变总持仓）
 }
 ```
 
+**补充：批量名称（`名称(代码)` 展示）**
+
+`GET /api/symbols/names?symbols=sh600000,sz000001`（鉴权同其他 `/api/*`）：
+
+- 响应 `{ code: 0, data: { "sh600000": "浦发银行", ... } }`；单次最多 200 个代码；
+- 名称是装饰信息：代码无名称 / 快照与行情库均不可用时该 key 缺省，**不返回 500**；
+- 前端缺失时回退为仅显示代码（与 §9.4 名称缺失口径一致）。
+
 **实现约束**：
 
 | 约束 | 说明 |
@@ -786,6 +794,21 @@ transfer         -> 忽略（转托管不改变总持仓）
 
 **实现约束**：必须扣**真实交易成本**（含最低佣金）；必须与基准对比；
 信号若在生效前已失效（如止损触发）按**实际可成交价**评估。
+
+**响应契约（`GET /api/strategy/effectiveness`，2026-11-09 定稿；F4 Step B `#137` / Step C `#141`）**：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `meta` | object | 口径快照：`from` / `to` / `benchmark` / `benchmarkClass` / `groupBy` / `horizons` / `notional` / `sampleSize` / `insufficientSample` / `statusCounts` / `fees` / `feeModelLabel` / `feeModels[]` / `adoption` / `generatedAt` |
+| `summary` | `HorizonStats[]` | 全样本按周期（t1 / t5 / t10）汇总 |
+| `groups` | array | 每组 `{ groupBy, value, stats: HorizonStats[], feeModels[], adoption }` |
+| `details` | array | 逐信号 × 周期明细（CSV `detail` 同源） |
+| `HorizonStats` | object | `horizon` / `sampleSize` / `excessSampleSize` / `statusCounts` / `insufficientSample` / `winRateAbsolute` / `winRateExcess` / `avgNetReturn` / `avgBenchmarkReturn` / `avgExcessReturn` |
+| `AdoptionStats` | object | `adopted` / `ignored` / `pending` / `processed` / `insufficientSample` / `adoptionRate` |
+
+**采纳率口径（D8）**：分母 = **已处理 = `adopted + ignored`**；「未处理」只展示、不进分母；
+`processed < MIN_SAMPLE_SIZE(20)` ⇒ `insufficientSample=true`、`adoptionRate=null`（JSON 与 CSV 均不输出百分比）。
+计数**按信号去重**（同一信号的多周期 outcome 不重复计入）。
 
 ### 9.7 复盘与交易对视图
 
@@ -910,6 +933,87 @@ V3 **不改插件引擎**（50ms 预算、参数校验、沙箱约束全部沿�
 |---|---|
 | 适用品种 | 全部 / 仅股票 / 仅场内 ETF / 仅跨境 ETF / **排除跨境** / **排除现金类** |
 | 适用周期 | 日线 / 60 分钟 / 15 分钟（V3 只用日线，§7 判定分钟线不纳入） |
+
+#### 10.4.1 组合策略契约（T133，PA-10 登记）
+
+> 决策来源：`docs/audit/proposal-combined-strategy.md` §6（D1~D4，owner 已定）。本节只固化**已上线行为**；实现真相源为 `apps/backend/src/services/comboEvaluator.ts`、`comboStrategy.ts`、`comboRepo.ts`、`apps/backend/src/routes/combo.ts`、`apps/backend/src/services/backtest/strategies/comboSignal.ts`、`apps/backend/src/services/paper/comboSignalSource.ts`、`apps/frontend/src/components/ComboEditor.tsx`。
+
+**1）组合逻辑：仅 AND（D1）**
+
+- `strategy_combo.combine_op` 列保留 `AND|OR` 两个取值，但**服务层只写 `'AND'`**（`comboRepo.createCombo` 的 INSERT 硬编码 `'AND'`）；`comboEvaluator.evaluateCombo` 只实现 AND，不实现 OR 与嵌套。
+- 启用条件数 < 2 ⇒ 组合不成立（`evaluateCombo` 返回 `null`；执行层计 `stats.failed++`，结果 `SKIP / NO_SIGNAL`）。
+- 条件白名单 = `comboStrategy.isAllowedComboCondition`：必须是 `category === 'monitor'`、`subCategory !== 'risk'`、`requiresPositions !== true` 的**真实插件**。组合自身不是插件定义，因此**不能作为另一个组合的条件**（无嵌套）。
+- 任一启用条件出现以下情况，该标的组合不成立：状态非 `OK`、`signalType` 不是 `BUY`/`SELL`、强度非法、多个条件方向不一致（混合方向 AND 不成立）。
+
+**2）组合强度：`strength = min`（D2）**
+
+- `evaluateCombo` 从 `strength = 1` 起算，逐条件取最小值；`ComboMatch.strength` 即最弱条件强度，同时记录 `minPluginId`。
+- 合成信号的 `strength` 直接使用该值；`metrics = { strength, conditionCount }`。
+
+**3）信号约束**
+
+- `plugin_id = combo:<id>`（`comboStrategy.comboPluginId`），`plugin_category = 'monitor'`。
+- `direction` 只允许 `buy` / `sell`（落库映射 `BUY → buy`、`SELL → sell`），**组合不输出 HOLD**；`sub_category` 为 `NULL`（落库调用不传该参数，`persistSignals` 默认 `null`）。
+- 信号标签为「组合买入」/「组合卖出」（`synthesizeSignal`）；`trade_date` = 执行日。
+- 组合信号与普通插件信号走**同一条**落库链路（`persistSignals`），由唯一键去重。
+
+**4）生成与回放：预生成、只读、无前视（D3）**
+
+- **实时生成**：`executeCombos` 与普通插件共享同一批预取行情（同一 `PluginContext`），逐组合 × 逐标的执行启用条件。条件参数**只来自组合配置**，不合并全局插件参数（INV-S3-19）；条件结果按 `(pluginId, params, symbol)` 缓存复用，避免跨组合重复执行。
+- 组合**不读取普通插件已落库的信号**；它直接消费条件插件的执行结果。回放侧所说的「预生成信号」指组合信号本身已由实时链路落库。
+- **回放 / 纸面**：`comboSignal.ts` / `comboSignalSource.ts` **只读** `user_strategy_signal`，不重算条件。查询条件为 `plugin_id = 'combo:<id>' AND trade_date <= asOf AND is_deleted = 0 AND strength IS NOT NULL`；取 `asOf` 及之前**最近一个交易日**的信号（`ORDER BY trade_date DESC`），策略层再排除 `direction = 'hold'`。无前视。
+
+**5）历史不可变与版本（D4）**
+
+- 配置仓储只改 `strategy_combo` / `strategy_combo_condition`，**不 UPDATE / DELETE `user_strategy_signal`**（`comboRepo.ts` 文件头 D4）。
+- 组合删除为软删：`is_deleted = 1, enabled = 0`，历史信号保留；`listCombos` 默认只返回 `enabled = 1 AND is_deleted = 0`，`include_disabled = 1` 可列出停用项。
+- `config_version` 只在**判据相关字段出现**时 +1：请求体显式携带 `conditions`（含参数/顺序/启停）、`assetScope` 或 `cooldownBars` 即递增（`comboRepo.updateCombo` 的 `versionBump`，不做深比较）；只改名或启停**不递增**。
+- 信号落库为 `INSERT OR IGNORE`，唯一键 `(user_id, asset_code, plugin_id, trade_date)`（`configStore` 建表）⇒ 同日同组合同标的重跑不覆盖、不产生重复行；修改配置**不回写**历史信号。
+- ⚠️ **截至本次登记（2026-11-09）**：信号行**不保存** `config_version`，也没有配置快照；`user_strategy_signal.snapshot_json` 列存在但**无写入方**（属 T134 快照能力，尚未落地）。因此无法从信号行还原「当时生效的组合参数」，只能依赖 `system_log` 的 `plugin_execute` 明细（含 `configVersion`）与配置表当前值。见计划 V3-B10。
+
+**6）参数校验与错误码**
+
+- `cooldownBars`：默认 `3`，必须是 **1~20 整数**。前端 `ComboEditor` 保存前校验；后端 `routes/combo.ts#parseCooldownBars` 与 `comboRepo.assertCooldownBars` 同口径；非法 ⇒ HTTP 400 `PARAM_INVALID`；DDL `CHECK (cooldown_bars >= 1 AND cooldown_bars <= 20)` 兜底。
+- 条件：数组至少 2 个；`pluginId` 不得重复；必须在白名单；`params` 按插件 `paramSchema` 校验并补默认值。**启用条件 < 2 允许保存**，但当日执行会整体失败（`stats.failed++`，不产信号）。
+- `assetScope` 必须属于 6 档；名称非空；`enabled` 只接受布尔值或 `0/1`。
+- 错误码：400 `PARAM_INVALID`；404 `NOT_FOUND`（不存在或已软删）；500 `INTERNAL_ERROR`。
+- 端点：`GET /api/strategy/combos`（`include_disabled`）、`GET /api/strategy/combos/:id`、`POST /api/strategy/combos`、`PUT /api/strategy/combos/:id`、`PUT /api/strategy/combos/:id/toggle`、`DELETE /api/strategy/combos/:id`。
+- ⚠️ **实测偏差**：`cooldownBars` 目前**仅存储、校验、展示**，未参与组合信号生成或去重；信号页冷却使用全局 `SIGNAL_COOLDOWN_BARS`（展示层合并）。见计划 V3-B9 / **T153（V3.10，待决策）**。
+
+#### 10.4.2 组合统计与插件统计分列
+
+> 实现：`pluginEngine.ts`（`PluginBatchStats` / `executeAllPlugins`）、`comboStrategy.ts`（`ComboRunStats`）、`strategyEffectiveness.ts`（按 `plugin_id` 分组）。
+
+| 口径 | 字段 | 分母 / 定义 | 是否含组合 |
+|---|---|---|---|
+| 批量执行 · 普通插件 | `PluginBatchStats.total / success / timeout / error / skip` | `total = Σ monitorPlugins(requiresPositions ? 1 : symbols.length)`；`success / timeout / error / skip` 为互斥分区；`noData` / `positionUnavailable` 是 `skip` 的子集 | **否** |
+| 批量执行 · 组合 | `PluginBatchStats.combo`（`ComboRunStats`） | `enabled` = 启用的组合数；`ran` = 实际尝试的组合数（当前恒等于 `enabled`）；`matchedSignals` = 合成信号数；`failed` = 配置级失败数（适用品种不可解析 / 启用条件 < 2 / 条件插件不可用 / 整体异常） | **仅组合** |
+| 策略有效性 | `stats.groups[].stats[].sampleSize` | 分组键 = `plugin_id`；`sampleSize` = 该组 `status='ok'` 且 `netReturn` 非空的样本数；`winRateAbsolute` 分母 = `sampleSize`；`winRateExcess` 分母 = 有基准收益的样本数；`sampleSize < 20` 时不输出任何百分比 | 组合信号自成 `combo:<id>` 组，**不并入**条件插件 |
+
+- `stats.combo` 在**标的域路径**恒出现；无启用组合时为 `{ enabled: 0, ran: 0, matchedSignals: 0, failed: 0 }`。**旧行为路径（未传 `symbols`）不执行组合**，`stats.combo` 不出现。`PluginBatchStats` 的接口注释「无启用组合时该字段不出现」与实现不符，以本表为准（见计划 V3-B11）。
+- 组合的 `results[]`（`plugin_id = combo:<id>`）会与普通插件结果合并后统一落库，但**不进入** `total / success / timeout / error / skip` 计数。
+- 条件插件在组合内部的执行**不计入**普通插件统计；若同一插件同时作为普通策略运行，则普通路径与组合路径各计一次（组合内部不额外放大分母）。
+- 有效性统计按 `plugin_id` 分组，组合信号独立成组；**禁止**把组合的收益 / 胜率回填到任一条件插件组。
+
+**为什么不能合并**：
+
+1. **分母单位不同**：普通插件是「插件 × 标的」，组合是「组合 × 标的」，直接相加没有可解释的分母。
+2. **会重复计数**：组合条件本身就是已计入普通统计的插件执行（当该插件也被普通策略选用时），再并入一次会虚增 `total / success`。
+3. **归属不唯一**：组合信号是多条件联合产物，无法归属到单一插件；并入任一插件都会污染其成功率与胜率。
+4. **统计含义不同**：组合成绩反映「多条件同时成立」的联合分布，与单插件的边际分布不可比。
+
+#### 10.4.3 跨境两档：fail-closed
+
+- 6 档适用品种中，`cross_border` / `exclude_cross_border` 当前**无法解析**：行情层 `raw_symbol_class` 只有 `class`（stock / etf / index / block / bstock / unknown），**没有跨境维度**；SQLite `asset_class` 只有 `risk / cash`；`symbol_dict.market` 是交易所前缀（sh / sz / bj），不是跨境分类。
+- `comboStrategy.resolveComboSymbols` 对这两档返回 `{ ok: false, reason }`，原因文案为「行情层无标维分类字段（跨境分类仅存在于券商成交事件），本轮跳过」。
+- **实际后果**：该组合当日被整体跳过 —— `stats.failed++`、结果 `status = ERROR`、写 `system_log`（`plugin_execute`，`WARN`），**不产出任何信号**；不影响其他组合与普通插件。
+- 前端口径：`ComboEditor` 选择这两档时明确提示「当前不会产出信号（P1 接入）」；`StrategyConfig` 另有跨境 ETF 流动性提示（F6 / PRD U13）。
+- 设计原则：**宁可当日无信号，也不产出与用户声明品种不符的信号**（fail-closed，不猜）。
+- **补齐所需数据前提**（缺一不可）：
+  1. 行情/标维提供可信的跨境分类（建议由 `tdx2db` 在 `raw_symbol_class` 增加 `is_cross_border` / `market_region` 字段，或独立映射表；**禁止**用代码前缀或名称关键字推断）；
+  2. 分类覆盖率与更新时点可验证，缺失时仍保持 fail-closed；
+  3. `resolveComboSymbols` 的两个分支实现 + 单测 / 集成测试；
+  4. 回放侧无需改动（组合信号已按 `plugin_id = combo:<id>` 落库）。
 
 ---
 
@@ -1078,6 +1182,56 @@ CREATE INDEX IF NOT EXISTS idx_fee_config_user ON user_fee_config(user_id, broke
 - `broker_code` / `asset_class` 均可空 ⇒ 费率（`commission_rate`）/ 最低佣金（`min_commission`）/ 印花税（`stamp_tax_rate`）/ 过户费（`transfer_fee_rate`）可按 **券商 / 资产类** 两个维度配置（NULL = 回落到账户级默认值）。
 - **取数规则**（D-46）：源文件 `fee_total` **优先**；缺失才按本配置反算，并标 `user_trade_record.fee_estimated=1`（反算是兜底不是替代，源数据绝不覆盖）。见 `docs/audit/v3-pending-decisions.md` D-46。
 
+#### 11.1.7 组合策略配置（V3.4 T133，PA-10 登记）
+
+> 权威源 = `apps/backend/src/config/comboSchema.ts`（`COMBO_SCHEMA_SQL`）；由 `ConfigStore` 启动时调用 `ensureComboTables(db)` 幂等建表。**只新增表，不改 `user_strategy_signal` 结构。**
+
+```sql
+CREATE TABLE IF NOT EXISTS strategy_combo (
+    id              TEXT PRIMARY KEY,
+    user_id         INTEGER NOT NULL,
+    name            TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    combine_op      TEXT NOT NULL DEFAULT 'AND' CHECK (combine_op IN ('AND', 'OR')),
+    asset_scope     TEXT NOT NULL DEFAULT 'all'
+                    CHECK (asset_scope IN (
+                        'all', 'stock', 'etf', 'cross_border', 'exclude_cross_border', 'exclude_cash'
+                    )),
+    period          TEXT NOT NULL DEFAULT 'daily' CHECK (period IN ('daily')),
+    cooldown_bars   INTEGER NOT NULL DEFAULT 3 CHECK (cooldown_bars >= 1 AND cooldown_bars <= 20),
+    config_version  INTEGER NOT NULL DEFAULT 1 CHECK (config_version >= 1),
+    is_deleted      INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (user_id) REFERENCES user_account(id)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_combo_condition (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    combo_id        TEXT NOT NULL,
+    seq             INTEGER NOT NULL,
+    plugin_id       TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    params_json     TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (combo_id, seq),
+    FOREIGN KEY (combo_id) REFERENCES strategy_combo(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_combo_user
+    ON strategy_combo (user_id, is_deleted);
+CREATE INDEX IF NOT EXISTS idx_strategy_combo_condition
+    ON strategy_combo_condition (combo_id, seq);
+```
+
+**语义说明**：
+
+- `combine_op` 物理上允许 `OR`，但服务层只写 `'AND'`（§10.4.1）；`period` 当前只允许 `daily`。
+- `cooldown_bars` 校验 1~20；当前仅存储/校验/展示，未参与生成或去重（§10.4.1、计划 V3-B9 / T153）。
+- `config_version` 仅在请求体显式携带 `conditions` / `asset_scope` / `cooldown_bars` 时 +1（不做深比较）；改名与启停不递增。
+- 组合删除为软删（`is_deleted = 1, enabled = 0`）；更新条件时在同一事务内 `DELETE + INSERT` 条件行（仅配置行，不触碰信号历史）。
+- `asset_scope = 'cross_border' | 'exclude_cross_border'` 当前 fail-closed，不产出信号（§10.4.3）。
+
 ### 11.2 `user_trade_record` 的改造（**已定稿**，T128）
 
 > ✅ **定稿**（2026-10-26，`v3-pending-decisions.md` D-7/D-34）：Wave 1-12 已全部合入，该表自 T49/T87b 后无未决改动。
@@ -1149,10 +1303,12 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | `adopted` | `INTEGER NOT NULL DEFAULT 0 CHECK (adopted IN (0, 1))` | T134 | 采纳标注 |
 | `ignored` | `INTEGER NOT NULL DEFAULT 0 CHECK (ignored IN (0, 1))` | T134 | 忽略标注 |
 | `adopted_at` | `TEXT` | T134 | 采纳时间 |
+| `ignored_at` | `TEXT` | T135（F4 Step C `#141`） | 忽略时间（`datetime('now','localtime')`，与 `adopted_at` 同口径）；**NULL = 未被忽略**。与 `adopted` 互斥：设一个即清另一个及其时间戳（`routes/signal.ts` 的 `writeSignalFlag`）；存量「双 1」由 `normalizeSignalAdoptionFlags()` 按「采纳优先」归一 |
 | `cooldown_until` | `TEXT` | T134 | 冷却期（同策略 / 同标的 / 同方向至此不重复出信号；MVP 先按日线） |
 | `linked_trade_id` | `INTEGER REFERENCES user_trade_record(id)` | T141 | 手动关联交易记录（跳转复盘，INV-S3-15/16） |
 
 > 迁移：存量表逐列 `ALTER TABLE ADD COLUMN` 由 `_ensureSignalLifecycleColumns()` 补齐（幂等，不重建表）。
+> `ignored_at` 走同一段 `PRAGMA table_info` + `ADD COLUMN` 路径（老库升级与新库初始化同一代码），补列后立即执行双 1 归一。
 
 ---
 

@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import React from 'react';
 import TodayActivityCard from '../../src/components/TodayActivityCard';
 import { mockResponse, renderWithRouter } from '../helpers';
@@ -923,7 +923,7 @@ describe('建议 D · 组件级约束', () => {
 
   it('建议 D：组件可独立渲染（不依赖 Dashboard 接线）', async () => {
     installApiMock();
-    render(<TodayActivityCard />);
+    renderWithRouter(<TodayActivityCard />);
     expect(screen.getByTestId('today-activity-card')).toBeInTheDocument();
 
     await act(async () => {

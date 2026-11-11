@@ -181,15 +181,15 @@ describe('T74 · 候选列表字段齐全', () => {
     expect(rows).toHaveLength(1);
 
     const cells = within(rows[0]).getAllByRole('cell');
-    // 列序：选择 / 代码 / 名称 / 基准价 / 现价 / 相对收益 / 跟踪天数 / 最新信号 / 操作
-    expect(cells[1]).toHaveTextContent('sh600519');
-    expect(cells[2]).toHaveTextContent('贵州茅台');
-    expect(cells[3]).toHaveTextContent('1500.00');
-    expect(cells[4]).toHaveTextContent('1650.00');
-    expect(cells[5]).toHaveTextContent('10.00%');
-    expect(cells[6]).toHaveTextContent('12 天');
-    expect(cells[7]).toHaveTextContent('买入');
-    expect(cells[7]).toHaveTextContent('RSI 超卖');
+    // 列序：选择 / 标的（名称(代码)）/ 基准价 / 现价 / 相对收益 / 跟踪天数 / 最新信号 / 操作
+    expect(cells[1]).toHaveTextContent('贵州茅台(sh600519)');
+    expect(cells[1].querySelector('a')?.getAttribute('href')).toBe('/kline?symbol=sh600519');
+    expect(cells[2]).toHaveTextContent('1500.00');
+    expect(cells[3]).toHaveTextContent('1650.00');
+    expect(cells[4]).toHaveTextContent('10.00%');
+    expect(cells[5]).toHaveTextContent('12 天');
+    expect(cells[6]).toHaveTextContent('买入');
+    expect(cells[6]).toHaveTextContent('RSI 超卖');
   });
 
   it('名称 / 现价 / 相对收益缺失时降级为 `--`（不显示 NaN / undefined）', async () => {
@@ -210,10 +210,12 @@ describe('T74 · 候选列表字段齐全', () => {
 
     await screen.findByRole('table', { name: '候选池列表' });
     const cells = within(candidateRows()[0]).getAllByRole('cell');
-    expect(cells[2]).toHaveTextContent('--');
+    // 名称缺失 → 只显示代码（不显示 `--` / `undefined`）
+    expect(cells[1]).toHaveTextContent('sh600036');
+    expect(cells[1]).not.toHaveTextContent('--');
+    expect(cells[3]).toHaveTextContent('--');
     expect(cells[4]).toHaveTextContent('--');
-    expect(cells[5]).toHaveTextContent('--');
-    expect(cells[7]).toHaveTextContent('--');
+    expect(cells[6]).toHaveTextContent('--');
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });

@@ -6,6 +6,7 @@ import { extractErrorMessage } from '../api/errors';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import Spinner from '../components/Spinner';
 import ScrollableTable from '../components/ScrollableTable';
+import AssetLink from '../components/AssetLink';
 import {
   SignalDirectionPill,
   SignalGradeTag,
@@ -87,6 +88,8 @@ interface SignalRow {
   id?: number;
   /** 后端字段名是 `asset_code`；`symbol` 是旧前端用例用的别名，一并兼容 */
   asset_code?: string;
+  /** 标的名称（后端 `raw_symbol_name`；缺失是常态，缺省回退为仅显示代码）*/
+  asset_name?: string | null;
   symbol?: string;
   plugin_id?: string;
   plugin_category?: string;
@@ -733,7 +736,7 @@ export default function Signals() {
                     <tr key={typeof row.id === 'number' ? `top5-${row.id}` : `top5-${i}`}>
                       <td style={thTdStyle}>{i + 1}</td>
                       <td style={thTdStyle}>
-                        <code>{code}</code>
+                        <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
                       </td>
                       <td style={thTdStyle}>
                         <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
@@ -802,7 +805,13 @@ export default function Signals() {
           ) : tradeDetail.trade ? (
             <div>
               <div>
-                {`成交 #${tradeDetail.trade.id} · ${tradeDetail.trade.asset_code} · ${TRADE_DIRECTION_LABEL[tradeDetail.trade.direction] ?? tradeDetail.trade.direction}（${tradeDetail.trade.trade_type}）`}
+                {`成交 #${tradeDetail.trade.id} · `}
+                <AssetLink
+                  assetCode={tradeDetail.trade.asset_code}
+                  assetName={rows.find((r) => r.id === tradeDetail.signal_id)?.asset_name}
+                  variant="inline"
+                />
+                {` · ${TRADE_DIRECTION_LABEL[tradeDetail.trade.direction] ?? tradeDetail.trade.direction}（${tradeDetail.trade.trade_type}）`}
               </div>
               <div>
                 {`成交日 ${tradeDetail.trade.trade_date}${tradeDetail.trade.trade_time ? ' ' + tradeDetail.trade.trade_time : ''}；数量 ${tradeDetail.trade.quantity}；价格 ${tradeDetail.trade.price}`}
@@ -995,7 +1004,7 @@ export default function Signals() {
                         }
                       >
                         <td style={thTdStyle}>
-                          <code>{code}</code>
+                          <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
                         </td>
                         <td style={thTdStyle}>
                           <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>

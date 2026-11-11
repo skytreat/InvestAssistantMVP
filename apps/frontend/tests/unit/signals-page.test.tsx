@@ -48,6 +48,8 @@ vi.mock('../../src/api/client', () => ({ api: { get: getMock, patch: patchMock }
 interface SignalFixture {
   id: number;
   asset_code: string;
+  /** 中文名（后端 `/api/signal` enrich；缺失为 null）*/
+  asset_name?: string | null;
   plugin_id: string;
   plugin_category?: string;
   direction: string;
@@ -728,5 +730,23 @@ describe('F2 · 信号处理状态与关联成交', () => {
     expect(within(panel).getByText(/成交日 2026-11-06 10:30:00/)).toBeInTheDocument();
     expect(within(panel).getByText(/成交金额 ¥1000\.00/)).toBeInTheDocument();
     expect(screen.getByTestId('signal-trade-pnl')).toHaveTextContent('不可得');
+  });
+});
+
+describe('标的名称 + K 线超链接', () => {
+  it('标的列展示「名称(代码)」并链接到 K 线页', async () => {
+    installPagedMock([{ rows: [{ ...BUY_ROW, asset_name: '浦发银行' }], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    const link = await screen.findByRole('link', { name: '浦发银行(sh600000)' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
+  });
+
+  it('名称缺失时回退为代码，仍链接到 K 线页', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    const link = await screen.findByRole('link', { name: 'sh600000' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
   });
 });

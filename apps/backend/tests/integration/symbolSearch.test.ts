@@ -56,6 +56,15 @@ async function search(q: string) {
   return { status: res.statusCode, body: JSON.parse(res.body) };
 }
 
+async function names(symbols: string) {
+  const res = await bundle.app.inject({
+    method: 'GET',
+    url: `/api/symbols/names?symbols=${encodeURIComponent(symbols)}`,
+    headers: { authorization: `Bearer ${bundle.adminToken}` },
+  });
+  return { status: res.statusCode, body: JSON.parse(res.body) };
+}
+
 beforeAll(async () => {
   bundle = await createTestApp();
   seed(PUFA);
@@ -116,5 +125,25 @@ describe('GET /api/symbols/search', () => {
     const { status, body } = await search('999999');
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
+  });
+});
+
+describe('GET /api/symbols/names', () => {
+  it('批量返回「代码 → 名称」，重复代码去重', async () => {
+    const { status, body } = await names('sh600000, sh511990,sh600000');
+    expect(status).toBe(200);
+    expect(body.data).toEqual({ sh600000: '浦发银行', sh511990: '华宝添益' });
+  });
+
+  it('缺失代码缺省该 key（不返回 null / 不报错）', async () => {
+    const { status, body } = await names('sh600000,sh999999');
+    expect(status).toBe(200);
+    expect(body.data).toEqual({ sh600000: '浦发银行' });
+  });
+
+  it('空参数 → 200 + 空对象', async () => {
+    const { status, body } = await names('');
+    expect(status).toBe(200);
+    expect(body.data).toEqual({});
   });
 });

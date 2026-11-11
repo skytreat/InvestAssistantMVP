@@ -417,7 +417,7 @@ describe('T143 券商导入向导 /broker/import', () => {
 
     // 不再误显示「导入完成」，而是待用户确认是否跳过
     const pending = await screen.findByTestId('pending-unknown-assets');
-    expect(pending.textContent).toContain('sh999999（未知股）');
+    expect(pending.textContent).toContain('未知股(sh999999)');
     expect(screen.queryByText('导入完成')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /跳过这些标的并导入/ }));

@@ -101,6 +101,15 @@ const EFFECTIVENESS = {
     },
     feeModelLabel: 'ETF 口径（印花税 0 / 过户费 0）',
     feeModels: [],
+    // F4 Step C：采纳/忽略三分口径（样本不足时不出百分比）
+    adoption: {
+      adopted: 1,
+      ignored: 1,
+      pending: 1,
+      processed: 2,
+      insufficientSample: true,
+      adoptionRate: null,
+    },
     generatedAt: '2026-11-08T00:00:00.000Z',
   },
   summary: [EMPTY_STATS],
@@ -119,6 +128,7 @@ beforeEach(() => {
           {
             id: 7,
             asset_code: 'sh600000',
+            asset_name: '浦发银行',
             plugin_id: 'rsi_oversold',
             direction: 'buy',
             trade_date: '2024-01-02',
@@ -225,6 +235,13 @@ describe('T150 策略有效性页（/strategy/effectiveness）', () => {
     expect(screen.getByText(/样本不足（3 条）/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出汇总' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出明细' })).toBeInTheDocument();
+  });
+
+  it('标的列展示「名称(代码)」并链接到 K 线页', async () => {
+    renderWithRouter(<StrategyEffectiveness />);
+
+    const link = await screen.findByRole('link', { name: '浦发银行(sh600000)' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
   });
 });
 

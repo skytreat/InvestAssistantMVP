@@ -9,6 +9,7 @@ import PluginParamForm, {
   type ParamField,
 } from '../components/PluginParamForm';
 import ScrollableTable from '../components/ScrollableTable';
+import AssetLink from '../components/AssetLink';
 import {
   cardStyle,
   cardTitleStyle,
@@ -805,10 +806,7 @@ export default function StockScan() {
                       序号
                     </th>
                     <th scope="col" style={thStyle}>
-                      标的代码
-                    </th>
-                    <th scope="col" style={thStyle}>
-                      名称
+                      标的
                     </th>
                     <th scope="col" style={thStyle}>
                       现价
@@ -849,9 +847,8 @@ export default function StockScan() {
                         </td>
                         <td style={thTdStyle}>{(page - 1) * PAGE_SIZE + i + 1}</td>
                         <td style={thTdStyle}>
-                          <code>{r.symbol}</code>
+                          <AssetLink assetCode={r.symbol} assetName={r.name} variant="inline" />
                         </td>
-                        <td style={thTdStyle}>{r.name ?? '--'}</td>
                         <td style={thTdStyle}>{formatClose(r.close)}</td>
                         <td
                           style={{
