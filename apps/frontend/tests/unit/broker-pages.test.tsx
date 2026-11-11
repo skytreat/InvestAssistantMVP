@@ -1119,6 +1119,21 @@ describe('全局「全部导入（所有页）」勾选', () => {
     expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm-batch')).toBe(false);
   });
 
+  it('批量模式不可用时显示原因，并保留逐页确认入口（不把入口全部藏掉）', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'gt-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+
+    // 未填券商标识 → 全局批量不可用
+    await user.click(screen.getByTestId('bulk-all-checkbox'));
+    expect(screen.getByRole('alert')).toHaveTextContent('请先填写券商标识');
+    expect(screen.getByTestId('bulk-all-confirm')).toBeDisabled();
+    // 逐页按钮仍渲染（此处同样因缺标识禁用），避免勾选后所有导入入口消失
+    expect(screen.getByRole('button', { name: /确认导入/ })).toBeInTheDocument();
+  });
+
   it('多券商互斥：勾选后提示不可跨券商单批，全局按钮禁用', async () => {
     postMock.mockImplementation((url: string, body?: unknown) => {
       if (url === '/broker-import/upload') {
