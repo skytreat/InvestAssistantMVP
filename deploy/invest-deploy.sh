@@ -99,13 +99,11 @@ if [ "$REPO_OWNER" != "root" ]; then
         echo "repository owner is not a valid user: $REPO_OWNER" >&2
         exit 5
     fi
-    OWNER_SHELL="$(getent passwd "$REPO_OWNER" | cut -d: -f7 || true)"
-    case "$OWNER_SHELL" in
-        ''|*/nologin|*/false)
-            echo "repository owner $REPO_OWNER has no usable shell: ${OWNER_SHELL:-<empty>}" >&2
-            exit 5
-            ;;
-    esac
+    # runuser 直接以该 uid 执行命令，不要求登录 shell；实测一次比猜 shell 更可靠。
+    if ! runuser -u "$REPO_OWNER" -- true; then
+        echo "cannot run commands as repository owner: $REPO_OWNER" >&2
+        exit 5
+    fi
 fi
 GIT_BIN="$(command -v git)"
 run_as_owner() {
