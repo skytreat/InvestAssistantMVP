@@ -73,6 +73,13 @@ export const COLORS = {
   textFaint: '#737373',    // 白底 4.74:1 / 页面灰底 4.53:1（原 #888888 仅 3.54:1，作废）
   // Backgrounds
   pageBg: '#f8fafc', cardBg: '#ffffff', headerBg: '#f9fafb',
+  // 导航分组底色（仅用于视觉分区，不承载业务语义；2026-11-11）
+  navGroupInvestmentBg: '#eff6ff', navGroupInvestmentBorder: '#dbeafe',
+  navGroupResearchBg: '#f0fdfa', navGroupResearchBorder: '#ccfbf1',
+  navGroupTradingBg: '#f0fdf4', navGroupTradingBorder: '#dcfce7',
+  navGroupBrokerBg: '#fffbeb', navGroupBrokerBorder: '#fef3c7',
+  navGroupStrategyBg: '#f5f3ff', navGroupStrategyBorder: '#ede9fe',
+  navGroupPortfolioBg: '#f1f5f9', navGroupPortfolioBorder: '#e2e8f0',
   // Borders
   borderLight: '#e5e7eb', borderMedium: '#d1d5db', borderFocus: '#2563eb',
   // ── 四色徽标色板（浅底 + 深字，保证 ≥ 4.5:1；Wave 4 T69 引入）──
