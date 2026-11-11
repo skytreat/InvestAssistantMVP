@@ -18,9 +18,21 @@ import type { BacktestResult } from '../engine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** 回测库路径：env `BACKTEST_DB_PATH` 优先，否则仓库根 `data/backtest.db` */
+/**
+ * 回测库路径（纸面账本同库）：
+ *   1. env `BACKTEST_DB_PATH` 优先；
+ *   2. 否则与业务库同目录（`SQLITE_DB_PATH` 所在的 `data/`）—— 生产后端起的是
+ *      tsup 打包产物 `app/dist/*.js`，`__dirname` 不在源码层级，仓库相对路径会
+ *      解析到 `/data/backtest.db`（`SQLITE_CANTOPEN: unable to open database file`）；
+ *   3. 都没有时回落到源码仓库根 `data/backtest.db`（本地开发）。
+ */
 export function resolveBacktestDbPath(): string {
-  return process.env.BACKTEST_DB_PATH ?? path.resolve(__dirname, '../../../../../../data/backtest.db');
+  if (process.env.BACKTEST_DB_PATH) return process.env.BACKTEST_DB_PATH;
+  const businessDbPath = process.env.SQLITE_DB_PATH;
+  if (businessDbPath && businessDbPath !== ':memory:') {
+    return path.join(path.dirname(businessDbPath), 'backtest.db');
+  }
+  return path.resolve(__dirname, '../../../../../../data/backtest.db');
 }
 
 const SCHEMA_SQL = `

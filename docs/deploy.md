@@ -115,6 +115,9 @@ SQLITE_DB_PATH=/opt/invol/IA_Prod/data/business.db
 DUCKDB_PATH=/opt/invol/IA_Prod/quotes.duckdb
 BACKUP_DIR=/opt/invol/IA_Prod/backup
 
+# 可选：回测/纸面账本库（默认与 SQLITE_DB_PATH 同目录的 backtest.db）
+# BACKTEST_DB_PATH=/opt/invol/IA_Prod/data/backtest.db
+
 # 可选
 # PLUGIN_ALLOWED_PATH=/opt/invol/IA_Prod/plugins/strategies
 # TDX2DB_WRITE_SENTINEL=/opt/invol/IA_Prod/.tdx2db-writing
@@ -388,6 +391,7 @@ tdx2db 是外部 Go 二进制，不随代码版本变化；升级需手动替换
 | `ERR_MODULE_NOT_FOUND` | `/opt/invol/IA_Prod/app` 缺少 node_modules 或 core | `ls /opt/invol/IA_Prod/app/node_modules/fastify`；重新执行部署（不要用 `--skip-build` 除非产物完整） |
 | 后端启动失败 | `.env.local` 缺失/权限错 | `ls -l /opt/invol/IA_Prod/.env.local`；`journalctl -u invest-assistant -n 50` |
 | 健康检查失败 | 端口被占 / SQLite 不可写 | `curl http://127.0.0.1:8080/api/health`；检查 `PORT`、`data/` 权限 |
+| 纸面账户/回测报 `unable to open database file` | `backtest.db` 路径解析错（打包产物下若未与 `SQLITE_DB_PATH` 同目录会落到 `/data`） | `ls -l /opt/invol/IA_Prod/data/backtest.db*`；确认属主 `invol`；必要时显式设 `BACKTEST_DB_PATH=/opt/invol/IA_Prod/data/backtest.db` 后重启 |
 | DuckDB 连接失败 | 行情库不存在 / 权限错 | `ls -l /opt/invol/IA_Prod/quotes.duckdb`；确认属主 `invol` 且模式 `600` |
 | 备份任务失败 | `/opt/invol/IA_Prod/backup` 不可写 | `sudo -u invol touch /opt/invol/IA_Prod/backup/.probe` |
 | 行情接口一直提示更新中 | 哨兵残留 | `ls -l /opt/invol/IA_Prod/.tdx2db-writing`；查看 `journalctl -u tdx2db`，确认无 tdx2db 运行后可手动删除 |
