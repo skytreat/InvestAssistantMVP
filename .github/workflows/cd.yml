@@ -157,10 +157,23 @@ jobs:
             exit 1
           }
 
+          RC=0
           RESULT="$(ssh -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes \
-            "$DUSER@$HOST" "$TARGET")"
+            "$DUSER@$HOST" "$TARGET")" || RC=$?
+          # 失败时也要把服务端日志打出来，否则只剩一个 exit code。
           printf '%s\n' "$RESULT"
+
+          if [ "$RC" -ne 0 ]; then
+            case "$RC" in
+              3) echo "::warning::服务端已有另一个部署在运行，本次跳过" ;;
+              4) echo "::warning::处于行情更新窗口或 tdx2db 写入期，本次跳过" ;;
+              5) echo "::error::服务端仓库/SHA 校验失败（见上方日志）" ;;
+              6) echo "::error::部署完成但 marker 与目标 SHA 不一致" ;;
+              *) echo "::error::服务端部署失败（exit $RC），见上方日志" ;;
+            esac
+            exit "$RC"
+          fi
 
           case "$RESULT" in
             *"deployed $TARGET"*|*"already deployed $TARGET"*) ;;
