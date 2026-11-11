@@ -59,6 +59,7 @@ sudo CADDY_DOMAIN=invest.example.com \
 2. 创建 `invol` 用户和 `/opt/invol/IA_Prod/{data,backup,secrets,plugins,frontend}` 目录
 3. 校验 `/opt/invol/IA_Prod/.env.local`（不覆盖生产文件，不复制开发机配置）
 4. `npm ci` → 根目录 `npm run build`（core → backend → frontend）→ `npm prune --omit=dev`
+   （在仓库目录构建，不触碰 `/opt/invol/IA_Prod/app` 的运行副本，构建期间服务照常可用）
 5. 组装 `/opt/invol/IA_Prod/app`，验证所有生产依赖（含 native 模块）可加载
 6. 原子切换后端与前端产物
 7. 安装 systemd units、启动 timer、首次初始化 DuckDB（如缺库）
@@ -95,6 +96,7 @@ sudo TDX2DB_VERSION=v2026.8.12 TDX2DB_SHA256=<sha256> bash deploy/deploy.sh
     ├── frontend/dist.old/   # 上一版本前端
     ├── quotes.duckdb        # tdx2db 写入，Fastify 只读
     ├── .tdx2db-writing      # tdx2db 写窗口哨兵（运行中存在）
+    ├── .deployed-sha        # 最近一次成功部署的 commit（CD 幂等标记）
     └── .env.local           # 生产环境变量（600 invol）
 ```
 
@@ -229,12 +231,123 @@ Node 自己触发补跑时走 `rerunQuoteUpdate()` 的主动让锁路径（ADR-0
 失败或未触发时校验会跳过，但会写 `datacheck/ERROR`，不会再出现「无数据却 ERROR=0 WARN=0」。
 若更新状态为成功但当日无数据，会先自动补跑一次；补跑后仍无数据才判 ERROR。
 
+## CD（每日定时部署）
+
+> 2026-11-10 新增，2026-11-11 修订。日常发布走 GitHub Actions `CD Production`；手工升级仍可用 `deploy/deploy.sh`。
+
+### 架构
+
+```text
+GitHub Actions  schedule 18:00 UTC（次日 02:00 Asia/Shanghai）+ workflow_dispatch
+  ├─ gate：解析目标 SHA，要求该 SHA 存在 push 到 main 的成功 CI（未完成时最多等 20 分钟）
+  └─ deploy：SSH 到生产机执行 /usr/local/sbin/invest-deploy <sha>
+       ├─ setsid 脱离 SSH 会话，日志写 /var/log/invest-deploy/
+       ├─ flock 串行（与手工 deploy.sh 共用 /run/invest-deploy.lock）
+       ├─ 工作日 16:55-17:45 与 .tdx2db-writing 期间拒绝
+       ├─ .deployed-sha 相同 -> no-op（不构建、不重启）
+       ├─ git fetch origin main -> 校验 SHA 在 main 上 -> git reset --hard
+       ├─ deploy/deploy.sh（构建 / 原子切换 / 健康检查 / 失败自恢复 app.old）
+       └─ 成功后才更新 .deployed-sha
+```
+
+- **只部署 main HEAD**：schedule 的目标是触发时刻的 main HEAD；dispatch 留空也是「运行时刻的 main HEAD」。
+  若 HEAD 的 CI 红或没有 push 触发的 CI 记录，当晚直接跳过，**不会**自动回退到「上一个绿提交」。
+- dispatch 旧 SHA 只用于**临时**回滚；次日 schedule 会重新部署 main HEAD（见「升级与回滚」）。
+- 构建必须在 ARM 生产机执行：`better-sqlite3`、DuckDB 是平台原生模块，
+  不能在 x86 runner 上构建后搬运 `node_modules`。
+- 仓库为 public，生产机 `git fetch` 无需额外凭证。
+- scheduled workflow 连续 60 天无仓库活动会被 GitHub 自动禁用，重新启用即可。
+- GitHub 的 cron 可能延迟数分钟，02:00（Asia/Shanghai）只是目标时刻。
+- SSH 断线不会中断部署：wrapper 用 `setsid` 把部署放进独立会话，Actions 侧可能显示失败，
+  但服务端会继续完成；下一次 CD 因 `.deployed-sha` 相同而 no-op。
+- wrapper 日志：`/var/log/invest-deploy/<UTC 时间>-<sha7>.log`，部署结束后整段回传 Actions 日志。
+
+### 一次性配置
+
+1. 生成 CD 专用密钥（私钥只放 GitHub secret）：
+
+```bash
+ssh-keygen -t ed25519 -C "cd-invest" -f cd-invest -N ""
+```
+
+2. 在生产机安装接收端（创建 `deployer` 用户、wrapper、sudoers、authorized_keys）：
+
+```bash
+cd /opt/invol/InvestAssistantMVP
+sudo bash deploy/install-cd-host.sh --public-key-file /tmp/cd-invest.pub
+```
+
+> `/usr/local/sbin/invest-deploy` 是**安装时拷贝**，CD 不会自动更新它。
+> 修改 `deploy/invest-deploy.sh`（或 sudoers/authorized_keys）后必须重新执行
+> `install-cd-host.sh`，否则生产机仍跑旧 wrapper。重复执行只替换脚本管理的
+> authorized_keys 条目，手工添加的其他 key 会保留。
+
+3. GitHub：`Settings -> Environments -> production`
+   - secrets：`DEPLOY_SSH_KEY`（私钥全文）、`DEPLOY_KNOWN_HOSTS`（`ssh-keyscan -t ed25519 <host>` 输出）
+   - variables：`DEPLOY_HOST`、`DEPLOY_USER`（默认 `deployer`）
+
+4. 手动演练：`Actions -> CD Production -> Run workflow`，SHA 留空即部署 main HEAD。
+
+### 行为与安全
+
+| 项 | 说明 |
+|---|---|
+| 触发 | 每天 02:00（Asia/Shanghai，前一日 18:00 UTC），或手动 dispatch |
+| 目标 | 只部署 main HEAD；dispatch 可指定 main 上任意有 push CI 的 SHA |
+| 门禁 | 目标 SHA 必须存在 push 到 main 的成功 CI；失败/取消/超时都不部署 |
+| 幂等 | `.deployed-sha` 相同直接退出，不构建、不重启 |
+| 并发 | GitHub `concurrency: cd-production` + 服务端 `flock`（手工 `deploy.sh` 同锁）双保险 |
+| 权限 | SSH 用户 `deployer` 只能运行 root 所有的 `/usr/local/sbin/invest-deploy`（无参数）；`restrict` 禁 pty/转发 |
+| 断线 | wrapper 用 `setsid` 脱离 SSH 会话；部署继续，日志落盘 |
+| 失败恢复 | `deploy.sh` 在停服到健康检查通过之间由 EXIT trap 兜底恢复 `app.old` |
+| 回滚 | 自动回滚只到 `app.old`；手工回滚见「升级与回滚」，必须先复位 marker |
+
+安全边界：拿到 `DEPLOY_SSH_KEY` 等价于「可把 origin/main 上任意提交部署到生产」，
+但无法执行任意 shell；密钥只存于 `production` environment，建议定期轮换。
+
+信任边界：仓库目录 `/opt/invol/InvestAssistantMVP` 属主是运行用户 `invol`，CD 以 root
+执行其中的 `deploy/deploy.sh`。`git reset --hard` **不会**清理未跟踪/被忽略文件
+（如仓库级 `.npmrc`、`node_modules`），因此能控制 `invol` 账号或仓库目录的人，
+可在下一次 CD 获得 root 执行能力。缓解措施：`invol` 只用于运行服务与拉代码，
+不共享登录凭据、不在仓库目录手工放置脚本；如需更严格，可改为 npm 阶段以
+`invol` 身份执行并校验 ignored 文件。
+
+### 故障排查（CD）
+
+| 症状 | 排查 |
+|---|---|
+| `缺少 secret DEPLOY_SSH_KEY` | environment `production` 未配置 secret |
+| SSH `Permission denied` | `authorized_keys` 是否含 forced command；`sudo -l -U deployer` 是否只有一条 |
+| `inside market-data window` / `tdx2db write window` | 正常避让；在窗口外手动 dispatch |
+| `目标 SHA 没有 push 到 main 的 CI 运行记录` | 该 SHA 是历史中间提交或 CI 未触发；改用 main HEAD，或 `git revert` 产生新提交 |
+| `commit is not on origin/main` | 目标 SHA 未合入 main（或被 force-push），拒绝部署 |
+| `deploy finished but marker is ...` | `deploy.sh` 未走到成功结尾；查 `journalctl -u invest-assistant` 与 `/var/log/invest-deploy/` |
+| Actions 显示 SSH 失败但服务端日志仍在写 | 连接断线；等部署完成后查 marker，下一次 CD 会 no-op |
+
 ## 升级与回滚
 
-正常升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会构建新产物，
-切换后端目录并重启；健康检查失败会自动恢复 `app.old`。
+日常升级由 CD 完成（合入 main 后次日 02:00 Asia/Shanghai 自动部署，或手动 dispatch 立即部署）。
+手工升级：拉取代码后直接执行 `sudo bash deploy/deploy.sh`。脚本会构建新产物，
+切换后端目录并重启（仅在切换瞬间短暂停服）；健康检查失败会自动恢复 `app.old`，
+停服到健康检查通过之间的其他失败也会由 EXIT trap 触发同样的恢复。
 
-手工回滚：
+### 回滚语义（重要）
+
+CD 只部署 main HEAD，**没有**「自动回退到上一个绿提交」的行为。三种回滚方式：
+
+| 方式 | 做法 | 持续时间 |
+|---|---|---|
+| 自动 | `deploy.sh` 健康检查失败 -> `app.old` | 单次部署内 |
+| 临时 | `CD Production` dispatch 上一版完整 SHA | 到下一次 schedule（次日 02:00） |
+| 持久 | 在 main 上 `git revert` 产生新提交，CI 绿后由 CD 部署 | 永久 |
+
+也可用 `Actions -> CD Production -> Disable workflow` 暂停定时任务。
+
+**dispatch 回滚是临时的**：marker 变为旧版本 A 后，次日 schedule 的 target 是 main HEAD B
+（B ≠ A），会重新部署被回滚的版本。持久回滚必须走 `git revert` 或先禁用 schedule。
+
+**手工 `app.old` 回滚后必须复位 marker**，否则 CD 看到 `.deployed-sha` 仍等于 main HEAD，
+会一直 no-op 并报 `already deployed`：
 
 ```bash
 sudo systemctl stop invest-assistant
@@ -242,9 +355,18 @@ sudo rm -rf /opt/invol/IA_Prod/app
 sudo mv /opt/invol/IA_Prod/app.old /opt/invol/IA_Prod/app
 sudo systemctl start invest-assistant
 sudo journalctl -u invest-assistant -n 50 --no-pager
+
+# 复位 marker（二选一）：
+# a) 删除 -> 下一次 CD 会重新部署 main HEAD（适用于 main 已修复/你就是要继续前进）
+sudo rm -f /opt/invol/IA_Prod/.deployed-sha
+
+# b) 写入当前实际运行的 SHA -> CD 认为该版本已部署而 no-op
+#    （适用于临时回滚后先禁用 schedule，等 git revert 再恢复）
+echo <实际运行的完整sha> | sudo tee /opt/invol/IA_Prod/.deployed-sha
+sudo chown invol:invol /opt/invol/IA_Prod/.deployed-sha
 ```
 
-前端回滚：
+前端回滚（手工后端回滚后通常一并执行）：
 
 ```bash
 sudo rm -rf /opt/invol/IA_Prod/frontend/dist
