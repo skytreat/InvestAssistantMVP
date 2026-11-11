@@ -527,7 +527,21 @@ mv "$FRONTEND_STAGE" "$FRONTEND_DIR"
 echo "✅ 前端静态产物已切换"
 
 # ---------------------------------------------------------------------------
-# 11. Caddy（可选）
+# 11. 记录已部署版本（CD 幂等标记，见 deploy/invest-deploy.sh）
+#
+# 必须在 Caddy 之前写：Caddy 是可选的主机配置，手动传错域名不应让已经
+# 成功切换的版本在次晚被重复构建部署。
+# ---------------------------------------------------------------------------
+CURRENT_STEP="记录部署版本"
+DEPLOYED_SHA="$(git -C "$PROJECT_ROOT" -c safe.directory="$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$DEPLOYED_SHA" ]; then
+    printf '%s\n' "$DEPLOYED_SHA" >"$DEPLOY_DIR/.deployed-sha"
+    chown "$USERNAME:$USERNAME" "$DEPLOY_DIR/.deployed-sha" 2>/dev/null || true
+    echo "✅ 已部署版本：$DEPLOYED_SHA"
+fi
+
+# ---------------------------------------------------------------------------
+# 12. Caddy（可选）
 # ---------------------------------------------------------------------------
 CURRENT_STEP="配置 Caddy"
 if ! command -v caddy >/dev/null 2>&1; then
@@ -564,17 +578,6 @@ else
     systemctl restart caddy
     CADDY_CONFIGURED=1
     echo "✅ Caddy 已配置并重启"
-fi
-
-# ---------------------------------------------------------------------------
-# 12. 记录已部署版本（CD 幂等标记，见 deploy/invest-deploy.sh）
-# ---------------------------------------------------------------------------
-CURRENT_STEP="记录部署版本"
-DEPLOYED_SHA="$(git -C "$PROJECT_ROOT" -c safe.directory="$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
-if [ -n "$DEPLOYED_SHA" ]; then
-    printf '%s\n' "$DEPLOYED_SHA" > "$DEPLOY_DIR/.deployed-sha"
-    chown "$USERNAME:$USERNAME" "$DEPLOY_DIR/.deployed-sha" 2>/dev/null || true
-    echo "✅ 已部署版本：$DEPLOYED_SHA"
 fi
 
 echo ""
