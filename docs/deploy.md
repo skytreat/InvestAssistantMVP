@@ -324,6 +324,10 @@ sudo bash deploy/install-cd-host.sh --public-key-file /tmp/cd-invest.pub
 | `deploy finished but marker is ...` | `deploy.sh` 未走到成功结尾；查 `journalctl -u invest-assistant` 与 `/var/log/invest-deploy/` |
 | Actions 显示 SSH 失败但服务端日志仍在写 | 连接断线；等部署完成后查 marker，下一次 CD 会 no-op |
 
+> 2026-11-11 实测：仓库路径是 symlink（`/opt/invol/InvestAssistantMVP -> /data/invol/InvestAssistantMVP`）时，
+> root 下 `git -c safe.directory=<逻辑路径>` 会报 dubious ownership，marker 写不出来，CD 报 `exit 6`。
+> 现在 CD 由 wrapper 通过 `IA_DEPLOY_SHA` 直接传目标 SHA；手工执行 `deploy.sh` 时用 `pwd -P` 的物理路径兜底。
+
 ## 升级与回滚
 
 日常升级由 CD 完成（合入 main 后次日 02:00 Asia/Shanghai 自动部署，或手动 dispatch 立即部署）。

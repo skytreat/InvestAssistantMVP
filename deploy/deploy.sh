@@ -533,11 +533,20 @@ echo "✅ 前端静态产物已切换"
 # 成功切换的版本在次晚被重复构建部署。
 # ---------------------------------------------------------------------------
 CURRENT_STEP="记录部署版本"
-DEPLOYED_SHA="$(git -C "$PROJECT_ROOT" -c safe.directory="$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
+# CD wrapper 直接传入目标 SHA；手工部署才回退到 git HEAD。
+# 仓库路径可能是 symlink（实测 /opt/invol/... -> /data/invol/...），
+# safe.directory 必须用物理路径，否则 root 下 git 会报 dubious ownership。
+DEPLOYED_SHA="${IA_DEPLOY_SHA:-}"
+if [ -z "$DEPLOYED_SHA" ]; then
+    PROJECT_ROOT_REAL="$(cd "$PROJECT_ROOT" && pwd -P)"
+    DEPLOYED_SHA="$(git -C "$PROJECT_ROOT" -c safe.directory="$PROJECT_ROOT_REAL" rev-parse HEAD 2>/dev/null || true)"
+fi
 if [ -n "$DEPLOYED_SHA" ]; then
     printf '%s\n' "$DEPLOYED_SHA" >"$DEPLOY_DIR/.deployed-sha"
     chown "$USERNAME:$USERNAME" "$DEPLOY_DIR/.deployed-sha" 2>/dev/null || true
     echo "✅ 已部署版本：$DEPLOYED_SHA"
+else
+    echo "⚠️  无法确定部署版本，跳过 .deployed-sha 更新（CD 幂等检查会失败）" >&2
 fi
 
 # ---------------------------------------------------------------------------

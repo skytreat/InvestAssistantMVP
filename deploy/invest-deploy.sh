@@ -136,7 +136,9 @@ run_as_owner "$GIT_BIN" -C "$REPO_DIR" -c safe.directory="$REPO_DIR" reset --har
 # deploy.sh 内含构建、原子切换、健康检查、失败自恢复与 marker 写入；
 # 健康检查只做一次（deploy.sh 内置 60 次重试），不再重复调用 healthcheck.sh。
 # 本进程已持有 /run/invest-deploy.lock，用环境变量让 deploy.sh 跳过重复加锁。
-IA_DEPLOY_LOCK_HELD=1 bash "$REPO_DIR/deploy/deploy.sh"
+# 目标 SHA 直接传给 deploy.sh：避免它在 symlink 仓库里以 root 跑 git 触发
+# dubious ownership，导致 marker 写不出来、本进程误报 exit 6。
+IA_DEPLOY_SHA="$SHA" IA_DEPLOY_LOCK_HELD=1 bash "$REPO_DIR/deploy/deploy.sh"
 
 MARKED="$(cat "$MARKER" 2>/dev/null || true)"
 if [ "$MARKED" != "$SHA" ]; then
