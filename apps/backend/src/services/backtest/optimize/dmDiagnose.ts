@@ -557,6 +557,67 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
       trailingTakeProfitRequiresThreshold: false,
     },
   },
+  // ── §13.15 A2：黄金腿加权（不引入新 ETF，对现有 sh518880 提权）＋ A3：volWindow 扫 ──
+  {
+    key: 'bt-gold-boost-2x',
+    label: '跑赢档+黄金腿2倍权重（A2）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      symbolWeights: '{"sh518880": 2}',
+    },
+  },
+  {
+    key: 'bt-gold-boost-3x',
+    label: '跑赢档+黄金腿3倍权重（A2）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      symbolWeights: '{"sh518880": 3}',
+    },
+  },
+  {
+    key: 'bt-vol-win-10',
+    label: '跑赢档+vol volWindow=10（A3，灵敏）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 10,
+    },
+  },
+  {
+    key: 'bt-vol-win-50',
+    label: '跑赢档+vol volWindow=50（A3，稳）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 50,
+    },
+  },
 ];
 
 function cagrBetween(first: number, last: number, fromDate: string, toDate: string): number {
