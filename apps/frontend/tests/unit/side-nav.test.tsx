@@ -236,6 +236,41 @@ describe('UX-12 · 导航分组标题', () => {
     ]);
   });
 
+  it('每个分组容器有独立的浅底色（桌面侧栏）', () => {
+    setViewportWidth(1440);
+    renderWithRouter(<App />, { initialEntries: ['/notfound'] });
+
+    const groups = screen.getAllByTestId('side-nav-group');
+    expect(groups.map((g) => g.getAttribute('data-group'))).toEqual(NAV_GROUPS);
+
+    const backgrounds = groups.map((g) => g.style.background);
+    expect(new Set(backgrounds).size).toBe(NAV_GROUPS.length);
+    for (const bg of backgrounds) {
+      expect(bg).not.toBe('');
+      expect(bg).not.toBe('transparent');
+    }
+  });
+
+  it('顶栏平铺与移动折叠菜单复用同一套分组底色', async () => {
+    setViewportWidth(800);
+    const { unmount } = renderWithRouter(<Navbar />);
+    const flat = screen.getAllByTestId('flat-nav-group');
+    const flatBackgrounds = flat.map((g) => g.style.background);
+    expect(new Set(flatBackgrounds).size).toBe(flat.length);
+    for (const bg of flatBackgrounds) expect(bg).not.toBe('');
+    unmount();
+
+    setViewportWidth(375);
+    const user = userEvent.setup();
+    renderWithRouter(<Navbar />);
+    await user.click(screen.getByRole('button', { name: '打开导航菜单' }));
+
+    const mobile = screen.getAllByTestId('mobile-nav-group');
+    const mobileBackgrounds = mobile.map((g) => g.style.background);
+    expect(new Set(mobileBackgrounds).size).toBe(mobile.length);
+    for (const bg of mobileBackgrounds) expect(bg).not.toBe('');
+  });
+
   it('窄屏折叠菜单同样按业务域分组（标题与入口都在）', async () => {
     useUserStore.setState({ token: 'tok-test', refreshToken: null, username: 'tester', role: 'user' });
     setViewportWidth(375);

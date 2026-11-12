@@ -1119,6 +1119,21 @@ describe('全局「全部导入（所有页）」勾选', () => {
     expect(postMock.mock.calls.some((c) => String(c[0]) === '/broker-import/confirm-batch')).toBe(false);
   });
 
+  it('批量模式不可用时显示原因，并保留逐页确认入口（不把入口全部藏掉）', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerImport />, { initialEntries: ['/broker/import'] });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(fileInput, new File(['x'], 'gt-trade.csv') as never);
+    await waitFor(() => expect(screen.getByText('探测结果')).toBeInTheDocument());
+
+    // 未填券商标识 → 全局批量不可用
+    await user.click(screen.getByTestId('bulk-all-checkbox'));
+    expect(screen.getByRole('alert')).toHaveTextContent('请先填写券商标识');
+    expect(screen.getByTestId('bulk-all-confirm')).toBeDisabled();
+    // 逐页按钮仍渲染（此处同样因缺标识禁用），避免勾选后所有导入入口消失
+    expect(screen.getByRole('button', { name: /确认导入/ })).toBeInTheDocument();
+  });
+
   it('多券商互斥：勾选后提示不可跨券商单批，全局按钮禁用', async () => {
     postMock.mockImplementation((url: string, body?: unknown) => {
       if (url === '/broker-import/upload') {
@@ -1204,6 +1219,110 @@ describe('T151③ 补录全选（当前页可补录行）', () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+describe('跨页全选（全选全部页可补录）', () => {
+  const makeRow = (id: number, over: Record<string, unknown> = {}) => ({
+    ...DIFF_ROWS[0],
+    id,
+    asset_code: `sh${600000 + id}`,
+    ...over,
+  });
+
+  /** /diff 按页返回给定行；total 决定跨页全选是否继续翻页 */
+  function mockDiffPages(pages: Array<Array<ReturnType<typeof makeRow>>>, total: number) {
+    getMock.mockImplementation((url: string, config?: { params?: Record<string, number | string> }) => {
+      if (url === '/broker-import/batches') return Promise.resolve(mockResponse({ batches: batchRows }));
+      if (url === '/broker-reconcile/latest') return Promise.resolve(mockResponse(REPORT));
+      if (url === '/broker-reconcile/diff') {
+        if (config?.params?.category !== 'unmatched')
+          return Promise.resolve(mockResponse({ rows: [], total: 0 }, { pagination: { total: 0 } }));
+        const p = Number(config?.params?.page ?? 1);
+        return Promise.resolve(mockResponse({ rows: pages[p - 1] ?? [], total }, { pagination: { total } }));
+      }
+      return Promise.reject(new Error(`unexpected get ${url}`));
+    });
+  }
+
+  /** confirm 返回本批条数；/run 为补录后的刷新兜底 */
+  function mockConfirmOk() {
+    postMock.mockImplementation((url: string, body?: { items?: unknown[] }) => {
+      if (url === '/broker-reconcile/confirm')
+        return Promise.resolve(
+          mockResponse({
+            brokerCode: 'gt',
+            imported: body?.items?.length ?? 0,
+            already: 0,
+            invalid: 0,
+            rows: [],
+          }),
+        );
+      return Promise.resolve(mockResponse({ ok: true }));
+    });
+  }
+
+  it('跨页拉全当前分类的可补录行，一次确认提交所有页', async () => {
+    mockDiffPages(
+      [
+        [
+          makeRow(101),
+          makeRow(102, { match_status: 'FUZZY' }), // 疑似匹配不可补录
+          makeRow(103, { asset_code: null }), // 缺标的不可补录
+        ],
+        [makeRow(104), makeRow(105)],
+      ],
+      201,
+    );
+    mockConfirmOk();
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await screen.findByRole('checkbox', { name: '全选全部页可补录' });
+    await user.click(screen.getByRole('checkbox', { name: '全选全部页可补录' }));
+
+    // 3 笔可补录行来自第 1、2 页
+    expect(
+      await screen.findByRole('button', { name: /全部补录（3 笔）/ }, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    const diffP2 = getMock.mock.calls.filter(
+      (c) =>
+        String(c[0]) === '/broker-reconcile/diff' &&
+        (c[1] as { params?: { page?: number } })?.params?.page === 2,
+    );
+    expect(diffP2.length).toBeGreaterThan(0);
+    expect((diffP2[0][1] as { params?: { category?: string } }).params?.category).toBe('unmatched');
+
+    await user.click(screen.getByRole('button', { name: /全部补录（3 笔）/ }));
+    await waitFor(() => {
+      const call = postMock.mock.calls.find((c) => String(c[0]) === '/broker-reconcile/confirm');
+      expect((call?.[1] as { items: unknown }).items).toEqual([
+        { sourceId: 101 },
+        { sourceId: 104 },
+        { sourceId: 105 },
+      ]);
+    });
+  });
+
+  it('跨页选中超过 500 笔时按 500 笔/批自动分批提交', async () => {
+    const rows = Array.from({ length: 501 }, (_, i) => makeRow(1000 + i));
+    mockDiffPages([rows.slice(0, 200), rows.slice(200, 400), rows.slice(400)], 501);
+    mockConfirmOk();
+    const user = userEvent.setup();
+    renderWithRouter(<BrokerReconcile />, { initialEntries: ['/broker/reconcile?brokerCode=gt'] });
+
+    await screen.findByRole('checkbox', { name: '全选全部页可补录' });
+    await user.click(screen.getByRole('checkbox', { name: '全选全部页可补录' }));
+
+    const confirmBtn = await screen.findByRole('button', { name: /全部补录（501 笔）/ }, { timeout: 5000 });
+    await user.click(confirmBtn);
+
+    const result = await screen.findByTestId('confirm-batch-result', {}, { timeout: 5000 });
+    expect(result).toHaveTextContent('成功 501');
+    const calls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-reconcile/confirm');
+    expect(calls).toHaveLength(2);
+    expect((calls[0][1] as { items: unknown[] }).items).toHaveLength(500);
+    expect((calls[1][1] as { items: unknown[] }).items).toHaveLength(1);
   });
 });
 
@@ -1300,12 +1419,12 @@ describe('非成交族可见性与补录（转入 / 送股 / 分红）', () => {
     await user.click(screen.getByRole('button', { name: /去补录（3 笔）/ }));
     await waitFor(() => expect(screen.getByText('现金红利')).toBeInTheDocument());
 
-    // checkbox 顺序：0=表头全选，1=TRANSFER_IN，2=DIVIDEND_BONUS，3=DIVIDEND_CASH
-    const boxes = screen.getAllByRole('checkbox');
-    expect(boxes).toHaveLength(4);
-    expect(boxes[1]).toBeEnabled();
-    expect(boxes[3]).toBeEnabled();
-    await user.click(boxes[3]);
+    // checkbox：2 个表头（本页 / 全部页）+ 3 行；按行 aria-label 精确定位
+    expect(screen.getAllByRole('checkbox')).toHaveLength(5);
+    expect(screen.getByRole('checkbox', { name: '选择补录 #201' })).toBeEnabled();
+    const cash = screen.getByRole('checkbox', { name: '选择补录 #203' });
+    expect(cash).toBeEnabled();
+    await user.click(cash);
 
     // 补录对话框：现金分红按 dividend 固定类型，不提供成交族下拉
     expect(await screen.findByTestId('fixed-type-203')).toHaveTextContent('现金分红');

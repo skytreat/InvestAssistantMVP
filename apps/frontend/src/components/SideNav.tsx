@@ -1,7 +1,12 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { SPACING } from '../theme/tokens';
-import { navGroupTitleStyle, navLinkActiveStyle, navLinkStyle } from '../theme/styles';
+import {
+  navGroupContainerStyle,
+  navGroupTitleStyle,
+  navLinkActiveStyle,
+  navLinkStyle,
+} from '../theme/styles';
 
 /**
  * 桌面左侧导航栏（T76 ① · PRD §5.8 #7）
@@ -11,6 +16,7 @@ import { navGroupTitleStyle, navLinkActiveStyle, navLinkStyle } from '../theme/s
  * 桌面端（≥1024px）的主导航入口，垂直排列，**与顶栏平铺导航是同一批入口**：
  * 入口清单由调用方（`pages/_shared.tsx` 的 `NAV_ITEMS`）传入，
  * 本组件**只负责渲染**（垂直排列 + 当前页高亮 + `aria-current`）。
+ * 业务域分组容器使用 `navGroupContainerStyle` 的浅底色做视觉分区（不改变入口顺序）。
  *
  * ⚠️ **组件层不反向依赖页面层** —— 导航项清单、角色过滤、可见性判断都不在本文件里：
  * - 清单 → `pages/_shared.tsx` 的 `NAV_ITEMS`（单一来源，顶栏与侧栏共用）；
@@ -102,13 +108,14 @@ export default function SideNav({ items, isAdmin }: SideNavProps) {
       }}
     >
       {groups.map((group, groupIndex) => (
-        <div key={`${group.title || 'nav'}-${groupIndex}`}>
+        <div
+          key={`${group.title || 'nav'}-${groupIndex}`}
+          data-testid="side-nav-group"
+          data-group={group.title}
+          style={navGroupContainerStyle(group.title)}
+        >
           {/* UX-12：分组标题是语义化 <h3>，不是入口（不可点击、不进 Tab 序列） */}
-          {group.title !== '' && (
-            <h3 style={{ ...navGroupTitleStyle, marginTop: groupIndex === 0 ? 0 : SPACING.gapBase }}>
-              {group.title}
-            </h3>
-          )}
+          {group.title !== '' && <h3 style={navGroupTitleStyle}>{group.title}</h3>}
           <ul
             style={{
               listStyle: 'none',

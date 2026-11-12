@@ -78,7 +78,8 @@ export const navLinkStyle: CSSProperties = {
  * 导航链接激活态（T63 · ui-spec §4「语义标签 / 导航激活态」）
  *
  * 复用既有 token，不引入新 hex：
- * - 底色 `COLORS.brandBg`（浅蓝）
+ * - 底色 `COLORS.bgSelectedPrimary`（比 `brandBg` 深一档，避免在「投资」分组
+ *   浅蓝底上和高亮几乎同色）
  * - 文字 `COLORS.brandLink`（深蓝）
  * - 字重 600
  *
@@ -86,7 +87,7 @@ export const navLinkStyle: CSSProperties = {
  *    （`style={({ isActive }) => ({ ...base, ...(isActive ? active : {}) })}`）。
  */
 export const navLinkActiveStyle: CSSProperties = {
-  background: COLORS.brandBg,
+  background: COLORS.bgSelectedPrimary,
   color: COLORS.brandLink,
   fontWeight: 600,
 };
@@ -96,6 +97,10 @@ export const navLinkActiveStyle: CSSProperties = {
  *
  * ⚠️ 只是**标签**，不是入口 —— 渲染成 `<h3>`（语义化标题），不可点击、不参与 `NavLink` 列表。
  *    左内边距 12px 与 `navLinkStyle` 的水平 padding 对齐，避免标题比入口"缩进"。
+ *
+ * ⚠️ 文字色用 `textSecondary`（而非 `textMuted`）：分组容器有了浅底色后，
+ *    `textMuted` 在 `#eff6ff` / `#f5f3ff` / `#f1f5f9` 上只有 4.41~4.44:1，
+ *    低于 WCAG AA 的 4.5:1；`textSecondary` 在六种底色上均 ≥ 6.89:1。
  */
 export const navGroupTitleStyle: CSSProperties = {
   margin: `0 0 ${SPACING.gapTight}`,
@@ -103,8 +108,38 @@ export const navGroupTitleStyle: CSSProperties = {
   fontSize: TYPO.captionSize,
   fontWeight: '600',
   letterSpacing: '0.05em',
-  color: COLORS.textMuted,
+  color: COLORS.textSecondary,
 };
+
+/**
+ * 导航分组容器底色（2026-11-11）
+ *
+ * 六个业务域各用一种极浅底色，**仅用于视觉分区**；分组语义仍由 `<h3>` 文本承担，
+ * 因此不依赖颜色传达信息。未知分组（含空标题）返回空对象，不渲染底色。
+ *
+ * ⚠️ 分组标题文案与 `pages/_shared.tsx` 的 `NAV_ITEMS.group` 是同一套 UX-12 文案；
+ *    这里只做「文案 → 底色」的映射，不参与分组/排序。
+ */
+const NAV_GROUP_TINTS: Record<string, { background: string; borderColor: string }> = {
+  投资: { background: COLORS.navGroupInvestmentBg, borderColor: COLORS.navGroupInvestmentBorder },
+  研究: { background: COLORS.navGroupResearchBg, borderColor: COLORS.navGroupResearchBorder },
+  交易与持仓: { background: COLORS.navGroupTradingBg, borderColor: COLORS.navGroupTradingBorder },
+  券商: { background: COLORS.navGroupBrokerBg, borderColor: COLORS.navGroupBrokerBorder },
+  策略与设置: { background: COLORS.navGroupStrategyBg, borderColor: COLORS.navGroupStrategyBorder },
+  组合与管理: { background: COLORS.navGroupPortfolioBg, borderColor: COLORS.navGroupPortfolioBorder },
+};
+
+export function navGroupContainerStyle(groupTitle: string): CSSProperties {
+  const tint = NAV_GROUP_TINTS[groupTitle];
+  if (!tint) return {};
+  return {
+    background: tint.background,
+    border: `1px solid ${tint.borderColor}`,
+    borderRadius: RADIUS.md,
+    padding: `${SPACING.gapBase} ${SPACING.gapBase} ${SPACING.gapTight}`,
+    boxSizing: 'border-box',
+  };
+}
 
 /** 卡片容器 */
 export const cardStyle: CSSProperties = {

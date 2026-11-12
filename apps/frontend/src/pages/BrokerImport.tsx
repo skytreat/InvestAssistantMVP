@@ -643,8 +643,9 @@ export default function BrokerImport() {
               </span>
             </label>
             <div style={{ fontSize: TYPO.captionSize, color: COLORS.textSecondary, marginTop: 4 }}>
-              勾选后本批文件一次性提交（同一券商，单次最多 5 个文件）；取消勾选即恢复逐页确认。
-              未知标的仍会单独列出并由你选择「跳过」或取消，不会自动丢弃。
+              勾选后下方会出现「全部导入【券商】」按钮，<strong>再点该按钮才会写入</strong>
+              （不会因勾选自动提交）。取消勾选即恢复逐页确认。同一券商单次最多 5
+              个文件；未知标的仍会单独列出并由你选择「跳过」或取消，不会自动丢弃。
             </div>
             {bulkAll && bulkDisabledReason !== null && (
               <p style={{ ...errorStyle, marginTop: 6 }} role="alert">
@@ -699,7 +700,8 @@ export default function BrokerImport() {
             </div>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {!bulkAll &&
+            {/* 批量模式不可用时保留逐页按钮，避免勾选后所有导入入口一起消失 */}
+            {(!bulkAll || bulkDisabledReason !== null) &&
               groups.map(([key, groupFiles]) => {
                 const importable = groupFiles.filter((f) => detectOk(f));
                 if (importable.length === 0) return null;

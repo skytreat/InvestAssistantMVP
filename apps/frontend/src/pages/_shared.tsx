@@ -2,7 +2,12 @@ import React from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useUserStore } from '../store/user';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
-import { navGroupTitleStyle, navLinkActiveStyle, navLinkStyle } from '../theme/styles';
+import {
+  navGroupContainerStyle,
+  navGroupTitleStyle,
+  navLinkActiveStyle,
+  navLinkStyle,
+} from '../theme/styles';
 import { groupNavItems } from '../components/SideNav';
 import type { NavItem } from '../components/SideNav';
 
@@ -63,6 +68,8 @@ const activeLinkStyle: React.CSSProperties = navLinkActiveStyle;
  *    `group` 仅标记**相邻连续区间**所属业务域，不做排序 / 重排；
  *    渲染时由 `groupNavItems()` 切段 → 每段前插入一个 `<h3>` 标题。
  *    管理员专属组（券商 / 组合与管理）在普通用户视角下若被过滤空，标题一并消失。
+ *    2026-11-11：分组容器按业务域加浅底色（`navGroupContainerStyle`），仅做视觉分区，
+ *    **不改变分组、顺序与入口**。
  */
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: '仪表盘', group: '投资' },
@@ -230,7 +237,12 @@ export function Navbar({ showFlatNav = true }: NavbarProps) {
             }}
           >
             {groups.map((group, groupIndex) => (
-              <div key={`${group.title || 'nav'}-${groupIndex}`}>
+              <div
+                key={`${group.title || 'nav'}-${groupIndex}`}
+                data-testid="flat-nav-group"
+                data-group={group.title}
+                style={navGroupContainerStyle(group.title)}
+              >
                 {/* UX-12：分组标题是语义化 <h3>，不是入口 */}
                 {group.title !== '' && <h3 style={navGroupTitleStyle}>{group.title}</h3>}
                 <ul style={navListStyle}>
@@ -275,9 +287,14 @@ export function Navbar({ showFlatNav = true }: NavbarProps) {
            `<header>` 内嵌 landmark（`<nav>`），放外面才合法。
       */}
       {isMobile && (
-        <nav id="mobile-menu" aria-label="主导航" hidden={!menuOpen}>
+        <nav id="mobile-menu" aria-label="主导航" hidden={!menuOpen} style={{ padding: SPACING.gapBase }}>
           {groups.map((group, groupIndex) => (
-            <div key={`${group.title || 'nav'}-${groupIndex}`} data-testid="mobile-nav-group">
+            <div
+              key={`${group.title || 'nav'}-${groupIndex}`}
+              data-testid="mobile-nav-group"
+              data-group={group.title}
+              style={{ ...navGroupContainerStyle(group.title), marginBottom: SPACING.gapBase }}
+            >
               {/* UX-12：窄屏折叠菜单与桌面侧栏共用同一份分组（窄屏同样生效） */}
               {group.title !== '' && <h3 style={navGroupTitleStyle}>{group.title}</h3>}
               <ul style={mobileMenuListStyle}>

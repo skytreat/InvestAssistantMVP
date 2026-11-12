@@ -74,6 +74,22 @@ export const COLORS = {
   cardBg: '#ffffff', // 卡片 / 面板底色（白）
   headerBg: '#f9fafb', // 表头底色
 
+  // ── 导航分组底色（2026-11-11）────────────────────────────────
+  // 只用于导航分区，**不承载业务语义**；分组含义仍由 <h3> 文本承担。
+  // 均为极浅色：分组标题用 textSecondary（≥ 6.89:1），链接用 brandLink（≥ 7.95:1）。
+  navGroupInvestmentBg: '#eff6ff', // 投资：浅蓝
+  navGroupInvestmentBorder: '#dbeafe',
+  navGroupResearchBg: '#f0fdfa', // 研究：浅青
+  navGroupResearchBorder: '#ccfbf1',
+  navGroupTradingBg: '#f0fdf4', // 交易与持仓：浅绿
+  navGroupTradingBorder: '#dcfce7',
+  navGroupBrokerBg: '#fffbeb', // 券商：浅琥珀
+  navGroupBrokerBorder: '#fef3c7',
+  navGroupStrategyBg: '#f5f3ff', // 策略与设置：浅紫
+  navGroupStrategyBorder: '#ede9fe',
+  navGroupPortfolioBg: '#f1f5f9', // 组合与管理：浅灰
+  navGroupPortfolioBorder: '#e2e8f0',
+
   // Borders
   borderLight: '#e5e7eb', // 卡片边框 / 表格分隔线
   borderMedium: '#d1d5db', // 输入框边框
