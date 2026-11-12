@@ -738,6 +738,12 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 - 本次交付全部是 **opt-in 研究参数**，缺省值逐位等于 DAS 锁定语义（`--check-baseline` 持续可验 `final=1,189,224.15`）；
 - **不改变对齐基线**、不动 `l1/` 口径常量、不写 `bt_*` 基线记录。
 
+> ✅ **纪律底线已于 2026-11-12 履行**：owner 选定「跑赢 `sh510300`」目标函数并签字，
+> **[ADR-022](docs/adr/ADR-022-dualmomentum-win-baseline.md)** 已开，
+> 跑赢档 + vol(0.12) 的 7 项 opt-in 参数**已转为 `DUALMOMENTUM_DEFAULTS` 缺省**，
+> 新基线锚点 `--check-baseline` = **`final=2,363,029.30 / cum=136.30% / cagr=11.65% / mdd=26.46% / trades=4657`**
+> （旧锚点 `final=1,189,224.15 / 1780 笔` 为 DAS 锁定基线，`git revert` ADR-022 对应 commit 即恢复）。
+
 ### 13.11 跑赢档组合补跑（T3c 增强版，2026-11-10）
 
 > §13.10 的「跑赢 sh510300」档（T3c，超额 +3.22pp）被质疑性价比后补跑的组合：
