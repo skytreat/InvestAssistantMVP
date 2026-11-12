@@ -63,8 +63,12 @@ const SEG_B_END = '2026-11-06';
 const WARMUP = 61;
 const OUT_DIR = path.resolve('data/dm-diagnose');
 
-/** 基线自证（与 `dmSweep --check-baseline` 同源） */
-const BASELINE = { finalEquity: 1_189_224.15, trades: 1780 };
+/**
+ * 基线自证（与 `dmSweep --check-baseline` 同源）。
+ * 🔴 锚点随 ADR-022（跑赢档成为正式基线）更新：DAS 锁定基线 `final=1189224.15 / 1780 笔`
+ * → 跑赢档基线 `final=2363029.30 / 4657 笔`。改任一默认参数都必须同步改这里。
+ */
+const BASELINE = { finalEquity: 2_363_029.3, trades: 4657 };
 
 type Layer = 'dailyChange' | 'ma' | 'wsmRange' | 'rsrsRange' | 'benchmark';
 type Disabled = ReadonlySet<Layer>;
@@ -616,6 +620,72 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
       exposureMode: 'vol',
       targetVol: 0.12,
       volWindow: 50,
+    },
+  },
+  // ── §13.16 B1/B2：扩池（债券/商品腿）+ 防御回退 ──
+  {
+    key: 'bt-pool-bond',
+    label: '跑赢档+vol+扩池2债券（B1a）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      poolExtension: '["sh511260","sh511010"]',
+    },
+  },
+  {
+    key: 'bt-defensive-bond',
+    label: '跑赢档+vol+防御回退债券（B1b）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      defensiveSymbol: 'sh511260',
+    },
+  },
+  {
+    key: 'bt-pool-and-defensive',
+    label: '跑赢档+vol+扩池+防御回退（B1c）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      poolExtension: '["sh511260","sh511010"]',
+      defensiveSymbol: 'sh511260',
+    },
+  },
+  {
+    key: 'bt-defensive-money',
+    label: '跑赢档+vol+防御回退货币ETF（B1d）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      defensiveSymbol: 'sh511880',
     },
   },
 ];

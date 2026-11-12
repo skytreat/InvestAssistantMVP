@@ -463,6 +463,44 @@ describe('decide() 契约', () => {
     // 缺省 symbolWeights='{}' 时（base 组），targetNotional = deployBudget / 候选数（均分）
     expect(base).toHaveProperty('symbolWeights', '{}');
   });
+
+  it('池扩展 + 防御回退（§13.16 B1/B2；opt-in）：缺省为空 ⇒ 基线路径不变', () => {
+    const strategy = createDualMomentumStrategy();
+    const params = { ...strategy.defaultParams, ...DECIDE_PARAMS };
+    // 缺省断言：池扩展为空、防御回退未设置
+    expect(params.poolExtension).toBe('[]');
+    expect(params.defensiveSymbol).toBe('');
+    strategy.init?.({ params });
+
+    const { ctx } = makeDecisionContext({ params });
+    const res = strategy.decide(ctx);
+    expect(res).not.toBeNull();
+    // 缺省不产生 defensive-fallback 退出
+    const reasons = Object.values(res!.exitReasons ?? {});
+    expect(reasons).not.toContain('defensive-fallback');
+  });
+
+  it('防御回退（§13.16 B1；opt-in）：无候选时以 defensive-fallback 全仓持有防御标的', () => {
+    const strategy = createDualMomentumStrategy();
+    // 构造「一定无候选」：把主槽动量下限抬到极高（池内标的动量都达不到）
+    const params = {
+      ...strategy.defaultParams,
+      ...DECIDE_PARAMS,
+      wsmMin: 999,
+      rsrsMin: 999,
+      defensiveSymbol: 'sh511260',
+    };
+    strategy.init?.({ params });
+
+    const { ctx } = makeDecisionContext({ params });
+    const res = strategy.decide(ctx);
+    expect(res).not.toBeNull();
+    const defensiveTarget = res!.targets.find((t) => t.symbol === 'sh511260');
+    expect(defensiveTarget).toBeDefined();
+    expect(defensiveTarget!.reason).toBe('defensive-fallback');
+    // 防御标的独占仓位（其余标的都不在 targets 里）
+    expect(res!.targets.every((t) => t.symbol === 'sh511260')).toBe(true);
+  });
 });
 
 describe('纸面绑定链路', () => {
