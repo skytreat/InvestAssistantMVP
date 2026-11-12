@@ -13,8 +13,9 @@
  *      （30 只持仓 = 1 次 DISTINCT + 30 次单标的查询 = 31 次）。
  *      ⇒ 现在是 **1 次查询**取回全部成交记录 + 内存分组 ⇒ **恒为 1 次**。
  *   ② **DuckDB 侧**（AGENTS.md「批量查询必须一次拿 100+ 标的」）：
- *      `/api/holding` 走 `batchGetLatestAndPrevClose`（1 次 IN 查询）+ `batchGetSymbolNames`
- *      （1 次 IN 查询）⇒ **恒为 2 次**，与标的数无关。
+ *      `/api/holding` 走 `batchGetLatestAndPrevClose`（stock/ETF 各 1 段 = 2 次 IN 查询）
+ *      + `batchGetSymbolNames`（1 次 IN 查询）+ `loadIndustryNames`（1 次 IN 查询）
+ *      ⇒ **恒为 4 次**，与标的数无关。
  *
  *   ⇒ **断言方式 = spy 计数 + 规模对照**：
  *      同一套夹具分别造 **5 只** 与 **30 只** 持仓，各打一次 `GET /api/holding`，
@@ -184,7 +185,8 @@ describe('N+1 消除 —— 查询次数不随标的数线性增长（计划 §1
 
     // 绝对上限（防止「常数变大」蒙混过关）
     expect(big.sqliteQueries, `SQLite 查询 ${big.sqliteQueries} 次，超出常量上限`).toBeLessThanOrEqual(4);
-    expect(big.duckdbQueries, `DuckDB 查询 ${big.duckdbQueries} 次，超出常量上限`).toBeLessThanOrEqual(3);
+    // DuckDB 常量：行情 2 段（stock/ETF）+ 名称 1 + 行业 1（2026-11-12 起 loadIndustryNames）
+    expect(big.duckdbQueries, `DuckDB 查询 ${big.duckdbQueries} 次，超出常量上限`).toBeLessThanOrEqual(4);
   }, 120_000);
 
   it('calcAllPositions 只发 1 条 SQL（无逐标的查询）', async () => {

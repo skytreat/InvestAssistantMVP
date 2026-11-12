@@ -303,6 +303,8 @@ export default function Dashboard() {
 
   /** 持仓类型过滤（饼图下钻；卡 3 的「标的类型筛选」复用同一个 state）*/
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  /** 行业过滤（卡 3 · F-D5）：选项来自持仓的 industry（tdx_research L1） */
+  const [industryFilter, setIndustryFilter] = useState<string>('all');
 
   /** 排序依据（卡 3 · F-D5；PRD §5.3 行 232）*/
   const [sortKey, setSortKey] = useState<SortKey>('pnl');
@@ -601,16 +603,34 @@ export default function Dashboard() {
   const activePositions = useMemo(() => positions.filter((p) => p.totalQuantity > 0), [positions]);
 
   /**
-   * 下钻后的持仓列表
+   * 行业过滤选项（来自后端 `industry`，口径 = tdx_research L1）
    *
-   * ⚠️ **下钻过滤的是持仓列表本身**（PRD §5.3 行 229），不是切页 —— 页面结构不变。
+   * 2026-11-12 起 `/api/holding` 已填充该字段（板块表回填后），
+   * 选项为空时控件禁用并显示「行业数据源暂不可用」——只降级、不静默失效。
+   */
+  const industryOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of positions) {
+      const v = p.industry?.trim();
+      if (v) set.add(v);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }, [positions]);
+
+  /**
+   * 卡 3 的持仓列表
+   *
+   * ⚠️ **仅作用于持仓列表本身**（PRD §5.3 行 229：饼图仍按全量持仓统计）。
    */
   const filteredPositions = useMemo(
     () =>
-      activePositions.filter((p) =>
-        typeFilter === 'all' ? true : (typeFilter === 'etf') === isEtf(p.asset_code),
-      ),
-    [activePositions, typeFilter],
+      activePositions.filter((p) => {
+        const typeOk = typeFilter === 'all' ? true : (typeFilter === 'etf') === isEtf(p.asset_code);
+        if (!typeOk) return false;
+        if (industryFilter === 'all') return true;
+        return (p.industry ?? '').trim() === industryFilter;
+      }),
+    [activePositions, typeFilter, industryFilter],
   );
 
   /**
@@ -630,8 +650,9 @@ export default function Dashboard() {
       .slice(0, 3);
   }, [activePositions]);
 
-  /** 是否展开完整持仓：≤3 只、下钻筛选、或用户主动展开 */
-  const showAllHoldings = holdingsExpanded || typeFilter !== 'all' || activePositions.length <= 3;
+  /** 是否展开完整持仓：≤3 只、类型/行业筛选、或用户主动展开 */
+  const showAllHoldings =
+    holdingsExpanded || typeFilter !== 'all' || industryFilter !== 'all' || activePositions.length <= 3;
 
   /** 点击饼图某一段：选中该类型；再点同一段 → 取消过滤（回到全部）*/
   const handleTypeSelect = (type: Exclude<TypeFilter, 'all'>) => {
@@ -663,15 +684,6 @@ export default function Dashboard() {
       return (va - vb) * dir;
     });
   }, [filteredPositions, sortKey, sortDirection]);
-
-  /**
-   * 行业过滤是否可用
-   *
-   * ⚠️ 当前**恒为 false** —— `raw_tdx_blocks_member` 实测 0 行 ⇒ `industry` 恒 `null`
-   *    （裁决 D-4）。控件据此禁用并显示「行业数据源暂不可用」，
-   *    **不许静默失效**。数据源恢复后会自动启用。
-   */
-  const industryAvailable = positions.some((p) => p.industry !== null && p.industry !== undefined);
 
   /** Top 5 的日期来源说明（F3：用户要能看出「这不是今天，而是哪一天」）*/
   const sigDateSourceLabel =
@@ -965,7 +977,12 @@ export default function Dashboard() {
                       setTypeFilter(type);
                       setHoldingsExpanded(true);
                     }}
-                    industryAvailable={industryAvailable}
+                    industryOptions={industryOptions}
+                    industryFilter={industryFilter}
+                    onIndustryFilterChange={(industry) => {
+                      setIndustryFilter(industry);
+                      setHoldingsExpanded(true);
+                    }}
                   />
                   {filteredPositions.length === 0 ? (
                     <div style={{ color: COLORS.neutral, padding: 20, textAlign: 'center' }}>

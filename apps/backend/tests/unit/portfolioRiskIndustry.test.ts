@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { queryDuckDB } = vi.hoisted(() => ({ queryDuckDB: vi.fn() }));
 vi.mock('../../src/db/duckdb.js', () => ({ queryDuckDB }));
 
-import { loadIndustryMapping } from '../../src/services/portfolioRisk.js';
+import {
+  loadIndustryMapping,
+  loadIndustryNames,
+  loadIndustryOptions,
+} from '../../src/services/portfolioRisk.js';
 
 /**
  * `loadIndustryMapping` 的取数口径（2026-11-06 真实库实测）：
@@ -77,5 +81,81 @@ describe('loadIndustryMapping 取数口径', () => {
     const r = await loadIndustryMapping(['sh600000']);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.map.get('sh600000')).toBe('多元金融'); // 名称升序第一个
+  });
+});
+
+/**
+ * `/api/holding` 用的轻量版（1 次查询，不查 DISTINCT block_type）；
+ * 选股页行业列表（`loadIndustryOptions`）同样走默认 tdx_research + L1。
+ */
+describe('loadIndustryNames / loadIndustryOptions（1 次查询口径）', () => {
+  beforeEach(() => {
+    queryDuckDB.mockReset();
+    delete process.env.INDUSTRY_BLOCK_TYPES;
+    delete process.env.INDUSTRY_BLOCK_LEVEL;
+  });
+
+  afterEach(() => {
+    delete process.env.INDUSTRY_BLOCK_TYPES;
+    delete process.env.INDUSTRY_BLOCK_LEVEL;
+  });
+
+  it('loadIndustryNames：单次 IN 查询，参数为 symbols + 类型 + 层级', async () => {
+    queryDuckDB.mockResolvedValueOnce([
+      { stock_symbol: 'sh600000', block_name: '银行' },
+      { stock_symbol: 'sh600000', block_name: '多元金融' },
+      { stock_symbol: 'sz000001', block_name: '银行' },
+    ]);
+
+    const map = await loadIndustryNames(['sh600000', 'sz000001']);
+
+    expect(queryDuckDB).toHaveBeenCalledTimes(1);
+    expect(queryDuckDB.mock.calls[0]?.[1]).toEqual(['sh600000', 'sz000001', 'tdx_research', 1]);
+    expect(map.get('sh600000')).toBe('多元金融');
+    expect(map.get('sz000001')).toBe('银行');
+  });
+
+  it('loadIndustryNames：空 symbols → 空 Map 且不查库', async () => {
+    const map = await loadIndustryNames([]);
+    expect(map.size).toBe(0);
+    expect(queryDuckDB).not.toHaveBeenCalled();
+  });
+
+  it('loadIndustryNames：查询失败 → 空 Map（持仓接口降级，不 500）', async () => {
+    queryDuckDB.mockRejectedValueOnce(new Error('duckdb unavailable'));
+    await expect(loadIndustryNames(['sh600000'])).resolves.toEqual(new Map());
+  });
+
+  it('loadIndustryOptions：返回 code/name，过滤空名称，参数带类型与层级', async () => {
+    queryDuckDB.mockResolvedValueOnce([
+      { block_code: 'sh881001', block_name: '煤炭' },
+      { block_code: 'sh881002', block_name: '  ' },
+      { block_code: 'sh881003', block_name: '电力' },
+    ]);
+
+    const list = await loadIndustryOptions();
+
+    expect(list).toEqual([
+      { code: 'sh881001', name: '煤炭' },
+      { code: 'sh881003', name: '电力' },
+    ]);
+    const sql = String(queryDuckDB.mock.calls[0]?.[0] ?? '');
+    expect(sql).toContain('ORDER BY block_code');
+    expect(queryDuckDB.mock.calls[0]?.[1]).toEqual(['tdx_research', 1]);
+  });
+
+  it('loadIndustryOptions：INDUSTRY_BLOCK_TYPES / LEVEL 覆盖生效', async () => {
+    process.env.INDUSTRY_BLOCK_TYPES = 'tdx_research, concept';
+    process.env.INDUSTRY_BLOCK_LEVEL = '2';
+    queryDuckDB.mockResolvedValueOnce([{ block_code: 'sh881002', block_name: '煤炭开采' }]);
+
+    await loadIndustryOptions();
+
+    expect(queryDuckDB.mock.calls[0]?.[1]).toEqual(['tdx_research', 'concept', 2]);
+  });
+
+  it('loadIndustryOptions：查询失败 → 空数组（前端禁用控件）', async () => {
+    queryDuckDB.mockRejectedValueOnce(new Error('no table'));
+    await expect(loadIndustryOptions()).resolves.toEqual([]);
   });
 });

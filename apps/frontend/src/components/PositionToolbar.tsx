@@ -29,8 +29,12 @@ export interface PositionToolbarProps {
   typeFilter: TypeFilter;
   /** 切换标的类型过滤 */
   onTypeFilterChange: (filter: TypeFilter) => void;
-  /** 行业数据源是否可用（当前恒为 false，见上方说明）*/
-  industryAvailable: boolean;
+  /** 行业过滤选项（来自持仓 `industry`；空数组 = 数据源不可用） */
+  industryOptions: string[];
+  /** 当前行业过滤（'all' = 不过滤） */
+  industryFilter: string;
+  /** 切换行业过滤 */
+  onIndustryFilterChange: (industry: string) => void;
 }
 
 /** 排序依据的三个档位（PRD §5.3 行 232）*/
@@ -54,10 +58,13 @@ export function PositionToolbar({
   onSortDirectionToggle,
   typeFilter,
   onTypeFilterChange,
-  industryAvailable,
+  industryOptions,
+  industryFilter,
+  onIndustryFilterChange,
 }: PositionToolbarProps) {
   const typeSelectId = React.useId();
   const industrySelectId = React.useId();
+  const industryAvailable = industryOptions.length > 0;
 
   const toggleStyle = (active: boolean): React.CSSProperties => ({
     padding: '4px 10px',
@@ -132,7 +139,7 @@ export function PositionToolbar({
         </select>
       </div>
 
-      {/* ── 行业过滤（数据源不可用 → 禁用 + 显式说明） ── */}
+      {/* ── 行业过滤（无数据 → 禁用 + 显式说明；有数据 → 正常过滤） ── */}
       <div>
         <label htmlFor={industrySelectId} style={labelStyle}>
           行业
@@ -141,9 +148,16 @@ export function PositionToolbar({
           <select
             id={industrySelectId}
             disabled={!industryAvailable}
+            value={industryFilter}
+            onChange={(e) => onIndustryFilterChange(e.target.value)}
             style={{ ...selectStyle, cursor: industryAvailable ? 'pointer' : 'not-allowed' }}
           >
             <option value="all">全部</option>
+            {industryOptions.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
           </select>
           {!industryAvailable && (
             /*

@@ -105,11 +105,23 @@ function scanResponse(results: ResultFixture[], totalCandidates = 5363, totalMat
   );
 }
 
-/** 默认 mock：插件列表 + 扫描结果 */
-function installDefaultMock(results: ResultFixture[] = DEFAULT_RESULTS): void {
+/** 行业选项 fixture（tdx_research L1） */
+const INDUSTRIES = [
+  { code: 'sh881001', name: '煤炭' },
+  { code: 'sh881013', name: '电力' },
+];
+
+/** 默认 mock：插件列表 + 扫描结果（默认行业数据源不可用：industries 为空） */
+function installDefaultMock(
+  results: ResultFixture[] = DEFAULT_RESULTS,
+  industries: Array<{ code: string; name: string }> = [],
+): void {
   getMock.mockImplementation((url: string) => {
     if (url === '/stockscan/plugins') {
       return Promise.resolve(mockResponse([FILTER_PLUGIN, MONITOR_PLUGIN]));
+    }
+    if (url === '/stockscan/industries') {
+      return Promise.resolve(mockResponse(industries));
     }
     return Promise.resolve(mockResponse([]));
   });
@@ -179,7 +191,7 @@ describe('F-S1 · 公共过滤（标的类型 / 排除 ST / 行业）', () => {
     await waitFor(() => expect(lastScanPayload().exclude_st).toBe(true));
   });
 
-  it('行业控件 **disabled** + 显式文案「行业数据源暂不可用」，且不提交 industry_code', async () => {
+  it('行业数据源不可用（选项为空）→ 控件 **disabled** + 显式文案，且不提交 industry_code', async () => {
     const user = userEvent.setup();
     renderWithRouter(<StockScan />);
 
@@ -189,8 +201,24 @@ describe('F-S1 · 公共过滤（标的类型 / 排除 ST / 行业）', () => {
 
     await user.click(screen.getByRole('button', { name: '开始选股' }));
     await waitFor(() => expect(postMock).toHaveBeenCalled());
-    // 🔴 板块表 0 行 → 传 industry_code 会把结果清空 ⇒ 绝不提交
+    // 无可用行业 ⇒ 绝不提交 industry_code（宁可不过滤，也不静默清空结果）
     expect(lastScanPayload()).not.toHaveProperty('industry_code');
+  });
+
+  it('行业选项可用 → 下拉启用，选中后提交 industry_code（block_code）', async () => {
+    installDefaultMock(DEFAULT_RESULTS, INDUSTRIES);
+    const user = userEvent.setup();
+    renderWithRouter(<StockScan />);
+
+    const industry = (await screen.findByLabelText('行业：')) as HTMLSelectElement;
+    expect(industry).not.toBeDisabled();
+    expect(screen.queryByText('行业数据源暂不可用')).not.toBeInTheDocument();
+    expect(Array.from(industry.options).map((o) => o.textContent)).toEqual(['全部', '煤炭', '电力']);
+
+    await user.selectOptions(industry, 'sh881013');
+    await user.click(screen.getByRole('button', { name: '开始选股' }));
+    await waitFor(() => expect(postMock).toHaveBeenCalled());
+    expect(lastScanPayload().industry_code).toBe('sh881013');
   });
 
   it('最低成交额（万元）→ 提交给后端时换算成「元」', async () => {

@@ -586,6 +586,42 @@ describe('T55 — 路由契约（app.inject，不占端口）', () => {
     const plugins = res.json().data as { id: string; category: string }[];
     expect(plugins.some((p) => p.category === 'filter')).toBe(true);
   });
+
+  itReal('GET /api/stockscan/industries 返回 tdx_research L1 列表（code + name）', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/stockscan/industries' });
+    expect(res.statusCode).toBe(200);
+    const list = res.json().data as { code: string; name: string }[];
+    // 迷你库与真库同源（make-mini-duckdb 对两张板块表是 SELECT *），故非空
+    expect(list.length).toBeGreaterThan(0);
+    for (const item of list) {
+      expect(item.code).toMatch(/^\S+$/);
+      expect(item.name.trim().length).toBeGreaterThan(0);
+    }
+    // block_code 唯一（列表用作下拉，不应重复）
+    expect(new Set(list.map((i) => i.code)).size).toBe(list.length);
+  });
+
+  itReal('industry_code 非 L1 行业 → 400 PARAM_INVALID（不静默返回空结果）', async () => {
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/stockscan',
+      payload: { plugin_id: 'rsi_oversold', industry_code: 'BK9999' },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error).toBe('PARAM_INVALID');
+
+    // 合法 L1 行业 → 200 且回显（概念/风格板块码不在列表里，同样会被 400 拦下）
+    const ind = await app.inject({ method: 'GET', url: '/api/stockscan/industries' });
+    const code = (ind.json().data as { code: string }[])[0]?.code;
+    expect(code).toBeTruthy();
+    const okRes = await app.inject({
+      method: 'POST',
+      url: '/api/stockscan',
+      payload: { plugin_id: 'rsi_oversold', industry_code: code },
+    });
+    expect(okRes.statusCode).toBe(200);
+    expect(okRes.json().data.filters.industryCode).toBe(code);
+  });
 });
 
 // 🔴 2026-11-07：原「T60c —— /api/market/latest 的新实现与视图口径逐条一致」已移入手动线

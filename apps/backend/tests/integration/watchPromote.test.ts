@@ -188,6 +188,10 @@ describe('Positions · 现价 / 市值 enrich（T33）', () => {
     expect(pos).toBeDefined();
     expect(pos.totalQuantity).toBe(200);
     expect(pos.avgCost).toBeCloseTo((200 * 1500 + 5) / 200, 4);
+    // 行业（tdx_research L1）：sh600519 挂 L1「食品饮料」/L2「酿酒」/L3「白酒」
+    // ⇒ 必须取 L1，防止层级过滤丢失导致同标的重复归属
+    // （CI 无行情库时 loadIndustryNames 降级为空 Map，故仅在数值库可用时断言）
+    if (MARKET_DATA_AVAILABLE) expect(pos.industry).toBe('食品饮料');
 
     // summary 结构完整（currentPrice 取决于 DuckDB 是否有行情，无行情时为 null）
     expect(body.summary).toBeDefined();
