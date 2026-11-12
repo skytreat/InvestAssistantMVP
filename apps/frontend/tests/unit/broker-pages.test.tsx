@@ -1542,6 +1542,8 @@ describe('一键全部补录（非成交族）', () => {
     expect(await screen.findByTestId('one-click-result')).toHaveTextContent('成功 3');
   });
 
+  // CI 上 jsdom + 501 行渲染 + 分批请求链路曾 6.5s 超时（2026-11-11 run 43135122262 / 43135843654）；
+  // 本用例是 501→2 批的机制验证（与用例数无关），给 30s 宽限消除 flaky，不是掩盖真实慢逻辑
   it('超过 500 条自动分批（501 → 2 次请求，500 + 1）', async () => {
     const rows = Array.from({ length: 501 }, (_, i) => makeRow(1000 + i));
     mockPending(rows, 501);
@@ -1571,8 +1573,8 @@ describe('一键全部补录（非成交族）', () => {
       expect(calls).toHaveLength(2);
       expect((calls[0][1] as { items: unknown[] }).items).toHaveLength(500);
       expect((calls[1][1] as { items: unknown[] }).items).toHaveLength(1);
-    });
-  });
+    }, 30_000);
+  }, 30_000);
 
   it('部分失败：第 2 批报错仍保留成功结果，并给出批次原因', async () => {
     const rows = Array.from({ length: 501 }, (_, i) => makeRow(2000 + i));
