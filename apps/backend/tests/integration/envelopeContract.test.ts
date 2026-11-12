@@ -185,6 +185,7 @@ const ROUTE_CASES: RouteCase[] = [
   { method: 'GET', url: '/api/quote/:symbol/patterns', timeout: 60_000 },
   { method: 'POST', url: '/api/stockscan', payload: { asset_type: 'stock' }, timeout: 60_000 },
   { method: 'GET', url: '/api/stockscan/plugins' },
+  { method: 'GET', url: '/api/stockscan/industries' },
   { method: 'GET', url: '/api/symbols/search', query: { q: '600000' }, timeout: 60_000 },
   {
     method: 'GET',
