@@ -36,7 +36,8 @@ export const DEFAULT_SLIPPAGE = 0.002;
 export const DEFAULT_LOT_SIZE = 100;
 export const DEFAULT_ETF_EXEMPT_TAX = true;
 
-/** 组合层（L2）默认值，DAS-3.1 §2.2。 */
+/** 组合层（L2）默认值 —— ⚠️ 除 minHoldDays 外均保留 DAS 锁定值；
+ * minHoldDays 现由 DUALMOMENTUM_DEFAULTS 直接赋 20（ADR-019 跑赢档），本常量仅作文档锚点保留。 */
 export const DEFAULT_SINGLE_POSITION_CAP = 0.33;
 export const DEFAULT_OVERWEIGHT_THRESHOLD = 0.4;
 export const DEFAULT_MIN_HOLD_DAYS = 5;
@@ -81,7 +82,7 @@ export interface DualMomentumParams {
   lotSize: number;
   etfExemptTax: boolean;
   benchmark: string;
-  /** 闲置现金年化利率（÷250 日计提；缺省 0 = 引擎不计息，基线不变；研究口径） */
+  /** 闲置现金年化利率（÷250 日计提；ADR-019 后缺省 0.02 = 2%；DAS 锁定值为 0） */
   cashInterestRate: number;
   /** 档 2：暴露模式（缺省 `fixed` = DAS 基线「候选均分满仓 / 否则空仓」） */
   exposureMode: 'fixed' | 'scale' | 'vol';
@@ -147,7 +148,7 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   maxHoldings: MAX_HOLDINGS,
   singlePositionCap: DEFAULT_SINGLE_POSITION_CAP,
   overweightThreshold: DEFAULT_OVERWEIGHT_THRESHOLD,
-  minHoldDays: DEFAULT_MIN_HOLD_DAYS,
+  minHoldDays: 20,
   takeProfitThreshold: DEFAULT_TAKE_PROFIT_THRESHOLD,
   takeProfitCooldown: DEFAULT_TAKE_PROFIT_COOLDOWN,
   stopLossDrawdown: DEFAULT_STOP_LOSS_DRAWDOWN,
@@ -159,16 +160,21 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   lotSize: DEFAULT_LOT_SIZE,
   etfExemptTax: DEFAULT_ETF_EXEMPT_TAX,
   benchmark: BENCHMARK_SYMBOL,
-  cashInterestRate: 0,
-  exposureMode: 'fixed',
+  // ── §13.10 跑赢档 + §13.13 vol(0.12)（ADR-019：目标函数 = 跑赢 sh510300；2026-11-12 owner 签字）──
+  // 代价：MDD 13.11% → 26.46%（翻倍）；收益：CAGR 2.25% → 11.65% / 超额 +5.63pp / Calmar 0.44
+  // 回退：`git revert` 本 ADR 对应 commit 即恢复 DAS 锁定基线（final=1,189,224.15 / 1780 笔）
+  cashInterestRate: 0.02,
+  exposureMode: 'vol',
   exposureScaleDivisor: 3,
   targetVol: 0.12,
+  // §13.15 A3：volWindow=10 虽 CAGR +0.21pp / 超额 +5.84pp 最高，但 Calmar 与 20 持平（0.44），
+  // 优势不显著（统计上不足以单独推翻），故维持 20（§13.13 已判定的跑赢档基准）
   volWindow: 20,
   capRelaxBelow: 0,
-  wsmMaxResearch: WSM_MAX,
-  rsrsMaxResearch: RSRS_MAX,
-  benchmarkGateMode: 'hard',
-  scoreMode: 'and',
+  wsmMaxResearch: 100,
+  rsrsMaxResearch: 100,
+  benchmarkGateMode: 'soft',
+  scoreMode: 'scored',
   momentumDecayExit: false,
   /** 缺省 = maxHoldings + 2；显式传小值（如 3）可收紧排名触发 */
   decayRankThreshold: 8,
@@ -397,7 +403,8 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     max: 250,
     step: 1,
     unit: '自然日',
-    description: 'DAS §2.2 min_hold_days（DAS §9.1：自然日差，不是交易日）',
+    description:
+      'DAS §2.2 min_hold_days（DAS §9.1：自然日差，不是交易日）；DAS 锁定 5，ADR-019 后缺省 20（降换手）',
   },
   {
     key: 'takeProfitThreshold',
@@ -510,7 +517,7 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
   },
   {
     key: 'cashInterestRate',
-    label: '闲置现金年化利率（档 1；缺省 0 = 引擎不计息）',
+    label: '闲置现金年化利率（档 1；ADR-019 后缺省 2%）',
     type: 'number',
     default: DUALMOMENTUM_DEFAULTS.cashInterestRate,
     min: 0,
@@ -525,7 +532,7 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     default: DUALMOMENTUM_DEFAULTS.exposureMode,
     options: ['fixed', 'scale', 'vol'],
     description:
-      'fixed = DAS 基线（候选均分满仓/否则空仓）；scale = 目标暴露 = min(1, 通过数 / divisor)；vol = 波动率目标（targetVol / 实现波动率）',
+      'fixed = DAS 基线（候选均分满仓/否则空仓）；scale = 目标暴露 = min(1, 通过数 / divisor)；vol = 波动率目标（targetVol / 实现波动率）；ADR-019 后缺省 vol',
   },
   {
     key: 'exposureScaleDivisor',
@@ -570,23 +577,23 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
   },
   {
     key: 'wsmMaxResearch',
-    label: '主槽上界研究值（档 3；缺省 = DAS 锁定 5）',
+    label: '主槽上界研究值（档 3；ADR-019 后缺省 100，DAS 锁定 5）',
     type: 'number',
     default: DUALMOMENTUM_DEFAULTS.wsmMaxResearch,
     min: 0,
     max: 100,
     step: 1,
-    description: '档 3 放宽（§12.5 第 1 条）；传 >5 才激活，缺省 = DAS 锁定值',
+    description: '档 3 放宽（§12.5 第 1 条）；DAS 锁定 5，ADR-019 后缺省 100',
   },
   {
     key: 'rsrsMaxResearch',
-    label: '次槽上界研究值（档 3；缺省 = DAS 锁定 2）',
+    label: '次槽上界研究值（档 3；ADR-019 后缺省 100，DAS 锁定 2）',
     type: 'number',
     default: DUALMOMENTUM_DEFAULTS.rsrsMaxResearch,
     min: 0,
     max: 100,
     step: 0.5,
-    description: '档 3 放宽（§12.5 第 1 条）；传 >2 才激活，缺省 = DAS 锁定值',
+    description: '档 3 放宽（§12.5 第 1 条）；DAS 锁定 2，ADR-019 后缺省 100',
   },
   {
     key: 'benchmarkGateMode',
@@ -594,7 +601,7 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     type: 'select',
     default: DUALMOMENTUM_DEFAULTS.benchmarkGateMode,
     options: ['hard', 'soft'],
-    description: 'hard = DAS 基线；soft = 仅基准动量 > 0 时启用第 9 步（§12.5 第 2 条）',
+    description: 'hard = DAS 基线；soft = 仅基准动量 > 0 时启用第 9 步（§12.5 第 2 条）；ADR-019 后缺省 soft',
   },
   {
     key: 'scoreMode',
@@ -602,7 +609,8 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     type: 'select',
     default: DUALMOMENTUM_DEFAULTS.scoreMode,
     options: ['and', 'scored'],
-    description: 'and = DAS 基线（次槽 + 基准 AND）；scored = 次槽降为打分不拦截（§12.5 第 3 条）',
+    description:
+      'and = DAS 基线（次槽 + 基准 AND）；scored = 次槽降为打分不拦截（§12.5 第 3 条）；ADR-019 后缺省 scored',
   },
   {
     key: 'momentumDecayExit',
@@ -747,19 +755,21 @@ export function resolveDualMomentumParams(
     lotSize: Math.max(1, int(src, 'lotSize', d.lotSize)),
     etfExemptTax: bool(src, 'etfExemptTax', d.etfExemptTax),
     benchmark: typeof src.benchmark === 'string' && src.benchmark !== '' ? src.benchmark : d.benchmark,
-    // 档 1：缺省 0 = 引擎不计息，基线不变
+    // 档 1：ADR-019 后缺省 0.02 = 2%（DAS 锁定值为 0 = 引擎不计息）
     cashInterestRate: Math.max(0, num(src, 'cashInterestRate', d.cashInterestRate)),
-    // 档 2：缺省 fixed + 0 ⇒ 基线路径逐位不变
-    exposureMode: src.exposureMode === 'scale' || src.exposureMode === 'vol' ? src.exposureMode : 'fixed',
+    // 档 2：缺省回落到 d（DEFAULTS）——ADR-019 后缺省 = 'vol'
+    exposureMode:
+      src.exposureMode === 'scale' || src.exposureMode === 'vol' ? src.exposureMode : d.exposureMode,
     exposureScaleDivisor: Math.max(1, num(src, 'exposureScaleDivisor', d.exposureScaleDivisor)),
     targetVol: Math.max(0.01, num(src, 'targetVol', d.targetVol)),
     volWindow: Math.max(5, int(src, 'volWindow', d.volWindow)),
     capRelaxBelow: Math.max(0, int(src, 'capRelaxBelow', d.capRelaxBelow)),
-    // 档 3：缺省 = DAS 锁定值（wsmMax=5 / rsrsMax=2），research 上界只放宽不收窄
+    // 档 3：DAS 锁定值 wsmMax=5 / rsrsMax=2；ADR-019 后缺省 100，research 上界只放宽不收窄
     wsmMaxResearch: Math.max(d.wsmMax, num(src, 'wsmMaxResearch', d.wsmMaxResearch)),
     rsrsMaxResearch: Math.max(d.rsrsMax, num(src, 'rsrsMaxResearch', d.rsrsMaxResearch)),
-    benchmarkGateMode: src.benchmarkGateMode === 'soft' ? 'soft' : 'hard',
-    scoreMode: src.scoreMode === 'scored' ? 'scored' : 'and',
+    // 缺省回落到 d（DEFAULTS）——ADR-019 后缺省 = 'soft' / 'scored'
+    benchmarkGateMode: src.benchmarkGateMode === 'soft' ? 'soft' : d.benchmarkGateMode,
+    scoreMode: src.scoreMode === 'scored' ? 'scored' : d.scoreMode,
     momentumDecayExit: bool(src, 'momentumDecayExit', d.momentumDecayExit),
     decayRankThreshold: Math.max(1, int(src, 'decayRankThreshold', d.decayRankThreshold)),
     // 追踪止盈（§12.5 第 4 条；缺省 false = DAS 基线固定止盈 + 冷却，逐位不变）
