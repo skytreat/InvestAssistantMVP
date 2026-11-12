@@ -105,6 +105,17 @@ export interface DualMomentumParams {
   momentumDecayExit: boolean;
   /** 衰减退出排名阈值：当日主槽排名（相对全池）> 该值即触发退出（缺省 = maxHoldings + 2） */
   decayRankThreshold: number;
+  /**
+   * 追踪止盈（§12.5 第 4 条；缺省 false = DAS 基线固定止盈 + 冷却，逐位不变）。
+   * 开启后：当日 qfq 收盘距高水位回撤 ≥ `trailingTakeProfitDrawdown` 即清仓，
+   * 替代固定 `takeProfitThreshold` 的「成本涨 30%」判定；且**止盈后不开 `takeProfitCooldown`**
+   * （§12.5 原文「止盈后不冷却」），只开 `stopLossCooldown`（防同日反复）。
+   */
+  trailingTakeProfit: boolean;
+  /** 追踪止盈回撤阈值：qfq 收盘距高水位 (hw − close)/hw ≥ 该值即清仓（缺省 0.15 = 15%） */
+  trailingTakeProfitDrawdown: number;
+  /** 追踪止盈是否仍需先满足固定止盈阈值（缺省 false = 纯追踪，不设 30% 前置门槛） */
+  trailingTakeProfitRequiresThreshold: boolean;
 }
 
 export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
@@ -154,6 +165,9 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   momentumDecayExit: false,
   /** 缺省 = maxHoldings + 2；显式传小值（如 3）可收紧排名触发 */
   decayRankThreshold: 8,
+  trailingTakeProfit: false,
+  trailingTakeProfitDrawdown: 0.15,
+  trailingTakeProfitRequiresThreshold: false,
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -599,6 +613,32 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     step: 1,
     description: '动量衰减退出：当日主槽全池排名 > 该值即触发退出（缺省 8 = 7 只池下几乎不触发）',
   },
+  {
+    key: 'trailingTakeProfit',
+    label: '追踪止盈（§12.5 第 4 条；缺省 false = DAS 基线固定止盈 + 冷却）',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.trailingTakeProfit,
+    description:
+      '开启后：qfq 收盘距高水位回撤 ≥ trailingTakeProfitDrawdown 即清仓，替代固定 30% 止盈；止盈后不开 takeProfitCooldown',
+  },
+  {
+    key: 'trailingTakeProfitDrawdown',
+    label: '追踪止盈回撤阈值（§12.5 第 4 条）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.trailingTakeProfitDrawdown,
+    min: 0.02,
+    max: 1,
+    step: 0.01,
+    description: '(高水位 − 当日 qfq 收盘) / 高水位 ≥ 该值即清仓（缺省 0.15 = 15%）',
+  },
+  {
+    key: 'trailingTakeProfitRequiresThreshold',
+    label: '追踪止盈前置 30% 门槛（§12.5 第 4 条）',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.trailingTakeProfitRequiresThreshold,
+    description:
+      'true = 仍需先满足固定 takeProfitThreshold 才启用追踪（双门槛）；false（缺省）= 纯追踪，不设 30% 前置',
+  },
 ];
 
 function num(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
@@ -681,6 +721,17 @@ export function resolveDualMomentumParams(
     scoreMode: src.scoreMode === 'scored' ? 'scored' : 'and',
     momentumDecayExit: bool(src, 'momentumDecayExit', d.momentumDecayExit),
     decayRankThreshold: Math.max(1, int(src, 'decayRankThreshold', d.decayRankThreshold)),
+    // 追踪止盈（§12.5 第 4 条；缺省 false = DAS 基线固定止盈 + 冷却，逐位不变）
+    trailingTakeProfit: bool(src, 'trailingTakeProfit', d.trailingTakeProfit),
+    trailingTakeProfitDrawdown: Math.max(
+      0.01,
+      num(src, 'trailingTakeProfitDrawdown', d.trailingTakeProfitDrawdown),
+    ),
+    trailingTakeProfitRequiresThreshold: bool(
+      src,
+      'trailingTakeProfitRequiresThreshold',
+      d.trailingTakeProfitRequiresThreshold,
+    ),
   };
 }
 

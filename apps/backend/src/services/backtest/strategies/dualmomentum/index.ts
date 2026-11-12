@@ -249,6 +249,10 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         const p = state.params;
         if (notice.reason === 'stop-loss') startCooldown(state, notice.symbol, p.stopLossCooldown);
         else if (notice.reason === 'take-profit') startCooldown(state, notice.symbol, p.takeProfitCooldown);
+        // 追踪止盈（§12.5 第 4 条「止盈后不冷却」）：不开 takeProfitCooldown，只开 stopLossCooldown
+        // 防同日反复；比固定止盈的 5 日冷却少 5 天空仓
+        else if (notice.reason === 'take-profit-trailing')
+          startCooldown(state, notice.symbol, p.stopLossCooldown);
         // 衰减退出开止损冷却（§12.5 第 4 条：止盈后不冷却，衰减是「动量转弱」而非止盈）
         else if (notice.reason === 'momentum-decay') startCooldown(state, notice.symbol, p.stopLossCooldown);
         return;
@@ -432,6 +436,21 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
           continue;
         }
         const takeProfit = pos.costBasis > 0 ? pos.marketValue / pos.costBasis - 1 : 0;
+        // 追踪止盈（§12.5 第 4 条；opt-in，缺省关闭 = 下方固定 30% 止盈逐位不变）：
+        // qfq 收盘距高水位回撤 ≥ trailingTakeProfitDrawdown 即清仓；
+        // RequiresThreshold=true 时仍需先满足固定 takeProfitThreshold（双门槛）
+        const trailingHit =
+          p.trailingTakeProfit &&
+          highDrawdown >= 0 &&
+          qfqClose !== null &&
+          hw !== undefined &&
+          hw > 0 &&
+          highDrawdown >= p.trailingTakeProfitDrawdown &&
+          (!p.trailingTakeProfitRequiresThreshold || takeProfit >= p.takeProfitThreshold);
+        if (trailingHit) {
+          sellAll.set(pos.symbol, 'take-profit-trailing');
+          continue;
+        }
         if (daysSinceEntry >= p.minHoldDays && takeProfit >= p.takeProfitThreshold) {
           sellAll.set(pos.symbol, 'take-profit');
           continue;

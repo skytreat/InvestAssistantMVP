@@ -526,6 +526,37 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
       volWindow: 20,
     },
   },
+  // ── §13.14 跑赢档 + 追踪止盈（§12.5 第 4 条；opt-in，缺省关闭）──
+  {
+    key: 'bt-t3c-win-trail',
+    label: '跑赢档+追踪止盈（dd 15%）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      trailingTakeProfit: true,
+      trailingTakeProfitDrawdown: 0.15,
+      trailingTakeProfitRequiresThreshold: false,
+    },
+  },
+  {
+    key: 'bt-t3c-win-trail-tight',
+    label: '跑赢档+追踪止盈（dd 10%，紧）',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      trailingTakeProfit: true,
+      trailingTakeProfitDrawdown: 0.1,
+      trailingTakeProfitRequiresThreshold: false,
+    },
+  },
 ];
 
 function cagrBetween(first: number, last: number, fromDate: string, toDate: string): number {
