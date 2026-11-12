@@ -383,23 +383,24 @@ describe('cron_sequence_trigger — 5 段按序实际触发（执行层，fake t
     }
   });
 
-  it('cron_sequence_trigger: 17:00 行情更新段的 Node 侧等价入口（17:01 校验发现 WARN/ERROR 时自愈补跑）', async () => {
-    // C1-C10 出现 ERROR ⇒ 17:01 校验段触发行情更新补跑（即 17:00 段的同一能力）
-    // ⚠️ 用 mockImplementationOnce（**不覆盖默认实现**）——
-    //    否则默认实现里的「记录调用顺序」副作用被抹掉，会让同文件的 fake timers 用例随机假红。
+  it('cron_sequence_trigger: 17:01 校验发现 WARN/ERROR 时不再补跑（ADR-018：tdx2db 增量语义下为空跑）', async () => {
+    // 进入 runDatacheckWithRerun 的前提是当天已有数据 ⇒ tdx2db cron 再跑一次不会改库。
+    // 因此这里断言「不补跑」，唯一的有效补跑在「更新成功但无数据」分支。
     vi.mocked(runAllChecks).mockImplementationOnce(async () => [
       { checkId: 'C3', checkName: '行情条数', result: 'ERROR', detail: 'mock 缺数据' } as any,
     ]);
     const callsBefore = vi.mocked(runAllChecks).mock.calls.length;
+    const rerunCallsBefore = vi.mocked(rerunQuoteUpdate).mock.calls.length;
 
     const result = await runDatacheckWithRerun('2026-10-20');
 
-    expect(result.reran, 'C1-C10 有 ERROR 时必须触发补跑').toBe(true);
+    expect(result.reran, '当日数据已存在时不得触发补跑').toBe(false);
+    expect(result.rerunSkippedReason).toBe('noop-by-design');
     expect(
-      rerunQuoteUpdate,
-      '补跑必须走 quoteRerun.rerunQuoteUpdate（调 tdx2db Go 二进制）',
-    ).toHaveBeenCalled();
-    // 补跑成功后必须**重新校验**一次（以补跑后的结果为终态）
-    expect(vi.mocked(runAllChecks).mock.calls.length - callsBefore).toBe(2);
+      vi.mocked(rerunQuoteUpdate).mock.calls.length - rerunCallsBefore,
+      '不得再调 tdx2db（增量语义下必为空跑）',
+    ).toBe(0);
+    // 也不再二次校验（没有补跑就没有「补跑后结果」）
+    expect(vi.mocked(runAllChecks).mock.calls.length - callsBefore).toBe(1);
   });
 });

@@ -321,11 +321,25 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     try {
       const { reason } = (request.body ?? {}) as { reason?: string };
       const { rerunQuoteUpdate } = await import('../services/quoteRerun.js');
-      const result = await rerunQuoteUpdate(reason?.trim() || `${user.username} 手动触发`);
+      const targetDate = await resolveTargetTradeDate();
+      const result = await rerunQuoteUpdate(reason?.trim() || `${user.username} 手动触发`, {
+        date: targetDate ?? undefined,
+      });
+      writeSystemLog({
+        logType: 'trigger_manual',
+        level: result.effective === false ? 'WARN' : 'INFO',
+        message: `${user.username} 手动触发行情补跑`,
+        detail: JSON.stringify({
+          status: result.status,
+          method: result.method,
+          effective: result.effective ?? null,
+          date: targetDate,
+        }),
+      });
       // 补跑成功后重跑一次校验，让管理员直接看到最新四色结果
       let checks: unknown = null;
       if (result.status === 'SUCCESS') {
-        checks = await runAllChecks((await resolveTargetTradeDate()) ?? getTradeDate());
+        checks = await runAllChecks(targetDate ?? getTradeDate());
       }
       return reply.send(ok({ ...result, checks }));
     } catch (err) {

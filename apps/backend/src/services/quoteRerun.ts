@@ -1,14 +1,18 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeSystemLog } from './logger.js';
-import { enterDuckDBWriteWindow } from '../db/duckdb.js';
+import { enterDuckDBWriteWindow, queryDuckDB } from '../db/duckdb.js';
 
 /**
- * 行情更新补跑（G3a — PRD D3「WARN 级别校验自动触发补跑」+ SDD §5.1 Step 3）
+ * 行情更新补跑（G3a — SDD §5.1 Step 3；触发条件已按 ADR-018 收窄）
  *
- * 场景：17:00 systemd timer 跑完 tdx2db 后，17:01 C1-C12 校验发现 WARN/ERROR
- *      （典型：tdx2db exit_code=0 但当日数据没落库 / 落库不全）。
- * 自愈动作：再跑一次 tdx2db，然后重新校验。
+ * ⚠️ **ADR-018：不要再用它实现「校验 WARN/ERROR → 自动补跑」。**
+ * tdx2db `cron` 是增量语义（当日已入库即跳过），而 17:01 校验只在
+ * `hasQuoteDataOn(date)=true` 时执行 ⇒ 此时补跑必然空跑。唯一有效的补跑是
+ * `runScheduledDatacheck()` 中「tdx2db 报成功但当天无数据」那一支。
+ *
+ * 每次补跑（含管理员手动触发）会在前后各取一次当日行情指纹，
+ * 用 `effective` 明确回答「这次补跑到底有没有改动数据」，避免日志撒谎。
  *
  * 实现方式对齐 SDD §5.1 Step 3：systemd-run --wait 同步等 exit_code（超时 5 分钟）。
  * 降级顺序：
@@ -42,11 +46,89 @@ function shouldSkipSystemdRun(): boolean {
 /** DuckDB URI（与 deploy/tdx2db.service 保持一致） */
 const DUCKDB_URI = process.env.TDX2DB_DBURI ?? `duckdb:///${process.env.DUCKDB_PATH ?? 'data/quotes.duckdb'}`;
 
+export interface RerunOptions {
+  /** 补跑针对的交易日；提供时会在补跑前后各取一次当日行情指纹（ADR-018） */
+  date?: string;
+}
+
+/** 当日行情指纹：三张带日期的原始表，用于判定补跑是否真的改了数据 */
+export interface QuoteFingerprint {
+  klineRows: number;
+  klineHash: string | null;
+  basicRows: number;
+  basicHash: string | null;
+  factorRows: number;
+  factorHash: string | null;
+}
+
 export interface RerunResult {
   status: 'SUCCESS' | 'FAIL' | 'SKIP';
   method: 'systemd-run' | 'systemctl' | 'exec' | 'none';
   exitCode?: number;
   message: string;
+  /** true=数据有变化；false=空跑/已是最新；null=未采集（未传 date 或查询失败） */
+  effective?: boolean | null;
+  before?: QuoteFingerprint | null;
+  after?: QuoteFingerprint | null;
+}
+
+const FINGERPRINT_SQL = `SELECT
+  (SELECT COUNT(*) FROM raw_kline_daily WHERE date = ?) AS kline_rows,
+  (SELECT CAST(COALESCE(SUM(CAST(hash(symbol || '|' || CAST(close AS VARCHAR) || '|' || CAST(volume AS VARCHAR)) AS HUGEINT)), 0) AS VARCHAR)
+     FROM raw_kline_daily WHERE date = ?) AS kline_hash,
+  (SELECT COUNT(*) FROM raw_basic_daily WHERE date = ?) AS basic_rows,
+  (SELECT CAST(COALESCE(SUM(CAST(hash(symbol || '|' || CAST(close AS VARCHAR) || '|' || CAST(totalmv AS VARCHAR)) AS HUGEINT)), 0) AS VARCHAR)
+     FROM raw_basic_daily WHERE date = ?) AS basic_hash,
+  (SELECT COUNT(*) FROM raw_adjust_factor WHERE date = ?) AS factor_rows,
+  (SELECT CAST(COALESCE(SUM(CAST(hash(symbol || '|' || CAST(hfq_factor AS VARCHAR)) AS HUGEINT)), 0) AS VARCHAR)
+     FROM raw_adjust_factor WHERE date = ?) AS factor_hash`;
+
+/**
+ * 读取某交易日的行情指纹（只读，失败不影响补跑主流程）。
+ *
+ * 需要三张表**同时**可用；任一缺失（如 CI 迷你库）则返回 null，
+ * 上层记录 `effective=null`，不把「采集失败」误判为「空跑」。
+ */
+export async function readQuoteFingerprint(date: string): Promise<QuoteFingerprint | null> {
+  try {
+    const rows = await queryDuckDB<{
+      kline_rows: number;
+      kline_hash: string | null;
+      basic_rows: number;
+      basic_hash: string | null;
+      factor_rows: number;
+      factor_hash: string | null;
+    }>(FINGERPRINT_SQL, [date, date, date, date, date, date]);
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      klineRows: Number(r.kline_rows),
+      klineHash: r.kline_hash ?? null,
+      basicRows: Number(r.basic_rows),
+      basicHash: r.basic_hash ?? null,
+      factorRows: Number(r.factor_rows),
+      factorHash: r.factor_hash ?? null,
+    };
+  } catch (err) {
+    writeSystemLog({
+      logType: 'tdx2db_update',
+      level: 'INFO',
+      message: `补跑指纹采集失败（不影响补跑）：${date}`,
+      detail: String(err).slice(0, 300),
+    });
+    return null;
+  }
+}
+
+function sameFingerprint(a: QuoteFingerprint, b: QuoteFingerprint): boolean {
+  return (
+    a.klineRows === b.klineRows &&
+    a.klineHash === b.klineHash &&
+    a.basicRows === b.basicRows &&
+    a.basicHash === b.basicHash &&
+    a.factorRows === b.factorRows &&
+    a.factorHash === b.factorHash
+  );
 }
 
 async function _trySystemdRun(): Promise<RerunResult | null> {
@@ -60,7 +142,7 @@ async function _trySystemdRun(): Promise<RerunResult | null> {
     writeSystemLog({
       logType: 'tdx2db_update',
       level: 'SUCCESS',
-      message: 'WARN/ERROR 触发 tdx2db 补跑（systemd-run）成功',
+      message: 'tdx2db 补跑 exit_code=0（systemd-run）',
       detail: text.slice(0, 500) || undefined,
     });
     return { status: 'SUCCESS', method: 'systemd-run', exitCode: 0, message: text || 'systemd-run 补跑成功' };
@@ -100,7 +182,7 @@ async function _trySystemctl(): Promise<RerunResult | null> {
         writeSystemLog({
           logType: 'tdx2db_update',
           level: ok ? 'SUCCESS' : 'ERROR',
-          message: `WARN/ERROR 触发 tdx2db 补跑（systemctl）${ok ? '成功' : '失败'}`,
+          message: `tdx2db 补跑（systemctl）${ok ? 'exit_code=0' : '失败'}`,
           detail: `exit_code=${exitCode}`,
         });
         return {
@@ -137,7 +219,7 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
     writeSystemLog({
       logType: 'tdx2db_update',
       level: 'SUCCESS',
-      message: 'WARN/ERROR 触发 tdx2db 补跑（直接 exec）成功',
+      message: 'tdx2db 补跑 exit_code=0（直接 exec）',
       detail: text.slice(0, 500) || undefined,
     });
     return { status: 'SUCCESS', method: 'exec', exitCode: 0, message: text || 'exec 补跑成功' };
@@ -161,14 +243,21 @@ async function _tryDirectExec(): Promise<RerunResult | null> {
 /**
  * 触发一次行情更新补跑（降级链 systemd-run → systemctl → exec → SKIP）
  *
+ * 传入 `opts.date` 时，补跑前后各采集一次当日行情指纹，结果见 `effective`：
+ *   - true  → 数据确有变化
+ *   - false → 空跑（tdx2db 增量语义下当日已入库，ADR-018）
+ *   - null  → 未采集（未传 date / 采集失败）
+ *
  * 补跑成功后等 RETRY_SETTLE_MS 让 DuckDB 落盘稳定，再由调用方重新校验。
  */
-export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
+export async function rerunQuoteUpdate(reason: string, opts: RerunOptions = {}): Promise<RerunResult> {
+  const before = opts.date ? await readQuoteFingerprint(opts.date) : null;
+
   writeSystemLog({
     logType: 'tdx2db_update',
     level: 'WARN',
     message: `触发行情更新补跑（原因：${reason}）`,
-    detail: `dburi=${DUCKDB_URI}`,
+    detail: `dburi=${DUCKDB_URI}${opts.date ? ` date=${opts.date}` : ''}`,
   });
 
   // 🔴 **方向 B**（ADR-012 §2.3）：Node 自己触发写 ⇒ 必须 Node 主动让锁。
@@ -199,8 +288,22 @@ export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
   if (result) {
     if (result.status === 'SUCCESS') {
       await new Promise((r) => setTimeout(r, RETRY_SETTLE_MS));
+      const after = opts.date ? await readQuoteFingerprint(opts.date) : null;
+      const effective = before && after ? !sameFingerprint(before, after) : null;
+      writeSystemLog({
+        logType: 'tdx2db_update',
+        level: effective === false ? 'WARN' : 'INFO',
+        message:
+          effective === null
+            ? '补跑结束：未采集数据指纹，无法判定是否空跑'
+            : effective
+              ? '补跑结束：当日行情数据有变化'
+              : '补跑结束：当日行情数据无变化（空跑）',
+        detail: JSON.stringify({ effective, before, after }),
+      });
+      return { ...result, effective, before, after };
     }
-    return result;
+    return { ...result, effective: null, before };
   }
 
   writeSystemLog({
@@ -208,5 +311,5 @@ export async function rerunQuoteUpdate(reason: string): Promise<RerunResult> {
     level: 'SKIP',
     message: '补跑不可用（无 systemd 且无 tdx2db 二进制），保持现状继续主流程',
   });
-  return { status: 'SKIP', method: 'none', message: '补跑通道不可用' };
+  return { status: 'SKIP', method: 'none', message: '补跑通道不可用', effective: null, before };
 }

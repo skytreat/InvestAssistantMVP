@@ -95,11 +95,38 @@ describe('T106 校验闸门', () => {
   it('更新成功 + 无数据 → 补跑一次；补跑后有数据则继续校验', async () => {
     vi.spyOn(quoteStatusNs, 'reportTdx2dbRunOutcome').mockResolvedValue(status('SUCCESS'));
     vi.spyOn(validatorNs, 'hasQuoteDataOn').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    vi.spyOn(rerunNs, 'rerunQuoteUpdate').mockResolvedValue({
+      status: 'SUCCESS',
+      method: 'exec',
+      message: 'mock rerun ok',
+      effective: false,
+    });
 
     const result = await runScheduledDatacheck();
 
     expect(result.action).toBe('CHECKED');
     expect(rerunNs.rerunQuoteUpdate).toHaveBeenCalledTimes(1);
+    expect(rerunNs.rerunQuoteUpdate).toHaveBeenCalledWith(
+      expect.stringContaining('2026-10-23'),
+      expect.objectContaining({ date: '2026-10-23' }),
+    );
+    // 补跑前后指纹一致 → 透传空跑结论，便于管理端/日志判定补跑是否白跑
+    expect(result.rerunEffective).toBe(false);
+    expect(validatorNs.runAllChecks).toHaveBeenCalledTimes(1);
+  });
+
+  it('校验存在 WARN/ERROR → 不再补跑（ADR-018），只跑一次校验', async () => {
+    vi.spyOn(quoteStatusNs, 'reportTdx2dbRunOutcome').mockResolvedValue(status('SUCCESS'));
+    vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([
+      { checkId: 'C1', name: 'C1', result: 'WARN', message: 'warn', detail: 'warn' },
+    ] as any);
+
+    const result = await runScheduledDatacheck();
+
+    expect(result.action).toBe('CHECKED');
+    expect(rerunNs.rerunQuoteUpdate).not.toHaveBeenCalled();
+    expect(result.reran).toBe(false);
+    expect(result.rerunSkippedReason).toBe('noop-by-design');
     expect(validatorNs.runAllChecks).toHaveBeenCalledTimes(1);
   });
 

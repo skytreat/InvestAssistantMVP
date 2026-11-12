@@ -30,6 +30,7 @@
 | [ADR-015](ADR-015-fund-check-line-level-only.md) | 资金校验只做行内自洽，不做账户级闭合 | V3 §2.9.3 | T125 |
 | [ADR-016](ADR-016-cash-like-asset-modeling.md) | 现金类资产建模（逆回购为债权、货币 ETF 不按百分比计收益） | V3 §3.5 | T120/T127/T132 |
 | [ADR-017](ADR-017-v3-task-renumbering.md) | V3 任务编号整体顺延 T119~T137（解除与 v2 计划 T100~T111 的撞号） | 2026-10-24 实查 git 历史撞号 | plan_v3 全量 + traceability §7bis + ADR-013~016 关联行 |
+| [ADR-018](ADR-018-noop-quote-rerun.md) | 校验 WARN/ERROR 不再自动补跑（tdx2db 增量语义下为空操作），补跑改为可测 | 2026-11-12 结构性证明（§13.2 I-37；消解 I-36 ④） | 本次修复：`scheduler.ts` / `quoteRerun.ts` / `routes/admin.ts` |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 
