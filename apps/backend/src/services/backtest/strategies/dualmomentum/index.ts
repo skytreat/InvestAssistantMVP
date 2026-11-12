@@ -68,13 +68,7 @@ interface DualMomentumState {
  * （现金 + 全部持仓市值）逐日权益的 `volWindow` 日滚动标准差 × √250（年化）。
  * 数据不足（< volWindow 根）或无波动时返回 1（满仓，退化为基线行为）。
  */
-function computeVolTargetExposure(
-  state: DualMomentumState,
-  ctx: StrategyContext,
-  p: DualMomentumParams,
-): number {
-  // 组合权益 = 现金 + 各持仓市值（ctx 提供）
-  const equitySeries: number[] = [];
+function computeVolTargetExposure(ctx: StrategyContext, p: DualMomentumParams): number {
   // 用 ctx.series 拿不到权益，改从持仓 + 现金重建「截至 asOf 的权益序列」
   // 简化：只取当前时刻权益，按「实现波动率 = 目标组合历史日收益 std」近似为
   // 持仓标的混合收益的滚动 std（各持仓按当前市值加权）
@@ -384,7 +378,7 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         const passCount = filtered.length;
         exposureScale = Math.min(1, passCount / p.exposureScaleDivisor);
       } else if (p.exposureMode === 'vol') {
-        exposureScale = computeVolTargetExposure(state, ctx, p);
+        exposureScale = computeVolTargetExposure(ctx, p);
       }
 
       const selected = filtered.slice(0, p.maxHoldings);
