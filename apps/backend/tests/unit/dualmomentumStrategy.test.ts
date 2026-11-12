@@ -217,8 +217,8 @@ describe('参数 schema 与锁定常量', () => {
       dailyChangeMax: DAILY_CHANGE_MAX,
       maxHoldings: MAX_HOLDINGS,
       benchmark: BENCHMARK_SYMBOL,
-      // 档 1/2/3 研究参数：ADR-019（2026-11-12）后缺省 = 跑赢档 + vol(0.12) 组合
-      // DAS 锁定语义见 `DUALMOMENTUM_DEFAULTS` 上方注释与 `docs/adr/ADR-019-*`
+      // 档 1/2/3 研究参数：ADR-022（2026-11-12）后缺省 = 跑赢档 + vol(0.12) 组合
+      // DAS 锁定语义见 `DUALMOMENTUM_DEFAULTS` 上方注释与 `docs/adr/ADR-022-*`
       cashInterestRate: 0.02,
       exposureMode: 'vol',
       exposureScaleDivisor: 3,

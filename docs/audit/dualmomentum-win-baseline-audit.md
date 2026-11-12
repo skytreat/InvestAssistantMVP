@@ -1,10 +1,10 @@
-# DualMomentum 跑赢档成为正式基线 验收（PR #164，ADR-019）
+# DualMomentum 跑赢档成为正式基线 验收（PR #164，ADR-022）
 
 > **判定人**：Agnes AI（实施 agent）
 > **日期**：2026-11-12
-> **波次**：DualMomentum 基线切换（ADR-019 落地）
+> **波次**：DualMomentum 基线切换（ADR-022 落地）
 > **PR**：#164 `feat/dm-win-baseline` → `main`
-> **上游**：[ADR-019](../../../docs/adr/ADR-019-dualmomentum-win-baseline.md) + `docs/audit/dualmomentum-l1-alignment.md` §13.10（目标函数二选一 + 纪律底线）
+> **上游**：[ADR-022](../../../docs/adr/ADR-022-dualmomentum-win-baseline.md) + `docs/audit/dualmomentum-l1-alignment.md` §13.10（目标函数二选一 + 纪律底线）
 > **Base**：`main`（#163 已合入，HEAD `29cfd93`）
 
 ---
@@ -13,7 +13,7 @@
 
 | 门槛 | 判定 | 实测依据 |
 |---|---|---|
-| **G-BL1**（ADR 已开 + 签字留档） | ✅ **PASS** | `docs/adr/ADR-019-dualmomentum-win-baseline.md`（决策 + 代价 + 7 项备选否决 + 回退方案 + 签字表）；`docs/adr/README.md` 索引已更新 |
+| **G-BL1**（ADR 已开 + 签字留档） | ✅ **PASS** | `docs/adr/ADR-022-dualmomentum-win-baseline.md`（决策 + 代价 + 7 项备选否决 + 回退方案 + 签字表）；`docs/adr/README.md` 索引已更新 |
 | **G-BL2**（新基线锚点已重跑） | ✅ **PASS** | `--check-baseline` → `final=2363029.30 cum=136.30% cagr=11.65% mdd=26.46% trades=4657`，与 §13.13 跑赢档+vol(0.12) 实测**逐位一致** |
 | **G-BL3**（缺省参数落地无隐性缺陷） | ✅ **PASS** | 修复 `resolveDualMomentumParams` 的 3 项字面量 fallback（`exposureMode`/`benchmarkGateMode`/`scoreMode`）→ 改为回落 `d.xxx`；否则改 DEFAULTS 不生效（首轮实测 cagr=4.66% 与预期 11.65% 不符，定位后修复） |
 | **G-BL4**（单测零回归） | ✅ **PASS** | `dualmomentumStrategy.test.ts` 12/12 + `dualmomentumL1Diagnostics.test.ts` 16/16 = 28/28 本地绿；`schema 覆盖全部默认参数` 用例断言新缺省值 |
@@ -119,7 +119,7 @@ $ node_modules/.bin/tsc --noEmit -p apps/backend/tsconfig.json
 |---|---|
 | CI `build-and-test` 通过 | ⏳ 待 push 后 CI 结果 |
 | G-BL1 ~ G-BL6 全 PASS | ✅ 本审计已落 |
-| ADR 与本波 commit 同 PR | ✅ `docs/adr/ADR-019-*.md` + README 索引 |
+| ADR 与本波 commit 同 PR | ✅ `docs/adr/ADR-022-*.md` + README 索引 |
 | 验收落档与本波 commit 同 PR | ✅ 本文件 |
 
 **判定：本审计 PASS。CI 全绿后可 squash merge。**

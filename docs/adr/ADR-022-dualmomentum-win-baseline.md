@@ -1,4 +1,4 @@
-# ADR-019 —— DualMomentum 跑赢档成为正式基线（目标函数 = 跑赢 `sh510300`）
+# ADR-022 —— DualMomentum 跑赢档成为正式基线（目标函数 = 跑赢 `sh510300`）
 
 | 项 | 值 |
 |---|---|
@@ -136,4 +136,4 @@ git revert <本 PR 的 squash commit>
 | 角色 | 决定 | 日期 |
 |---|---|---|
 | owner（目标函数选定 + 签字） | 跑赢档 | 2026-11-12 |
-| 实施 agent（落盘 + 重跑基线） | ADR-019 + `DUALMOMENTUM_DEFAULTS` 改动 + 新锚点 | 2026-11-12 |
+| 实施 agent（落盘 + 重跑基线） | ADR-022 + `DUALMOMENTUM_DEFAULTS` 改动 + 新锚点 | 2026-11-12 |
