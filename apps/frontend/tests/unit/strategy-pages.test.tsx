@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
-import StrategyConfig from '../../src/pages/StrategyConfig';
+import Settings from '../../src/pages/Settings';
 import StrategyEffectiveness from '../../src/pages/StrategyEffectiveness';
 import RiskCheck from '../../src/pages/RiskCheck';
 import { renderWithRouter, mockResponse } from '../helpers';
@@ -26,7 +26,7 @@ vi.mock('../../src/api/client', () => ({
   api: { get: getMock, post: postMock, put: putMock, patch: patchMock, delete: delMock },
   onSessionExpired: () => () => {},
   emitSessionExpired: () => {},
-  currentPath: () => '/strategy/config',
+  currentPath: () => '/settings',
 }));
 
 const PLUGINS = [
@@ -160,9 +160,9 @@ beforeEach(() => {
   delMock.mockResolvedValue(mockResponse({ data: null }));
 });
 
-describe('T148 策略配置页（/strategy/config）', () => {
+describe('T148 设置页 · 插件管理（/settings?tab=plugins，原 /strategy/config 已并入）', () => {
   it('按分类渲染插件列表，含启用开关', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />);
     expect(await screen.findByText('监控类策略')).toBeInTheDocument();
     expect(screen.getByText('过滤类策略')).toBeInTheDocument();
     expect(screen.getByText('RSI 超卖')).toBeInTheDocument();
@@ -171,7 +171,7 @@ describe('T148 策略配置页（/strategy/config）', () => {
   });
 
   it('编辑参数 → 超范围值被前端校验拦截（不发请求）', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />);
     await screen.findByText('RSI 超卖');
     // 两个插件各有一个「编辑参数」按钮，取第一个（rsi_oversold）
     await userEvent.click(screen.getAllByRole('button', { name: /编辑参数/ })[0]);
@@ -185,11 +185,12 @@ describe('T148 策略配置页（/strategy/config）', () => {
   });
 
   it('启用开关切换 → PUT /toggle 且列表状态更新', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />);
     await screen.findByText('流动性过滤');
     await userEvent.click(screen.getByRole('checkbox', { name: '流动性过滤 启用' }));
     await waitFor(() =>
-      expect(putMock).toHaveBeenCalledWith('/strategy/plugins/liquidity_filter/toggle', { enabled: true }),
+      // 统一后的 PluginManager 与旧设置页同口径：`enabled` 传 0/1
+      expect(putMock).toHaveBeenCalledWith('/strategy/plugins/liquidity_filter/toggle', { enabled: 1 }),
     );
     expect(await screen.findByText(/已启用/)).toBeInTheDocument();
   });
@@ -197,7 +198,7 @@ describe('T148 策略配置页（/strategy/config）', () => {
 
 describe('F6 · 跨境 ETF 提示（PRD U13）', () => {
   it('编辑组合策略参数时提示一次，可关闭；再次编辑不再出现', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />);
     await screen.findByText('RSI 超卖');
 
     // 第一次打开参数编辑器 → 出现提示

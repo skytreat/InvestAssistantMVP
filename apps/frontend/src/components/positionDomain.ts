@@ -55,8 +55,8 @@ export interface PositionSignal {
  *   - `prevClose` —— 昨收（卡 5「总资产变化」用）；
  *   - `signal` —— 该标的最新一条信号（建议 A，卡 3 消费，卡 7 扩展）；
  *   - `name` —— 中文名（`raw_symbol_name`，覆盖率约 70%，**缺失是常态**）；
- *   - `industry` —— 行业（**契约预留字段，当前恒为 `null`**：
- *     `raw_tdx_blocks_member` 实测 0 行 → 行业筛选必须显式降级，裁决 D-4）。
+ *   - `industry` —— 行业（tdx_research **L1** 板块名；2026-11-12 起后端已填充，
+ *     ETF/未收录标的为 `null`。无任何非空值时前端禁用行业筛选，见裁决 D-4）。
  */
 export interface Position {
   asset_code: string;

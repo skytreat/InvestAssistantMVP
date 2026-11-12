@@ -48,19 +48,18 @@ import {
  * | 排除 ST | `exclude_st` | boolean |
  * | 最低成交额 | `min_amount` | **后端口径是「元」**（`raw_kline_daily.amount` 单位为元）|
  * | 总市值上限 | `market_cap_max` | 亿元（后端 `market_cap_max * 1e8` 与 `totalmv` 比较）|
- * | 行业 | `industry_code` | 🔴 **不可用**（见下）|
+ * | 行业 | `industry_code` | tdx_research **L1** 板块（`/api/stockscan/industries`） |
  *
  * ⚠️ **成交额单位换算**：界面用「万元」（用户友好），后端 `min_amount` 比的是**元**
  *    （`buildPoolQuery` 里 `k.amount >= ?`，`amount` 存元）。
  *    ⇒ 前端提交前 **× 10000**。改动前界面写「万元」而后端按「元」比，
  *    实际放行了 1 万倍的成交额 —— 本页已修正这个口径错位。
  *
- * 🔴 **行业过滤为什么 disabled**（T85b ④ / I-22 实测）：
- *    `raw_tdx_blocks_info` 与 `raw_tdx_blocks_member` **均为 0 行**（未采集板块数据），
- *    后端 `buildPoolQuery` 的 `EXISTS (SELECT 1 FROM raw_tdx_blocks_member ...)`
- *    必然 0 行 ⇒ 任何 `industry_code` 都会让**全部标的消失**（静默丢标的）。
- *    ⇒ 本页把行业控件**禁用**并显式写明「行业数据源暂不可用」，
- *      **不发送** `industry_code`（宁可不过滤，也不静默清空结果）。
+ * **行业过滤**（2026-11-12 起可用，板块表 2026-11-06 回填后启用）：
+ *    选项来自 `GET /api/stockscan/industries`（tdx_research L1 板块，~30 个）；
+ *    提交 `industry_code`（block_code），后端校验非法值 400。
+ *    接口返回**空列表**时（板块数据缺失）控件禁用并显式提示「行业数据源暂不可用」，
+ *    此时不发送 `industry_code`（宁可不过滤，也不静默清空结果）。
  *
  * ## F-S2 · 参数表单
  *
@@ -87,6 +86,12 @@ interface PluginInfo {
   description?: string;
   category: 'monitor' | 'filter';
   paramSchema?: ParamField[];
+}
+
+/** 行业过滤选项（`GET /api/stockscan/industries`，tdx_research L1 板块） */
+interface IndustryOption {
+  code: string;
+  name: string;
 }
 
 /** 一条选股结果（后端 `StockScanResult`） */
@@ -188,6 +193,10 @@ export default function StockScan() {
   const [minAmountWan, setMinAmountWan] = useState<number>(0);
   /** 总市值上限（亿元，空 = 不过滤） */
   const [marketCapMaxYi, setMarketCapMaxYi] = useState<string>('');
+  /** 行业过滤选项（tdx_research L1；空列表 = 数据源不可用，控件禁用） */
+  const [industryOptions, setIndustryOptions] = useState<IndustryOption[]>([]);
+  /** 当前行业（block_code；'' = 不过滤） */
+  const [industryCode, setIndustryCode] = useState<string>('');
 
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<ScanResult[]>([]);
@@ -243,6 +252,14 @@ export default function StockScan() {
         }
       })
       .catch(() => setErrorMsg('加载插件列表失败'));
+
+    // 行业选项（tdx_research L1）；加载失败/板块表缺失 → 空列表 → 控件禁用 + 显式文案
+    api
+      .get('/stockscan/industries')
+      .then((res) => {
+        setIndustryOptions(((res.data?.data ?? []) as IndustryOption[]).filter((i) => i?.code));
+      })
+      .catch(() => setIndustryOptions([]));
   }, []);
 
   /** 切换插件：重置参数为新插件的默认值 */
@@ -360,7 +377,8 @@ export default function StockScan() {
         asset_type: assetType,
         exclude_st: excludeSt,
         ...(marketCapMaxYi.trim() !== '' ? { market_cap_max: Number(marketCapMaxYi) } : {}),
-        // ⚠️ 不传 industry_code：板块表 0 行 → 传了会把结果清空（见文件头说明）
+        // 行业：只提交后端 L1 列表里的 block_code（未选择 / 数据源不可用时不带该字段）
+        ...(industryCode ? { industry_code: industryCode } : {}),
       });
       if (isOkEnvelope(res.data) && res.data?.data) {
         setResults((res.data.data.results ?? []) as ScanResult[]);
@@ -625,13 +643,24 @@ export default function StockScan() {
           <span style={hintStyle}>按总市值过滤，单位：亿元，留空表示不过滤</span>
         </div>
 
-        {/* F-S1 · 行业（🔴 数据源不可用 → 禁用 + 显式文案）*/}
+        {/* F-S1 · 行业（数据源不可用 → 禁用 + 显式文案；可用时选 L1 行业）*/}
         <div style={rowStyle}>
           <label htmlFor="stockscan-industry" style={labelStyle}>
             行业：
           </label>
-          <select id="stockscan-industry" style={controlStyle} disabled value="">
+          <select
+            id="stockscan-industry"
+            style={controlStyle}
+            disabled={industryOptions.length === 0}
+            value={industryCode}
+            onChange={(e) => setIndustryCode(e.target.value)}
+          >
             <option value="">全部</option>
+            {industryOptions.map((i) => (
+              <option key={i.code} value={i.code}>
+                {i.name}
+              </option>
+            ))}
           </select>
           {/*
             ⚠️ 颜色用 `COLORS.textWarning`（深琥珀 #92400e，白底对比度 7.09:1 ≥ 4.5:1）
@@ -639,7 +668,9 @@ export default function StockScan() {
                后者会被真浏览器 axe 判为 color-contrast 违规（serious）。
                （Wave 7 卡 5 新增了 `textWarning`；此处沿用同值的 `textDisclaimer` 亦可。）
           */}
-          <span style={{ ...hintStyle, color: COLORS.textDisclaimer }}>行业数据源暂不可用</span>
+          {industryOptions.length === 0 && (
+            <span style={{ ...hintStyle, color: COLORS.textDisclaimer }}>行业数据源暂不可用</span>
+          )}
         </div>
 
         {/* F-S2 · 参数表单（schema 驱动）*/}
@@ -740,7 +771,9 @@ export default function StockScan() {
             {appliedFilters.excludeSt ? ' · 排除 ST' : ''}
             {appliedFilters.minAmount ? ` · 成交额 ≥ ${appliedFilters.minAmount} 元` : ''}
             {appliedFilters.marketCapMaxYi ? ` · 总市值 ≤ ${appliedFilters.marketCapMaxYi} 亿` : ''}
-            {' · 行业：未过滤（数据源不可用）'}
+            {appliedFilters.industryCode
+              ? ` · 行业：${industryOptions.find((i) => i.code === appliedFilters.industryCode)?.name ?? appliedFilters.industryCode}`
+              : ' · 行业：全部'}
           </div>
         ) : null}
 

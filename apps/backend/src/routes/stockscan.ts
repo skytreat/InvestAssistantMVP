@@ -15,6 +15,7 @@ import {
   type PluginSignal,
 } from '../services/pluginEngine.js';
 import { resolveLatestQuoteDate, batchGetDailyRangeByView } from '../services/marketData.js';
+import { loadIndustryOptions } from '../services/portfolioRisk.js';
 import { writeSystemLog, withSystemLogBuffer } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
@@ -277,10 +278,12 @@ export function parseScanFilters(body: ParsedBody):
  *   实测 2026-10-12 v_stock_qfq 池内 198 只被排除（5561 → 5363）。
  *   COALESCE 兜底：没有名称记录的标的（实测 585 只股票无 name）按「非 ST」放行，不误杀。
  *
- * ⚠️ 行业口径（MVP 标注为「板块口径」）：`raw_tdx_blocks_info` / `raw_tdx_blocks_member`
- *   **实测均为 0 行**（未采集板块数据），故 block_type（行业/概念/地区）无法甄别 ——
- *   本实现只按 block_code 等值过滤，不假装能区分行业与概念。
- *   数据为空时任何 industry_code 都返回 0 条，属数据缺失而非 SQL 错误。
+ * ⚠️ 行业口径：板块表 2026-11-06 起已回填（info 926 行 / member 90,988 行），
+ *   `block_type` 实际取值为 `tdx_research` / `concept` / `style` / `region` —— **没有 `industry`**。
+ *   行业口径对齐 `portfolioRisk`：`tdx_research` + `block_level = 1`（L1 覆盖 5,581/5,581；
+ *   不过滤层级会因一/二/三级重复挂靠放大 2.85 倍）。
+ *   路由层已校验 `industry_code` 必须来自 `/api/stockscan/industries` 的 L1 列表；
+ *   SQL 仍只按 `block_code` 等值过滤（不在此处拼 block_type，避免参数顺序复杂化）。
  *
  * ⚠️ 市值 NULL 放行：`market_cap_max` 只过滤「已知且超限」的标的；
  *   实测 ETF 的 raw_basic_daily.totalmv 多为 0（非 NULL），故该过滤对 ETF 基本不起作用。
@@ -419,7 +422,7 @@ export async function loadCandidateDaily(
  *     -- T55 公共过滤 --
  *     asset_type?: 'stock'|'etf'|'all',  // 默认 stock
  *     exclude_st?: boolean,     // 默认 false（SDD §3.3 声称的 is_st 列实测不存在，按名称前缀判定）
- *     industry_code?: string,   // raw_tdx_blocks_member.block_code（MVP「板块口径」）
+ *     industry_code?: string,   // tdx_research L1 block_code（取自 /api/stockscan/industries，非法值 400）
  *     market_cap_max?: number,  // 总市值上限，单位「亿元」
  *   }
  *
@@ -459,6 +462,23 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
         return reply.code(400).send(fail(400, 'PARAM_INVALID', parsed.message));
       }
       const { maxResults, ...filters } = parsed.value;
+
+      // industry_code 必须是「tdx_research L1 行业」的 block_code ——
+      // 概念/风格/地区板块也在这两张表里，直接放行会得到“看似成功但口径错误”的结果。
+      if (filters.industryCode !== null) {
+        const industries = await loadIndustryOptions();
+        if (!industries.some((i) => i.code === filters.industryCode)) {
+          return reply
+            .code(400)
+            .send(
+              fail(
+                400,
+                'PARAM_INVALID',
+                `industry_code 无效（只接受 tdx_research L1 行业）：${filters.industryCode}`,
+              ),
+            );
+        }
+      }
 
       const userParams: Record<string, unknown> = body.params ?? {};
 
@@ -652,5 +672,10 @@ export async function registerStockScanRoutes(app: FastifyInstance) {
       paramSchema: p.paramSchema,
     }));
     reply.send(ok(plugins));
+  });
+
+  // GET /api/stockscan/industries — 行业过滤选项（tdx_research L1；空数组 = 数据源不可用）
+  app.get('/api/stockscan/industries', async (_request, reply) => {
+    reply.send(ok(await loadIndustryOptions()));
   });
 }

@@ -272,6 +272,103 @@ export function resolveIndustryBlockLevel(): number {
   return Number.isInteger(n) && n >= 1 ? n : DEFAULT_INDUSTRY_BLOCK_LEVEL;
 }
 
+/**
+ * 不查库的「本次生效行业类型」：环境变量覆盖 → 默认 `tdx_research`。
+ *
+ * 供 `/api/holding`、选股页行业选项等**只读视图**使用（1 次查询即可）；
+ * `loadIndustryMapping()` 的旧库兼容回退仍走「先查 DISTINCT block_type」的路径。
+ */
+function effectiveIndustryTypes(): string[] {
+  const override = (process.env.INDUSTRY_BLOCK_TYPES ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return override.length ? override : DEFAULT_INDUSTRY_BLOCK_TYPES;
+}
+
+/** `symbol → 行业板块名` 的单次 IN 查询（口径与 {@link loadIndustryMapping} 一致） */
+async function queryIndustryNames(
+  symbols: string[],
+  types: string[],
+  level: number,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (symbols.length === 0 || types.length === 0) return map;
+
+  const memberRows = await queryDuckDB<{ stock_symbol: string; block_name: string }>(
+    `SELECT DISTINCT m.stock_symbol AS stock_symbol, i.block_name AS block_name
+       FROM raw_tdx_blocks_member m
+       JOIN raw_tdx_blocks_info i ON i.block_code = m.block_code
+      WHERE m.stock_symbol IN (${symbols.map(() => '?').join(',')})
+        AND i.block_type IN (${types.map(() => '?').join(',')})
+        AND i.block_level = ?`,
+    [...symbols, ...types, level],
+  );
+
+  for (const r of memberRows) {
+    const name = String(r.block_name ?? '').trim();
+    if (!name) continue;
+    const prev = map.get(r.stock_symbol);
+    // L1 下仍可能挂多个板块：按名称排序取第一个（不做权重拆分，与 loadIndustryMapping 一致）
+    if (prev === undefined || name < prev) map.set(String(r.stock_symbol), name);
+  }
+  return map;
+}
+
+export interface IndustryOption {
+  /** `raw_tdx_blocks_info.block_code`（L1 行业板块） */
+  code: string;
+  /** `raw_tdx_blocks_info.block_name`（如「煤炭」） */
+  name: string;
+}
+
+/**
+ * 读取可用于「行业过滤」的 L1 行业列表（选股页 /api/stockscan/industries）。
+ *
+ * 口径：`block_type = tdx_research`（可用 `INDUSTRY_BLOCK_TYPES` 覆盖）、
+ *       `block_level = 1`（可用 `INDUSTRY_BLOCK_LEVEL` 覆盖）。
+ * 数据缺失/查询失败 → 返回空数组（前端据此禁用控件，不静默清空结果）。
+ */
+export async function loadIndustryOptions(): Promise<IndustryOption[]> {
+  try {
+    const types = effectiveIndustryTypes();
+    const rows = await queryDuckDB<{ block_code: string; block_name: string | null }>(
+      `SELECT block_code, block_name
+         FROM raw_tdx_blocks_info
+        WHERE block_type IN (${types.map(() => '?').join(',')})
+          AND block_level = ?
+          AND block_name IS NOT NULL
+        ORDER BY block_code`,
+      [...types, resolveIndustryBlockLevel()],
+    );
+    const out: IndustryOption[] = [];
+    for (const r of rows) {
+      const name = String(r.block_name ?? '').trim();
+      const code = String(r.block_code ?? '').trim();
+      if (!name || !code) continue;
+      out.push({ code, name });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 读取「标的 → 行业名」映射（**1 次查询**，供 `/api/holding` 等请求内使用）。
+ *
+ * 与 {@link loadIndustryMapping} 的差别：不先查 DISTINCT block_type（省 1 次往返），
+ * 因此没有「按类型名含行业」的旧库回退；新库（933 行板块 + 9 万成员）为常态。
+ * 查询失败 → 空 Map（持仓接口的 industry 字段退化为 null）。
+ */
+export async function loadIndustryNames(symbols: string[]): Promise<Map<string, string>> {
+  try {
+    return await queryIndustryNames(symbols, effectiveIndustryTypes(), resolveIndustryBlockLevel());
+  } catch {
+    return new Map();
+  }
+}
+
 /** 行业归属覆盖率：按持仓只数计（`industryBySymbol` 里没有有效板块名的即视为未覆盖） */
 export function computeIndustryCoverage(
   rows: Array<{ assetCode: string }>,

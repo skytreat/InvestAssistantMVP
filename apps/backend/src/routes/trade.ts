@@ -9,6 +9,7 @@ import {
   type LatestAndPrevClose,
 } from '../services/marketData.js';
 import { getLatestSignalsByAssets, type SignalRow } from '../services/todaySignals.js';
+import { loadIndustryNames } from '../services/portfolioRisk.js';
 import { writeSystemLog } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
@@ -838,6 +839,9 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         }
       }
 
+      // 1 次 IN 查询：全部持仓标的的行业归属（tdx_research L1；板块表 2026-11-06 起已回填）
+      const industryBySymbol = await loadIndustryNames(positions.map((p) => p.asset_code));
+
       // 市值合计 → 每只标的的仓位占比
       const enriched = positions.map((p) => {
         const quote = quotes.get(p.asset_code);
@@ -871,17 +875,13 @@ export async function registerTradeRoutes(app: FastifyInstance) {
            */
           broker_code: brokerMap.has(p.asset_code) ? (brokerMap.get(p.asset_code) as string | null) : null,
           /**
-           * 行业（**契约预留字段，当前恒为 null**）
+           * 行业（通达信板块 L1；2026-11-06 实测板块表已回填：info 926 行 / member 90,988 行）
            *
-           * 实测（2026-10-20）：`raw_tdx_blocks_member` 与 `raw_tdx_blocks_info` **均为 0 行**，
-           *   且 `raw_tdx_blocks_member` 实际列名是 `(stock_symbol, block_code)`
-           *   —— 与 SDD §3.3 行 1299 登记的 `symbol` **不一致**（AGENTS.md：放行 ≠ 已知列名）。
-           * ⇒ 行业在当前数据源下**可证明恒为 null**。
-           * ⚠️ 接入真实查询前必须先甄别 `block_type`（行业 / 概念 / 地区）——
-           *   空表上无法实测该取值集合，故本卡**不写猜测口径**，只把字段预留进契约，
-           *   前端据此把「行业筛选」显式降级（禁用 + 说明文案），不许静默失效。
+           * 口径与 `portfolioRisk.loadIndustryNames()` 一致：
+           *   `block_type = tdx_research`（可用 `INDUSTRY_BLOCK_TYPES` 覆盖）、`block_level = 1`。
+           * 无归属（ETF / 未收录标的）→ null；前端据此启用/禁用行业筛选。
            */
-          industry: null,
+          industry: industryBySymbol.get(p.asset_code) ?? null,
         };
       });
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
-import StrategyConfig from '../../src/pages/StrategyConfig';
+import Settings from '../../src/pages/Settings';
 import { renderWithRouter, mockResponse } from '../helpers';
 
 /**
@@ -27,7 +27,7 @@ vi.mock('../../src/api/client', () => ({
   api: { get: getMock, post: postMock, put: putMock, patch: vi.fn(), delete: delMock },
   onSessionExpired: () => () => {},
   emitSessionExpired: () => {},
-  currentPath: () => '/strategy/config',
+  currentPath: () => '/settings?tab=combos',
 }));
 
 /**
@@ -129,7 +129,7 @@ beforeEach(() => {
 
 describe('组合策略列表（PA-08）', () => {
   it('渲染组合行：名称 / 条件 / 适用品种 / 冷却 / 配置版本', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
 
     const row = await screen.findByTestId('combo-row-cmb_1');
     expect(within(row).getByText('超卖金叉组合')).toBeInTheDocument();
@@ -154,7 +154,7 @@ describe('组合策略列表（PA-08）', () => {
       ]);
     });
 
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     const row = await screen.findByTestId('combo-row-cmb_1');
     expect(within(row).getByText('RSI 超卖 + MACD 金叉（停用）')).toBeInTheDocument();
   });
@@ -165,7 +165,7 @@ describe('组合策略编辑（PA-08）', () => {
     const created = { ...COMBO, id: 'cmb_new', name: '新组合' };
     postMock.mockResolvedValueOnce(mockResponse(created));
 
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combos-section');
     await userEvent.click(screen.getByTestId('combo-new'));
 
@@ -194,7 +194,7 @@ describe('组合策略编辑（PA-08）', () => {
   it('编辑：回填已有配置，保存 → PUT /strategy/combos/:id', async () => {
     putMock.mockResolvedValueOnce(mockResponse({ ...COMBO, name: '改名后的组合', configVersion: 2 }));
 
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combo-row-cmb_1');
     await userEvent.click(screen.getByTestId('combo-edit-cmb_1'));
 
@@ -213,7 +213,7 @@ describe('组合策略编辑（PA-08）', () => {
   });
 
   it('条件候选排除 filter / 风险类 / 需持仓插件', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combos-section');
     await userEvent.click(screen.getByTestId('combo-new'));
 
@@ -226,7 +226,7 @@ describe('组合策略编辑（PA-08）', () => {
   });
 
   it('跨境两档：选择后明确提示当前不产出信号', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combos-section');
     await userEvent.click(screen.getByTestId('combo-new'));
 
@@ -244,7 +244,7 @@ describe('组合策略编辑（PA-08）', () => {
   });
 
   it('名称空 / 条件不足 2 个 → 前端拦截，不发请求', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combos-section');
     await userEvent.click(screen.getByTestId('combo-new'));
 
@@ -265,7 +265,7 @@ describe('组合策略编辑（PA-08）', () => {
       mockResponse({ ...COMBO, id: 'cmb_cooldown', name: '冷却校验', cooldownBars: 5 }),
     );
 
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combos-section');
     await userEvent.click(screen.getByTestId('combo-new'));
 
@@ -299,7 +299,7 @@ describe('组合策略编辑（PA-08）', () => {
 
 describe('组合启停与删除（PA-08）', () => {
   it('启用开关 → PUT /strategy/combos/:id/toggle', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     const toggle = await screen.findByTestId('combo-toggle-cmb_1');
     await userEvent.click(toggle);
 
@@ -310,7 +310,7 @@ describe('组合启停与删除（PA-08）', () => {
   });
 
   it('删除 → 确认框 → DELETE /strategy/combos/:id 且行消失', async () => {
-    renderWithRouter(<StrategyConfig />);
+    renderWithRouter(<Settings />, { initialEntries: ['/settings?tab=combos'] });
     await screen.findByTestId('combo-row-cmb_1');
     await userEvent.click(screen.getByTestId('combo-delete-cmb_1'));
 

@@ -527,16 +527,35 @@ describe('F-D5 · 过滤（标的类型可用 / 行业禁用）', () => {
     expect(screen.getByText('行业数据源暂不可用')).toBeInTheDocument();
   });
 
-  it('F-D5 过滤：行业字段一旦有数据，控件自动启用（不再写死禁用）', async () => {
+  it('F-D5 过滤：行业字段有数据 → 控件自动启用，选项来自持仓且过滤生效', async () => {
     installApiMock({
-      positions: [{ ...DEFAULT_POSITIONS[0], industry: '银行' }],
+      positions: [
+        { ...DEFAULT_POSITIONS[0], industry: '银行' },
+        { ...DEFAULT_POSITIONS[1], industry: '证券' },
+        { ...DEFAULT_POSITIONS[2], industry: '银行' },
+      ],
     });
+    const user = userEvent.setup();
     renderWithRouter(<Dashboard />);
     await screen.findByText('总盈亏');
 
     const industrySelect = screen.getByLabelText('行业') as HTMLSelectElement;
     expect(industrySelect).not.toBeDisabled();
     expect(screen.queryByText('行业数据源暂不可用')).not.toBeInTheDocument();
+
+    const labels = Array.from(industrySelect.options).map((o) => o.textContent);
+    expect(labels).toHaveLength(3);
+    expect(labels).toEqual(expect.arrayContaining(['全部', '银行', '证券']));
+
+    await user.selectOptions(industrySelect, '银行');
+    // 卡片按默认「盈亏降序」渲染（sz159915 的 pnl=200 > sh600000 的 100），故用集合比较
+    expect([...renderedCodes()].sort()).toEqual(['sh600000', 'sz159915']);
+
+    await user.selectOptions(industrySelect, '证券');
+    expect(renderedCodes()).toEqual(['sh510300']);
+
+    await user.selectOptions(industrySelect, 'all');
+    expect(renderedCodes()).toHaveLength(3);
   });
 });
 

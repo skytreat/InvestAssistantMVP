@@ -10,7 +10,6 @@ import Review from './pages/Review';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 import PortfolioReturn from './pages/PortfolioReturn';
-import StrategyConfig from './pages/StrategyConfig';
 import StrategyEffectiveness from './pages/StrategyEffectiveness';
 import RiskCheck from './pages/RiskCheck';
 import PaperAccount from './pages/PaperAccount';
@@ -167,7 +166,8 @@ function ProtectedShell({ expiredFrom }: { expiredFrom: string | null }) {
 
       {/*
         T95：全局合规声明常驻（PRD §5.9，逐字文案见 `components/ComplianceFooter.tsx`）。
-        ⚠️ 「隐私声明（设置页）」与「插件安全承诺（设置页插件区）」属 T76 ⑥，尚未落地。
+        「隐私声明（设置页）」与「插件安全承诺（设置页插件管理区）」已随 T76 ⑥ 落地
+        （设置页「合规声明」/「插件管理」两个分区）。
       */}
       <ComplianceFooter />
     </div>
@@ -240,8 +240,8 @@ export default function App() {
           <Route path="/portfolio/return" element={<PortfolioReturn />} />
           {/* PA-13/PA-14：纸面账户（只读账本 + 必须的手动切换阶段） */}
           <Route path="/paper" element={<PaperAccount />} />
-          {/* V3.8 T148/T150：策略配置 / 有效性 / 组合体检（PRD_v3 §4.1/§4.3/§5.3） */}
-          <Route path="/strategy/config" element={<StrategyConfig />} />
+          {/* V3.8 T150：策略有效性 / 组合体检（PRD_v3 §4.3/§5.3）
+             策略配置（T148）已于 2026-11-12 并入 /settings（?tab=plugins|combos） */}
           <Route path="/strategy/effectiveness" element={<StrategyEffectiveness />} />
           <Route path="/portfolio/risk-check" element={<RiskCheck />} />
           <Route path="/settings" element={<Settings />} />

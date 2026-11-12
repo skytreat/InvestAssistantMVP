@@ -132,6 +132,11 @@ vi.mock('../../src/db/duckdb.js', async (importOriginal) => {
       }
       return rows;
     }
+    // ④ 行业归属批量查询（1 次 IN，tdx_research L1；2026-11-12 ADR-020）
+    //    假数据集没有板块数据 → 空 ⇒ 持仓 industry 全为 null（字段仍在）
+    if (sql.includes('FROM raw_tdx_blocks_member')) {
+      return [];
+    }
     // ① 批量取价（窗口函数）—— 用**语义标记**识别，不匹配整段 SQL 文本
     if (!sql.includes('ROW_NUMBER() OVER') || !sql.includes('raw_kline_daily')) {
       throw new Error(`t67 测试：未预期的 DuckDB 查询 → ${sql.slice(0, 120)}`);
@@ -535,14 +540,15 @@ describe('T67-③ signal —— 最新一条信号', () => {
 // ══════════════════════════════════════════════════════════
 
 describe('T67-④ 批量取数 —— 禁止 N+1', () => {
-  it('20 只持仓 → DuckDB 只查 3 次（品种 1 + 行情 1 + 名称 1），不随标的数线性增长', async () => {
+  it('20 只持仓 → DuckDB 只查 4 次（品种 1 + 行情 1 + 名称 1 + 行业 1），不随标的数线性增长', async () => {
     const spy = queryDuckDB as unknown as { mock: { calls: unknown[][] } };
     spy.mockClear();
     await getHolding();
-    // ⚠️ DuckDB 往返 = **3 次**（品种 1 + 行情 1 + 名称 1），仍是**常数**
-    //   —— 与持仓数无关（20 只 → 3 次；若退化成 N+1 则是 25 次）
-    //   品种那 1 次是 ETF/LOF 取价走 v_etf_* 视图必需的，只查 stock 会把 ETF 现价算成 null
-    expect(spy.mock.calls.length).toBe(3);
+    // ⚠️ DuckDB 往返 = **4 次**（品种 1 + 行情 1 + 名称 1 + 行业 1），仍是**常数**
+    //   —— 与持仓数无关（20 只 → 4 次；若退化成 N+1 则是 26 次）
+    //   品种那 1 次是 ETF/LOF 取价走 v_etf_* 视图必需的，只查 stock 会把 ETF 现价算成 null；
+    //   行业那 1 次是 2026-11-12 起 loadIndustryNames（tdx_research L1，ADR-020）
+    expect(spy.mock.calls.length).toBe(4);
     // 且这几次查询都带了全部 20+ 个标的（IN 批量，不是逐个）
     for (const call of spy.mock.calls) {
       const params = call[1] as unknown[];
