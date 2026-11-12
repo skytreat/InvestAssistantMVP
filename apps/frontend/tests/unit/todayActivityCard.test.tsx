@@ -862,12 +862,14 @@ describe('建议 D · 请求次数与文案约束', () => {
     installApiMock();
   });
 
-  it('建议 D：无 N+1 —— 每个端点只请求 1 次（候选/信号不逐标的请求）', async () => {
+  it('建议 D：无 N+1 —— 每个数据端点只请求 1 次（名称走批量接口）', async () => {
     await renderCard();
 
+    // `/symbols/names` 是**批量**接口（一个请求可带多个标的），
+    // 且随交易/除权/重点关注数据分批就绪会补查，不计入本用例的 N+1 判据。
+    const dataCalls = getMock.mock.calls.filter(([url]) => url !== '/symbols/names');
     const counts = new Map<string, number>();
-    for (const call of getMock.mock.calls) {
-      const url = call[0];
+    for (const [url] of dataCalls) {
       counts.set(url, (counts.get(url) ?? 0) + 1);
     }
     // 持仓 1 次（块 ① 与块 ⑤ 的持仓部分**共用**同一次响应）
@@ -879,7 +881,15 @@ describe('建议 D · 请求次数与文案约束', () => {
     expect(counts.get('/signal/stats')).toBe(1);
     expect(counts.get('/trade')).toBe(1);
     expect(counts.get('/ex-dividend/imports')).toBe(1);
-    expect(getMock.mock.calls.length).toBe(6);
+    expect(dataCalls.length).toBe(6);
+
+    for (const [url, cfg] of getMock.mock.calls) {
+      if (url !== '/symbols/names') continue;
+      // 名称接口必须是**批量**调用：symbols 不能为空，也不能出现空标的
+      const symbols = String(cfg?.params?.symbols ?? '');
+      expect(symbols.length).toBeGreaterThan(0);
+      expect(symbols.split(',')).not.toContain('');
+    }
   });
 
   it('建议 D：卡片文案不出现调度时刻（信号 17:02 / 除权 17:03 属 T79 ③）', async () => {
