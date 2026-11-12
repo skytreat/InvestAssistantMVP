@@ -500,13 +500,31 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       const deployBudget = cashAfterSells * exposureScale;
       const capAmount = totalValue * effectiveCap;
       const candidates = selected.filter((s) => !sellAll.has(s.symbol) && !overweightTarget.has(s.symbol));
-      // 档 2：每只目标 = 部署预算（已含 exposureScale）÷ 候选数（缺省 exposureScale=1 ⇒ 与基线一致）
-      const perTarget = candidates.length > 0 ? deployBudget / candidates.length : 0;
+      // §13.15 A2：按标的权重归一分配（缺省 '{}' = 均分，基线不变）；
+      // p.symbolWeights 是 JSON 字符串，解析为对象后 weight[s] 未出现视为 1
+      let weightMap: Readonly<Record<string, number>> = {};
+      try {
+        const parsed = JSON.parse(p.symbolWeights);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+          weightMap = parsed as Readonly<Record<string, number>>;
+      } catch {
+        weightMap = {};
+      }
+      const hasWeights = Object.keys(weightMap).length > 0;
+      const weightOf = (sym: string): number => weightMap[sym] ?? 1;
+      const weightSum = hasWeights ? candidates.reduce((sum, c) => sum + weightOf(c.symbol), 0) : 0;
 
       const targets: TargetPosition[] = [];
       for (const cand of candidates) {
         const pos = posBySymbol.get(cand.symbol);
         const currentValue = pos ? pos.marketValue : 0;
+        // 缺省 hasWeights=false ⇒ perTarget=deployBudget/候选数（基线逐位不变）
+        const perTarget =
+          hasWeights && weightSum > 0
+            ? (deployBudget * weightOf(cand.symbol)) / weightSum
+            : candidates.length > 0
+              ? deployBudget / candidates.length
+              : 0;
         const addValue = Math.min(perTarget, Math.max(0, capAmount - currentValue));
         if (pos !== undefined && addValue <= 0) {
           // 已持仓但本期不加仓：保持不动。不能用 `targetNotional = 市值` 表达，

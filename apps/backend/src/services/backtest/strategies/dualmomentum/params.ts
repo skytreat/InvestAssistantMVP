@@ -116,6 +116,13 @@ export interface DualMomentumParams {
   trailingTakeProfitDrawdown: number;
   /** 追踪止盈是否仍需先满足固定止盈阈值（缺省 false = 纯追踪，不设 30% 前置门槛） */
   trailingTakeProfitRequiresThreshold: boolean;
+  /**
+   * 按标的权重（§13.15 A2；缺省 `'{}'` = 候选均分，基线逐位不变）。
+   * 仅对「当前入选候选」生效：目标市值按权重归一后分配（`weight[s] / Σ weight[入选]`），
+   * 未出现的标的视为权重 1。`'{"sh518880":2}'` = 黄金腿入选时占 2 倍于其他候选的份额。
+   * 存储为 JSON 字符串（schema default 须过纸面建户 string 校验）；`index.ts` 消费时 JSON.parse。
+   */
+  symbolWeights: string;
 }
 
 export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
@@ -168,6 +175,8 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   trailingTakeProfit: false,
   trailingTakeProfitDrawdown: 0.15,
   trailingTakeProfitRequiresThreshold: false,
+  /** 缺省 '{}' = 候选均分，基线不变；显式传 '{"sh518880":2}' 等才激活加权分配 */
+  symbolWeights: '{}',
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -639,6 +648,14 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     description:
       'true = 仍需先满足固定 takeProfitThreshold 才启用追踪（双门槛）；false（缺省）= 纯追踪，不设 30% 前置',
   },
+  {
+    key: 'symbolWeights',
+    label: '按标的权重（§13.15 A2；缺省全 1 = 候选均分）',
+    type: 'string',
+    default: DUALMOMENTUM_DEFAULTS.symbolWeights,
+    description:
+      'JSON 对象字符串，对入选候选的市值分配按权重归一（weight[s] / Σ 入选权重）；未出现标的视为 1；如 {"sh518880": 2} 黄金腿 2 倍份额',
+  },
 ];
 
 function num(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
@@ -660,6 +677,30 @@ function bool(raw: Readonly<Record<string, unknown>>, key: string, fallback: boo
     if (v === 'false') return false;
   }
   return fallback;
+}
+
+/** 归一 symbolWeights 为 JSON 字符串（接受 JSON 字符串 / 原生对象 / 缺省），非法值退化为 '{}'（全 1 均分）。 */
+function normalizeSymbolWeightsJson(raw: Readonly<Record<string, unknown>>, fallback: string): string {
+  const v = raw.symbolWeights;
+  let candidate: Record<string, unknown> | null = null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    try {
+      const parsed: unknown = JSON.parse(v);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        candidate = parsed as Record<string, unknown>;
+    } catch {
+      candidate = null;
+    }
+  } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+    candidate = v as Record<string, unknown>;
+  }
+  if (!candidate) return fallback; // 缺省 fallback='{}'
+  const out: Record<string, number> = {};
+  for (const [k, val] of Object.entries(candidate)) {
+    const n = typeof val === 'number' ? val : typeof val === 'string' ? Number(val) : NaN;
+    if (Number.isFinite(n) && n > 0) out[k] = n;
+  }
+  return Object.keys(out).length > 0 ? JSON.stringify(out) : fallback;
 }
 
 /** 合并默认值 + 用户参数，并做最小合法性收敛（不抛错，避免回测因单个参数中断）。 */
@@ -732,6 +773,8 @@ export function resolveDualMomentumParams(
       'trailingTakeProfitRequiresThreshold',
       d.trailingTakeProfitRequiresThreshold,
     ),
+    // §13.15 A2：缺省 '{}' = 候选均分，基线不变；接受 JSON 字符串或对象两种形式，归一为 JSON 字符串
+    symbolWeights: normalizeSymbolWeightsJson(src, d.symbolWeights),
   };
 }
 

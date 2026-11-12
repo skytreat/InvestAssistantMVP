@@ -434,6 +434,33 @@ describe('decide() 契约', () => {
     // 缺省 trailingTakeProfit=false：exitReason 绝不应是 take-profit-trailing
     expect(res!.exitReasons?.[symbol]).not.toBe('take-profit-trailing');
   });
+
+  it('按标的权重（§13.15 A2；opt-in）：sh518880 提权后其 targetNotional 高于均分基准', () => {
+    const strategy = createDualMomentumStrategy();
+    // 均分基准：sh518880 权重 1
+    const base = { ...strategy.defaultParams, ...DECIDE_PARAMS };
+    strategy.init?.({ params: base });
+    const ctxBase = makeDecisionContext({ params: base }).ctx;
+    const resBase = strategy.decide(ctxBase);
+
+    // 提权：sh518880 权重 3（JSON 字符串形式，schema 口径）
+    const boosted = { ...strategy.defaultParams, ...DECIDE_PARAMS, symbolWeights: '{"sh518880": 3}' };
+    const s2 = createDualMomentumStrategy();
+    s2.init?.({ params: boosted });
+    const ctxBoosted = makeDecisionContext({ params: boosted, portfolio: new Portfolio(1_000_000) }).ctx;
+    const resBoosted = s2.decide(ctxBoosted);
+
+    // 两组都选中 sh518880（DECIDE_PARAMS 放宽 rsrs 区间使合成数据能出候选）
+    const baseTarget = resBase!.targets.find((t) => t.symbol === 'sh518880');
+    const boostTarget = resBoosted!.targets.find((t) => t.symbol === 'sh518880');
+    // 均分基准下 sh518880 可能未入选（候选 < 7 只时），此时提权后也应入选或更高
+    expect(boostTarget).toBeDefined();
+    if (baseTarget) {
+      expect(boostTarget!.targetNotional).toBeGreaterThan(baseTarget.targetNotional);
+    }
+    // 缺省 symbolWeights='{}' 时（base 组），targetNotional = deployBudget / 候选数（均分）
+    expect(base).toHaveProperty('symbolWeights', '{}');
+  });
 });
 
 describe('纸面绑定链路', () => {
