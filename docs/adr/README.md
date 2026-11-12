@@ -33,6 +33,7 @@
 | [ADR-018](ADR-018-noop-quote-rerun.md) | 校验 WARN/ERROR 不再自动补跑（tdx2db 增量语义下为空操作），补跑改为可测 | 2026-11-12 结构性证明（§13.2 I-37；消解 I-36 ④） | 本次修复：`scheduler.ts` / `quoteRerun.ts` / `routes/admin.ts` |
 | [ADR-019](ADR-019-settings-strategy-merge.md) | 策略配置并入设置页（`/strategy/config` 删除，`/settings` 三 Tab），消除双份插件管理实现 | 2026-11-12 所有者裁决（PRD_v3 §4.1 / T148 偏差） | 前端合并：`PluginManager` / `ComboSection` + 4 个测试文件 |
 | [ADR-020](ADR-020-industry-source-revived.md) | 重新启用行业数据源（板块表 2026-11-06 回填，tdx_research L1 口径；选股/持仓/仪表盘三处接线） | 2026-11-12 实测（I-22「0 行」结论失效） | `stockscan.ts` / `trade.ts` / `portfolioRisk.ts` + 前后端测试 |
+| [ADR-021](ADR-021-signal-domain-position-source.md) | 信号标的域的「持仓」来源改为交易流水实时计算（不再依赖 `user_asset_rel` 派生关系） | 2026-11-12 生产事故（信号域恒空）→ §13.2 I-38 | `signalService.ts` + `t85b-signal-scope.test.ts` |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 

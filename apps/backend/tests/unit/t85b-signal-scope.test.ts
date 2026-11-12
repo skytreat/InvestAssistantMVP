@@ -1,5 +1,5 @@
 /**
- * t85b-signal-scope.test.ts —— T85b ① 信号标的域收敛（I-19）
+ * t85b-signal-scope.test.ts —— T85b ① 信号标的域收敛（I-19）+ 2026-11-12 口径修正
  *
  * 🔴 修复前的缺陷（实测）：
  *   `executeAllPlugins()` 恒定 `executePlugin(plugin, {}, ctx)` 传空参 →
@@ -7,13 +7,22 @@
  *   「每日自动跑策略信号」**只对 1 只硬编码标的生效**，
  *   用户的自选 / 持仓一只都跑不到（违反 PRD M4）。
  *
+ * 🔴 2026-11-12 口径修正（生产事故驱动）：
+ *   原口径的「持仓」取自 `user_asset_rel` 的 `rel_type='hold'` **派生关系**，
+ *   而该派生关系只有**手工录入**路径（POST /api/trade → syncHoldRelation）会维护，
+ *   **券商导入路径（brokerConfirm）从不写** ⇒ 生产 `user_asset_rel` 恒为 0 行
+ *   ⇒ 17:02 每日信号生成恒定跳过（"信号域为空"），而用户明明有 35 只净持仓。
+ *   ⇒ 改为：**持仓由 `user_trade_record` 实时计算**（core 口径，与 /api/positions、
+ *     插件持仓快照同源），派生关系不再参与任何决策。
+ *
  * 本文件锁定的断言（对应 plan §12.7 G1.3b）：
- *   ① 信号标的域 = 用户自选 ∪ 持仓
- *   ② 反向：集合外的标的不得产生信号
+ *   ① 信号标的域 = 用户自选 ∪ 持仓（持仓 = 交易流水算出的净持仓 > 0）
+ *   ② 反向：集合外的标的不得产生信号；`hold` 派生关系**不再**是信号域来源
  *   ③ 批量查询：整个标的域只发 1 次 DuckDB 查询（SDD §5.3 P8）
  *   ④ symbol 由运行时注入，用户参数里的同名字段被覆盖
  *   ⑤ 空标的域 → 不执行、不产生信号
  *   ⑥ 候选池（candidate）不属于信号域
+ *   ⑦ 现金类资产（asset_class='cash'）不产生信号（T133 / INV-S4-15）
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import path from 'node:path';
@@ -27,6 +36,7 @@ process.env.SQLITE_DB_PATH = TEST_DB;
 
 import { ConfigStore } from '../../src/config/configStore.js';
 import { resolveSignalSymbols, SIGNAL_USER_ID } from '../../src/services/signalService.js';
+import { calcAllPositions } from '../../src/services/positionCalculator.js';
 import { executeAllPlugins } from '../../src/services/pluginEngine.js';
 import { getAllPlugins } from '../../src/services/pluginEngine.js';
 import * as duckdbMod from '../../src/db/duckdb.js';
@@ -66,24 +76,33 @@ function cleanup(): void {
 }
 
 /**
- * 清空该用户的关系行
+ * 清空该用户的关系行 / 交易流水 / 资产分类
  *
  * 🔴 T81 顺序依赖：同文件的用例共用一个临时库 → 前序用例种下的行会残留，
  *   导致「软删的行不计入」这类**精确集合**断言随机失败（shuffle 下暴露）。
  *   → 每个用例前先清干净。
  */
 function cleanRelations(): void {
-  ConfigStore.getInstance().db.prepare('DELETE FROM user_asset_rel WHERE user_id = ?').run(SIGNAL_USER_ID);
+  const db = ConfigStore.getInstance().db;
+  db.prepare('DELETE FROM user_asset_rel WHERE user_id = ?').run(SIGNAL_USER_ID);
+  db.prepare('DELETE FROM user_trade_record WHERE user_id = ?').run(SIGNAL_USER_ID);
+  db.prepare('DELETE FROM asset_class').run();
 }
 
-/** 铺自选 / 持仓 / 候选池数据 */
+/** 确保测试用户存在（user_asset_rel / user_trade_record 有外键） */
+function ensureUser(): void {
+  ConfigStore.getInstance()
+    .db.prepare(
+      `INSERT OR IGNORE INTO user_account (id, username, password_hash, role)
+       VALUES (?, ?, 'x', 'admin')`,
+    )
+    .run(SIGNAL_USER_ID, 't85b_admin');
+}
+
+/** 铺自选 / 候选池 / 派生持仓关系 */
 function seedRelations(rows: Array<[string, string]>): void {
   const db = ConfigStore.getInstance().db;
-  // user_asset_rel.user_id 有外键 → 先建用户
-  db.prepare(
-    `INSERT OR IGNORE INTO user_account (id, username, password_hash, role)
-     VALUES (?, ?, 'x', 'admin')`,
-  ).run(SIGNAL_USER_ID, 't85b_admin');
+  ensureUser();
   cleanRelations();
   const stmt = db.prepare(
     `INSERT OR REPLACE INTO user_asset_rel
@@ -91,6 +110,30 @@ function seedRelations(rows: Array<[string, string]>): void {
      VALUES (?, ?, ?, 0, datetime('now','localtime'))`,
   );
   for (const [assetCode, relType] of rows) stmt.run(SIGNAL_USER_ID, assetCode, relType);
+}
+
+/** 铺交易流水（**持仓的唯一来源**）：[asset_code, trade_type, quantity, trade_date, trade_time] */
+function seedTrades(rows: Array<[string, string, number, string, string]>): void {
+  const db = ConfigStore.getInstance().db;
+  ensureUser();
+  const stmt = db.prepare(
+    `INSERT INTO user_trade_record
+       (user_id, asset_code, trade_type, trade_date, trade_time, quantity, price, fee, is_deleted)
+     VALUES (?, ?, ?, ?, ?, ?, 10.0, 0, 0)`,
+  );
+  for (const [assetCode, tradeType, quantity, tradeDate, tradeTime] of rows) {
+    stmt.run(SIGNAL_USER_ID, assetCode, tradeType, tradeDate, tradeTime, quantity);
+  }
+}
+
+/** 铺资产分类（现金类排除用例） */
+function seedAssetClass(symbol: string, assetClass: 'risk' | 'cash'): void {
+  ConfigStore.getInstance()
+    .db.prepare(
+      `INSERT OR REPLACE INTO asset_class (symbol, asset_class, rule_hit, source, updated_at)
+       VALUES (?, ?, 'test', 'manual', datetime('now','localtime'))`,
+    )
+    .run(symbol, assetClass);
 }
 
 beforeAll(() => {
@@ -104,31 +147,99 @@ afterAll(() => {
   cleanup();
 });
 
-describe('T85b ① — resolveSignalSymbols（标的域 = 自选 ∪ 持仓）', () => {
-  it('自选 ∪ 持仓去重，候选池不计入', () => {
+describe('信号标的域 = 自选 ∪ 持仓（持仓由交易流水实时计算）', () => {
+  it('自选计入；持仓（交易流水）计入；hold 派生关系不再计入', () => {
     seedRelations([
       ['sh600001', 'watch'],
       ['sh600002', 'watch'],
       ['sh600003', 'hold'],
-      ['sh600004', 'hold'],
-      ['sh600005', 'candidate'],
     ]);
+    seedTrades([['sh600010', 'buy', 100, '2026-11-10', '09:30:00']]);
+
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
-    expect(symbols).toEqual(['sh600001', 'sh600002', 'sh600003', 'sh600004']);
-    expect(symbols, '候选池不属于信号域').not.toContain('sh600005');
+
+    expect(symbols).toEqual(['sh600001', 'sh600002', 'sh600010']);
+    expect(symbols, 'hold 派生关系不再作为信号域来源').not.toContain('sh600003');
   });
 
-  it('软删的行不计入', () => {
-    seedRelations([
-      ['sh600001', 'watch'],
-      ['sh600002', 'hold'],
+  it('生产事故回归：用户只有券商导入的持仓、无任何 user_asset_rel 行时，标的域非空', () => {
+    // 生产实测：user_asset_rel 恒为 0 行，但 user_trade_record 有 438 条券商导入交易
+    seedRelations([]);
+    seedTrades([
+      ['sh600020', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600021', 'buy', 200, '2026-11-03', '10:00:00'],
     ]);
-    const db = ConfigStore.getInstance().db;
-    db.prepare('UPDATE user_asset_rel SET is_deleted = 1 WHERE asset_code = ?').run('sh600002');
-    expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual(['sh600001']);
+
+    expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual(['sh600020', 'sh600021']);
   });
 
-  it('无任何自选/持仓 → 空数组', () => {
+  it('净持仓 > 0 计入；清仓（净持仓 = 0）不计入', () => {
+    seedRelations([]);
+    seedTrades([
+      ['sh600030', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600030', 'reduce', 40, '2026-11-05', '10:00:00'],
+      ['sh600031', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600031', 'clear', 100, '2026-11-06', '10:00:00'],
+    ]);
+
+    expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual(['sh600030']);
+  });
+
+  it('core 口径：加仓 / 送股 / 转增计入；现金分红不改变股数（只有分红记录的不计入）', () => {
+    seedRelations([]);
+    seedTrades([
+      ['sh600040', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600040', 'add', 50, '2026-11-03', '10:00:00'],
+      ['sh600041', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600041', 'dividend', 100, '2026-11-04', '00:00:00'],
+      ['sh600042', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600042', 'bonus', 10, '2026-11-04', '00:00:00'],
+      ['sh600043', 'buy', 100, '2026-11-02', '09:30:00'],
+      ['sh600043', 'transfer', 10, '2026-11-04', '00:00:00'],
+      ['sh600044', 'dividend', 100, '2026-11-04', '00:00:00'],
+    ]);
+
+    const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
+
+    // sh600041 = 买入 100 股 + 现金分红 100 股 → 持仓仍是 100 股（core 口径：分红**不加**股数）⇒ 仍是持仓
+    expect(symbols).toEqual(['sh600040', 'sh600041', 'sh600042', 'sh600043']);
+    expect(symbols, '只有分红记录、没有任何买入 → 不构成持仓').not.toContain('sh600044');
+
+    // 股数口径断言（分红不改变股数）
+    const positions = calcAllPositions(SIGNAL_USER_ID);
+    expect(positions.find((p) => p.asset_code === 'sh600041')?.totalQuantity).toBe(100);
+    expect(positions.find((p) => p.asset_code === 'sh600040')?.totalQuantity).toBe(150);
+    expect(positions.find((p) => p.asset_code === 'sh600042')?.totalQuantity).toBe(110);
+    expect(positions.find((p) => p.asset_code === 'sh600043')?.totalQuantity).toBe(110);
+    expect(positions.find((p) => p.asset_code === 'sh600044')?.totalQuantity).toBe(0);
+  });
+
+  it('软删的自选与软删的交易都不计入', () => {
+    seedRelations([['sh600050', 'watch']]);
+    seedTrades([['sh600051', 'buy', 100, '2026-11-02', '09:30:00']]);
+    const db = ConfigStore.getInstance().db;
+    db.prepare('UPDATE user_asset_rel SET is_deleted = 1 WHERE asset_code = ?').run('sh600050');
+    db.prepare('UPDATE user_trade_record SET is_deleted = 1 WHERE asset_code = ?').run('sh600051');
+
+    expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual([]);
+  });
+
+  it('候选池不计入', () => {
+    seedRelations([['sh600060', 'candidate']]);
+    seedTrades([]);
+
+    expect(resolveSignalSymbols(SIGNAL_USER_ID)).not.toContain('sh600060');
+  });
+
+  it('现金类资产不产生信号（T133 / INV-S4-15）', () => {
+    seedRelations([['sh600070', 'watch']]);
+    seedTrades([['sh600071', 'buy', 100, '2026-11-02', '09:30:00']]);
+    seedAssetClass('sh600071', 'cash');
+
+    expect(resolveSignalSymbols(SIGNAL_USER_ID)).toEqual(['sh600070']);
+  });
+
+  it('无自选无持仓 → 空数组', () => {
     // ⚠️ 用**独立 userId** 判定：SIGNAL_USER_ID 的关系行由前序用例种下
     //   （同文件共用一个临时库）→ 直接查 SIGNAL_USER_ID 会拿到残留。
     //   这正是 T81 的顺序依赖：shuffle 下「无自选/持仓」可能排在种数据之后。
@@ -136,13 +247,11 @@ describe('T85b ① — resolveSignalSymbols（标的域 = 自选 ∪ 持仓）',
   });
 });
 
-describe('T85b ① — executeAllPlugins 的标的域注入', () => {
+describe('executeAllPlugins 的标的域注入', () => {
   it('信号只对传入的标的域产生，且不出现集合外的标的', async () => {
     installDuckDBMock();
-    seedRelations([
-      ['sh600001', 'watch'],
-      ['sh600002', 'hold'],
-    ]);
+    seedRelations([['sh600001', 'watch']]);
+    seedTrades([['sh600002', 'buy', 100, '2026-11-10', '09:30:00']]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
 
     const result = await executeAllPlugins({ symbols });
@@ -161,8 +270,8 @@ describe('T85b ① — executeAllPlugins 的标的域注入', () => {
     seedRelations([
       ['sh600001', 'watch'],
       ['sh600002', 'watch'],
-      ['sh600003', 'hold'],
     ]);
+    seedTrades([['sh600003', 'buy', 100, '2026-11-10', '09:30:00']]);
     const symbols = resolveSignalSymbols(SIGNAL_USER_ID);
     const monitors = getAllPlugins().filter((p) => p.category === 'monitor');
     // 组合级插件（requiresPositions，如风险类）读整份持仓快照，只执行 1 次，不按标的重数
