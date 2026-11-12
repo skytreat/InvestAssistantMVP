@@ -1304,6 +1304,8 @@ describe('跨页全选（全选全部页可补录）', () => {
     });
   });
 
+  // CI jsdom 环境渲染 501 行 + 跨页拉全 + 分批确认链路曾 6.5s 超时（#155 新用例，同型 flaky）；
+  // 本用例验证 501→2 批（500+1）的机制，与渲染行数无关，给 30s 宽限消除 flaky
   it('跨页选中超过 500 笔时按 500 笔/批自动分批提交', async () => {
     const rows = Array.from({ length: 501 }, (_, i) => makeRow(1000 + i));
     mockDiffPages([rows.slice(0, 200), rows.slice(200, 400), rows.slice(400)], 501);
@@ -1314,16 +1316,22 @@ describe('跨页全选（全选全部页可补录）', () => {
     await screen.findByRole('checkbox', { name: '全选全部页可补录' });
     await user.click(screen.getByRole('checkbox', { name: '全选全部页可补录' }));
 
-    const confirmBtn = await screen.findByRole('button', { name: /全部补录（501 笔）/ }, { timeout: 5000 });
+    const confirmBtn = await screen.findByRole(
+      'button',
+      { name: /全部补录（501 笔）/ },
+      {
+        timeout: 30_000,
+      },
+    );
     await user.click(confirmBtn);
 
-    const result = await screen.findByTestId('confirm-batch-result', {}, { timeout: 5000 });
+    const result = await screen.findByTestId('confirm-batch-result', {}, { timeout: 30_000 });
     expect(result).toHaveTextContent('成功 501');
     const calls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-reconcile/confirm');
     expect(calls).toHaveLength(2);
     expect((calls[0][1] as { items: unknown[] }).items).toHaveLength(500);
     expect((calls[1][1] as { items: unknown[] }).items).toHaveLength(1);
-  });
+  }, 30_000);
 });
 
 /**
