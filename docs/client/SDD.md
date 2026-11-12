@@ -1254,8 +1254,11 @@ CREATE TABLE IF NOT EXISTS system_log (
         log_type IN ('tdx2db_update', 'datacheck', 'signal_generate',
                      'dividend_import', 'backup', 'trigger_manual',
                      'plugin_execute', 'startup', 'trade',
-                     'candidate_migrate')   -- 后 4 个为代码实际在用，SDD 初稿遗漏（2026-10-17 / 2026-10-19 实测补齐）
+                     'candidate_migrate', 'alert')
+                     -- plugin_execute / startup / trade / candidate_migrate / alert 为代码实际在用，
+                     -- SDD 初稿遗漏（2026-10-17 / 2026-10-19 实测补齐）
                      -- candidate_migrate：候选池迁移打标记（T92）—— 原用 'trade' 记录属误用（这不是交易）
+                     -- alert：企业微信告警发送失败（旁路日志，不参与业务校验）
     ),
     level TEXT NOT NULL CHECK (level IN ('INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS')),
     check_item TEXT,
@@ -2653,10 +2656,17 @@ MVP 不引入 Prometheus/Grafana，使用 systemd journal + system_log SQLite �
 |--------|---------|---------|
 | Fastify 存活 | systemd watchdog 30s | systemd 自动 restart（最多 5 次后停止）|
 | Caddy 存活 | systemd watchdog | 同上 |
-| tdx2db exit_code | Fastify cron 检测 | SQLite ERROR 日志 + 管理员 dashboard 显示 |
-| 数据校验 C1-C12 | system_log level=ERROR | 管理员 dashboard 红色高亮 |
+| tdx2db exit_code | Fastify cron 检测 | SQLite ERROR 日志 + 管理员 dashboard 显示 + 企业微信 |
+| 数据校验 C1-C12 | system_log level=ERROR | 管理员 dashboard 红色横幅 + 企业微信 |
+| Fastify 进程最终失败 | systemd `OnFailure` | `invest-alert@.service` → 企业微信 |
 | SQLite 磁盘满 | system_log 写入 SQLITE_FULL | 日志 + 邮件告警（postfix ssmtp）|
 | 插件执行失败 | system_log type=plugin_execute | 日志记录（不单独告警，dashboard 可见）|
+
+企业微信推送由 `apps/backend/src/services/alert.ts` 实现：仅工作日、同一交易日最多一条（去重键
+`date:kind`，行情链路终态共用 `quote_chain_failed`）、默认 5s 超时、发送失败写
+`system_log(alert/ERROR)`；webhook 地址只从 `WECOM_WEBHOOK_URL` 读取，
+不得写日志或下发前端。systemd 侧只对 Fastify 进程失败补位，避免与 17:01 应用层告警重复。
+环境变量与手动验证命令见 `docs/deploy.md` §环境变量 / §企业微信失败告警。
 
 ---
 

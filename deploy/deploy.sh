@@ -434,6 +434,8 @@ CURRENT_STEP="安装 systemd units"
 install -m 644 "$SCRIPT_DIR/tdx2db.service" /etc/systemd/system/tdx2db.service
 install -m 644 "$SCRIPT_DIR/tdx2db-update.timer" /etc/systemd/system/tdx2db-update.timer
 install -m 644 "$SCRIPT_DIR/invest-assistant.service" /etc/systemd/system/invest-assistant.service
+install -m 644 "$SCRIPT_DIR/invest-alert@.service" /etc/systemd/system/invest-alert@.service
+install -m 755 "$SCRIPT_DIR/wecom-alert.mjs" /usr/local/bin/invest-wecom-alert.mjs
 systemctl daemon-reload
 systemctl disable tdx2db.service >/dev/null 2>&1 || true
 # 允许 Fastify 运行用户（invol）无交互管理 tdx2db.service，供 rerun 降级链使用
