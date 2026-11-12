@@ -217,6 +217,19 @@ describe('参数 schema 与锁定常量', () => {
       dailyChangeMax: DAILY_CHANGE_MAX,
       maxHoldings: MAX_HOLDINGS,
       benchmark: BENCHMARK_SYMBOL,
+      // 档 1/2/3 研究参数（缺省 = 基线语义，见 §13.6–13.13）
+      cashInterestRate: 0,
+      exposureMode: 'fixed',
+      exposureScaleDivisor: 3,
+      capRelaxBelow: 0,
+      targetVol: 0.12,
+      volWindow: 20,
+      wsmMaxResearch: WSM_MAX,
+      rsrsMaxResearch: RSRS_MAX,
+      benchmarkGateMode: 'hard',
+      scoreMode: 'and',
+      momentumDecayExit: false,
+      decayRankThreshold: 8,
     });
   });
 

@@ -61,6 +61,47 @@ interface DualMomentumState {
   warnedNoBenchmark: boolean;
 }
 
+/**
+ * 波动率目标暴露（`exposureMode='vol'`；缺省路径不调用，基线不变）。
+ *
+ * `exposure = clip(targetVol / realizedVol, 0, 1)`，其中 `realizedVol` = 组合
+ * （现金 + 全部持仓市值）逐日权益的 `volWindow` 日滚动标准差 × √250（年化）。
+ * 数据不足（< volWindow 根）或无波动时返回 1（满仓，退化为基线行为）。
+ */
+function computeVolTargetExposure(ctx: StrategyContext, p: DualMomentumParams): number {
+  // 用 ctx.series 拿不到权益，改从持仓 + 现金重建「截至 asOf 的权益序列」
+  // 简化：只取当前时刻权益，按「实现波动率 = 目标组合历史日收益 std」近似为
+  // 持仓标的混合收益的滚动 std（各持仓按当前市值加权）
+  const positions = ctx.positions().filter((v) => v.qty > 0);
+  const totalMv = positions.reduce((a, v) => a + v.marketValue, 0);
+  if (totalMv <= 0) return 1; // 无风险敞口时不缩放（避免空仓日反复拉低暴露）
+
+  const w = p.volWindow;
+  let retSum = 0;
+  let retSqSum = 0;
+  let n = 0;
+  for (const pos of positions) {
+    const weight = pos.marketValue / totalMv;
+    if (weight <= 0) continue;
+    // 该标的截至 asOf 的最近 w 根日收益（qfq 轨，ctx.series 提供）
+    const closes = ctx.series(pos.symbol, w + 1);
+    if (closes.length < 2) continue;
+    for (let i = 1; i < closes.length; i++) {
+      const r = closes[i] / closes[i - 1] - 1;
+      retSum += weight * r;
+      retSqSum += weight * r * r;
+      n++;
+    }
+  }
+  if (n < 2) return 1;
+  const mean = retSum / n;
+  const varAll = retSqSum / n - mean * mean;
+  const dailyVol = Math.sqrt(Math.max(0, varAll));
+  const realizedVol = dailyVol * Math.sqrt(250);
+  if (realizedVol <= 0) return 1;
+  return Math.max(0, Math.min(1, p.targetVol / realizedVol));
+}
+
 function createState(): DualMomentumState {
   return {
     params: resolveDualMomentumParams(undefined),
@@ -208,6 +249,8 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         const p = state.params;
         if (notice.reason === 'stop-loss') startCooldown(state, notice.symbol, p.stopLossCooldown);
         else if (notice.reason === 'take-profit') startCooldown(state, notice.symbol, p.takeProfitCooldown);
+        // 衰减退出开止损冷却（§12.5 第 4 条：止盈后不冷却，衰减是「动量转弱」而非止盈）
+        else if (notice.reason === 'momentum-decay') startCooldown(state, notice.symbol, p.stopLossCooldown);
         return;
       }
       // 买入成交 → 新建仓（加仓不改建仓日与高水位）
@@ -296,8 +339,57 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       }
       // 稳定降序：并列保持 POOL_ORDER（JS sort 自 ES2019 起稳定）
       passed.sort((a, b) => b.primary - a.primary);
-      const selected = passed.slice(0, p.maxHoldings);
+
+      // ── 档 3：放宽上界 / 基准软化 / 评分制（全部缺省 = DAS 锁定语义，逐位不变）──
+      // 触发条件：任一研究开关偏离缺省。缺省时走基线路径（`filtered = passed`）。
+      const wsmRelaxed = p.wsmMaxResearch > p.wsmMax;
+      const rsrsRelaxed = p.rsrsMaxResearch > p.rsrsMax;
+      let filtered = passed;
+      if (wsmRelaxed || rsrsRelaxed || p.benchmarkGateMode === 'soft' || p.scoreMode === 'scored') {
+        filtered = [];
+        for (const symbol of POOL_ORDER) {
+          const day = dayBySymbol.get(symbol);
+          if (!day || day.bars.length === 0) continue;
+          const ind = calcIndicators(day.bars, p);
+          const primary = slots.primary === 'wsm' ? ind.wsm : ind.nday;
+          const secondary = slots.secondary === 'rsrs' ? ind.rsrs : ind.wsm;
+          const primaryInRange = primary >= p.wsmMin && primary <= p.wsmMaxResearch;
+          // 评分制：次槽不再拦截（`scored` 时 `secondaryInRange` 恒 true）
+          const secondaryInRange =
+            p.scoreMode === 'scored' ? true : secondary >= p.rsrsMin && secondary <= p.rsrsMaxResearch;
+          // 基准软化：`soft` 时仅当基准动量 > 0 才启用第 9 步
+          const benchGate =
+            p.benchmarkGateMode === 'soft'
+              ? benchmarkPrimary > 0
+                ? primary >= benchmarkPrimary
+                : true
+              : primary >= benchmarkPrimary;
+          if (primaryInRange && secondaryInRange && benchGate) filtered.push({ symbol, primary });
+        }
+        filtered.sort((a, b) => b.primary - a.primary);
+      }
+
+      // ── 档 2：连续仓位（缺省 `fixed` = DAS 基线「候选均分满仓/否则空仓」）──
+      // `scale`：目标暴露 = min(1, 通过数 / divisor)；`vol`：波动率目标
+      // （exposure = targetVol / 实现波动率，clip 到 [0,1]；实现波动率 = 组合 20 日日收益 std × √250，
+      //  无持仓/数据不足时实现波动率取 0 ⇒ 暴露 = 1，退化为满仓）
+      let exposureScale = 1.0;
+      if (p.exposureMode === 'scale') {
+        const passCount = filtered.length;
+        exposureScale = Math.min(1, passCount / p.exposureScaleDivisor);
+      } else if (p.exposureMode === 'vol') {
+        exposureScale = computeVolTargetExposure(ctx, p);
+      }
+
+      const selected = filtered.slice(0, p.maxHoldings);
       const selectedSet = new Set(selected.map((s) => s.symbol));
+
+      // 档 2 cap 条件化：候选数 < capRelaxBelow 时允许单只接近满仓（0 = 不放开）
+      const capRelaxed =
+        p.exposureMode === 'scale' && p.capRelaxBelow > 0 && filtered.length < p.capRelaxBelow;
+      const effectiveCap = capRelaxed ? 1.0 : p.singlePositionCap;
+      const selectedSetForCap = selectedSet; // 语义不变，别名仅供阅读
+      void selectedSetForCap;
 
       // ── 3) L2 卖出：止损 > 止盈 > 再平衡 > 超配（§3.4）──
       const totalValue = ctx.equity;
@@ -324,6 +416,10 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
           }
         }
 
+        // 持仓的主槽动量 + 排名（衰减退出用；缺省开关关闭时零开销——仍算了但不判定）
+        const ind = calcIndicators(day.bars, p);
+        const primaryNow = slots.primary === 'wsm' ? ind.wsm : ind.nday;
+
         const daysSinceEntry = calendarDaysBetween(state.entryDate.get(pos.symbol) ?? asOf, asOf);
         // 成本止损：(unit_cost − price)/unit_cost ≥ stopLossDrawdown
         const costDrawdown = pos.costBasis > 0 ? 1 - pos.marketValue / pos.costBasis : 0;
@@ -342,6 +438,17 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         }
         if (!selectedSet.has(pos.symbol) && daysSinceEntry >= p.minHoldDays) {
           sellAll.set(pos.symbol, 'out-of-candidate');
+          continue;
+        }
+        // 动量衰减退出（§12.5 第 5 条；可绕过 minHoldDays，缺省关闭 = DAS 基线）：
+        // 主槽动量转负 / 排名跌出 decayRankThreshold，两者任一触发即清仓
+        if (p.momentumDecayExit && selectedSet.has(pos.symbol)) {
+          const rankNow = filtered.filter((c) => c.primary > primaryNow).length + 1;
+          const decayByMomentum = primaryNow < 0;
+          const decayByRank = rankNow > p.decayRankThreshold;
+          if (decayByMomentum || decayByRank) {
+            sellAll.set(pos.symbol, 'momentum-decay');
+          }
         }
       }
       for (const [symbol, reason] of sellAll) exitReasons[symbol] = reason;
@@ -370,9 +477,12 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         return sum + gross * (1 - p.slippage) - fee;
       }, 0);
       const cashAfterSells = ctx.cash + sellProceeds;
-      const capAmount = totalValue * p.singlePositionCap;
+      // 档 2：目标敞口 = 现金可用额度 × exposureScale（缺省 1.0 = 基线「候选均分满仓」）
+      const deployBudget = cashAfterSells * exposureScale;
+      const capAmount = totalValue * effectiveCap;
       const candidates = selected.filter((s) => !sellAll.has(s.symbol) && !overweightTarget.has(s.symbol));
-      const perTarget = candidates.length > 0 ? cashAfterSells / candidates.length : 0;
+      // 档 2：每只目标 = 部署预算（已含 exposureScale）÷ 候选数（缺省 exposureScale=1 ⇒ 与基线一致）
+      const perTarget = candidates.length > 0 ? deployBudget / candidates.length : 0;
 
       const targets: TargetPosition[] = [];
       for (const cand of candidates) {

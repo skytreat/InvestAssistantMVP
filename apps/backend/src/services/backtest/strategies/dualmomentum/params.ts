@@ -81,6 +81,30 @@ export interface DualMomentumParams {
   lotSize: number;
   etfExemptTax: boolean;
   benchmark: string;
+  /** 闲置现金年化利率（÷250 日计提；缺省 0 = 引擎不计息，基线不变；研究口径） */
+  cashInterestRate: number;
+  /** 档 2：暴露模式（缺省 `fixed` = DAS 基线「候选均分满仓 / 否则空仓」） */
+  exposureMode: 'fixed' | 'scale' | 'vol';
+  /** 档 2：`scale` 模式下目标暴露 = min(1, 通过数 / 该值) */
+  exposureScaleDivisor: number;
+  /** 档 2：`vol` 模式下目标年化波动率（如 0.12 = 12%） */
+  targetVol: number;
+  /** 档 2：`vol` 模式下实现波动率估计窗口（交易日） */
+  volWindow: number;
+  /** 档 2：候选数 < 该值时放开单标的 cap（0 = 不放开；缺省 0） */
+  capRelaxBelow: number;
+  /** 档 3：主槽上界研究值（缺省 = DAS `wsmMax`；传更大值才放宽） */
+  wsmMaxResearch: number;
+  /** 档 3：次槽上界研究值（缺省 = DAS `rsrsMax`；传更大值才放宽） */
+  rsrsMaxResearch: number;
+  /** 档 3：基准门槛模式（缺省 `hard` = DAS 基线；`soft` = 仅基准动量 > 0 时启用） */
+  benchmarkGateMode: 'hard' | 'soft';
+  /** 档 3：AND→评分制（缺省 `and` = DAS 基线；`scored` = 次槽降为打分不拦截） */
+  scoreMode: 'and' | 'scored';
+  /** 动量衰减退出（§12.5 第 5 条；缺省 false = DAS 基线，不新增退出路径） */
+  momentumDecayExit: boolean;
+  /** 衰减退出排名阈值：当日主槽排名（相对全池）> 该值即触发退出（缺省 = maxHoldings + 2） */
+  decayRankThreshold: number;
 }
 
 export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
@@ -117,6 +141,19 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   lotSize: DEFAULT_LOT_SIZE,
   etfExemptTax: DEFAULT_ETF_EXEMPT_TAX,
   benchmark: BENCHMARK_SYMBOL,
+  cashInterestRate: 0,
+  exposureMode: 'fixed',
+  exposureScaleDivisor: 3,
+  targetVol: 0.12,
+  volWindow: 20,
+  capRelaxBelow: 0,
+  wsmMaxResearch: WSM_MAX,
+  rsrsMaxResearch: RSRS_MAX,
+  benchmarkGateMode: 'hard',
+  scoreMode: 'and',
+  momentumDecayExit: false,
+  /** 缺省 = maxHoldings + 2；显式传小值（如 3）可收紧排名触发 */
+  decayRankThreshold: 8,
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -448,6 +485,120 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     options: [BENCHMARK_SYMBOL],
     description: 'DAS §2.1/§2.2 benchmark；用于市场过滤与超额基准',
   },
+  {
+    key: 'cashInterestRate',
+    label: '闲置现金年化利率（档 1；缺省 0 = 引擎不计息）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.cashInterestRate,
+    min: 0,
+    max: 0.2,
+    step: 0.001,
+    description: '研究口径（§12.3 闲置现金收益）；不入 DAS 对齐基线',
+  },
+  {
+    key: 'exposureMode',
+    label: '暴露模式（档 2）',
+    type: 'select',
+    default: DUALMOMENTUM_DEFAULTS.exposureMode,
+    options: ['fixed', 'scale', 'vol'],
+    description:
+      'fixed = DAS 基线（候选均分满仓/否则空仓）；scale = 目标暴露 = min(1, 通过数 / divisor)；vol = 波动率目标（targetVol / 实现波动率）',
+  },
+  {
+    key: 'exposureScaleDivisor',
+    label: '暴露缩放分母（档 2）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.exposureScaleDivisor,
+    min: 1,
+    max: 10,
+    step: 0.5,
+    description: 'scale 模式下目标暴露 = min(1, 通过数 / 该值)',
+  },
+  {
+    key: 'targetVol',
+    label: '目标年化波动率（档 2 vol 模式）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.targetVol,
+    min: 0.01,
+    max: 1,
+    step: 0.01,
+    description: 'vol 模式下目标暴露 = clip(targetVol / 实现波动率, 0, 1)',
+  },
+  {
+    key: 'volWindow',
+    label: '实现波动率估计窗口（档 2 vol 模式）',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.volWindow,
+    min: 5,
+    max: 120,
+    step: 5,
+    unit: '交易日',
+    description: 'vol 模式下滚动实现波动率的窗口长度',
+  },
+  {
+    key: 'capRelaxBelow',
+    label: '放开单标的 cap 的候选数阈值（档 2；0 = 不放开）',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.capRelaxBelow,
+    min: 0,
+    max: 10,
+    step: 1,
+    description: '候选数 < 该值时单标的 cap 放开到 1.0；缺省 0 = DAS 基线 33%',
+  },
+  {
+    key: 'wsmMaxResearch',
+    label: '主槽上界研究值（档 3；缺省 = DAS 锁定 5）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.wsmMaxResearch,
+    min: 0,
+    max: 100,
+    step: 1,
+    description: '档 3 放宽（§12.5 第 1 条）；传 >5 才激活，缺省 = DAS 锁定值',
+  },
+  {
+    key: 'rsrsMaxResearch',
+    label: '次槽上界研究值（档 3；缺省 = DAS 锁定 2）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.rsrsMaxResearch,
+    min: 0,
+    max: 100,
+    step: 0.5,
+    description: '档 3 放宽（§12.5 第 1 条）；传 >2 才激活，缺省 = DAS 锁定值',
+  },
+  {
+    key: 'benchmarkGateMode',
+    label: '基准门槛模式（档 3）',
+    type: 'select',
+    default: DUALMOMENTUM_DEFAULTS.benchmarkGateMode,
+    options: ['hard', 'soft'],
+    description: 'hard = DAS 基线；soft = 仅基准动量 > 0 时启用第 9 步（§12.5 第 2 条）',
+  },
+  {
+    key: 'scoreMode',
+    label: 'AND → 评分制（档 3）',
+    type: 'select',
+    default: DUALMOMENTUM_DEFAULTS.scoreMode,
+    options: ['and', 'scored'],
+    description: 'and = DAS 基线（次槽 + 基准 AND）；scored = 次槽降为打分不拦截（§12.5 第 3 条）',
+  },
+  {
+    key: 'momentumDecayExit',
+    label: '动量衰减退出（§12.5 第 5 条；缺省 false = DAS 基线）',
+    type: 'boolean',
+    default: DUALMOMENTUM_DEFAULTS.momentumDecayExit,
+    description:
+      '开启后：主槽动量转负或全池排名 > decayRankThreshold 即清仓，可绕过 minHoldDays，触发后开 stopLoss 冷却',
+  },
+  {
+    key: 'decayRankThreshold',
+    label: '衰减退出排名阈值（§12.5 第 5 条）',
+    type: 'integer',
+    default: DUALMOMENTUM_DEFAULTS.decayRankThreshold,
+    min: 1,
+    max: 50,
+    step: 1,
+    description: '动量衰减退出：当日主槽全池排名 > 该值即触发退出（缺省 8 = 7 只池下几乎不触发）',
+  },
 ];
 
 function num(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
@@ -515,6 +666,21 @@ export function resolveDualMomentumParams(
     lotSize: Math.max(1, int(src, 'lotSize', d.lotSize)),
     etfExemptTax: bool(src, 'etfExemptTax', d.etfExemptTax),
     benchmark: typeof src.benchmark === 'string' && src.benchmark !== '' ? src.benchmark : d.benchmark,
+    // 档 1：缺省 0 = 引擎不计息，基线不变
+    cashInterestRate: Math.max(0, num(src, 'cashInterestRate', d.cashInterestRate)),
+    // 档 2：缺省 fixed + 0 ⇒ 基线路径逐位不变
+    exposureMode: src.exposureMode === 'scale' || src.exposureMode === 'vol' ? src.exposureMode : 'fixed',
+    exposureScaleDivisor: Math.max(1, num(src, 'exposureScaleDivisor', d.exposureScaleDivisor)),
+    targetVol: Math.max(0.01, num(src, 'targetVol', d.targetVol)),
+    volWindow: Math.max(5, int(src, 'volWindow', d.volWindow)),
+    capRelaxBelow: Math.max(0, int(src, 'capRelaxBelow', d.capRelaxBelow)),
+    // 档 3：缺省 = DAS 锁定值（wsmMax=5 / rsrsMax=2），research 上界只放宽不收窄
+    wsmMaxResearch: Math.max(d.wsmMax, num(src, 'wsmMaxResearch', d.wsmMaxResearch)),
+    rsrsMaxResearch: Math.max(d.rsrsMax, num(src, 'rsrsMaxResearch', d.rsrsMaxResearch)),
+    benchmarkGateMode: src.benchmarkGateMode === 'soft' ? 'soft' : 'hard',
+    scoreMode: src.scoreMode === 'scored' ? 'scored' : 'and',
+    momentumDecayExit: bool(src, 'momentumDecayExit', d.momentumDecayExit),
+    decayRankThreshold: Math.max(1, int(src, 'decayRankThreshold', d.decayRankThreshold)),
   };
 }
 
