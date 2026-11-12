@@ -66,7 +66,12 @@ export default tseslint.config(
 
   /* ── 后端 / core：Node 环境 ──────────────────────────────────── */
   {
-    files: ['apps/backend/**/*.{ts,tsx}', 'packages/core/**/*.{ts,tsx}', 'scripts/**/*.{js,mjs,cjs,ts}'],
+    files: [
+      'apps/backend/**/*.{ts,tsx}',
+      'packages/core/**/*.{ts,tsx}',
+      'scripts/**/*.{js,mjs,cjs,ts}',
+      'deploy/**/*.{js,mjs,cjs}',
+    ],
     languageOptions: {
       globals: { ...globals.node },
     },

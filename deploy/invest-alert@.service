@@ -1,0 +1,12 @@
+[Unit]
+Description=InvestAssistant 失败告警（企业微信）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=invol
+Group=invol
+EnvironmentFile=/opt/invol/IA_Prod/.env.local
+ExecStart=/usr/bin/node /usr/local/bin/invest-wecom-alert.mjs %i
+TimeoutStartSec=30

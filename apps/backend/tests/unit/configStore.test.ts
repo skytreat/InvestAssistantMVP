@@ -117,6 +117,18 @@ describe('configStore — writeLog', () => {
     expect(rows[1].detail).toBe('some detail');
   });
 
+  it('writeLog 接受 alert 类型（企业微信告警旁路）', () => {
+    const store = ConfigStore.getInstance();
+    store.db.prepare('DELETE FROM system_log').run();
+
+    store.writeLog('alert', 'ERROR', '企业微信告警发送失败', 'redacted detail');
+
+    const rows = store.db.prepare('SELECT * FROM system_log').all() as any[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].log_type).toBe('alert');
+    expect(rows[0].level).toBe('ERROR');
+  });
+
   it('writeLog 忽略非法 level（降级到 warn）', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const store = ConfigStore.getInstance();

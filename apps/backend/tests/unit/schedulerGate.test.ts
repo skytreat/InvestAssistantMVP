@@ -7,6 +7,11 @@ import * as quoteStatusNs from '../../src/services/quoteUpdateStatus.js';
 import * as marketNs from '../../src/services/marketData.js';
 import * as rerunNs from '../../src/services/quoteRerun.js';
 import * as duckdbNs from '../../src/db/duckdb.js';
+import * as alertNs from '../../src/services/alert.js';
+
+vi.mock('../../src/services/alert.js', () => ({
+  sendWecomAlert: vi.fn(async () => ({ sent: true, reason: 'SENT' })),
+}));
 
 /**
  * T106：17:01 校验闸门语义。
@@ -29,6 +34,7 @@ function logs(): Array<{ logType: string; level: string; message: string }> {
 
 beforeEach(() => {
   vi.spyOn(loggerNs, 'writeSystemLog').mockImplementation(() => {});
+  vi.mocked(alertNs.sendWecomAlert).mockClear();
   vi.spyOn(duckdbNs, 'isDuckDBWriteSentinelPresent').mockReturnValue(false);
   vi.spyOn(marketNs, 'resolveTargetTradeDate').mockResolvedValue('2026-10-23');
   vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([]);
@@ -58,6 +64,14 @@ describe('T106 校验闸门', () => {
     expect(rerunNs.rerunQuoteUpdate).not.toHaveBeenCalled();
     const err = logs().find((l) => l.logType === 'datacheck' && l.level === 'ERROR');
     expect(err?.message).toContain('行情更新未生效');
+    expect(alertNs.sendWecomAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        date: '2026-10-23',
+        kind: 'quote_chain_failed',
+        title: expect.stringContaining('更新未生效'),
+        lines: expect.arrayContaining([expect.stringContaining('状态：FAIL')]),
+      }),
+    );
   });
 
   it('更新未触发 + 无数据 → UPDATE_FAILED', async () => {
@@ -132,6 +146,28 @@ describe('T106 校验闸门', () => {
     const result = await runScheduledDatacheck();
     expect(result.action).toBe('CHECKED');
     expect(validatorNs.runAllChecks).toHaveBeenCalledTimes(1);
+    expect(alertNs.sendWecomAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('更新结果异常') }),
+    );
+  });
+
+  it('校验出现 ERROR → 推送企业微信告警（含 ERROR 项）', async () => {
+    vi.spyOn(quoteStatusNs, 'reportTdx2dbRunOutcome').mockResolvedValue(status('SUCCESS'));
+    vi.spyOn(validatorNs, 'runAllChecks').mockResolvedValue([
+      { checkId: 'C1', name: 'C1', result: 'ERROR', message: 'missing', detail: 'no rows' },
+    ] as any);
+
+    const result = await runScheduledDatacheck();
+
+    expect(result.action).toBe('CHECKED');
+    expect(alertNs.sendWecomAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        date: '2026-10-23',
+        kind: 'quote_chain_failed',
+        title: expect.stringContaining('数据校验未通过'),
+        lines: expect.arrayContaining([expect.stringContaining('C1')]),
+      }),
+    );
   });
 
   it('等哨兵超时 → WAIT_TIMEOUT，不写更新结果、不校验', async () => {
@@ -146,5 +182,8 @@ describe('T106 校验闸门', () => {
     expect(validatorNs.runAllChecks).not.toHaveBeenCalled();
     const updateLog = logs().find((l) => l.logType === 'tdx2db_update' && l.level === 'WARN');
     expect(updateLog?.message).toContain('未结束');
+    expect(alertNs.sendWecomAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('写窗口超时') }),
+    );
   });
 });

@@ -16,6 +16,7 @@ import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
 import { syncSymbolDict } from './symbolDict.js';
+import { sendWecomAlert } from './alert.js';
 import { PaperStore } from './paper/store.js';
 import { runPaperDailyStage } from './paper/settle.js';
 
@@ -128,6 +129,21 @@ export interface ScheduledDatacheckResult {
 }
 
 /**
+ * 行情链路终态失败 → 企业微信告警（旁路，失败不影响调度）。
+ *
+ * 只在工作日推送；`kind` 固定，保证同一交易日最多一条（避免 17:01 各分支重复）。
+ */
+async function notifyQuoteChainFailure(date: string, action: string, lines: string[]): Promise<void> {
+  await sendWecomAlert({
+    date,
+    kind: 'quote_chain_failed',
+    title: `行情更新失败（${action}）`,
+    level: 'ERROR',
+    lines,
+  });
+}
+
+/**
  * 17:01 校验段的完整入口（T106：更新结果 → 数据闸门 → 校验/补跑）。
  *
  * 三类「无行情数据」必须区分，不能都汇总成 `ERROR=0 WARN=0`：
@@ -162,6 +178,10 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
       level: 'WARN',
       message: `等待 tdx2db 写窗口超时（${Math.round(wait.waitMs / 1000)}s），跳过本轮校验`,
     });
+    await notifyQuoteChainFailure(new Date().toISOString().slice(0, 10), '写窗口超时', [
+      `tdx2db 写窗口超过 ${Math.round(wait.waitMs / 1000)}s 未结束`,
+      '本轮 C1-C12 校验已跳过',
+    ]);
     return { date: '', action: 'WAIT_TIMEOUT' };
   }
 
@@ -187,6 +207,11 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
       message: `行情更新未生效（state=${update.state}），跳过 ${date} 的 C1-C12 校验`,
       detail: update.message,
     });
+    await notifyQuoteChainFailure(date, '更新未生效', [
+      `状态：${update.state}`,
+      `详情：${update.message}`,
+      `已跳过 ${date} 的 C1-C12 校验`,
+    ]);
     return { date, action: 'UPDATE_FAILED', updateState: update.state };
   }
 
@@ -205,6 +230,11 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
         message: `行情更新成功但无数据，补跑失败，跳过 ${date} 的 C1-C12 校验`,
         detail: `rerun=${rerun.status} method=${rerun.method} msg=${rerun.message}`,
       });
+      await notifyQuoteChainFailure(date, '补跑失败', [
+        `更新状态：${update.state}，${date} 仍无行情数据`,
+        `补跑：${rerun.status}/${rerun.method}`,
+        `详情：${rerun.message}`,
+      ]);
       return { date, action: 'NO_DATA_AFTER_RERUN', updateState: update.state, reran: true, rerunOk: false };
     }
     hasData = await hasQuoteDataOn(date);
@@ -215,6 +245,10 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
         message: `补跑后 ${date} 仍无行情数据，跳过 C1-C12 校验`,
         detail: update.message,
       });
+      await notifyQuoteChainFailure(date, '补跑后仍无数据', [
+        `更新状态：${update.state}，补跑后 ${date} 仍无行情数据`,
+        '已跳过 C1-C12 校验',
+      ]);
       return { date, action: 'NO_DATA_AFTER_RERUN', updateState: update.state, reran: true, rerunOk: true };
     }
   }
@@ -227,6 +261,17 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
     level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
     message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
   });
+
+  if (errors > 0 || update.state === 'FAIL' || update.state === 'NOT_RUN') {
+    const errorChecks = summaries.filter((s) => s.result === 'ERROR').map((s) => s.checkId);
+    await notifyQuoteChainFailure(date, errors > 0 ? '数据校验未通过' : '更新结果异常', [
+      `更新状态：${update.state}`,
+      ...(errors > 0 ? [`C1-C12：ERROR=${errors} WARN=${warns}`] : []),
+      ...(errorChecks.length > 0 ? [`ERROR 项：${errorChecks.join(', ')}`] : []),
+      `补跑：${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
+    ]);
+  }
+
   return { date, action: 'CHECKED', updateState: update.state, summaries, reran, rerunOk };
 }
 

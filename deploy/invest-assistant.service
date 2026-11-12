@@ -2,6 +2,8 @@
 Description=InvestAssistant Fastify 后端
 After=network-online.target
 Wants=network-online.target
+# 进程最终失败（Restart 次数耗尽）时推送企业微信；行情链路的失败由 Fastify cron 在 17:01 告警
+OnFailure=invest-alert@%N.service
 
 [Service]
 Type=simple

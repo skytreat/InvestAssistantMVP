@@ -124,6 +124,12 @@ BACKUP_DIR=/opt/invol/IA_Prod/backup
 # ENABLE_QUOTE_BACKUP=false
 # LOG_LEVEL=info
 
+# 企业微信机器人 Webhook（可选；留空 = 不推送）
+# 行情链路失败（tdx2db 未生效 / 无数据 / C1-C12 ERROR）与 Fastify 进程失败时推送。
+# WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx
+# ALERT_ENABLED=true
+# ALERT_TIMEOUT_MS=5000
+
 # Fastify 固定监听 127.0.0.1，仅端口可改
 PORT=8080
 ```
@@ -195,6 +201,30 @@ sudo journalctl -u tdx2db.service -f
 `tdx2db.service` 在写库前后创建/删除 `/opt/invol/IA_Prod/.tdx2db-writing`；
 `ExecStopPost` 在 tdx2db 失败时也会清理哨兵，避免 Fastify 永久等待写窗口。
 
+### 企业微信失败告警
+
+配置 `WECOM_WEBHOOK_URL` 后，两条路径会推送到企业微信群机器人：
+
+| 触发 | 来源 | 说明 |
+|---|---|---|
+| 行情链路失败 | Fastify 17:01 校验终态 | `UPDATE_FAILED` / `NO_DATA_AFTER_RERUN` / `WAIT_TIMEOUT` / C1-C12 ERROR；仅工作日推送，同一交易日去重 |
+| Fastify 进程失败 | systemd `OnFailure` | `invest-assistant.service` 最终失败时由 `invest-alert@.service` 调用 `/usr/local/bin/invest-wecom-alert.mjs` |
+
+```bash
+# 手动验证 webhook（不要把真实 URL 写进 shell 历史）
+source /opt/invol/IA_Prod/.env.local
+curl -sS -X POST "$WECOM_WEBHOOK_URL" \
+  -H 'Content-Type: application/json' \
+  -d '{"msgtype":"markdown","markdown":{"content":"**InvestAssistant 测试告警**"}}'
+
+# 查看告警单元
+sudo systemctl status 'invest-alert@invest-assistant.service'
+sudo journalctl -u 'invest-alert@invest-assistant.service' -n 50 --no-pager
+```
+
+> `WECOM_WEBHOOK_URL` 是凭据：只放在 `/opt/invol/IA_Prod/.env.local`（600 invol），
+> 不要提交到仓库、不要打印到日志或前端。`ALERT_ENABLED=false` 可临时关闭应用层推送。
+
 ### Caddy
 
 ```bash
@@ -233,6 +263,8 @@ Node 自己触发补跑时走 `rerunQuoteUpdate()` 的主动让锁路径（ADR-0
 `Result` / `ExecMainStatus` / 起止时间写入 `system_log`（`log_type=tdx2db_update`）。
 失败或未触发时校验会跳过，但会写 `datacheck/ERROR`，不会再出现「无数据却 ERROR=0 WARN=0」。
 若更新状态为成功但当日无数据，会先自动补跑一次；补跑后仍无数据才判 ERROR。
+管理端 Dashboard 在 admin 登录后会显示当日 ERROR 红色横幅；配置 `WECOM_WEBHOOK_URL`
+后同一终态还会推送到企业微信（见「企业微信失败告警」）。
 
 ## CD（每日定时部署）
 

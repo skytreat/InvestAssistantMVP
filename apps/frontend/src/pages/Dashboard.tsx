@@ -18,6 +18,7 @@ import TodayActivityCard from '../components/TodayActivityCard';
 import TradeFormModal from '../components/TradeFormModal';
 import type { SignalTradeDraft } from '../components/SignalMiniMenu';
 import CandidatePoolPanel, { type CandidateBuyDraft } from '../components/CandidatePoolPanel';
+import SystemAlertBanner from '../components/SystemAlertBanner';
 import {
   DIRECTION_LABEL,
   fmt,
@@ -88,6 +89,8 @@ interface Signal {
 type SignalDateSource = 'explicit' | 'signal' | 'quote' | 'today';
 
 interface SystemLog {
+  id?: number;
+  log_date?: string;
   created_at: string;
   log_type: string;
   level: string;
@@ -320,6 +323,8 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
+  /** 今日行情链路 ERROR 横幅（admin 专属；空数组 = 不显示） */
+  const [systemAlertMessages, setSystemAlertMessages] = useState<string[]>([]);
 
   /* ------------------------------------------------------------------ *
    * 三个顶层模态的 state（批次 5 接线）
@@ -549,6 +554,35 @@ export default function Dashboard() {
           setLogLoading(false);
         }
       })();
+
+      (async () => {
+        const today = new Date().toISOString().slice(0, 10);
+        const params = { start_date: today, end_date: today, page_size: 1 };
+        const latest = (body: unknown, logType: string): SystemLog | null => {
+          if (!isOkEnvelope(body)) return null;
+          const rows = (body as { data?: unknown }).data;
+          if (!Array.isArray(rows) || rows.length === 0) return null;
+          const row = rows[0] as SystemLog;
+          return row.log_date === today && row.log_type === logType ? row : null;
+        };
+
+        try {
+          const [updateRes, checkRes] = await Promise.all([
+            api.get('/admin/system-log', { params: { ...params, log_type: 'tdx2db_update' } }),
+            api.get('/admin/system-log', { params: { ...params, log_type: 'datacheck' } }),
+          ]);
+          const messages: string[] = [];
+          const updateLog = latest(updateRes.data, 'tdx2db_update');
+          if (updateLog?.level === 'ERROR') messages.push(`行情更新失败：${updateLog.message}`);
+          const checkLog = latest(checkRes.data, 'datacheck');
+          if (checkLog?.level === 'ERROR') messages.push(`数据校验异常：${checkLog.message}`);
+          setSystemAlertMessages(messages);
+        } catch {
+          setSystemAlertMessages([]);
+        }
+      })();
+    } else {
+      setSystemAlertMessages([]);
     }
   }, [role]);
 
@@ -664,6 +698,7 @@ export default function Dashboard() {
         {latestQuoteDate && (
           <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>最新行情日期：{latestQuoteDate}</div>
         )}
+        <SystemAlertBanner messages={systemAlertMessages} />
 
         {/* T79 ⑤：概览四块之一 —— 资产汇总（总资产卡 + 资产组成） */}
         <section aria-label="资产汇总" data-testid="overview-assets">
