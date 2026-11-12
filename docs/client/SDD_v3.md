@@ -1374,7 +1374,7 @@ emotion_status TEXT CHECK (emotion_status IS NULL OR emotion_status IN ('极度�
 | `/broker/import` | 导入向导（拖拽→探测/映射→预览→确认） | `POST /api/broker-import/upload /preview /confirm` | §3.1 | T143 |
 | `/broker/reconcile` | 对账报告（摘要/归因/资金校验/回填/差异/三口径） | `POST /run`、`GET /latest /diff`、`/api/portfolio/return` | §3.2 | T144/T147 |
 | （弹窗） | 补录对话框 | `POST /confirm`、`POST /diff/:id/match` | §3.3 | T145 |
-| `/strategy/config` | 策略配置（分类/组合/适用品种/冷却期） | `GET /api/strategy/plugins`、`PUT /:id/config` | §4.1 | T148 |
+| （`/settings?tab=plugins` / `?tab=combos`） | 策略配置（插件分类/组合/适用品种/冷却期）—— **2026-11-12 起并入设置页**（原 `/strategy/config` 路由已删除，ADR-019） | `GET /api/strategy/plugins`、`PUT /:id/config`、`GET /api/strategy/combos` | §4.1 | T148（已并入） |
 | （现有 Signals 页增强） | 分级/过期/Top5/采纳/快照/关联 | `PATCH /api/signal/:id/adopt /ignore /link-trade`、`GET /outcome` | §4.2 | T149 |
 | `/strategy/effectiveness` | 策略有效性（多周期/基准/导出 CSV） | `GET /api/strategy/signals/:id/outcome`（T135） | §4.3 | T150 |
 | `/portfolio/risk-check` | 组合体检（四指标卡片/行业分布） | `GET /api/portfolio/risk-check` | §5.3 | T150 |
