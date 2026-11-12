@@ -34,18 +34,18 @@ if (parsed.protocol !== 'https:' || parsed.hostname !== WEBHOOK_HOST) {
 
 const when = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 const content = [
-  '**InvestAssistant 服务异常**',
-  `> 单元：${unit}`,
-  `> 主机：${hostname}`,
-  `> 时间：${when}`,
-  '> 请登录服务器执行 `systemctl status <unit>` 查看详情',
+  'InvestAssistant 服务异常',
+  `单元：${unit}`,
+  `主机：${hostname}`,
+  `时间：${when}`,
+  `请登录服务器执行 systemctl status ${unit} 查看详情`,
 ].join('\n');
 
 try {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ msgtype: 'markdown', markdown: { content } }),
+    body: JSON.stringify({ msgtype: 'text', text: { content } }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   const body = await res.json().catch(() => null);

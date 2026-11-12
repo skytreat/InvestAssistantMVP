@@ -215,7 +215,7 @@ sudo journalctl -u tdx2db.service -f
 source /opt/invol/IA_Prod/.env.local
 curl -sS -X POST "$WECOM_WEBHOOK_URL" \
   -H 'Content-Type: application/json' \
-  -d '{"msgtype":"markdown","markdown":{"content":"**InvestAssistant 测试告警**"}}'
+  -d '{"msgtype":"text","text":{"content":"InvestAssistant 测试告警"}}'
 
 # 查看告警单元
 sudo systemctl status 'invest-alert@invest-assistant.service'
