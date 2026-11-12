@@ -11,7 +11,7 @@ import { writeSystemLog } from './logger.js';
 
 export const ALERT_LOG_TYPE = 'alert';
 const DEFAULT_TIMEOUT_MS = 5_000;
-const MAX_MARKDOWN_CHARS = 1_000;
+const MAX_TEXT_BYTES = 2_000;
 
 export interface WecomAlertInput {
   /** YYYY-MM-DD，与 system_log.log_date 同口径 */
@@ -83,20 +83,29 @@ function redactSecrets(text: string): string {
   return text.replace(/key=[^&\s]+/gi, 'key=****');
 }
 
-export function buildWecomMarkdown(input: WecomAlertInput): string {
+function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let truncated = text;
+  while (Buffer.byteLength(truncated, 'utf8') > maxBytes - 3) {
+    truncated = truncated.slice(0, -1);
+  }
+  return `${truncated}…`;
+}
+
+export function buildWecomText(input: WecomAlertInput): string {
   const content = [
-    `**${input.title}**`,
-    `> 日期：${input.date}`,
-    `> 级别：<font color="warning">${input.level ?? 'ERROR'}</font>`,
-    ...input.lines.map((line) => `> ${line}`),
+    `[InvestAssistant] ${input.title}`,
+    `日期：${input.date}`,
+    `级别：${input.level ?? 'ERROR'}`,
+    ...input.lines,
   ].join('\n');
-  return content.length > MAX_MARKDOWN_CHARS ? `${content.slice(0, MAX_MARKDOWN_CHARS)}…` : content;
+  return truncateUtf8(content, MAX_TEXT_BYTES);
 }
 
 export function buildWecomPayload(input: WecomAlertInput): Record<string, unknown> {
   return {
-    msgtype: 'markdown',
-    markdown: { content: buildWecomMarkdown(input) },
+    msgtype: 'text',
+    text: { content: buildWecomText(input) },
   };
 }
 

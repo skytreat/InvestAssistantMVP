@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
-  buildWecomMarkdown,
+  buildWecomText,
   getWecomWebhookUrl,
   isAlertableDay,
   resetAlertDedupe,
@@ -38,8 +38,8 @@ afterEach(() => {
 });
 
 describe('alert · 企业微信告警', () => {
-  it('markdown 包含标题、日期与明细，并做长度截断', () => {
-    const content = buildWecomMarkdown({
+  it('纯文本包含标题、日期与明细，并按字节截断', () => {
+    const content = buildWecomText({
       date: '2026-11-12',
       kind: 'quote_chain_failed',
       title: '行情更新失败（更新未生效）',
@@ -51,14 +51,16 @@ describe('alert · 企业微信告警', () => {
     expect(content).toContain('状态：FAIL');
     expect(content).toContain('详情：mock');
     expect(content).toContain('ERROR');
+    expect(content).not.toContain('**');
+    expect(content).not.toContain('<font');
 
-    const long = buildWecomMarkdown({
+    const long = buildWecomText({
       date: '2026-11-12',
       kind: 'k',
       title: 'T',
       lines: ['x'.repeat(2_000)],
     });
-    expect(long.length).toBeLessThanOrEqual(1_001);
+    expect(Buffer.byteLength(long, 'utf8')).toBeLessThanOrEqual(2_000);
     expect(long.endsWith('…')).toBe(true);
   });
 
@@ -122,7 +124,7 @@ describe('alert · 企业微信告警', () => {
     expect(log.detail).not.toContain('test-secret');
   });
 
-  it('成功发送 markdown 消息，并按 (date,kind) 去重', async () => {
+  it('成功发送纯文本消息，并按 (date,kind) 去重', async () => {
     const fetchFn = fetchOk();
     const input = { date: '2026-11-12', kind: 'quote_chain_failed', title: 'T', lines: ['line-1'] };
 
@@ -136,8 +138,8 @@ describe('alert · 企业微信告警', () => {
     expect(url).toBe(WEBHOOK_URL);
     expect(init.method).toBe('POST');
     expect(JSON.parse(String(init.body))).toMatchObject({
-      msgtype: 'markdown',
-      markdown: { content: expect.stringContaining('line-1') },
+      msgtype: 'text',
+      text: { content: expect.stringContaining('line-1') },
     });
   });
 
