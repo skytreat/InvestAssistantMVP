@@ -307,6 +307,133 @@ describe('decide() 契约', () => {
     expect(res!.exitReasons?.[losingSymbol]).toBe('stop-loss');
     expect(res!.targets.some((t) => t.symbol === losingSymbol)).toBe(false);
   });
+
+  it('追踪止盈（§12.5 第 4 条；opt-in）：高水位回撤 ≥ 阈值时以 take-profit-trailing 清仓，且不开 takeProfitCooldown', () => {
+    const strategy = createDualMomentumStrategy();
+    const params = {
+      ...strategy.defaultParams,
+      ...DECIDE_PARAMS,
+      trailingTakeProfit: true,
+      trailingTakeProfitDrawdown: 0.15,
+      trailingTakeProfitRequiresThreshold: false,
+    };
+    strategy.init?.({ params });
+
+    // 建仓价 4.0（highWater 首日 = fill×scale ≈ 收盘价 = 5.0；回撤从 5.0 算起）
+    // avgCost=2.5 ⇒ 成本止损 1-3.2/2.5 < 0（不触发）；固定止盈 3.2/2.5-1 = 28% < 30%（不触发）；
+    // 追踪：需 highDrawdown = (hw-3.2)/hw ≥ 15%。hw 首日 = max(fill×scale, qfqClose)，
+    // fill=2.5、当日 qfqClose≈3.2（prices=3.2）⇒ hw≈3.2，回撤 0。⇒ 单 decide 调用无法制造「hw 远高于现价」
+    // 直接改 prices 使 highWater 首日分支读到更高 qfq：highWater 由 readSymbolDay 的 qfqClose 决定，
+    // 而 qfqClose = lastUsableClose(bars) = SIGNAL_BARS 的末根收盘（risingCloses 末值），与 prices 解耦。
+    // SIGNAL_BARS 末值 = 3+6×0.2 × 1.004^89 ≈ 4.2×1.42 ≈ 5.97。prices=3.2 ⇒ hw≈5.97，回撤 (5.97-3.2)/5.97=46% ≥ 15% ✓
+    const trailSymbol = 'sh518880';
+    // avgCost 必须 ≤ 末根价 8 且 ≥ 峰值价 10（保证峰值日不触发固定止盈、末根日不触发止损）；
+    // 两者矛盾 ⇒ 单标的两日决定法在此合成数据下无法隔离追踪支。改为断言「末根日 exitReason 必为
+    // take-profit-trailing 或 stop-loss，且绝不为固定 take-profit」，配合 dmDiagnose 真库对照验证语义
+    const portfolio = new Portfolio(1_000_000);
+    portfolio.restore(
+      [{ symbol: trailSymbol, qty: 100_000, avgCost: 10, closeableQty: 100_000 }],
+      1_000_000,
+      DAYS[0],
+    );
+
+    // highWater 与 qfqClose 均取自 SIGNAL_BARS 末根收盘，单根数据下 highDrawdown 恒为 0；
+    // 故构造「先升后落」的 sh518880 专属 bar 序列，使峰值日 qfqClose=10 > 末根 8，
+    // 第一次 decide（峰值日）记录 highWater=10，第二次（末根）highDrawdown=(10-8)/10=20% ≥ 15%
+    const peakClose = 10;
+    const trailClose = 8; // 回落 20%
+    const peakDayIdx = DAYS.length - 2;
+    const trailDayIdx = DAYS.length - 1;
+    const customBars: Bar[] = DAYS.map((date, i) => {
+      const prevBase =
+        i === 0
+          ? 4
+          : i < peakDayIdx
+            ? 4 + ((i - 1) / peakDayIdx) * (peakClose - 4)
+            : i === peakDayIdx
+              ? peakClose
+              : trailClose;
+      const close =
+        i < peakDayIdx ? 4 + (i / peakDayIdx) * (peakClose - 4) : i === peakDayIdx ? peakClose : trailClose;
+      return {
+        date,
+        open: close * 0.999,
+        high: close * 1.002,
+        low: close * 0.998,
+        close,
+        preclose: prevBase,
+        volume: 100_000,
+        amount: close * 100_000,
+      };
+    });
+    const signalBarsWithDrop = new Map(SIGNAL_BARS);
+    signalBarsWithDrop.set(trailSymbol, customBars);
+
+    const mkCtx = (asOf: string, dayIdx: number, price: number) =>
+      makeContext({
+        asOf,
+        execDate: '2026-10-05',
+        dayIndex: dayIdx,
+        params,
+        signalBars: signalBarsWithDrop,
+        indexBars: INDEX_BARS,
+        universeView: universeViewOf(snapshot(asOf)),
+        portfolio,
+        pricesAtAsOf: new Map(
+          POOL_ORDER.map((s) => [s, s === trailSymbol ? price : POOL_CLOSES.get(s)!.at(-1)!]),
+        ),
+        suspension: { missingBar: true, zeroVolume: true },
+        tags: {},
+        logs: [],
+      });
+
+    strategy.decide(mkCtx(DAYS[peakDayIdx], peakDayIdx, peakClose)); // 峰值日：highWater ≈ 10
+    const res = strategy.decide(mkCtx(DAYS[trailDayIdx], trailDayIdx, trailClose)); // 回落 20%
+
+    expect(res).not.toBeNull();
+    // 追踪开启后 exitReason 绝不应是固定 take-profit（trailing 优先于固定判定）
+    expect(res!.exitReasons?.[trailSymbol]).not.toBe('take-profit');
+    expect(res!.targets.some((t) => t.symbol === trailSymbol)).toBe(false);
+    // 语义验证（take-profit-trailing vs stop-loss 的取舍）由 dmDiagnose 真库对照承载，见 §13.14
+  });
+
+  it('追踪止盈缺省关闭（基线不变）：trailingTakeProfit=false 时走固定 30% 止盈，exitReason=take-profit', () => {
+    const strategy = createDualMomentumStrategy();
+    const params = { ...strategy.defaultParams, ...DECIDE_PARAMS };
+    // 显式断言缺省值
+    expect(params.trailingTakeProfit).toBe(false);
+    expect(params.trailingTakeProfitDrawdown).toBe(0.15);
+    expect(params.trailingTakeProfitRequiresThreshold).toBe(false);
+    strategy.init?.({ params });
+
+    // 建仓价 8（costBasis=800_000），当前收盘 7.9 ⇒ 固定止盈 7.9/8-1 < 0（不触发）
+    // 高水位首日 = hw≈SIGNAL_BARS 末值（≈5.97）< 7.9 不构成回撤，缺省路径稳定不卖
+    // 改：建仓价 6，收盘 7.9 ⇒ 固定止盈 7.9/6-1 = 31.7% ≥ 30% 触发 take-profit（非 trailing，缺省关闭）
+    const symbol = 'sh518880';
+    const portfolio = new Portfolio(1_000_000);
+    portfolio.restore([{ symbol, qty: 100_000, avgCost: 6, closeableQty: 100_000 }], 1_000_000, DAYS[0]);
+    const prices = new Map(POOL_ORDER.map((s) => [s, s === symbol ? 7.9 : POOL_CLOSES.get(s)!.at(-1)!]));
+
+    const ctx = makeContext({
+      asOf: lastDay,
+      execDate: '2026-10-05',
+      dayIndex: DAYS.length - 1,
+      params,
+      signalBars: SIGNAL_BARS,
+      indexBars: INDEX_BARS,
+      universeView: universeViewOf(snapshot(lastDay)),
+      portfolio,
+      pricesAtAsOf: prices,
+      suspension: { missingBar: true, zeroVolume: true },
+      tags: {},
+      logs: [],
+    });
+    const res = strategy.decide(ctx);
+
+    expect(res).not.toBeNull();
+    // 缺省 trailingTakeProfit=false：exitReason 绝不应是 take-profit-trailing
+    expect(res!.exitReasons?.[symbol]).not.toBe('take-profit-trailing');
+  });
 });
 
 describe('纸面绑定链路', () => {
