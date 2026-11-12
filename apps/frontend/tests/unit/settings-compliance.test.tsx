@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Settings from '../../src/pages/Settings';
 import { COLORS } from '../../src/theme/tokens';
+import { renderWithRouter } from '../helpers';
 
 /**
  * 设置页合规文案 + token 对比度用例（Wave 7 · 卡 5 · T76 ⑥ / G3.4 遗留项）
@@ -76,9 +78,11 @@ function contrastRatio(a: string, b: string): number {
 
 describe('设置页合规文案（PRD §5.9）', () => {
   it('设置页：展示隐私声明（不收集手机号/仅存交易与行情数据）', async () => {
-    render(<Settings />);
+    // Settings 用 useSearchParams 读 ?tab=，必须在 Router 内渲染
+    renderWithRouter(<Settings />);
 
-    // 用 findBy 等待插件列表的异步加载结束（避免 act(...) 警告）
+    // 隐私声明在「合规声明」分区（Tab）
+    await userEvent.click(screen.getByRole('tab', { name: '合规声明' }));
     const notice = await screen.findByTestId('privacy-notice');
     expect(notice).toBeInTheDocument();
     expect(notice).toHaveTextContent('不收集手机号');
@@ -87,10 +91,10 @@ describe('设置页合规文案（PRD §5.9）', () => {
     expect(notice).toHaveTextContent('仅存储交易数据和行情相关数据');
   });
 
-  it('设置页：插件区展示插件安全承诺（禁荐股/资金托管/实盘对接/超时保护）', async () => {
-    render(<Settings />);
+  it('设置页：插件管理区展示插件安全承诺（禁荐股/资金托管/实盘对接/超时保护）', async () => {
+    renderWithRouter(<Settings />);
 
-    // 承诺必须落在**插件管理区域**内（不是页脚、也不是「关于」卡片）
+    // 承诺必须落在**插件管理区域**内（默认「插件管理」Tab，不是页脚、也不是「关于」卡片）
     const notice = await screen.findByTestId('plugin-security-notice');
     expect(notice).toBeInTheDocument();
     expect(notice).toHaveTextContent('荐股');

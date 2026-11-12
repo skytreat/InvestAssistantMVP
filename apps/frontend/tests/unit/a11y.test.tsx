@@ -386,8 +386,8 @@ const PAGES: PageCase[] = [
   { key: 'broker-reconcile', path: '/broker/reconcile', admin: true },
   // V3.8 T147：收益页（三口径 + 口径说明，PRD_v3 §3.4.2）
   { key: 'portfolio-return', path: '/portfolio/return' },
-  // V3.8 T148/T150：策略配置 / 有效性 / 组合体检（PRD_v3 §4/§5）
-  { key: 'strategy-config', path: '/strategy/config' },
+  // V3.8 T150：有效性 / 组合体检（PRD_v3 §4/§5）；策略配置已并入 /settings（?tab=combos）
+  { key: 'settings-combos', path: '/settings?tab=combos' },
   { key: 'strategy-effectiveness', path: '/strategy/effectiveness' },
   { key: 'risk-check', path: '/portfolio/risk-check' },
   { key: 'notfound', path: '/__a11y_unknown_route__' },
@@ -416,7 +416,7 @@ const KNOWN_VIOLATIONS: Record<string, ReadonlyArray<readonly [string, string, s
   'broker-import': [],
   'broker-reconcile': [],
   'portfolio-return': [],
-  'strategy-config': [],
+  'settings-combos': [],
   'strategy-effectiveness': [],
   'risk-check': [],
   notfound: [],

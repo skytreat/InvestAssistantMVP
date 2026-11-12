@@ -75,8 +75,8 @@ describe('设置页 · 插件启停必须走 PUT（缺陷 ① 回归）', () => 
     await screen.findByRole('checkbox');
     await waitFor(() => expect(getMock).toHaveBeenCalled());
 
-    // 展开参数表单
-    fireEvent.click(screen.getByRole('button', { name: '参数配置' }));
+    // 展开参数表单（统一后的 PluginManager 按钮文案是「编辑参数」）
+    fireEvent.click(screen.getByRole('button', { name: '编辑参数' }));
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
     await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));

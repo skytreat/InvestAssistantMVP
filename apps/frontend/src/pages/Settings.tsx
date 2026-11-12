@@ -1,320 +1,131 @@
-import React, { useEffect, useState } from 'react';
-import { api } from '../api/client';
-import { isOkEnvelope } from '../api/envelope';
-import { extractErrorMessage } from '../api/errors';
-import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
-import Spinner from '../components/Spinner';
-import PluginParamForm, {
-  paramDefault,
-  validateParamValues,
-  type ParamField,
-} from '../components/PluginParamForm';
-import {
-  pageContainerStyle,
-  cardStyle,
-  titleStyle,
-  cardTitleStyle,
-  buttonStyle,
-  errorStyle,
-  successStyle,
-} from './_shared';
+import React from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { COLORS, RADIUS, TYPO } from '../theme/tokens';
+import { pageContainerStyle, cardStyle, titleStyle, cardTitleStyle } from './_shared';
+import PluginManager from '../components/PluginManager';
+import ComboSection from '../components/ComboSection';
 
 /**
- * ⚠️ `ParamField`（后端 paramSchema 契约）与参数表单渲染器已抽到
- *    `components/PluginParamForm.tsx`（T73 · F-S2）——
- *    本页与 `pages/StockScan.tsx`（选股页）**共用同一个 schema 驱动渲染器**，
- *    避免两份实现随时间漂移（控件类型映射 / 范围提示 / 必填标记）。
+ * 设置页 `/settings`（2026-11-12 起合并原「策略配置」页 `/strategy/config`）
+ *
+ * 页内三个分区（Tab）：
+ * ① 插件管理 —— 插件列表 + 启停 + 参数编辑（唯一实现 `components/PluginManager`）
+ * ② 组合策略 —— 组合 CRUD（`components/ComboSection`）
+ * ③ 合规声明 —— 隐私声明（PRD §5.9 要求常驻设置页）+ 关于
+ *
+ * 合并原因：原 Settings 与 StrategyConfig 两页的插件启停/参数保存是**两份重复实现**
+ *（且已漂移：一个保存后重新拉取、一个只改本地 state），移动端底部 Tab 也进不了
+ * 原 /strategy/config。路由 `?tab=plugins|combos|compliance` 支持直达分区。
  */
-interface PluginItem {
-  id: string;
-  name: string;
-  category: string;
-  description?: string;
-  paramSchema?: ParamField[];
-  enabled: number;
-  params: Record<string, unknown>;
+
+type TabKey = 'plugins' | 'combos' | 'compliance';
+
+const TABS: ReadonlyArray<{ key: TabKey; label: string }> = [
+  { key: 'plugins', label: '插件管理' },
+  { key: 'combos', label: '组合策略' },
+  { key: 'compliance', label: '合规声明' },
+];
+
+function isValidTab(raw: string | null): raw is TabKey {
+  return raw === 'plugins' || raw === 'combos' || raw === 'compliance';
 }
 
-const CATEGORY_LABEL: Record<string, string> = {
-  monitor: '监控信号',
-  filter: '条件选股',
-};
-
-/**
- * 「合规 / 承诺」提示条样式
- *
- * ⚠️ 复用既有的 `bgDisclaimer` / `textDisclaimer` 色板（**不新增裸 hex**）——
- *    深琥珀文字（#92400e）在浅琥珀底上的对比度 6.8:1 ≥ 4.5:1。
- */
-const noticeStyle: React.CSSProperties = {
-  background: COLORS.bgDisclaimer,
-  color: COLORS.textDisclaimer,
-  borderRadius: RADIUS.base,
-  padding: '8px 12px',
-  marginBottom: 12,
+const tabButtonBase: React.CSSProperties = {
+  padding: '6px 14px',
   fontSize: TYPO.smallSize,
-  lineHeight: 1.8,
+  fontFamily: TYPO.fontFamily,
+  borderRadius: RADIUS.base,
+  border: `1px solid ${COLORS.borderMedium}`,
+  background: COLORS.cardBg,
+  color: COLORS.textSecondary,
+  cursor: 'pointer',
 };
 
-/**
- * 插件「启用 / 禁用」开关的 checkbox id（T63）
- *
- * 与参数字段 id 命名空间隔离（用 `plugin-` 前缀），避免与同名参数 key 撞 id。
- */
-function pluginToggleId(pluginId: string): string {
-  const sanitize = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
-  return `settings-${sanitize(pluginId)}-plugin-enabled`;
+function tabButtonStyle(active: boolean): React.CSSProperties {
+  return {
+    ...tabButtonBase,
+    ...(active
+      ? {
+          background: COLORS.bgSelectedPrimary,
+          border: `1px solid ${COLORS.borderSelectedPrimary}`,
+          color: COLORS.brandLink,
+          fontWeight: 700,
+        }
+      : {}),
+  };
 }
 
 export default function Settings() {
-  const [plugins, setPlugins] = useState<PluginItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab');
+  const tab: TabKey = isValidTab(rawTab) ? rawTab : 'plugins';
 
-  /** 展开参数表单的插件 id */
-  const [expanded, setExpanded] = useState<string | null>(null);
-  /** 编辑中的参数草稿：pluginId → params */
-  const [draft, setDraft] = useState<Record<string, Record<string, unknown>>>({});
-  const [saving, setSaving] = useState<string | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.get('/strategy/plugins');
-      if (isOkEnvelope(res.data)) setPlugins(res.data.data ?? []);
-      else setError(res.data.message ?? '加载失败');
-    } catch (err) {
-      setError(extractErrorMessage(err, '加载失败'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  const openEditor = (p: PluginItem) => {
-    const next: Record<string, unknown> = {};
-    for (const f of p.paramSchema ?? []) {
-      next[f.key] = p.params?.[f.key] !== undefined ? p.params[f.key] : paramDefault(f);
-    }
-    setDraft((d) => ({ ...d, [p.id]: next }));
-    setExpanded(expanded === p.id ? null : p.id);
-    setMsg(null);
-  };
-
-  const save = async (p: PluginItem) => {
-    const params = draft[p.id] ?? {};
-    // 前端做一遍范围校验，后端 pluginEngine 仍会二次校验（防绕过）
-    // ⚠️ T73：校验规则已抽到 `components/PluginParamForm.tsx` 的 `validateParamValues`
-    //    （与选股页共用），错误文案与改动前逐字一致。
-    const issue = validateParamValues(p.paramSchema ?? [], params);
-    if (issue) {
-      setError(`插件「${p.name}」的「${issue.label}」${issue.message}`);
-      return;
-    }
-
-    setSaving(p.id);
-    setError(null);
-    try {
-      // ⚠️ **必须用 PUT**（SDD §4.4）：后端只注册了 `PUT /api/strategy/plugins/:id/config`。
-      //   Fastify **不做方法回退** ⇒ 用 POST 会 404（按钮点了没反应）。
-      await api.put(`/strategy/plugins/${p.id}/config`, { params });
-      setMsg(`已保存「${p.name}」参数`);
-      setExpanded(null);
-      await load();
-    } catch (err) {
-      setError(extractErrorMessage(err, '保存失败'));
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const toggle = async (p: PluginItem) => {
-    const next = p.enabled ? 0 : 1;
-    setError(null);
-    try {
-      // ⚠️ **必须用 PUT**（SDD §4.4）：后端只注册了 `PUT /api/strategy/plugins/:id/toggle`。
-      //   此前这里误用 POST ⇒ 设置页的「启用/禁用」开关**点了必然 404**。
-      await api.put(`/strategy/plugins/${p.id}/toggle`, { enabled: next });
-      setMsg(`已${next ? '启用' : '禁用'}「${p.name}」`);
-      await load();
-    } catch (err) {
-      setError(extractErrorMessage(err, '操作失败'));
-    }
+  const switchTab = (next: TabKey) => {
+    // 默认分区不带 query（/settings 即「插件管理」），其余分区写进 URL 便于直达
+    setSearchParams(next === 'plugins' ? {} : { tab: next });
   };
 
   return (
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>设置</h1>
 
-      {/*
-       * 异步结果的播报区（T76 ⑤ · aria-live）
-       *
-       * ⚠️ **`aria-live` 必须挂在「常驻」的容器上** —— 若挂在条件渲染出来的节点上，
-       *    读屏在内容变化时该节点还不存在 ⇒ 播报不会触发（与 Dashboard / Candidates 的同款做法）。
-       * ⚠️ `successStyle` 里的 `COLORS.success` 是**饱和图形档**（白底 3.30:1）——
-       *    `theme/styles.ts` 属卡 4 的地盘（不在本卡改动范围），故在**使用点**覆盖成
-       *    正文色档 `textSuccess`（白底 5.02:1 ✅）。
-       */}
-      <div aria-live="polite" aria-busy={loading}>
-        {error && <div style={errorStyle}>{error}</div>}
-        {msg && <div style={{ ...successStyle, color: COLORS.textSuccess }}>{msg}</div>}
+      <div
+        role="tablist"
+        aria-label="设置分区"
+        style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}
+      >
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            style={tabButtonStyle(tab === t.key)}
+            onClick={() => switchTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <div style={cardStyle}>
-        <div style={cardTitleStyle}>策略插件</div>
-        {/*
-         * PRD §5.9「插件安全承诺」——**逐字要点**（不是改写）：
-         *   「所有插件禁止包含荐股、资金托管、实盘对接功能」
-         *   「自定义插件默认执行超时保护，防止异常代码影响主流程」
-         * ⚠️ 这条承诺属于**插件管理区域**，故落在本卡片内（不是页脚、也不是全局合规条）。
-         */}
-        <div style={noticeStyle} data-testid="plugin-security-notice">
-          所有插件禁止包含荐股、资金托管、实盘对接功能；自定义插件默认执行超时保护，防止异常代码影响主流程。
-        </div>
-        {loading && <Spinner />}
-        {!loading && plugins.length === 0 && (
-          <div style={{ color: COLORS.neutral, padding: 16 }}>暂无可用插件</div>
-        )}
-        {!loading &&
-          plugins.map((p) => (
-            <div
-              key={p.id}
-              style={{
-                border: `1px solid ${COLORS.borderLight}`,
-                borderRadius: RADIUS.base,
-                padding: 12,
-                marginBottom: 12,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 180 }}>
-                  <div style={{ fontWeight: TYPO.cardTitleWeight, fontSize: 15 }}>
-                    {p.name}
-                    <span
-                      style={{
-                        marginLeft: 8,
-                        fontSize: 12,
-                        padding: '1px 6px',
-                        borderRadius: 10,
-                        background:
-                          p.category === 'monitor' ? COLORS.bgSelectedPrimary : COLORS.bgSelectedPurple,
-                        color: p.category === 'monitor' ? COLORS.brandLink : COLORS.textSelectedPurple,
-                      }}
-                    >
-                      {CATEGORY_LABEL[p.category] ?? p.category}
-                    </span>
-                  </div>
-                  {p.description && (
-                    <div style={{ fontSize: TYPO.smallSize, color: COLORS.neutral, marginTop: 2 }}>
-                      {p.description}
-                    </div>
-                  )}
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>
-                    <code>{p.id}</code>
-                  </div>
-                </div>
-                <label
-                  style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-                >
-                  {/* 包住式 label（label 内含唯一的 checkbox）→ 天然关联，无需 htmlFor */}
-                  <input
-                    id={pluginToggleId(p.id)}
-                    type="checkbox"
-                    checked={p.enabled === 1}
-                    onChange={() => toggle(p)}
-                  />
-                  {p.enabled === 1 ? '已启用' : '已禁用'}
-                </label>
-                {(p.paramSchema?.length ?? 0) > 0 && (
-                  <button style={buttonStyle} onClick={() => openEditor(p)}>
-                    {expanded === p.id ? '收起参数' : '参数配置'}
-                  </button>
-                )}
-              </div>
+      {tab === 'plugins' && <PluginManager />}
 
-              {expanded === p.id && (
-                <div
-                  style={{
-                    marginTop: 12,
-                    paddingTop: 12,
-                    borderTop: `1px solid ${COLORS.borderSubtle}`,
-                  }}
-                >
-                  {/*
-                    T73 · F-S2：参数表单改用共享的 schema 驱动渲染器
-                    `components/PluginParamForm.tsx`（与选股页共用）。
-                    ⚠️ `runtimeInjected` 的参数（如 symbol）由后端运行时注入，
-                    不该作为用户可配置项出现在表单里 —— 组件内部已按该标记过滤。
-                  */}
-                  <PluginParamForm
-                    pluginId={p.id}
-                    schema={p.paramSchema ?? []}
-                    values={draft[p.id] ?? {}}
-                    idPrefix="settings"
-                    onChange={(key, value) =>
-                      setDraft((d) => ({ ...d, [p.id]: { ...d[p.id], [key]: value } }))
-                    }
-                  />
-                  <div style={{ display: 'flex', gap: SPACING.gapBase }}>
-                    <button style={buttonStyle} disabled={saving === p.id} onClick={() => save(p)}>
-                      {saving === p.id ? '保存中...' : '保存'}
-                    </button>
-                    <button
-                      style={{ ...buttonStyle, background: COLORS.neutral }}
-                      onClick={() => setExpanded(null)}
-                    >
-                      取消
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-      </div>
+      {tab === 'combos' && <ComboSection />}
 
-      {/*
-        PRD §5.9「隐私声明常驻（注册页 + 设置页）」——**逐字要点**：
-          「不收集手机号、位置、社交账号等多余个人信息」
-          「仅存储交易数据和行情相关数据」
-        ⚠️ 位置要求：**设置页独立区块**（不是「关于」卡片里的一句，也不是全局合规条）。
-        ⚠️ 注册页（`pages/Login.tsx`）的那一份**不在本卡改动范围**（见交付报告的遗留项）。
-      */}
-      <div style={cardStyle}>
-        <div style={cardTitleStyle}>隐私声明</div>
-        <div
-          style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}
-          data-testid="privacy-notice"
-        >
-          <div>本工具不收集手机号、位置、社交账号等多余个人信息；仅存储交易数据和行情相关数据。</div>
-        </div>
-      </div>
-
-      <div style={cardStyle}>
-        <div style={cardTitleStyle}>关于</div>
-        <div style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}>
-          <div>InvestAssistant MVP — 个人股票管理 + 策略信号系统</div>
-          <div>行情数据：通达信本地日线（DuckDB 行情层，只读）</div>
-          <div>数据校验：每日 C1-C12 三层防线，WARN 自动补跑</div>
+      {tab === 'compliance' && (
+        <>
           {/*
-            T95：此处原有的合规声明文案是全局合规声明的**重复**，
-            且与 PRD §5.9 的逐字原文不一致（多了一个限定词）→ 已删除。
-            全局合规声明统一由 App.tsx 的 `<footer>`（`components/ComplianceFooter.tsx`）渲染，
-            文案逐字取自 PRD §5.9。
-            ⚠️ PRD §5.9 的「隐私声明常驻（注册页 + 设置页）」与「插件安全承诺（设置页插件区）」
-            属 T76 ⑥ —— 本卡（Wave 7 卡 5）已在**上方两个独立区块**落地（设置页部分）；
-            注册页（`pages/Login.tsx`）部分不在本卡改动范围。
+            PRD §5.9「隐私声明常驻（注册页 + 设置页）」——**逐字要点**：
+              「不收集手机号、位置、社交账号等多余个人信息」
+              「仅存储交易数据和行情相关数据」
+            ⚠️ 位置要求：**设置页独立区块**（不是「关于」卡片里的一句，也不是全局合规条）。
+            插件安全承诺在「插件管理」分区内（`PluginManager`），本分区只放隐私声明。
           */}
-        </div>
-      </div>
+          <div style={cardStyle}>
+            <div style={cardTitleStyle}>隐私声明</div>
+            <div
+              style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}
+              data-testid="privacy-notice"
+            >
+              <div>本工具不收集手机号、位置、社交账号等多余个人信息；仅存储交易数据和行情相关数据。</div>
+            </div>
+          </div>
+
+          <div style={cardStyle}>
+            <div style={cardTitleStyle}>关于</div>
+            <div style={{ fontSize: TYPO.bodySize, lineHeight: 1.9, color: COLORS.textSecondary }}>
+              <div>InvestAssistant MVP — 个人股票管理 + 策略信号系统</div>
+              <div>行情数据：通达信本地日线（DuckDB 行情层，只读）</div>
+              {/*
+                ⚠️ ADR-018（2026-11-12）后此文案必须与代码一致：
+                校验 WARN/ERROR **不再自动补跑** tdx2db（增量语义下必为空跑），
+                只记录 + 告警 + 人工处理；补跑仅保留「更新成功但无数据」一支。
+              */}
+              <div>数据校验：每日 C1-C12，异常记录并告警（不再自动补跑，见 ADR-018）</div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
