@@ -1,6 +1,6 @@
 import { ConfigStore } from '../config/configStore.js';
 import { writeSystemLog } from './logger.js';
-import { calcClosedTradePnLs } from './positionCalculator.js';
+import { calcAllPositions, calcClosedTradePnLs } from './positionCalculator.js';
 import { isTradingDay, resolveLatestQuoteDate } from './marketData.js';
 import type { PluginSignal, PluginSubCategory } from './pluginEngine.js';
 
@@ -13,36 +13,58 @@ import type { PluginSignal, PluginSubCategory } from './pluginEngine.js';
 export const SIGNAL_USER_ID = 1;
 
 /**
- * 解析信号生成的**标的域**（T85b ① / I-19）
+ * 解析信号生成的**标的域**（T85b ① / I-19；2026-11-12 口径修正）
  *
  * PRD M4：「每日收盘后系统自动跑一遍**自选 + 持仓标的**的策略信号」
  * PRD §1.1 痛点：「没有一个工具能在收盘后自动给自己的**自选 + 持仓**标的跑一遍策略信号」
  *
- * 🔴 修复前：`executeAllPlugins()` 传空参 → 所有插件落到 `paramSchema` 的硬编码默认
- *   `symbol:'sh600000'` → 信号只对 **1 只**硬编码标的生效，用户的自选/持仓一只都跑不到。
+ * 🔴 2026-11-12 口径修正（生产事故驱动；偏差登记见 code_implementation_plan_v2.md §13）：
+ *   原口径把「持仓」取自 `user_asset_rel` 的 `rel_type='hold'` **派生关系**，
+ *   而该派生关系只有**手工录入**路径（POST /api/trade → syncHoldRelation）会维护，
+ *   **券商导入路径（brokerConfirm）从不写** ⇒ 生产 `user_asset_rel` 恒为 0 行
+ *   ⇒ 17:02 每日信号生成恒定跳过（"信号域为空"），而用户明明有净持仓。
+ *   ⇒ 改为：**持仓直接由 `user_trade_record` 实时计算**，
+ *     口径 = core `calculateMovingWeightedCost`（与 GET /api/positions、插件持仓快照同源）。
  *
- * 口径：`user_asset_rel` 中 `rel_type IN ('watch','hold')` 的 `asset_code` **并集**，
- * 去重、排除软删（`is_deleted=1`）。`candidate`（候选池）**不算** —— 它不是持仓也不是自选。
+ * 口径：
+ * - 自选：`user_asset_rel` 中 `rel_type='watch'` 且未软删
+ * - 持仓：`user_trade_record` 算出的**净持仓 > 0**（1 次查询 + 内存聚合，与标的数无关）
+ * - 现金类资产（`asset_class='cash'`）不产生任何策略信号（T133 / INV-S4-15）
+ * - `candidate`（候选池）不算 —— 它不是持仓也不是自选
  *
  * @returns 去重后的标的代码数组（升序）；无标的时返回空数组
  */
 export function resolveSignalSymbols(userId: number = SIGNAL_USER_ID): string[] {
   const db = ConfigStore.getInstance().db;
-  const rows = db
+  const watchRows = db
     .prepare(
       `SELECT DISTINCT asset_code FROM user_asset_rel
-       WHERE user_id = ? AND rel_type IN ('watch', 'hold') AND is_deleted = 0
-       ORDER BY asset_code`,
+       WHERE user_id = ? AND rel_type = 'watch' AND is_deleted = 0`,
     )
     .all(userId) as Array<{ asset_code: string }>;
-  const codes = rows.map((r) => r.asset_code).filter((s) => typeof s === 'string' && s.length > 0);
+  const watchCodes = watchRows
+    .map((r) => r.asset_code)
+    .filter((s): s is string => typeof s === 'string' && s.length > 0);
+
+  // 持仓：1 次查询取回该用户全部交易 → 内存按标的分组算 core 口径净持仓
+  //（T60 已消除 N+1；与 /api/positions、插件持仓快照完全同源）
+  const holdingCodes = calcAllPositions(userId)
+    .filter((p) => p.totalQuantity > 0)
+    .map((p) => p.asset_code);
+
+  // 排序用 `<` / `>`（SQLite BINARY collation），不用 localeCompare
+  const codes = Array.from(new Set([...watchCodes, ...holdingCodes])).sort((a, b) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  if (codes.length === 0) return [];
+
   // T133（V3.4）：现金类资产不产生任何策略信号（SDD_v3 §2 / INV-S4-15）
   // 无 asset_class 记录的标的默认 risk（安全侧），不静默排除
   const cashSet = new Set(
     (
       db
         .prepare(
-          `SELECT symbol FROM asset_class WHERE asset_class = 'cash' AND symbol IN (${codes.map(() => '?').join(',') || "''"})`,
+          `SELECT symbol FROM asset_class WHERE asset_class = 'cash' AND symbol IN (${codes.map(() => '?').join(',')})`,
         )
         .all(...codes) as Array<{ symbol: string }>
     ).map((r) => r.symbol),

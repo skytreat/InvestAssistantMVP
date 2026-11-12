@@ -1555,7 +1555,7 @@ sequenceDiagram
     end
 
     Note over Fastify,FastifyCron: 17:02 触发信号生成
-    FastifyCron->>SQLite: SELECT 用户自选与持仓并集
+    FastifyCron->>SQLite: SELECT 自选关联 + 按交易流水算出的净持仓并集
     FastifyCron->>DuckDB: 批量加载前复权日线 IN 查询
     FastifyCron->>PluginEngine: execute monitor plugins
     loop 每个插件
