@@ -57,23 +57,29 @@ async function waitForQuoteUpdateWindow(onWait?: () => void): Promise<{ ready: b
 }
 
 /**
- * G3a — WARN/ERROR 自动补跑 + 重新校验（PRD D3 自愈闭环 + SDD §5.1 Step 3）
+ * 17:01 C1-C12 校验（**不再在 WARN/ERROR 后自动补跑**，见 ADR-018）
  *
- * 判定口径（SDD §7.2 三层防线 + Requirements §6 C1-C10 处置列）：
- *   - C11/C12 外部源不可用 → 只标 SKIP，不触发补跑（补跑行情解决不了）
- *   - C1-C10 任一 ERROR → 立即补跑（数据源大概率没落全）
- *   - C1-C10 任一 WARN  → 补跑后再校验；二次仍 WARN/ERROR 才升级为 ERROR 告警
+ * ⚠️ 为什么不补跑：`runScheduledDatacheck()` 保证进入本函数时
+ * `hasQuoteDataOn(date)=true`，而 tdx2db `cron` 是**按日期增量**（当日已入库即跳过）
+ * ⇒ 此时再跑一次必然空跑。历史 G3a 的「WARN/ERROR → 补跑」因此是结构性空操作，
+ * 还会让 17:02/17:03/17:04 等后续 cron 段白等十几分钟写窗口。
  *
- * 补跑通道不可用时返回 SKIP，不抛错、不阻塞后续 cron 段。
+ * 唯一有效的补跑保留在 `runScheduledDatacheck()`：tdx2db 报成功但当天仍无数据。
+ *
+ * 本函数只负责：跑校验 → 记录 C1-C10 的 WARN/ERROR → 返回结果。
+ * C11/C12 是外部源，其 SKIP/WARN 不影响内部判定。
  */
-export async function runDatacheckWithRerun(date: string): Promise<{
+export interface DatacheckWithRerunResult {
   summaries: Awaited<ReturnType<typeof runAllChecks>>;
   reran: boolean;
   rerunOk: boolean;
-}> {
+  /** 内部检查存在 WARN/ERROR 时固定为 'noop-by-design'（tdx2db 增量语义下补跑无效） */
+  rerunSkippedReason?: 'noop-by-design';
+}
+
+export async function runDatacheckWithRerun(date: string): Promise<DatacheckWithRerunResult> {
   const summaries = await runAllChecks(date);
 
-  // 内部一致性校验（C1-C10）才触发补跑；C11/C12 是外部源，SKIP 不算
   const internal = summaries.filter((s) => s.checkId !== 'C11' && s.checkId !== 'C12');
   const errorItems = internal.filter((s) => s.result === 'ERROR');
   const warnItems = internal.filter((s) => s.result === 'WARN');
@@ -87,36 +93,15 @@ export async function runDatacheckWithRerun(date: string): Promise<{
       ? `C1-C10 ERROR×${errorItems.length}（${errorItems.map((s) => s.checkId).join(',')}）`
       : `C1-C10 WARN×${warnItems.length}（${warnItems.map((s) => s.checkId).join(',')}）`;
 
-  const rerun = await rerunQuoteUpdate(reason);
-  if (rerun.status !== 'SUCCESS') {
-    writeSystemLog({
-      logType: 'datacheck',
-      level: errorItems.length > 0 ? 'ERROR' : 'WARN',
-      message: `补跑未成功，保留首轮校验结果（${reason}）`,
-      detail: `rerun=${rerun.status} method=${rerun.method} msg=${rerun.message}`,
-    });
-    return { summaries, reran: rerun.status !== 'SKIP', rerunOk: false };
-  }
-
-  // 补跑成功 → 重新校验，把最新结果作为终态
-  const after = await runAllChecks(date);
-  const afterInternal = after.filter((s) => s.checkId !== 'C11' && s.checkId !== 'C12');
-  const afterErrors = afterInternal.filter((s) => s.result === 'ERROR');
-  const afterWarns = afterInternal.filter((s) => s.result === 'WARN');
-
+  // ADR-018：不调用 rerunQuoteUpdate —— 当日数据已存在，tdx2db 增量语义下必为空跑。
   writeSystemLog({
     logType: 'datacheck',
-    level: afterErrors.length > 0 ? 'ERROR' : afterWarns.length > 0 ? 'WARN' : 'SUCCESS',
-    message: `补跑后重新校验: ERROR=${afterErrors.length} WARN=${afterWarns.length}（首轮 ${reason}）`,
-    detail:
-      afterErrors.length > 0
-        ? `二次仍 ERROR: ${afterErrors.map((s) => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
-        : afterWarns.length > 0
-          ? `二次仍 WARN: ${afterWarns.map((s) => `${s.checkId}/${s.detail ?? '无详情'}`).join('; ')}`
-          : '补跑自愈成功',
+    level: errorItems.length > 0 ? 'ERROR' : 'WARN',
+    message: `校验未通过，按 tdx2db 增量语义跳过补跑：${reason}`,
+    detail: 'rerun=skipped(noop-by-design)',
   });
 
-  return { summaries: after, reran: true, rerunOk: true };
+  return { summaries, reran: false, rerunOk: true, rerunSkippedReason: 'noop-by-design' };
 }
 
 export interface ScheduledDatacheckResult {
@@ -126,6 +111,8 @@ export interface ScheduledDatacheckResult {
   summaries?: Awaited<ReturnType<typeof runAllChecks>>;
   reran?: boolean;
   rerunOk?: boolean;
+  rerunSkippedReason?: 'noop-by-design';
+  rerunEffective?: boolean | null;
 }
 
 /**
@@ -200,6 +187,7 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
   }
 
   let hasData = await hasQuoteDataOn(date);
+  let rerunEffective: boolean | null | undefined;
   if (!hasData && update.state !== 'SUCCESS') {
     writeSystemLog({
       logType: 'datacheck',
@@ -222,20 +210,29 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
       message: `行情更新状态为成功，但 ${date} 仍无行情数据，触发补跑`,
       detail: update.message,
     });
-    const rerun = await rerunQuoteUpdate(`行情更新成功但 ${date} 无数据`);
+    const rerun = await rerunQuoteUpdate(`行情更新成功但 ${date} 无数据`, { date });
+    const rerunDetail = `rerun=${rerun.status} method=${rerun.method} msg=${rerun.message} effective=${rerun.effective ?? 'unknown'}`;
+    rerunEffective = rerun.effective ?? null;
     if (rerun.status !== 'SUCCESS') {
       writeSystemLog({
         logType: 'datacheck',
         level: 'ERROR',
         message: `行情更新成功但无数据，补跑失败，跳过 ${date} 的 C1-C12 校验`,
-        detail: `rerun=${rerun.status} method=${rerun.method} msg=${rerun.message}`,
+        detail: rerunDetail,
       });
       await notifyQuoteChainFailure(date, '补跑失败', [
         `更新状态：${update.state}，${date} 仍无行情数据`,
         `补跑：${rerun.status}/${rerun.method}`,
         `详情：${rerun.message}`,
       ]);
-      return { date, action: 'NO_DATA_AFTER_RERUN', updateState: update.state, reran: true, rerunOk: false };
+      return {
+        date,
+        action: 'NO_DATA_AFTER_RERUN',
+        updateState: update.state,
+        reran: true,
+        rerunOk: false,
+        rerunEffective: rerun.effective ?? null,
+      };
     }
     hasData = await hasQuoteDataOn(date);
     if (!hasData) {
@@ -243,23 +240,38 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
         logType: 'datacheck',
         level: 'ERROR',
         message: `补跑后 ${date} 仍无行情数据，跳过 C1-C12 校验`,
-        detail: update.message,
+        detail: rerunDetail,
       });
       await notifyQuoteChainFailure(date, '补跑后仍无数据', [
         `更新状态：${update.state}，补跑后 ${date} 仍无行情数据`,
+        `补跑是否改动数据：${rerun.effective === null ? '未采集' : rerun.effective ? '是' : '否（空跑）'}`,
         '已跳过 C1-C12 校验',
       ]);
-      return { date, action: 'NO_DATA_AFTER_RERUN', updateState: update.state, reran: true, rerunOk: true };
+      return {
+        date,
+        action: 'NO_DATA_AFTER_RERUN',
+        updateState: update.state,
+        reran: true,
+        rerunOk: true,
+        rerunEffective: rerun.effective ?? null,
+      };
     }
   }
 
-  const { summaries, reran, rerunOk } = await runDatacheckWithRerun(date);
+  const { summaries, reran, rerunOk, rerunSkippedReason } = await runDatacheckWithRerun(date);
   const errors = summaries.filter((s) => s.result === 'ERROR').length;
   const warns = summaries.filter((s) => s.result === 'WARN').length;
+  const rerunText = reran
+    ? rerunOk
+      ? '成功'
+      : '失败'
+    : rerunSkippedReason
+      ? '跳过（增量语义）'
+      : '无需补跑';
   writeSystemLog({
     logType: 'datacheck',
     level: errors > 0 ? 'ERROR' : warns > 0 ? 'WARN' : 'SUCCESS',
-    message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
+    message: `C1-C12 校验完成: ERROR=${errors} WARN=${warns} TOTAL=${summaries.length} 补跑=${rerunText}`,
   });
 
   if (errors > 0 || update.state === 'FAIL' || update.state === 'NOT_RUN') {
@@ -268,11 +280,20 @@ export async function runScheduledDatacheck(): Promise<ScheduledDatacheckResult>
       `更新状态：${update.state}`,
       ...(errors > 0 ? [`C1-C12：ERROR=${errors} WARN=${warns}`] : []),
       ...(errorChecks.length > 0 ? [`ERROR 项：${errorChecks.join(', ')}`] : []),
-      `补跑：${reran ? (rerunOk ? '成功' : '失败') : '未触发'}`,
+      `补跑：${rerunText}`,
     ]);
   }
 
-  return { date, action: 'CHECKED', updateState: update.state, summaries, reran, rerunOk };
+  return {
+    date,
+    action: 'CHECKED',
+    updateState: update.state,
+    summaries,
+    reran,
+    rerunOk,
+    rerunSkippedReason,
+    rerunEffective,
+  };
 }
 
 /**
