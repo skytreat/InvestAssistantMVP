@@ -1568,12 +1568,15 @@ describe('一键全部补录（非成交族）', () => {
     expect(screen.getByTestId('one-click-dialog')).toHaveTextContent('一键补录：501 笔');
     await user.click(screen.getByRole('button', { name: /确认补录（501 笔）/ }));
 
-    await waitFor(() => {
-      const calls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-reconcile/confirm');
-      expect(calls).toHaveLength(2);
-      expect((calls[0][1] as { items: unknown[] }).items).toHaveLength(500);
-      expect((calls[1][1] as { items: unknown[] }).items).toHaveLength(1);
-    }, 30_000);
+    await waitFor(
+      () => {
+        const calls = postMock.mock.calls.filter((c) => String(c[0]) === '/broker-reconcile/confirm');
+        expect(calls).toHaveLength(2);
+        expect((calls[0][1] as { items: unknown[] }).items).toHaveLength(500);
+        expect((calls[1][1] as { items: unknown[] }).items).toHaveLength(1);
+      },
+      { timeout: 30_000 },
+    );
   }, 30_000);
 
   it('部分失败：第 2 批报错仍保留成功结果，并给出批次原因', async () => {
