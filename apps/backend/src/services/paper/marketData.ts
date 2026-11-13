@@ -33,6 +33,7 @@ import {
 import {
   dualMomentumLookback,
   resolveDualMomentumParams,
+  DUALMOMENTUM_DEFAULTS,
 } from '../backtest/strategies/dualmomentum/params.js';
 import { DEFAULT_DYNAMIC_TOP_N, DEFAULT_LIQUIDITY_DIVISOR } from '../backtest/universe/pointInTime.js';
 import type { Bar } from '../backtest/types.js';
@@ -113,7 +114,13 @@ export function strategyWarmup(strategyId: string, params: Readonly<Record<strin
  * 必须显式补上，否则该标的永远没有 bar（L1 会判 `POOL_ABSENT`）。
  */
 export function paperStrategySymbols(strategyId: string): readonly string[] {
-  return strategyId === 'dualmomentum' ? DM_POOL_ORDER : [];
+  if (strategyId !== 'dualmomentum') return [];
+  // 🔴 **防御回退标的必须一起装载**（ADR-024）：`benchmarkBreakoutThreshold=-0.5` 触发时
+  //   `decide()` 会把防御标的设为**排他目标**，若该标的无 bar ⇒ 目标指向不存在的行情
+  //   ⇒ 纸面决策产出坏订单/抛错。
+  //   （同 §13.17.4 / §13.18 的装载层缺陷同源：会下单的标的必须进装载清单。）
+  const defensive = DUALMOMENTUM_DEFAULTS.defensiveSymbol.trim();
+  return defensive === '' ? DM_POOL_ORDER : [...DM_POOL_ORDER, defensive];
 }
 
 /** 策略需要的**指数**轨（`v_etf_*` 不含指数，必须走 `raw_kline_daily` 的 index 行） */
@@ -130,6 +137,11 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
 
   const mode = universeModeForStrategy(input.strategyId);
   const userSymbol = typeof input.params.symbol === 'string' ? input.params.symbol : null;
+  // 🔴 建户参数里显式指定的防御标的也要装载（ADR-024 破位切防御会把它设为排他目标）
+  const paramDefensive =
+    typeof input.params.defensiveSymbol === 'string' && input.params.defensiveSymbol.trim() !== ''
+      ? input.params.defensiveSymbol.trim()
+      : null;
   const extraSymbols = [
     ...new Set([
       ...FIXED_ETF_POOL,
@@ -137,6 +149,7 @@ export async function buildPaperMarketData(input: BuildPaperMarketDataInput): Pr
       DEFENSIVE_ETF,
       input.benchmark,
       ...paperStrategySymbols(input.strategyId),
+      ...(paramDefensive ? [paramDefensive] : []),
       ...(userSymbol ? [userSymbol] : []),
       ...(input.heldSymbols ?? []),
       ...(input.extraSymbols ?? []),

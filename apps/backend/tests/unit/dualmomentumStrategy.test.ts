@@ -53,7 +53,7 @@ import {
 import { runPaperDecision, type PaperDecisionDeps } from '../../src/services/paper/decision.js';
 
 const STRATEGY_ID = 'dualmomentum';
-const STRATEGY_VERSION = 'das-3.1';
+const STRATEGY_VERSION = 'das-3.2';
 
 /** 90 个连续工作日（足够 60 根预热 + 决策日） */
 const DAYS: string[] = (() => {
@@ -109,6 +109,9 @@ function snapshot(asOf: string): UniverseSnapshot {
 
 const SIGNAL_BARS = new Map<string, Bar[]>(POOL_ORDER.map((s) => [s, barsOf(POOL_CLOSES.get(s)!)]));
 const INDEX_BARS = new Map<string, Bar[]>([[BENCHMARK_SYMBOL, barsOf(risingCloses(3000, 0.002))]]);
+
+/** 基准（指数）下跌轨 —— 供「基准破位切防御」用例构造触发条件 */
+const FALLING_INDEX_BARS = new Map<string, Bar[]>([[BENCHMARK_SYMBOL, barsOf(risingCloses(3000, -0.004))]]);
 
 const lastDay = DAYS[DAYS.length - 1];
 
@@ -502,6 +505,42 @@ describe('decide() 契约', () => {
     expect(res!.targets.every((t) => t.symbol === 'sh511260')).toBe(true);
   });
 
+  it('基准破位切防御（§13.17 / ADR-024）：基准趋势向下 ⇒ 切防御（与「无候选」路径可区分）', () => {
+    // 基准（指数）用下跌轨 ⇒ 基准主槽动量为负 ⇒ 破位阈值 -0.5 触发
+    // ⚠️ 池内标的仍是上涨合成数据 ⇒ **有候选** ⇒ 可与「无候选 → 防御回退」路径区分开
+    const strategy = createDualMomentumStrategy();
+    const params = {
+      ...strategy.defaultParams,
+      ...DECIDE_PARAMS,
+      defensiveSymbol: 'sh511260',
+      benchmarkBreakoutThreshold: -0.5,
+      benchmarkBreakoutHysteresis: 0.3,
+    };
+    strategy.init?.({ params });
+
+    const ctx = makeContext({
+      asOf: lastDay,
+      execDate: '2026-10-05',
+      dayIndex: DAYS.length - 1,
+      params,
+      signalBars: SIGNAL_BARS,
+      indexBars: FALLING_INDEX_BARS,
+      universeView: universeViewOf(snapshot(lastDay)),
+      portfolio: new Portfolio(1_000_000),
+      pricesAtAsOf: new Map(POOL_ORDER.map((s) => [s, POOL_CLOSES.get(s)!.at(-1)!])),
+      suspension: { missingBar: true, zeroVolume: true },
+      tags: {},
+      logs: [],
+    });
+    const res = strategy.decide(ctx);
+    expect(res).not.toBeNull();
+    // 破位触发 ⇒ 防御标的成为排他目标（池内标的即使有候选也不买）
+    const defensiveTarget = res!.targets.find((t) => t.symbol === 'sh511260');
+    expect(defensiveTarget).toBeDefined();
+    expect(defensiveTarget!.reason).toBe('defensive-fallback');
+    expect(res!.targets.every((t) => t.symbol === 'sh511260')).toBe(true);
+  });
+
   it('基准破位切防御（§13.17 / ADR-024）：缺省已按 ADR-024 采纳为 th=-0.5 + 债券防御', () => {
     const strategy = createDualMomentumStrategy();
     const params = { ...strategy.defaultParams, ...DECIDE_PARAMS };
@@ -614,9 +653,11 @@ describe('纸面绑定链路', () => {
     ).toThrow(/必须是整数/);
   });
 
-  it('装载层：池内 7 只（含 sh513000）、指数轨 sh000300、预热 60', () => {
-    expect(paperStrategySymbols(STRATEGY_ID)).toEqual(POOL_ORDER);
+  it('装载层：池内 7 只（含 sh513000）+ 防御标的 + 指数轨 sh000300、预热 60', () => {
+    // ADR-024：防御回退标的（缺省 sh511260）必须一起装载 —— 破位触发时它会被设为排他目标
+    expect(paperStrategySymbols(STRATEGY_ID)).toEqual([...POOL_ORDER, 'sh511260']);
     expect(paperStrategySymbols(STRATEGY_ID)).toContain('sh513000');
+    expect(paperStrategySymbols(STRATEGY_ID)).toContain('sh511260');
     expect(paperStrategyIndexCodes(STRATEGY_ID)).toEqual([BENCHMARK_SYMBOL]);
 
     expect(strategyWarmup(STRATEGY_ID, {})).toBe(60);

@@ -239,7 +239,7 @@ D1 是为「未来出现非 `O=H=L=C` 形态的占位 bar」预留的正确性�
 
 | 位置 | 状态 |
 |---|---|
-| `apps/backend/src/services/backtest/strategies/dualmomentum/index.ts` | `Strategy` 适配器：`id=dualmomentum`、`version=das-3.1`、`priceMode=open`、`warmupDays=60` |
+| `apps/backend/src/services/backtest/strategies/dualmomentum/index.ts` | `Strategy` 适配器：`id=dualmomentum`、`version=das-3.2`（2026-11-13 因 ADR-022/024 语义变更升版）、`priceMode=open`、`warmupDays=60` |
 | `apps/backend/src/services/backtest/strategies/dualmomentum/params.ts` | 参数 schema；默认值**引用** `l1/params.ts` 锁定常量，不另抄 |
 | `apps/backend/src/services/backtest/cli.ts` | 回测入口注册；fixed 模式装载池内 7 只 + `sh000300` 指数轨 |
 | `apps/backend/src/services/paper/strategies.ts` | 纸面白名单注册（方案 D 降级，见 §9） |
@@ -273,6 +273,23 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 | 止损 / 止盈冷却（3 / 5 交易日） | **永不生效** | 回放不调用 `onFill` → 冷却表恒为空 |
 
 纸面仍可用的部分：成本止损（只读 `costBasis`）、超配减仓（只读持仓市值）、池内选股与权重分配。
+
+**✅ 例外（ADR-024，2026-11-13 补测）**：「**基准破位切防御**」**在纸面里能真实工作**——
+它只依赖①每日行情算出的基准动量（`benchmarkPrimary`）与②`decide()` 内逐日维护的状态位
+（`state.inBenchmarkBreakout` + 迟滞），**都不依赖成交事件累积** ⇒ 不受「回放期无成交 / 不调 `onFill`」限制。
+实测（真库 + 纸面装载链路，asOf=2026-10-22）：
+
+| 配置 | `decide()` 产出 |
+|---|---|
+| 破位开（ADR-024 缺省） | `[{"s":"sh511260","r":"defensive-fallback"}]` |
+| 破位关（`threshold=0` + `defensiveSymbol=''`） | `[{"s":"sh513100","r":"candidate-top"},{"s":"sh513500","r":"candidate-top"}]` |
+
+⇒ 破位切防御是**纸面里唯一能真实工作的 L2 退出规则**；其余四条仍如上表「永不触发」。
+
+**🔧 纸面装载层修复（同源缺陷）**：`paper/marketData.ts` 的 `paperStrategySymbols('dualmomentum')`
+原只返回 7 只池，**不含防御标的** ⇒ 破位触发时会产出**指向无行情标的**的目标。
+已改为 `[...POOL_ORDER, DUALMOMENTUM_DEFAULTS.defensiveSymbol]`，并额外装载建户参数里显式指定的
+`defensiveSymbol` ⇒ 实测 `sh511260` 装载到 114 根 bar。
 
 `paper_position` 现有列（`avg_cost` / `cost_basis` / `last_buy_date`）**不足以重建**上述状态：
 没有首次建仓日、没有高水位、没有冷却计数。

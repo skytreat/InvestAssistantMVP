@@ -244,7 +244,7 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
 
   return defineStrategy({
     id: 'dualmomentum',
-    version: 'das-3.1',
+    version: 'das-3.2',
     name: '双动量轮动（DAS-3.1）',
     paramSchema: DUALMOMENTUM_PARAM_SCHEMA,
     // 默认参数下 DAS 的指标预热是 60 根；参数放大时同步放大
