@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | ✅ **已接受（路线裁决）**（2026-11-13，owner 签字）；**实施待排期** |
+| **状态** | ✅ **已接受并实施**（2026-11-13 owner 签字 + 实施合入 `main`，commit `dbea4a3` / PR #179；E2E 验证 PR #180）；**任务号 T156（V3.12）** |
 | **落地（待派）** | `paper/decision.ts`（回放喂 `onFill`）+ `paper/settle.ts`（落 `exit_reason`）+ `store/paperSchema.ts`（加列 + 索引） |
 | **关联文档** | `docs/audit/dualmomentum-l1-alignment.md` §9（不保真清单）、§10（方案 A 立项）、**§10.4（实施评估）**、§11.4（F-3 根因） |
 | **取代** | 不取代任何 ADR。**解除** §9.3 的禁令「纸面结果不得与回测互相校验」 |
@@ -136,5 +136,6 @@
 | owner（是否采纳 A1 路线、是否解除 §9.3 禁令） | ✅ **采纳 A1**（2026-11-13） | 2026-11-13 |
 | 实施 agent（ADR 起草 + 待派实施） | ADR-025 已归档，实施待排期 | 2026-11-13 |
 
-> ⚠️ **实施排期约束**：正式任务号待 `docs/client/code_implementation_plan_v3.md` 的并行分支合并后再补
-> （该文件当前有其它分支在改，**不得触碰**）。
+> ✅ **任务号已补：T156（V3.12）**（`docs/client/code_implementation_plan_v3.md` 任务表 + 阶段卡 + 版本历史，2026-11-13）。
+> **遗留待办**：冷却 L1 过滤在 research 档（soft/scored 缺省）路径被绕过（`index.ts:375-394` 不判 cooling），
+> T156 只恢复「建仓日/止盈」L2 路径；冷却 L1 生效需另立项（research 档 L1 补 cooling 判定）。
