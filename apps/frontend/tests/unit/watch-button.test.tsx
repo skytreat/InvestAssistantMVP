@@ -98,4 +98,18 @@ describe('WatchButton + useWatchStore', () => {
     await waitFor(() => expect(useWatchStore.getState().codes).toContain('sh600519'));
     expect(useWatchStore.getState().message).toContain('已在自选');
   });
+
+  it('5xx / 网络失败：只提示、**不改**本地 codes（避免「本地以为加了、服务端其实没有」的幻读）', async () => {
+    const user = userEvent.setup();
+    resetStore([]);
+    postMock.mockRejectedValue({ response: { status: 500 }, message: '服务异常' });
+    render(<WatchButton assetCode="sh600519" />);
+
+    await user.click(screen.getByTestId('watch-toggle'));
+    await waitFor(() => expect(useWatchStore.getState().pendingCode).toBeNull());
+    // 失败 ⇒ 本地 codes 仍为空（按钮还是「加自选」，没被误判成已自选）
+    expect(useWatchStore.getState().codes).not.toContain('sh600519');
+    expect(useWatchStore.getState().message).toContain('加入自选失败');
+    expect(screen.getByTestId('watch-toggle')).toHaveAttribute('aria-pressed', 'false');
+  });
 });

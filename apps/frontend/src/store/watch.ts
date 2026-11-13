@@ -83,21 +83,24 @@ export const useWatchStore = create<WatchState>()((set, get) => ({
     try {
       const res = await api.post('/watch', { asset_code: code });
       if (isOkEnvelope(res.data)) {
+        // 服务端确认加入成功 ⇒ 同步本地状态
         set((s) => ({ pendingCode: null, message: '已加入自选', codes: sortedUnion(s.codes, target) }));
       } else {
-        set((s) => ({
-          pendingCode: null,
-          message: String(res.data?.message ?? '加入自选失败'),
-          codes: s.codes.includes(target) ? s.codes : sortedUnion(s.codes, target),
-        }));
+        // 服务端明确拒绝（非 0 错误码）⇒ **不改本地 codes**（否则「已在自选」是幻读，刷新后对不上）
+        set({ pendingCode: null, message: String(res.data?.message ?? '加入自选失败') });
       }
     } catch (err) {
-      // 409 DUPLICATE（已在自选）⇒ 视为成功并同步本地状态；其余错误提示
-      set((s) => ({
-        pendingCode: null,
-        message: isDuplicateWatchError(err) ? `${code} 已在自选` : extractErrorMessage(err, '加入自选失败'),
-        codes: sortedUnion(s.codes, target),
-      }));
+      // 只有 409「已在自选」才视为该标的确实已在列表里（同步本地）；
+      // 其余错误（500 / 网络等）**不改本地 codes**，只提示 —— 避免本地以为加了、服务端其实没有。
+      if (isDuplicateWatchError(err)) {
+        set((s) => ({
+          pendingCode: null,
+          message: `${code} 已在自选`,
+          codes: s.codes.includes(target) ? s.codes : sortedUnion(s.codes, target),
+        }));
+      } else {
+        set({ pendingCode: null, message: extractErrorMessage(err, '加入自选失败') });
+      }
     }
   },
 
