@@ -39,6 +39,7 @@
 | [ADR-025](ADR-025-paper-fill-replay-fidelity.md) | 纸面回放补全成交回报（`onFill` 历史回放）—— 解除「纸面不得与回测互校」禁令；采纳 A1 路线（`paper_order` 加 `exit_reason` + 结算落库 + 决策回放喂 `onFill`） | 2026-11-13 owner 签字（§10.4 实施评估） | **待排期**（plan_v3 并行分支合并后补任务号）：`paper/decision.ts` / `paper/settle.ts` / `store/paperSchema.ts` |
 | [ADR-022](ADR-022-dualmomentum-win-baseline.md) | DualMomentum 跑赢档成为正式基线（目标函数 = 跑赢 `sh510300`；7 项 opt-in 参数转缺省 + 重跑基线） | 2026-11-12 owner 签字（§13.10 纪律底线） | 本次落地：`strategies/dualmomentum/params.ts`（`DUALMOMENTUM_DEFAULTS`）+ 新锚点 `final=2363029.30 / trades=4657` |
 | [ADR-026](ADR-026-asset-class-incremental-classification.md) | asset_class 增量初判（新标的补齐 + 7 天冷却期改判 + 手工录入触发；生产默认 `execute` 回填） | 2026-11-13 owner 拍板「一次改好」→ §13.2 I-41 | `assetClass.ts` / `assetClassSync.ts` / `routes/trade.ts` / `cli/assetClassSync.ts` / `deploy/invest-assistant.service` + 回填步骤（`docs/deploy.md`） |
+| [ADR-025](ADR-025-signal-group-tabs.md) | 信号页「持仓组/自选组」两 Tab + 组内轻量聚合 + 组合优先综合结论（不合成单条件）；已清仓历史信号两 Tab 不显（I-42 遗留） | 2026-11-13 owner 冻结口径（Requirements V3 §4.5 / PRD_v3 §4.2 / SDD_v3 §10.4.4 / T154+T155） | T154（本 PR）：`routes/signal.ts` scope 参数 + 前端两 Tab；T155 单独立项 |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 
