@@ -405,6 +405,10 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 
 1. **对其它策略零影响** —— wufu / combo / buy-and-hold **都没有 `onFill`**（grep 实测）⇒
    喂进去也没人接，不改它们的行为，**不需要「兼容审计」**（§10.3 第 3 条的担忧消解）。
+   ⚠️ 注意口径：**wufu 并非无状态**（`weak` 走弱 latch / `lastPool` / `startDayIndex`），
+   但它的状态**在 `decide()` 内部从行情自维护**，而纸面回放是**逐日调 `decide()`** 的
+   （`decision.ts:337-366`，`replayStart` = 落账起点）⇒ 能被完整重建，不依赖 `onFill`。
+   「零影响」的成立理由是**「没有 `onFill` 回调」**，不是「无状态」。详见 §11.5。
 2. **历史序列连续无断层** —— shadow→ledger 切换时 `cash = initial_cash` + `DELETE FROM paper_position`
    + `last_settled_date = NULL`（`accountService.ts:311-323`）⇒ 影子期历史决策**不影响**落账期。
 3. **性能可接受** —— 跑赢档年换手 24.4 ⇒ 8 年约 400~800 笔成交，每次决策重放 800 条 `onFill` 是毫秒级；
@@ -427,7 +431,7 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 
 ## 11. 框架级待修项（2026-11-09 回测实测发现，不影响寻优）
 
-> 两条都不是 DualMomentum 的问题，而是 `apps/backend/src/services/backtest/` 的**框架公共路径**问题，
+> 三条都不是 DualMomentum 的问题，而是 `apps/backend/src/services/backtest/` 的**框架公共路径**问题，
 > 影响所有策略的回测统计口径。**只登记，本次不改代码**（寻优只做分析，不动语义）。
 
 ### 11.1 F-1：`bt_round_trip` 按「每笔卖出」计数，胜率名不符实
@@ -453,18 +457,44 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 - **影响面**：所有策略的**成交笔数、费用明细、单笔收益率分布**；
   对权益曲线影响极小（本轮 8 年累计费用 17,454 元 ≈ 本金的 1.7%，其中零股部分仅数十元）。
 
-### 11.3 为什么这两条不阻塞参数寻优
+### 11.3 为什么这三条不阻塞参数寻优
 
 1. 本次寻优的目标函数是 **CAGR / Calmar / 最大回撤 / 对 `sh510300` 前复权的超额**，
    四个都由**权益曲线**（`bt_equity`）与基准序列算出，**不经过** `bt_round_trip`；
 2. F-2 的费用在成交时已计入现金，权益曲线是「真实发生」的；
    零股只让**单笔收益率**失真，不改变累计净值；
 3. 唯一会受污染的是「胜率 / 回合数」，本次**不作为目标、也不作为择优依据**；
-4. 若后续要修，**必须重跑基线**（数字会变），故与寻优分开、另开任务。
+4. **F-3 与指标无关** —— 它是**接口暴露缺口**（`PositionView` 少一个字段），不改变任何计算结果；
+   DualMomentum 用 `onFill` 记的建仓日与引擎 `Portfolio` 维护的是**同一份事实**（两处各记一份），
+   ⇒ 不影响寻优，只影响「新策略是否被迫写 `onFill`」；
+5. F-1 / F-2 若后续要修，**必须重跑基线**（数字会变），故与寻优分开、另开任务。
 
-### 11.4 登记去向
+### 11.4 F-3：`PositionView` 不暴露 `openDate`，强制有状态策略只能用 `onFill`
 
-两条均为框架级缺陷，正式编号待 `docs/client/code_implementation_plan_v3.md` 的并行分支合并后再补
+- **位置**：`strategy/types.ts:26-36` —— `PositionView` 只有
+  `qty / avgCost / costBasis / closeableQty / marketValue`，**没有 `openDate`**。
+- **实测**：`openDate` 在 `types.ts` 全文只出现 1 次，位于 `RoundTripNotice`（`:133`），
+  且**只对已平仓的回合有效** ⇒ 策略在 `decide()` 里对**未平仓**持仓无法得知建仓日。
+- **但引擎内部有这份数据**：`account/portfolio.ts:79` 的 `openDateBySymbol`，
+  由 `applyFill` 维护（`:206` 建仓写入、`:229` 清仓删除）—— **只是没往策略接口暴露**。
+- **后果**：任何需要「建仓日 / 持有期 / 建仓价」的规则**只能**靠 `onFill` 自行记账。
+  DualMomentum 的 `entryDate` / `entryFillPrice` / `highWater` / `cooldown` 全部如此
+  （`dualmomentum/index.ts:265-285`）。**这也是 §9 纸面失真的根因之一。**
+- **为什么不能「给 `PositionView` 加个 `openDate`」就完事**：
+  `Portfolio.restore()`（`account/portfolio.ts:92-98`）从检查点恢复时把每个持仓压成
+  **一笔合成 `buy`（`price = avgCost`）**，`openDate` 会变成**恢复日**而不是真实建仓日
+  （源码注释已警告「回合报告必须走全量回放」）。
+  ⇒ 在纸面检查点恢复路径上 `openDate` **本身就是错的**，只有 `onFill` 回放完整成交序列
+  才能重建真实建仓日 —— 这条**强化了 §10 A1 的必要性**。
+- **影响面**：所有需要持仓生命周期状态的策略；以及纸面保真（§9 / §10）。
+- **修法选项**：
+  1. 给 `PositionView` 加 `openDate`（数据已在 `Portfolio`，**回测路径可行**；但**解决不了纸面**，见上）；
+  2. 把「需要建仓日的策略必须实现 `onFill`」写成契约并落 SDD；
+  3. 与 §10 A1 合并处理（回放时喂 `onFill`）。
+
+### 11.5 登记去向
+
+三条均为框架级缺陷，正式编号待 `docs/client/code_implementation_plan_v3.md` 的并行分支合并后再补
 （当前该文件有其它分支在改，**不得触碰**）。
 
 ---
