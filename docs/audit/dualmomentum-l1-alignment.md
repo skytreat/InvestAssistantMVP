@@ -248,6 +248,42 @@ D1 是为「未来出现非 `O=H=L=C` 形态的占位 bar」预留的正确性�
 DAS §4.3「停牌当日订单失效、不顺延」由执行层 `simulator` 的 `suspended` 分支实现，
 适配器不需要额外表达。
 
+### 8.1 纸面启动 checklist（2026-11-13）
+
+> 状态：**技术前置已就绪**（PR #174）⇒ 可以启动。以下为启动方需要知道的口径与步骤。
+
+#### 启动步骤
+
+1. **建户**：纸面账户页新建，策略选 `DualMomentum`，**版本必须是 `das-3.2`**（ADR-022/024 两次语义变更后升版）；
+   初始资金自定；基准资产 `sh510300`（账户层超额口径，见 §9.4）。
+2. **参数**：**不填即用 ADR-024 基线**（跑赢档 + vol(0.12) + 基准破位切防御 th=−0.5 + 十年国债 `sh511260`）。
+   建户时缺省值会被**冻结进 `paper_account.params_json`** ⇒ 之后上游改缺省值**不影响已有账户**（符合 D4 的可复现要求）。
+   实测冻结内容（节选）：`defensiveSymbol:"sh511260"` / `benchmarkBreakoutThreshold:-0.5` /
+   `benchmarkBreakoutHysteresis:0.3` / `exposureMode:"vol"` / `targetVol:0.12` /
+   `wsmMaxResearch:100` / `rsrsMaxResearch:100` / `scoreMode:"scored"` /
+   `benchmarkGateMode:"soft"` / `minHoldDays:20` / `cashInterestRate:0.02`。
+3. **自动日更**：17:04 cron（`4 17 * * 1-5`，`CRON_TIMEZONE`）→ `runPaperDailyStage`：
+   **落账期先结算 T，再决策 T→T+1**；影子期只有决策。
+4. **前置条件**：**当日行情必须已更新**（tdx2db 17:00 段）。否则决策返回
+   `blocked: quotes-not-updated`（实测：行情停在 2026-10-22 而当日 2026-11-13 ⇒ 正确阻塞）。
+
+#### 口径提醒（**纸面 ≠ 回测**）
+
+| 项 | 纸面实际 | 说明 |
+|---|---|---|
+| 止盈 / 再平衡 / 高水位止损 / 止损止盈冷却 | **永不触发** | §9.2 四条；回放期空组合 + 不调 `onFill` ⇒ 状态无法累积 |
+| **基准破位切防御** | ✅ **能真实工作** | §9.2 例外：只依赖每日行情算出的基准动量 + `decide()` 内维护的状态位，**不依赖成交事件** |
+| 成本止损 / 超配减仓 / 池内选股与权重分配 | ✅ 可用 | 只读 `costBasis` / 持仓市值 |
+
+⇒ **纸面结果不得与回测结果互相校验**；回测（`cli.ts backtest` + `optimize`）是 DAS 口径的唯一有效验收入口。
+
+#### 纸面链路的两处前置修复（PR #174）
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | `paperStrategySymbols('dualmomentum')` 原只返回 7 只池，**不含防御标的** | 破位触发 ⇒ 目标指向无行情标的 ⇒ 坏订单/抛错。已修为 `[...POOL_ORDER, DUALMOMENTUM_DEFAULTS.defensiveSymbol]` + 装载建户参数显式指定的 `defensiveSymbol` |
+| 2 | 版本号未随 ADR-022/024 升版 | 违反 D4「不做隐式升级」⇒ 升 `das-3.2`（本地/生产无既有账户，无迁移负担） |
+
 ## 9. 纸面账户已知不保真（方案 D：显式接受，不修公共回放）
 
 ### 9.1 契约冲突
