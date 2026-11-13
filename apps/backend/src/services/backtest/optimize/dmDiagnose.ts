@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadTradingCalendar } from '../calendar.js';
 import { getBars } from '../marketPanel.js';
+import { collectStrategyExtraSymbols } from './marketData.js';
 import { DEFENSIVE_ETF, FIXED_ETF_POOL, GLOBAL_ETF_POOL } from '../universe/fixedPool.js';
 import { WEAK_PERIOD_INDEXES } from '../universe/pointInTime.js';
 import { loadUniverseProvider } from '../universe/provider.js';
@@ -65,10 +66,12 @@ const OUT_DIR = path.resolve('data/dm-diagnose');
 
 /**
  * 基线自证（与 `dmSweep --check-baseline` 同源）。
- * 🔴 锚点随 ADR-022（跑赢档成为正式基线）更新：DAS 锁定基线 `final=1189224.15 / 1780 笔`
- * → 跑赢档基线 `final=2363029.30 / 4657 笔`。改任一默认参数都必须同步改这里。
+ * 🔴 锚点随基线切换更新：
+ *   - ADR-022（跑赢档 + vol(0.12)）：`final=2363029.30 / 4657 笔`
+ *   - ADR-024（+ 基准破位切防御 th=-0.5 + 债券）：`final=2189713.16 / 4680 笔`
+ * 改任一默认参数都必须同步改这里。
  */
-const BASELINE = { finalEquity: 2_363_029.3, trades: 4657 };
+const BASELINE = { finalEquity: 2_189_713.16, trades: 4680 };
 
 type Layer = 'dailyChange' | 'ma' | 'wsmRange' | 'rsrsRange' | 'benchmark';
 type Disabled = ReadonlySet<Layer>;
@@ -114,7 +117,9 @@ async function loadPanel(): Promise<BacktestData> {
       DEFENSIVE_ETF,
       BENCHMARK_SYMBOL,
       ...POOL_ORDER,
-      ...collectExperimentSymbols(),
+      // 🔴 实验里会下单的标的（防御回退 / 池扩展）必须装进面板，
+      //    否则「成交不了」会静默退化成切现金（ADR-024 §6 实测踩坑）
+      ...collectStrategyExtraSymbols(collectExperimentSymbols()),
     ]),
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
@@ -553,7 +558,7 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
   },
   {
     key: 'bt-t3c-win-vol',
-    label: '跑赢档+波动率目标（vol 0.12）',
+    label: 'ADR-022 基线（跑赢档+vol，显式关闭破位切防御）',
     overrides: {
       wsmMaxResearch: 100,
       rsrsMaxResearch: 100,
@@ -564,6 +569,9 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
       exposureMode: 'vol',
       targetVol: 0.12,
       volWindow: 20,
+      // ADR-024 起默认开启破位切防御；此处显式关闭以保留 ADR-022 对照
+      defensiveSymbol: '',
+      benchmarkBreakoutThreshold: 0,
     },
   },
   // ── §13.14 跑赢档 + 追踪止盈（§12.5 第 4 条；opt-in，缺省关闭）──

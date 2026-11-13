@@ -20,6 +20,7 @@ import { WEAK_PERIOD_INDEXES } from '../universe/pointInTime.js';
 import { loadUniverseProvider } from '../universe/provider.js';
 import { loadIndexBars } from '../universe/dynamicPanel.js';
 import { loadCorporateActions } from '../corporateActions.js';
+import { collectStrategyExtraSymbols } from './marketData.js';
 import { runBacktest, type BacktestData, type BacktestResult } from '../engine.js';
 import type { Bar } from '../types.js';
 import { createDualMomentumStrategy } from '../strategies/dualmomentum/index.js';
@@ -172,7 +173,16 @@ async function loadPanel(): Promise<BacktestData> {
   const loadStart = calendar.lastN(START, WARMUP)[0] ?? START;
   const benchmark = BENCHMARK_SYMBOL;
   const extraSymbols = [
-    ...new Set([...FIXED_ETF_POOL, ...GLOBAL_ETF_POOL, DEFENSIVE_ETF, benchmark, ...POOL_ORDER]),
+    ...new Set([
+      ...FIXED_ETF_POOL,
+      ...GLOBAL_ETF_POOL,
+      ...DEFENSIVE_ETF,
+      benchmark,
+      ...POOL_ORDER,
+      // 🔴 策略会下单但不在固定池里的标的（防御回退 / 池扩展）必须装进面板，
+      //    否则「成交不了」会静默退化成切现金（ADR-024 §6 实测踩坑）
+      ...collectStrategyExtraSymbols(),
+    ]),
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
 

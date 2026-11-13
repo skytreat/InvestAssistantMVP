@@ -464,18 +464,18 @@ describe('decide() 契约', () => {
     expect(base).toHaveProperty('symbolWeights', '{}');
   });
 
-  it('池扩展 + 防御回退（§13.16 B1/B2；opt-in）：缺省为空 ⇒ 基线路径不变', () => {
+  it('池扩展 + 防御回退（§13.16 B1/B2）：缺省池扩展为空；防御标的缺省已按 ADR-024 设为债券', () => {
     const strategy = createDualMomentumStrategy();
     const params = { ...strategy.defaultParams, ...DECIDE_PARAMS };
-    // 缺省断言：池扩展为空、防御回退未设置
+    // 池扩展缺省为空（DAS 锁定 7 只池）；防御标的缺省 = ADR-024 采纳的十年国债 ETF
     expect(params.poolExtension).toBe('[]');
-    expect(params.defensiveSymbol).toBe('');
+    expect(params.defensiveSymbol).toBe('sh511260');
     strategy.init?.({ params });
 
     const { ctx } = makeDecisionContext({ params });
     const res = strategy.decide(ctx);
     expect(res).not.toBeNull();
-    // 缺省不产生 defensive-fallback 退出
+    // 合成数据下有候选 ⇒ 不触发防御回退
     const reasons = Object.values(res!.exitReasons ?? {});
     expect(reasons).not.toContain('defensive-fallback');
   });
@@ -502,19 +502,38 @@ describe('decide() 契约', () => {
     expect(res!.targets.every((t) => t.symbol === 'sh511260')).toBe(true);
   });
 
-  it('基准破位切防御（§13.17 / ADR-024；opt-in）：threshold 缺省 0 = 关闭，基线路径不变', () => {
+  it('基准破位切防御（§13.17 / ADR-024）：缺省已按 ADR-024 采纳为 th=-0.5 + 债券防御', () => {
     const strategy = createDualMomentumStrategy();
     const params = { ...strategy.defaultParams, ...DECIDE_PARAMS };
-    // 缺省断言：破位阈值 0 = 不启用，迟滞 0.3
-    expect(params.benchmarkBreakoutThreshold).toBe(0);
+    // ADR-024 采纳后：破位阈值 -0.5、迟滞 0.3、防御标的 = 十年国债 ETF
+    expect(params.benchmarkBreakoutThreshold).toBe(-0.5);
     expect(params.benchmarkBreakoutHysteresis).toBe(0.3);
+    expect(params.defensiveSymbol).toBe('sh511260');
     strategy.init?.({ params });
 
     const { ctx } = makeDecisionContext({ params });
     const res = strategy.decide(ctx);
     expect(res).not.toBeNull();
-    // 缺省不产生 defensive-fallback 退出
+    // 合成数据下有候选 ⇒ 不触发防御回退
     expect(Object.values(res!.exitReasons ?? {})).not.toContain('defensive-fallback');
+  });
+
+  it('基准破位切防御（§13.17）：threshold=0 + defensiveSymbol 空 ⇒ 防御路径全关', () => {
+    const strategy = createDualMomentumStrategy();
+    // 显式关闭两条防御路径（破位 + 无候选回退），恢复 ADR-022 基线语义
+    const params = {
+      ...strategy.defaultParams,
+      ...DECIDE_PARAMS,
+      defensiveSymbol: '',
+      benchmarkBreakoutThreshold: 0,
+    };
+    strategy.init?.({ params });
+
+    const { ctx } = makeDecisionContext({ params });
+    const res = strategy.decide(ctx);
+    expect(res).not.toBeNull();
+    // 防御标的为空 ⇒ 不会产生防御目标
+    expect(res!.targets.some((t) => t.symbol === 'sh511260')).toBe(false);
   });
 
   it('基准破位切防御（§13.17；opt-in）：threshold<0 生效，无候选时全仓防御标的', () => {
