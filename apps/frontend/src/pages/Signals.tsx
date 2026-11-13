@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { isOkEnvelope } from '../api/envelope';
@@ -117,6 +117,10 @@ interface SignalRow {
   adopted?: number | null;
   ignored?: number | null;
   trade_date?: string;
+  /** T154（ADR-025）：该标的当前归属组（holdings / watch / null = 两组之外）*/
+  scope?: string | null;
+  /** T154（ADR-025）：现金类标的（`asset_class='cash'`，无记录 = false）*/
+  is_cash?: boolean;
   [key: string]: unknown;
 }
 
@@ -157,6 +161,26 @@ const GRADE_TABS: Array<{ key: GradeTab; label: string }> = [
   { key: 'weak', label: '弱' },
   { key: 'expired', label: '已过期' },
 ];
+
+/**
+ * T154（ADR-025，SDD_v3 §10.4.4）：分组视图 tab
+ *
+ * - 持仓组 = `calcAllPositions` 净持仓 > 0（ADR-021 同源）——**默认**；
+ * - 自选组 = 自选（`user_asset_rel` watch）**且不在持仓组**（INV-S3-28 不双显）。
+ *
+ * 组内轻量聚合：每标的一个 `<tbody>` + 分组头（`<th colSpan scope="rowgroup">`，
+ * 不带市值/盈亏），组合行（`combo:<id>`）置顶，其余按强度降序；
+ * 综合结论**只认组合行**（无组合 ⇒「无组合结论」，不得由单条件投票合成）。
+ */
+type GroupTab = 'holdings' | 'watch';
+
+const GROUP_TABS: Array<{ key: GroupTab; label: string }> = [
+  { key: 'holdings', label: '持仓组' },
+  { key: 'watch', label: '自选组' },
+];
+
+/** 组合信号 `plugin_id` 前缀（SDD_v3 §10.4.1：`combo:<id>`）*/
+const COMBO_PLUGIN_PREFIX = 'combo:';
 
 /** 东八区今天（YYYY-MM-DD）—— 与后端 `getTradeDate()` 同口径，用于过期判断 */
 function todayInShanghai(): string {
@@ -208,6 +232,10 @@ export default function Signals() {
    * F1：分级 tab，**默认只看强**（用户口径：默认只显强；全部/中/弱/已过期按需切换）
    */
   const [gradeTab, setGradeTab] = useState<GradeTab>('strong');
+  /**
+   * T154（ADR-025）：分组视图 tab，**默认持仓组**（用户口径：先回答「我持仓的每只标的今天有什么结论」）
+   */
+  const [groupTab, setGroupTab] = useState<GroupTab>('holdings');
 
   // ── 数据与分页 ──────────────────────────────────────────────
   const [loading, setLoading] = useState(false);
@@ -387,6 +415,8 @@ export default function Signals() {
       if (gradeTab !== 'all') params.grade = gradeTab;
       // F6：展示层冷却合并去重（同策略+标的+方向窗口内合并，只影响展示，不影响生成）
       params.dedupe = 1;
+      // T154（ADR-025）：分组视图（持仓组/自选组；后端按组集合 IN 过滤，组内聚合由前端做）
+      params.scope = groupTab;
 
       const res = await api.get('/signal', { params });
       if (isOkEnvelope(res.data)) {
@@ -456,7 +486,16 @@ export default function Signals() {
    * ⚠️ 指纹比对放在 **timer 回调内** —— 这样「点【查询】按钮」先把指纹写进去，
    *    300ms 后到期的防抖就会自己跳过，**不会重复发两次请求**。
    */
-  const filterKey = JSON.stringify([tradeDate, startDate, endDate, assetCode, pluginId, direction, gradeTab]);
+  const filterKey = JSON.stringify([
+    tradeDate,
+    startDate,
+    endDate,
+    assetCode,
+    pluginId,
+    direction,
+    gradeTab,
+    groupTab,
+  ]);
   const lastQueriedFilterKey = useRef<string>(filterKey);
 
   useEffect(() => {
@@ -516,13 +555,236 @@ export default function Signals() {
           ? '兜底交易日'
           : '指定日期';
 
+  /** F1：东八区今天，用于判断 `expires_at` 是否已过期（过期置灰不删）*/
+  const today = todayInShanghai();
+
+  /**
+   * T154（ADR-025）：分组视图的组内聚合（**展示层**规则，不改后端数据）
+   *
+   * - 按标的分组（每组一个 `<tbody>` + 分组头 `<th scope="rowgroup">`）；
+   * - 组内排序：**组合行（`combo:<id>`）置顶**，其余按强度降序（null 垫底，稳定排序）；
+   * - 综合结论**只认组合行**（细则：HOLD 不计票；冷却/过期置灰行不参与；
+   *   买卖冲突 ⇒ 卖出优先；无组合 ⇒「无组合结论」，不得由单条件合成）。
+   */
+  /** 行的「置灰」判定：非当前展示日（历史行）或已过期（F1 置灰不删） */
+  const rowMuteInfo = (row: SignalRow): { isOtherDay: boolean; isExpired: boolean; muted: boolean } => {
+    const isOtherDay =
+      resolvedDate !== null && typeof row.trade_date === 'string' && row.trade_date !== resolvedDate;
+    const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null;
+    const isExpired = expiresAt !== null && expiresAt < today;
+    return { isOtherDay, isExpired, muted: isOtherDay || isExpired };
+  };
+
+  /** 组内排序：组合行置顶 + 强度降序（null 垫底；同强度保持接口返回顺序 = 稳定） */
+  const orderGroupRows = (groupRows: SignalRow[]): SignalRow[] => {
+    const isCombo = (r: SignalRow) =>
+      typeof r.plugin_id === 'string' && r.plugin_id.startsWith(COMBO_PLUGIN_PREFIX);
+    const strengthOf = (r: SignalRow): number | null => (typeof r.strength === 'number' ? r.strength : null);
+    const sortDesc = (arr: SignalRow[]): SignalRow[] =>
+      arr
+        .map((r, i) => [r, i] as const)
+        .sort((a, b) => {
+          const sa = strengthOf(a[0]);
+          const sb = strengthOf(b[0]);
+          if (sa === null && sb === null) return a[1] - b[1];
+          if (sa === null) return 1;
+          if (sb === null) return -1;
+          if (sb !== sa) return sb - sa;
+          return a[1] - b[1];
+        })
+        .map((x) => x[0]);
+    return [...sortDesc(groupRows.filter(isCombo)), ...sortDesc(groupRows.filter((r) => !isCombo(r)))];
+  };
+
+  /** 综合结论（只认**未被置灰**的组合行；sell 优先；HOLD 不计票） */
+  const conclusionOf = (
+    groupRows: SignalRow[],
+  ): { kind: 'sell' | 'buy'; label: string | null; conflict: boolean } | null => {
+    const comboRows = groupRows.filter(
+      (r) =>
+        typeof r.plugin_id === 'string' &&
+        r.plugin_id.startsWith(COMBO_PLUGIN_PREFIX) &&
+        !rowMuteInfo(r).muted,
+    );
+    const sells = comboRows.filter((r) => r.direction === 'sell');
+    const buys = comboRows.filter((r) => r.direction === 'buy');
+    // HOLD 不计票（细则②）；买卖冲突 ⇒ 卖优先（细则⑦）
+    const target = sells.length > 0 ? sells[0] : buys[0];
+    if (!target) return null;
+    return {
+      kind: target.direction === 'sell' ? 'sell' : 'buy',
+      label: typeof target.label === 'string' ? target.label : null,
+      conflict: sells.length > 0 && buys.length > 0,
+    };
+  };
+
+  /** 分组（按标的代码升序；每组一个 `<tbody>`） */
+  const signalGroups = useMemo(() => {
+    const byCode = new Map<string, SignalRow[]>();
+    for (const row of rows) {
+      const code = assetCodeOf(row);
+      if (code === '--') continue;
+      const list = byCode.get(code);
+      if (list) list.push(row);
+      else byCode.set(code, [row]);
+    }
+    return [...byCode.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([code, groupRows]) => ({
+        code,
+        assetName: groupRows.find((r) => typeof r.asset_name === 'string')?.asset_name ?? null,
+        isCash: groupRows.some((r) => r.is_cash === true),
+        orderedRows: orderGroupRows(groupRows),
+        conclusion: conclusionOf(groupRows),
+      }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, resolvedDate, today]);
+
+  /** 单行渲染（T149 操作列 / F1 置灰 / F2 状态共用；分组视图下由每组 `<tbody>` 复用）*/
+  const renderSignalRow = (row: SignalRow, key: React.Key) => {
+    const code = assetCodeOf(row);
+    const category =
+      typeof row.plugin_category === 'string' ? PLUGIN_CATEGORY_LABEL[row.plugin_category] : undefined;
+    /**
+     * 非当前展示日 / 已过期 → 灰显（见列表上方 `signals-gray-legend` 与 `rowMuteInfo`）
+     */
+    const { isOtherDay, isExpired, muted } = rowMuteInfo(row);
+    const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null;
+    const generatedDaysAgo =
+      isExpired && typeof row.trade_date === 'string' ? daysSince(row.trade_date, today) : null;
+    return (
+      <tr
+        key={key}
+        data-testid={isExpired ? 'signals-row-expired' : undefined}
+        style={muted ? { color: COLORS.textMuted, opacity: isExpired ? 0.6 : 1 } : undefined}
+        title={
+          isExpired
+            ? `已过期（有效期至 ${expiresAt}）`
+            : isOtherDay
+              ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
+              : undefined
+        }
+      >
+        <td style={thTdStyle}>
+          <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
+        </td>
+        <td style={thTdStyle}>
+          <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+          {category ? (
+            <span style={{ color: COLORS.textMuted, fontSize: TYPO.captionSize }}> {category}</span>
+          ) : null}
+        </td>
+        <td style={thTdStyle}>
+          <SignalDirectionPill direction={typeof row.direction === 'string' ? row.direction : 'hold'} />
+        </td>
+        <td style={thTdStyle}>
+          <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
+        </td>
+        <td style={thTdStyle}>
+          <SignalStrength
+            value={typeof row.strength === 'number' ? row.strength : null}
+            label={`${code} 信号强度`}
+          />
+        </td>
+        <td style={thTdStyle}>
+          <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+          {/* F6：冷却窗口内被合并 → 标注「连续第 N 日选中」 */}
+          {typeof row.consecutive_days === 'number' && row.consecutive_days >= 2 ? (
+            <span
+              data-testid="signals-consecutive-count"
+              style={{
+                display: 'block',
+                fontSize: TYPO.captionSize,
+                color: COLORS.textMuted,
+              }}
+            >
+              {`连续第 ${row.consecutive_days} 日选中`}
+            </span>
+          ) : null}
+        </td>
+        <td style={thTdStyle}>
+          {typeof row.trade_date === 'string' ? row.trade_date : '--'}
+          {/* F1：过期行标注「生成于 X 天前」（置灰不删，信息不丢） */}
+          {generatedDaysAgo !== null ? (
+            <span
+              data-testid="signals-expired-age"
+              style={{
+                display: 'block',
+                fontSize: TYPO.captionSize,
+                color: COLORS.textMuted,
+              }}
+            >
+              生成于 {generatedDaysAgo} 天前
+            </span>
+          ) : null}
+        </td>
+        {/* F2：状态 tag（后端派生；断链不显示「查看成交」） */}
+        <td style={thTdStyle}>
+          <SignalTradeStatusTag status={row.trade_status} />
+          {row.trade_status === 'traded' && row.link_broken !== true ? (
+            <button
+              data-testid="signal-trade-view"
+              style={{
+                ...buttonStyle,
+                marginTop: 4,
+                padding: '2px 8px',
+                fontSize: TYPO.captionSize,
+              }}
+              onClick={() => {
+                if (typeof row.id === 'number') void openTradeDetail(row.id);
+              }}
+            >
+              查看成交
+            </button>
+          ) : null}
+        </td>
+        {/* V3.8 T149：采纳/忽略/关联交易（过期信号仍可标注，标灰由后端 T134 的 expires_at 承担） */}
+        <td style={thTdStyle}>
+          {typeof row.id === 'number' ? (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                disabled={Boolean(row.adopted)}
+                onClick={() => void signalAction(row.id!, 'adopt')}
+              >
+                {row.adopted ? '已采纳' : '采纳'}
+              </button>
+              <button
+                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                disabled={Boolean(row.ignored)}
+                onClick={() => void signalAction(row.id!, 'ignore')}
+              >
+                {row.ignored ? '已忽略' : '忽略'}
+              </button>
+              <button
+                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                onClick={() => void linkTrade(row.id!)}
+              >
+                关联交易
+              </button>
+              {/* F2：未成交 → 跳转交易录入并预填 signal_id（录入时自动回填关联） */}
+              {row.trade_status !== 'traded' || row.link_broken === true ? (
+                <button
+                  data-testid="signal-trade-entry"
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
+                  onClick={() => navigate(`/trade?signal_id=${row.id}`)}
+                >
+                  录入交易
+                </button>
+              ) : null}
+              {/* 加自选：把这条信号对应的标的沉淀成观察池（共享 useWatchStore；main #172 增补） */}
+              <WatchButton assetCode={code} compact />
+            </div>
+          ) : null}
+        </td>
+      </tr>
+    );
+  };
+
   /** 列表里是否有「非当前展示日」的行（决定是否显示灰显说明）*/
   const hasOtherDayRows =
     resolvedDate !== null &&
     rows.some((r) => typeof r.trade_date === 'string' && r.trade_date !== resolvedDate);
-
-  /** F1：东八区今天，用于判断 `expires_at` 是否已过期（过期置灰不删）*/
-  const today = todayInShanghai();
 
   const filterLabelStyle: React.CSSProperties = {
     fontSize: TYPO.bodySize,
@@ -644,6 +906,39 @@ export default function Signals() {
         <button style={buttonStyle} onClick={handleQuery} disabled={loading} aria-busy={loading}>
           查询
         </button>
+      </div>
+
+      {/*
+        T154（ADR-025）：分组视图 tab（持仓组 / 自选组，默认持仓组）
+        ⚠️ 组内聚合（分组头 / 组合行置顶 / 综合结论）是**展示层**规则：
+           综合结论只认组合行（combo:<id>），无组合 ⇒「无组合结论」，不得由单条件合成。
+      */}
+      <div
+        role="group"
+        aria-label="信号分组视图"
+        data-testid="signals-group-tabs"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+      >
+        <span style={filterLabelStyle}>分组</span>
+        {GROUP_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            aria-pressed={groupTab === tab.key}
+            data-testid={`signals-group-tab-${tab.key}`}
+            onClick={() => setGroupTab(tab.key)}
+            style={{
+              ...buttonStyle,
+              background: groupTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
+              color: groupTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
+          默认持仓组；综合结论只认组合信号（无组合 ⇒ 无组合结论）
+        </span>
       </div>
 
       {/*
@@ -845,6 +1140,13 @@ export default function Signals() {
           */
           <div data-testid="signals-empty" style={{ padding: 20, textAlign: 'center' }}>
             <div style={{ color: COLORS.neutral, fontSize: TYPO.bodySize }}>{emptyText}</div>
+            {/* T154（ADR-025 细则⑤）：组内无信号 = 无当日评估（「无信号 ≠ 持有」，不解读为持有指令） */}
+            <div
+              data-testid="signals-group-no-eval"
+              style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize, marginTop: 4 }}
+            >
+              {groupTab === 'holdings' ? '持仓组' : '自选组'} · 无当日评估
+            </div>
             <div style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize, marginTop: 4 }}>
               收盘后 17:02 自动运行信号生成
             </div>
@@ -963,168 +1265,51 @@ export default function Signals() {
                     </th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.map((row, i) => {
-                    const code = assetCodeOf(row);
-                    const category =
-                      typeof row.plugin_category === 'string'
-                        ? PLUGIN_CATEGORY_LABEL[row.plugin_category]
-                        : undefined;
-                    /**
-                     * 非当前展示日 → 灰显（见列表上方 `signals-gray-legend`）
-                     *
-                     * ⚠️ 仅在后端已解析出展示日（默认视角）时生效；显式筛选下
-                     *    `resolvedDate` 为 null，不做任何灰显。
-                     */
-                    const isOtherDay =
-                      resolvedDate !== null &&
-                      typeof row.trade_date === 'string' &&
-                      row.trade_date !== resolvedDate;
-                    /**
-                     * F1：过期判断 —— `expires_at < 今天` 即过期。
-                     * **置灰不删**：行照常渲染，标注「生成于 X 天前」，让用户知道它失效了。
-                     */
-                    const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null;
-                    const isExpired = expiresAt !== null && expiresAt < today;
-                    const generatedDaysAgo =
-                      isExpired && typeof row.trade_date === 'string'
-                        ? daysSince(row.trade_date, today)
-                        : null;
-                    const muted = isOtherDay || isExpired;
-                    return (
-                      <tr
-                        key={typeof row.id === 'number' ? row.id : i}
-                        data-testid={isExpired ? 'signals-row-expired' : undefined}
-                        style={muted ? { color: COLORS.textMuted, opacity: isExpired ? 0.6 : 1 } : undefined}
-                        title={
-                          isExpired
-                            ? `已过期（有效期至 ${expiresAt}）`
-                            : isOtherDay
-                              ? `历史信号（${row.trade_date}），非当前展示日 ${resolvedDate}`
-                              : undefined
-                        }
+                {/*
+                  T154（ADR-025）：分组视图 —— 每标的一个 `<tbody>` + 分组头
+                  （`<th colSpan scope="rowgroup">`：标的 + 归属 + 现金类标注 + 综合结论），
+                  组内组合行置顶、其余按强度降序（`renderSignalRow` 渲染数据行）。
+                */}
+                {signalGroups.map((g) => (
+                  <tbody key={g.code} data-testid={`signals-group-${g.code}`}>
+                    <tr data-testid={`signals-group-header-${g.code}`}>
+                      <th
+                        colSpan={9}
+                        scope="rowgroup"
+                        style={{
+                          ...thStyle,
+                          textAlign: 'left',
+                          background: COLORS.bgPillNeutral,
+                          fontWeight: 600,
+                        }}
                       >
-                        <td style={thTdStyle}>
-                          <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
-                        </td>
-                        <td style={thTdStyle}>
-                          <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
-                          {category ? (
-                            <span style={{ color: COLORS.textMuted, fontSize: TYPO.captionSize }}>
-                              {' '}
-                              {category}
-                            </span>
-                          ) : null}
-                        </td>
-                        <td style={thTdStyle}>
-                          <SignalDirectionPill
-                            direction={typeof row.direction === 'string' ? row.direction : 'hold'}
-                          />
-                        </td>
-                        <td style={thTdStyle}>
-                          <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
-                        </td>
-                        <td style={thTdStyle}>
-                          <SignalStrength
-                            value={typeof row.strength === 'number' ? row.strength : null}
-                            label={`${code} 信号强度`}
-                          />
-                        </td>
-                        <td style={thTdStyle}>
-                          <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
-                          {/* F6：冷却窗口内被合并 → 标注「连续第 N 日选中」 */}
-                          {typeof row.consecutive_days === 'number' && row.consecutive_days >= 2 ? (
-                            <span
-                              data-testid="signals-consecutive-count"
-                              style={{
-                                display: 'block',
-                                fontSize: TYPO.captionSize,
-                                color: COLORS.textMuted,
-                              }}
-                            >
-                              {`连续第 ${row.consecutive_days} 日选中`}
-                            </span>
-                          ) : null}
-                        </td>
-                        <td style={thTdStyle}>
-                          {typeof row.trade_date === 'string' ? row.trade_date : '--'}
-                          {/* F1：过期行标注「生成于 X 天前」（置灰不删，信息不丢） */}
-                          {generatedDaysAgo !== null ? (
-                            <span
-                              data-testid="signals-expired-age"
-                              style={{
-                                display: 'block',
-                                fontSize: TYPO.captionSize,
-                                color: COLORS.textMuted,
-                              }}
-                            >
-                              生成于 {generatedDaysAgo} 天前
-                            </span>
-                          ) : null}
-                        </td>
-                        {/* F2：状态 tag（后端派生；断链不显示「查看成交」） */}
-                        <td style={thTdStyle}>
-                          <SignalTradeStatusTag status={row.trade_status} />
-                          {row.trade_status === 'traded' && row.link_broken !== true ? (
-                            <button
-                              data-testid="signal-trade-view"
-                              style={{
-                                ...buttonStyle,
-                                marginTop: 4,
-                                padding: '2px 8px',
-                                fontSize: TYPO.captionSize,
-                              }}
-                              onClick={() => {
-                                if (typeof row.id === 'number') void openTradeDetail(row.id);
-                              }}
-                            >
-                              查看成交
-                            </button>
-                          ) : null}
-                        </td>
-                        {/* V3.8 T149：采纳/忽略/关联交易（过期信号仍可标注，标灰由后端 T134 的 expires_at 承担） */}
-                        <td style={thTdStyle}>
-                          {typeof row.id === 'number' ? (
-                            <div style={{ display: 'flex', gap: 6 }}>
-                              <button
-                                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                                disabled={Boolean(row.adopted)}
-                                onClick={() => void signalAction(row.id!, 'adopt')}
-                              >
-                                {row.adopted ? '已采纳' : '采纳'}
-                              </button>
-                              <button
-                                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                                disabled={Boolean(row.ignored)}
-                                onClick={() => void signalAction(row.id!, 'ignore')}
-                              >
-                                {row.ignored ? '已忽略' : '忽略'}
-                              </button>
-                              <button
-                                style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                                onClick={() => void linkTrade(row.id!)}
-                              >
-                                关联交易
-                              </button>
-                              {/* F2：未成交 → 跳转交易录入并预填 signal_id（录入时自动回填关联） */}
-                              {row.trade_status !== 'traded' || row.link_broken === true ? (
-                                <button
-                                  data-testid="signal-trade-entry"
-                                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: TYPO.captionSize }}
-                                  onClick={() => navigate(`/trade?signal_id=${row.id}`)}
-                                >
-                                  录入交易
-                                </button>
-                              ) : null}
-                              {/* 加自选：把这条信号对应的标的沉淀成观察池（共享 useWatchStore） */}
-                              <WatchButton assetCode={code} compact />
-                            </div>
-                          ) : null}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                        <AssetLink assetCode={g.code} assetName={g.assetName} variant="inline" />
+                        <span style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize }}>
+                          {groupTab === 'holdings' ? ' · 持仓组' : ' · 自选组'}
+                          {g.isCash ? ' · 现金类' : ''}
+                        </span>
+                        {/*
+                          综合结论（ADR-025 §2.2）：只认组合行（combo:<id>）——
+                          无组合 ⇒「无组合结论」（不得由单条件投票合成）；买卖冲突 ⇒ 卖优先。
+                        */}
+                        <div data-testid={`signals-group-conclusion-${g.code}`}>
+                          {g.conclusion ? (
+                            <>
+                              {`◆ 综合结论：${g.conclusion.kind === 'sell' ? '卖出' : '买入'}`}
+                              {g.conclusion.label ? `（组合：${g.conclusion.label}）` : ''}
+                              {g.conclusion.conflict ? '（买卖冲突 ⇒ 卖出优先）' : ''}
+                            </>
+                          ) : (
+                            <>◆ 综合结论：无组合结论（未命中组合或组合未启用）</>
+                          )}
+                        </div>
+                      </th>
+                    </tr>
+                    {g.orderedRows.map((row, i) =>
+                      renderSignalRow(row, typeof row.id === 'number' ? row.id : `${g.code}-${i}`),
+                    )}
+                  </tbody>
+                ))}
               </table>
             </ScrollableTable>
 

@@ -73,6 +73,48 @@ export function resolveSignalSymbols(userId: number = SIGNAL_USER_ID): string[] 
 }
 
 /**
+ * 信号域分组集合（T154 / ADR-025，SDD_v3 §10.4.4）：
+ *
+ * - `holdings`：`calcAllPositions(userId)`（core 移动加权口径，与 `/api/positions` 同源，
+ *   ADR-021）净持仓 > 0 的标的；
+ * - `watch`：`user_asset_rel`（`rel_type='watch'`、`is_deleted=0`）的标的，
+ *   **排除 holdings**（同一标的不双显，INV-S3-28）。
+ *
+ * ⚠️ 与 `resolveSignalSymbols` 的区别：本函数**不排除现金类**——
+ * 分组视图要回答「我关注的每只标的今天有什么结论」，现金类标的（如货币 ETF）
+ * 虽然不产生信号（T133 生成域排除），但仍需在组头可见并标「现金类」。
+ *
+ * @returns 两组均升序去重；watch 与 holdings 互斥
+ */
+export function resolveSignalScopeSets(userId: number = SIGNAL_USER_ID): {
+  holdings: string[];
+  watch: string[];
+} {
+  const db = ConfigStore.getInstance().db;
+  const holdings = calcAllPositions(userId)
+    .filter((p) => p.totalQuantity > 0)
+    .map((p) => p.asset_code)
+    .filter((c): c is string => typeof c === 'string' && c.length > 0);
+  const holdingsSet = new Set(holdings);
+
+  const watchRows = db
+    .prepare(
+      `SELECT DISTINCT asset_code FROM user_asset_rel
+       WHERE user_id = ? AND rel_type = 'watch' AND is_deleted = 0`,
+    )
+    .all(userId) as Array<{ asset_code: string }>;
+  const watch = watchRows
+    .map((r) => r.asset_code)
+    .filter((c): c is string => typeof c === 'string' && c.length > 0 && !holdingsSet.has(c));
+
+  const byCode = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  return {
+    holdings: [...new Set(holdings)].sort(byCode),
+    watch: Array.from(new Set(watch)).sort(byCode),
+  };
+}
+
+/**
  * 信号持久化服务（T27 核心）
  *
  * executeAllPlugins() 返回的 PluginSignal[] 写入 user_strategy_signal
