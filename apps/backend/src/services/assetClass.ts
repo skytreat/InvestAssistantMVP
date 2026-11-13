@@ -18,8 +18,8 @@
  * - 逆回购 raw_kline_daily 收录：sh204001/002/003/004/007、sz131810/131811（204005/006/009、
  *   131812~131818 未收录 —— 已退市/停刊；样本若再遇到走人工修正，见 V3-B5）
  *
- * 人工修正（§2.4）：`setManualClass` 写 source='manual'，**规则重跑不得覆盖**（runInitialClassification
- * 只 INSERT OR IGNORE）；rule_hit 保留初判值 → 可回溯「当初是谁按什么规则判的」。
+ * 人工修正（§2.4）：`setManualClass` 写 source='manual'，**规则重跑不得覆盖**（ADR-026：
+ * runInitialClassification 只改 source='rule' 的行）；rule_hit 保留初判值 → 可回溯「当初是谁按什么规则判的」。
  */
 import type Database from 'better-sqlite3';
 import { queryDuckDB } from '../db/duckdb.js';
@@ -101,9 +101,32 @@ export function classifySymbol(input: ClassifyInput): ClassifyResult {
 }
 
 /**
+ * 「终态」判定：命中现金规则的行**不再重扫行情层**（ADR-026）。
+ *
+ * - `repo_code` / `cash_etf_name` / `cash_etf_near_par`：证据已成立 ⇒ 终态；
+ * - `source='manual'`：人工修正 ⇒ 永不被规则覆盖；
+ * - `default`：**可重试** —— 新上市标的当初因「窗口不足 120 根」判不出，
+ *   攒够 K 线后应能改判为 cash（改判只发生在 rule/default 行上）。
+ */
+export const TERMINAL_RULE_HITS: readonly string[] = ['repo_code', 'cash_etf_name', 'cash_etf_near_par'];
+
+export function isTerminalRuleHit(ruleHit: string | null | undefined): boolean {
+  return !!ruleHit && TERMINAL_RULE_HITS.includes(ruleHit);
+}
+
+/**
  * 批量初判落库：对每个标的取行情层窗口统计 + 名称（inputProvider 可注入，单测不碰 DuckDB），
- * 逐一走 classifySymbol，**只 INSERT OR IGNORE** —— 已有记录（无论 rule / manual）一律不覆盖。
- * 返回：本次新写入的 + 被跳过的 + 未分类可列出的（无行情窗口统计 ⇒ 报告须列出）。
+ * 逐一走 classifySymbol。
+ *
+ * ⚠️ **写入口径（ADR-026）**：
+ * - 无记录 ⇒ INSERT（`source='rule'`）；
+ * - 已有记录且 `source='manual'` ⇒ **永不覆盖**（人工修正优先）；
+ * - 已有记录且命中终态规则（`isTerminalRuleHit`）⇒ 不动（证据已成立，不重复扫）；
+ * - 已有记录且 `source='rule'` 且 `rule_hit='default'` ⇒ **允许改判**：
+ *   本次若判为 cash ⇒ UPDATE 分类与 rule_hit；仍为 default ⇒ 仅刷新 `updated_at`
+ *   （作为「已复查过」的冷却标记，避免每次导入都重扫行情层）。
+ *
+ * 返回：本次新写入/改判的 + 跳过/仅刷新的 + 未分类可列出的（无行情窗口统计 ⇒ 报告须列出）。
  */
 export async function runInitialClassification(
   db: Database.Database,
@@ -112,42 +135,78 @@ export async function runInitialClassification(
 ): Promise<{
   written: ClassifyResult[];
   skippedExisting: string[];
+  refreshed: string[];
   unclassifiable: string[];
 }> {
   const inputs = await inputProvider(codes);
   const inputByCode = new Map(inputs.map((i) => [i.code, i]));
   const written: ClassifyResult[] = [];
   const skippedExisting: string[] = [];
+  const refreshed: string[] = [];
   const unclassifiable: string[] = [];
 
   const ph = codes.map(() => '?').join(',');
-  const existingSet = new Set(
-    (
-      db.prepare(`SELECT symbol FROM asset_class WHERE symbol IN (${ph})`).all(...codes) as Array<{
-        symbol: string;
-      }>
-    ).map((r) => r.symbol),
-  );
+  const existingRows = db
+    .prepare(`SELECT symbol, asset_class, rule_hit, source FROM asset_class WHERE symbol IN (${ph})`)
+    .all(...codes) as Array<{
+    symbol: string;
+    asset_class: AssetClass;
+    rule_hit: string | null;
+    source: 'rule' | 'manual';
+  }>;
+  const existingBy = new Map(existingRows.map((r) => [r.symbol, r]));
 
   const upsert = db.prepare(
     `INSERT OR IGNORE INTO asset_class (symbol, asset_class, rule_hit, source, updated_by)
      VALUES (?, ?, ?, 'rule', NULL)`,
   );
+  // 改判：仅限 source='rule' 的行（manual 由 setManualClass 保护）
+  const updateVerdict = db.prepare(
+    `UPDATE asset_class
+        SET asset_class = ?, rule_hit = ?, updated_at = datetime('now','localtime')
+      WHERE symbol = ? AND source = 'rule'`,
+  );
+  // 仅刷新时间戳（分类不变）—— 作为「已复查」冷却标记
+  const touchUpdatedAt = db.prepare(
+    `UPDATE asset_class SET updated_at = datetime('now','localtime')
+      WHERE symbol = ? AND source = 'rule'`,
+  );
 
   for (const code of codes) {
-    if (existingSet.has(code)) {
-      skippedExisting.push(code); // 已有记录（rule / manual）一律不覆盖
-      continue;
-    }
     const input = inputByCode.get(code) ?? { code };
     const r = classifySymbol(input);
+    const cur = existingBy.get(code);
+
+    if (cur) {
+      // ① 人工修正 ⇒ 永不覆盖
+      if (cur.source === 'manual') {
+        skippedExisting.push(code);
+        continue;
+      }
+      // ② 终态判定 ⇒ 不动
+      if (isTerminalRuleHit(cur.rule_hit)) {
+        skippedExisting.push(code);
+        continue;
+      }
+      // ③ rule/default ⇒ 允许改判
+      if (r.asset_class === 'cash') {
+        updateVerdict.run(r.asset_class, r.rule_hit, code);
+        written.push(r);
+        continue;
+      }
+      // 仍为 default=risk ⇒ 只刷新时间戳（不动分类）
+      touchUpdatedAt.run(code);
+      refreshed.push(code);
+      continue;
+    }
+
     upsert.run(code, r.asset_class, r.rule_hit);
     written.push(r);
     if (r.rule_hit === 'default' && !(input.winBars ?? 0) && !REPO_CODES.has(code)) {
       unclassifiable.push(code); // 无行情窗口统计 ⇒ 报告须列出
     }
   }
-  return { written, skippedExisting, unclassifiable };
+  return { written, skippedExisting, refreshed, unclassifiable };
 }
 
 /** 窗口统计 + 名称（各 1 次 IN 查询，行情层只读，符合 SDD §5.3 批量约束） */
@@ -188,7 +247,7 @@ export async function collectClassifyInputs(codes: string[]): Promise<ClassifyIn
   });
 }
 
-/** 人工修正：source='manual'，保留初判 rule_hit（可回溯）；规则重跑（INSERT OR IGNORE）不会覆盖它 */
+/** 人工修正：source='manual'，保留初判 rule_hit（可回溯）；规则重跑（ADR-026）永不覆盖 manual 行 */
 export function setManualClass(db: Database.Database, userId: number, code: string, cls: AssetClass): void {
   const cur = db.prepare(`SELECT rule_hit FROM asset_class WHERE symbol = ?`).get(code) as
     { rule_hit: string | null } | undefined;
