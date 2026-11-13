@@ -74,8 +74,9 @@ async function bootstrap() {
     process.exit(1);
   }
 
-  // 调用点 ①（SDD_v3 §2.3「分类表为空时按需触发」）：不阻塞启动。
-  // 默认 dry-run ⇒ 只记日志、**一行不写**；需落库时显式设 ASSET_CLASS_SYNC_MODE=execute。
+  // 调用点 ①（ADR-024 增量语义）：启动时按「候选集合」补齐 asset_class（新标的 + 冷却期外的
+  // rule/default 行；manual/终态永不重扫；候选为空不扫行情层）。
+  // 代码默认 dry-run ⇒ 只记日志；生产 unit 置 ASSET_CLASS_SYNC_MODE=execute ⇒ 自动落库。
   void runAssetClassSyncIfNeeded(config.db, app.log);
 }
 

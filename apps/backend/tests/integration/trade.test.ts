@@ -851,3 +851,18 @@ describe('Trade · 标的存在性校验（raw_symbol_class）', () => {
     }
   });
 });
+
+describe('Trade · ADR-024 asset_class 增量初判触发', () => {
+  it('POST /api/trade 成功后触发 runAssetClassSyncIfNeeded（异步、不阻塞响应）', async () => {
+    const syncMod = await import('../../src/services/assetClassSync.js');
+    const spy = vi.spyOn(syncMod, 'runAssetClassSyncIfNeeded');
+    spy.mockResolvedValue(null);
+    try {
+      await seedBuy('szTEST02');
+      expect(spy).toHaveBeenCalled();
+      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

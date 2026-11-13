@@ -4,7 +4,8 @@
  * 用法（在 apps/backend 下）：
  *   npx tsx src/cli/assetClassSync.ts                      # dry-run，报告写 %TEMP%
  *   npx tsx src/cli/assetClassSync.ts --report <路径>       # dry-run + 指定报告路径
- *   npx tsx src/cli/assetClassSync.ts --execute             # 真落库（INSERT OR IGNORE，幂等）
+ *   npx tsx src/cli/assetClassSync.ts --execute             # 真落库（ADR-024：新标的插入 / rule-default 可改判 / manual 不覆盖）
+ *   npx tsx src/cli/assetClassSync.ts --all                 # 全量审计业务层标的（默认只看候选）
  *
  * 环境变量：`SQLITE_DB_PATH`（默认 data/business.db）、`DUCKDB_PATH`（默认 data/quotes.duckdb）
  * 安全：dry-run 用 `readonly: true` 打开 **且不执行任何 DDL**（不经 ConfigStore），
@@ -14,7 +15,12 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ASSET_CLASS_SYNC_ENV, renderSyncReport, syncAssetClass } from '../services/assetClassSync.js';
+import {
+  ASSET_CLASS_SYNC_ENV,
+  renderSyncReport,
+  selectClassifyCandidates,
+  syncAssetClass,
+} from '../services/assetClassSync.js';
 
 function argOf(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -49,7 +55,9 @@ async function main() {
     }
 
     const mode = execute ? 'execute' : 'dry-run';
-    const result = await syncAssetClass(db, mode);
+    // 默认只处理「还没定论」的候选（增量）；--all 才全量审计业务层标的
+    const scope = argv.includes('--all') ? undefined : selectClassifyCandidates(db).map((c) => c.symbol);
+    const result = await syncAssetClass(db, mode, undefined, scope);
 
     const generatedAt = new Date().toLocaleString('sv-SE', { hour12: false });
     const report =

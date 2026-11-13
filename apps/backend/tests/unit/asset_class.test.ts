@@ -198,12 +198,14 @@ describe('T120 · 落库与人工修正（INV-S4-14~17）', () => {
     expect(getAssetClass(db, 'sh688001')).toBe('risk');
   });
 
-  it('重跑规则不覆盖已有记录（含 manual）', async () => {
+  it('重跑规则不覆盖已有记录（含 manual；ADR-024：rule/default 行可改判，计入 refreshed）', async () => {
     // 自包含：先写 sz000001（有窗口统计 ⇒ 判 cash），再重跑
     await runInitialClassification(db, ['sz000001', 'sz000002'], fakeProvider);
     setManualClass(db, uid, 'sz000001', 'risk');
     const r = await runInitialClassification(db, ['sz000001', 'sz000002', 'sz000003'], fakeProvider);
-    expect(r.skippedExisting.sort()).toEqual(['sz000001', 'sz000002']); // 已有（rule / manual）不覆盖
+    expect(r.skippedExisting).toEqual(['sz000001']); // manual 不覆盖；终态/冷却期外才进 skipped
+    // sz000002：rule/default（fakeProvider 无窗口统计）⇒ 改判窗口内允许刷新（分类不变，仅时间戳）
+    expect(r.refreshed).toEqual(['sz000002']);
     expect(r.written.map((x) => x.code)).toEqual(['sz000003']); // 只有新标的写入
     expect(getAssetClass(db, 'sz000001')).toBe('risk'); // manual 值仍在
   });

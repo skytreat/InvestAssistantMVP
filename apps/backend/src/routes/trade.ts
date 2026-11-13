@@ -10,6 +10,7 @@ import {
 } from '../services/marketData.js';
 import { getLatestSignalsByAssets, type SignalRow } from '../services/todaySignals.js';
 import { loadIndustryNames } from '../services/portfolioRisk.js';
+import { runAssetClassSyncIfNeeded } from '../services/assetClassSync.js';
 import { writeSystemLog } from '../services/logger.js';
 import { ok, fail } from '../lib/envelope.js';
 import { defaultMessage } from '../lib/errorMessages.js';
@@ -408,6 +409,10 @@ export async function registerTradeRoutes(app: FastifyInstance) {
 
       // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
       const holdRel = syncHoldRelation(user.sub, assetCode);
+
+      // ADR-024：手工录入也会带来**新标的**（可能正是逆回购/货币 ETF）⇒ 触发一次
+      //   asset_class 增量初判（异步、不阻塞响应；候选为空时内部直接跳过，不扫行情层）。
+      void runAssetClassSyncIfNeeded(db, request.log);
 
       reply.code(201).send(
         ok({
