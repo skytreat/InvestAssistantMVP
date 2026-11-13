@@ -12,6 +12,7 @@ import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } fr
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
 import { isDuckDBWriteSentinelPresent } from '../db/duckdb.js';
 import { runFullBackup } from './backup.js';
+import type { SystemLogType } from '../config/systemLogTypes.js';
 import { insertAssetStatSnapshots } from './assetStat.js';
 import { rerunQuoteUpdate } from './quoteRerun.js';
 import { reportTdx2dbRunOutcome, type Tdx2dbRunState } from './quoteUpdateStatus.js';
@@ -367,7 +368,7 @@ export function registerCronJobs(app: FastifyInstance): void {
 
   const enqueueStage = (
     label: string,
-    logType: string,
+    logType: SystemLogType,
     run: () => Promise<void>,
     waitForQuoteUpdate: boolean,
   ): Promise<void> => {

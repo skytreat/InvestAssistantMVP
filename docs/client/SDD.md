@@ -2020,7 +2020,7 @@ sequenceDiagram
 >
 > **修订原因**：初稿本节的 C3-C8 定义为「数据内容校验」（停牌/退市/ST/价差/成交量/滞后），
 > 与 Requirements §7.1 的「数据新鲜度」校验**完全不同**，而 PRD §6.4 亦写明
-> 「行情更新执行时长 ≤ 120s \| 内部校验 C8 监控」—— 即 **PRD + Requirements 两层**
+> 「行情更新执行时长 ≤ 1200s \| 内部校验 C8 监控」—— 即 **PRD + Requirements 两层**
 > 都站在新鲜度口径上。初稿的 6 条内容校验未被删除，已移至本节末「📎 扩展校验」，
 > **不占用 C 编号、不计入 12 项主表**。
 >
@@ -2229,7 +2229,7 @@ WHERE date = '{{TRADE_DATE}}';
 #### C8：行情更新执行时长
 
 ```sql
--- C8 行情更新执行时长 ≤ 120s
+-- C8 行情更新执行时长 ≤ 1200s
 -- ⚠️ 本项不查 DuckDB，而是读本次行情更新的耗时记录（system_log 的行情更新条目时间戳差）
 -- ⚠️ PRD §6.4 与 Requirements §7.1 C8 均明确定义本项为「时长检查」——
 --    这是本轮修订中编号含义变化最大的一条（初稿 SDD 曾定义为「复权信息滞后」）
@@ -2444,7 +2444,7 @@ flowchart TD
 | K 线渲染 | ≤ 500ms | **自写 Canvas 渲染耗时**（Chrome Performance Profiler 实测） | Chrome Performance Profiler |
 | 选股 ≤ 3s | 5000+ 标的 | DuckDB OLAP 查询列式压缩；一次 IN 查询批量拿日线 | `time curl -X POST /api/stockscan` |
 | 信号生成 ≤ 20s | 50 插件 × 30 标的 | 一次批量日线加载 → 多插件共享；IN 查询 | 插入 system_log 记录前后时间戳 |
-| 行情更新 ≤ 120s | — | tdx2db 全量增量；HTTP 下载通达信日线包 | C8 校验 |
+| 行情更新 ≤ 1200s | — | tdx2db 全量增量；HTTP 下载通达信日线包 | C8 校验 |
 | SQLite 备份 ≤ 30s | — | VACUUM INTO 热备份（不阻塞写入）| `time sqlite3 user.db ".backup /backup/test.db"` |
 
 ### 6.3 可用性设计
@@ -2797,7 +2797,7 @@ sequenceDiagram
 | PE1 | 首屏加载 ≤ 1.5s（Lighthouse）| 是 | Chrome DevTools |
 | PE2 | 选股 ≤ 3s（5000+ 标的）| 是 | curl -w %{time_total} |
 | PE3 | 信号生成 ≤ 20s（50 插件 × 30 标的）| 是 | system_log 时间差 |
-| PE4 | 行情更新 ≤ 120s（C8 校验 PASS）| 是 | system_log 记录 |
+| PE4 | 行情更新 ≤ 1200s（C8 校验 PASS）| 是 | system_log 记录 |
 | PE5 | K 线首渲染 ≤ 500ms | 是 | Chrome Performance Profiler |
 | PE6 | SQLite WAL 模式下锁等待（busy timeout）是否配置合理（≥ 5s）？| 是 | 连接初始化代码 |
 

@@ -31,8 +31,8 @@ describe('T85 容差常量：与 Requirements §7 对齐', () => {
     expect(TOLERANCES.MAX_OPEN_CLOSE_RATIO).toBe(2);
   });
 
-  it('C8 行情更新时长上限 120s', () => {
-    expect(TOLERANCES.MAX_UPDATE_SECONDS).toBe(120);
+  it('C8 行情更新时长上限 1200s（ADR-023：实测 571s，原 120s 每天必 WARN）', () => {
+    expect(TOLERANCES.MAX_UPDATE_SECONDS).toBe(1200);
   });
 });
 

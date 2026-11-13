@@ -5,6 +5,7 @@ import { queryDuckDB } from '../db/duckdb.js';
 import { writeSystemLog } from './logger.js';
 import { resolveTargetTradeDate } from './marketData.js';
 import { queryLatestTdx2dbTiming } from './quoteUpdateStatus.js';
+import type { SystemLogLevel } from '../config/systemLogTypes.js';
 
 /** 校验结果三值（扩展 SKIP 用于 C11/C12 MVP） */
 export type CheckResult = 'PASS' | 'WARN' | 'ERROR' | 'SKIP';
@@ -35,7 +36,7 @@ export const TOLERANCES = {
   EX_DIVIDEND_FRESH_DAYS: 7, // C4 最新除权日 ≥ 当日 - 7 天
   CLASS_COUNT_DROP: 0.1, // C5 分类总数降幅 < 10%
   MAX_OPEN_CLOSE_RATIO: 2, // C7 开盘价 ≤ 收盘价 × 2
-  MAX_UPDATE_SECONDS: 120, // C8 行情更新执行时长 ≤ 120s
+  MAX_UPDATE_SECONDS: 1200, // C8 行情更新执行时长 ≤ 1200s（ADR-023：实测 571s，原 120s 每天必 WARN）
 
   // ── C9/C10 内容类（Requirements §7.2）──
   QFQ_PRICE_DIFF: 0.01, // C9 前复权价差容差 < 0.01 元
@@ -162,7 +163,7 @@ function withinTimeBudget(startedAt: number): boolean {
 
 /** 写 system_log（level 映射：PASS→SUCCESS, WARN→WARN, ERROR→ERROR, SKIP→SKIP） */
 function logResult(checkId: string, result: CheckResult, detail: string, tradeDate: string): void {
-  const levelMap: Record<CheckResult, string> = {
+  const levelMap: Record<CheckResult, SystemLogLevel> = {
     PASS: 'SUCCESS',
     WARN: 'WARN',
     ERROR: 'ERROR',
@@ -557,13 +558,18 @@ async function checkC7(tradeDate: string): Promise<CheckSummary> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// C8：行情更新执行时长（Requirements §7.1：≤ 120s，WARN）
+// C8：行情更新执行时长（Requirements §7.1：≤ 1200s，WARN）
 // ⚠️ T85：初稿此处实现的是「数据滞后天数」—— 那是 SDD 的扩展校验，已移出。
 // ⚠️ T107（2026-10-24）：system_log 是 **SQLite** 表，原实现用 queryDuckDB 查询
 //    ⇒ 生产环境必然 `Catalog Error: Table with name system_log does not exist`，
 //    且 SQL 里的 `?::date` 是 PostgreSQL 语法，SQLite 不支持。
 //    现改为读 SQLite，并使用 T105 写入的 `duration_s`（真实执行耗时）。
 //    无结构化日志（新库 / 从未跑过 tdx2db）→ SKIP，不得计为 PASS（ADR-004）。
+// ⚠️ 阈值 120s → 1200s（ADR-023，2026-11-13）：生产实测全市场日线更新耗时
+//    **571s**（17:00:07 → 17:09:38），原 120s 阈值 ⇒ **每天必 WARN**，
+//    且 C8 是 Requirements §7.1 的硬口径 ⇒ 阈值本身与现实不符。
+//    新值取 1200s（20 分钟）：≈ 实测的 2.1 倍留余量，且**早于** systemd oneshot
+//    的 `TimeoutStartSec=1800`（超 30 分钟会被 unit 直接杀掉 ⇒ 那才是真故障）。
 // ─────────────────────────────────────────────────────────────────
 
 async function checkC8(tradeDate: string): Promise<CheckSummary> {

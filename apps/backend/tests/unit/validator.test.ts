@@ -49,7 +49,7 @@ describe('validator — TOLERANCES 常量', () => {
     expect(TOLERANCES.EX_DIVIDEND_FRESH_DAYS).toBe(7);
     expect(TOLERANCES.CLASS_COUNT_DROP).toBe(0.1);
     expect(TOLERANCES.MAX_OPEN_CLOSE_RATIO).toBe(2);
-    expect(TOLERANCES.MAX_UPDATE_SECONDS).toBe(120);
+    expect(TOLERANCES.MAX_UPDATE_SECONDS).toBe(1200);
     // C9/C10 内容类
     expect(TOLERANCES.QFQ_PRICE_DIFF).toBe(0.01);
     expect(TOLERANCES.GBBQ_DROP_DIFF).toBe(0.005);

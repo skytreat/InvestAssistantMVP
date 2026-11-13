@@ -2,6 +2,14 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { ensureComboTables } from './comboSchema.js';
+import {
+  SYSTEM_LOG_TYPES,
+  SYSTEM_LOG_LEVELS,
+  SYSTEM_LOG_TYPE_LIST_SQL,
+  SYSTEM_LOG_LEVEL_LIST_SQL,
+  type SystemLogType,
+  type SystemLogLevel,
+} from './systemLogTypes.js';
 
 /**
  * ConfigStore 单例
@@ -390,11 +398,9 @@ CREATE TABLE IF NOT EXISTS system_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     log_date TEXT NOT NULL,
     log_type TEXT NOT NULL CHECK (
-        log_type IN ('tdx2db_update', 'datacheck', 'plugin_execute', 'signal_generate',
-                     'dividend_import', 'backup', 'trigger_manual', 'startup', 'trade',
-                     'candidate_migrate', 'alert')
+        log_type IN (${SYSTEM_LOG_TYPE_LIST_SQL})
     ),
-    level TEXT NOT NULL CHECK (level IN ('INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS')),
+    level TEXT NOT NULL CHECK (level IN (${SYSTEM_LOG_LEVEL_LIST_SQL})),
     check_item TEXT,
     message TEXT NOT NULL,
     detail TEXT,
@@ -406,8 +412,8 @@ CREATE INDEX IF NOT EXISTS idx_system_log_date ON system_log(log_date, log_type,
 /** system_log 单条写入的事务参数 */
 type LogInsertArgs = (
   logDate: string,
-  logType: string,
-  level: string,
+  logType: SystemLogType,
+  level: SystemLogLevel,
   message: string,
   detail: string | undefined,
   checkItem: string | undefined,
@@ -415,8 +421,8 @@ type LogInsertArgs = (
 
 /** system_log 批量写入的一行 */
 interface LogBatchEntry {
-  logType: string;
-  level: string;
+  logType: SystemLogType;
+  level: SystemLogLevel;
   message: string;
   detail?: string;
   checkItem?: string;
@@ -613,24 +619,15 @@ export class ConfigStore {
 
   /**
    * 补齐 system_log 的 CHECK(log_type IN (...)) 白名单
-   * 新增 plugin_execute / trade 后，旧建的表 CHECK 约束还没包含它们
+   * 新增 plugin_execute / trade / paper_account 后，旧建的表 CHECK 约束还没包含它们
    * 检测方式：CREATE TABLE system_log_new (完整 DDL) → ALTER RENAME → INSERT SELECT → DROP
+   *
+   * ⚠️ 白名单来自 `systemLogTypes.ts`（唯一真相源）—— 新增 log_type 只需改那一个文件，
+   *   本迁移会自动把旧库重建到新白名单（幂等表重建，见 AGENTS.md）。
    */
   private _ensureSystemLogCheckConstraint(): void {
-    const EXPECTED_TYPES = [
-      'tdx2db_update',
-      'datacheck',
-      'plugin_execute',
-      'signal_generate',
-      'dividend_import',
-      'backup',
-      'trigger_manual',
-      'startup',
-      'trade',
-      'candidate_migrate',
-      'alert',
-    ];
-    const EXPECTED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
+    const EXPECTED_TYPES = [...SYSTEM_LOG_TYPES];
+    const EXPECTED_LEVELS = [...SYSTEM_LOG_LEVELS];
 
     try {
       const current = this._db
@@ -1078,8 +1075,8 @@ export class ConfigStore {
    *   实测这条路径单独就要 ~1.6s。
    */
   writeLog(
-    logType: string,
-    level: string,
+    logType: SystemLogType,
+    level: SystemLogLevel,
     message: string,
     detail?: string,
     checkItem?: string,
@@ -1132,15 +1129,22 @@ export class ConfigStore {
   /** 单条写入的独立事务（事务包装器只创建一次，反复调用） */
   private _logInsertTx(
     logDate: string,
-    logType: string,
-    level: string,
+    logType: SystemLogType,
+    level: SystemLogLevel,
     message: string,
     detail: string | undefined,
     checkItem: string | undefined,
   ): void {
     if (!this._logInsertTransaction) {
       this._logInsertTransaction = this._db.transaction(
-        (d: string, t: string, l: string, m: string, det: string | undefined, ci: string | undefined) => {
+        (
+          d: string,
+          t: SystemLogType,
+          l: SystemLogLevel,
+          m: string,
+          det: string | undefined,
+          ci: string | undefined,
+        ) => {
           this._logStmt().run(d, t, l, ci ?? null, m, det ?? null);
         },
       );
