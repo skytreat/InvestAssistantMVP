@@ -328,4 +328,27 @@ export function assertPaperSchemaIsolation(db: Database.Database): void {
 export function createPaperSchema(db: Database.Database): void {
   db.exec(PAPER_SCHEMA_SQL);
   assertPaperSchemaIsolation(db);
+  ensurePaperOrderExitReasonColumn(db);
+  ensurePaperOrderStatusIndex(db);
+}
+
+/** 幂等：给 paper_order 加 exit_reason 列 */
+function ensurePaperOrderExitReasonColumn(db: Database.Database): void {
+  const tableInfo = db.prepare('PRAGMA table_info(paper_order)').all() as Array<{ name: string }>;
+  const hasExitReason = tableInfo.some((col) => col.name === 'exit_reason');
+  if (!hasExitReason) {
+    db.exec(
+      'ALTER TABLE paper_order ADD COLUMN exit_reason TEXT CHECK (exit_reason IS NULL OR exit_reason IN (' +
+        "'take-profit', 'stop-loss', 'momentum-decay', 'defensive-fallback'," +
+        "'holding-retained', 'candidate-top', 'weak-period-exit'," +
+        "'drop-from-pool', 'out-of-candidate', 'rebalance', 'rebalance-replace'," +
+        "'exit-of-backtest'" +
+        '))',
+    );
+  }
+}
+
+/** 幂等：补 idx_paper_order_status 索引 */
+function ensurePaperOrderStatusIndex(db: Database.Database): void {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_paper_order_status ON paper_order (account_id, status)');
 }

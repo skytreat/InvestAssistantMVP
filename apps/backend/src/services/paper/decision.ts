@@ -223,6 +223,33 @@ export function paperSignalId(accountId: number, decisionDate: string, assetCode
   return `psig_${accountId}_${decisionDate}_${assetCode}`;
 }
 
+/**
+ * 加载历史 filled 订单（用于回放 strategy.onFill）
+ *
+ * 只返回 `replayStart` 之后的成交（影子期的成交不参与回放）
+ */
+function loadFilledOrders(db: Database.Database, accountId: number, replayStart: string) {
+  const rows = db
+    .prepare(
+      `
+      SELECT asset_code, side, filled_qty, fill_price, fee, exit_reason, trade_date
+      FROM paper_order
+      WHERE account_id = ? AND status = 'filled' AND is_deleted = 0 AND trade_date >= ?
+      ORDER BY trade_date ASC
+    `,
+    )
+    .all(accountId, replayStart) as Array<{
+    asset_code: string;
+    side: 'buy' | 'sell';
+    filled_qty: number;
+    fill_price: number;
+    fee: number;
+    exit_reason: string | null;
+    trade_date: string;
+  }>;
+  return rows;
+}
+
 /** 影子决策主流程 */
 export async function runPaperDecision(
   db: Database.Database,
@@ -324,6 +351,21 @@ export async function runPaperDecision(
   // ── 回放：重建策略内部状态（中间日空组合，仅最终日用检查点组合）──
   const strategy: Strategy = resolvePaperStrategy(account.strategy_id, account.strategy_version);
   strategy.init?.({ params });
+
+  // A1：回放前先喂历史 filled 订单（用于 dualmomentum 的 entryDate/entryFillPrice/highWater/cooldown）
+  const filledOrders = loadFilledOrders(db, accountId, replayStart);
+  for (const o of filledOrders) {
+    if (!strategy.onFill) continue; // wufu / combo / buy-and-hold 无 onFill，零影响
+    strategy.onFill({
+      date: o.trade_date,
+      symbol: o.asset_code,
+      side: o.side,
+      qty: o.filled_qty,
+      price: o.fill_price,
+      fee: o.fee,
+      reason: o.exit_reason ?? 'unknown',
+    });
+  }
 
   const emptyPortfolio = new Portfolio(account.cash);
   const checkpointPortfolio = new Portfolio(account.cash);

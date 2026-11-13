@@ -299,7 +299,7 @@ function writeSettleDay(args: {
   const updateOrder = db.prepare(
     `UPDATE paper_order
         SET status = ?, side = ?, filled_qty = ?, fill_price = ?, filled_notional = ?,
-            fee = ?, slippage_cost = ?, unfilled_reason = ?, unfilled_detail = ?,
+            fee = ?, slippage_cost = ?, exit_reason = ?, unfilled_reason = ?, unfilled_detail = ?,
             settled_at = ?, updated_at = ?
       WHERE id = ?`,
   );
@@ -379,7 +379,8 @@ function writeSettleDay(args: {
           Math.abs(fill.qty * fill.price),
           fill.fee,
           fill.slippageCost,
-          null,
+          fill.reason ?? null, // exit_reason：undefined → null（符合 CHECK）
+          null, // unfilled_reason
           null,
           nowText,
           nowText,
@@ -400,6 +401,7 @@ function writeSettleDay(args: {
           0,
           0,
           0,
+          null, // exit_reason
           skip.reason,
           skip.detail ?? null,
           nowText,
@@ -418,6 +420,7 @@ function writeSettleDay(args: {
         0,
         0,
         0,
+        null, // exit_reason
         null,
         null,
         nowText,
