@@ -955,6 +955,12 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 
 ### 13.17 基准趋势破位 → 切防御（§13.16 后续，新策略语义，2026-11-12 补测）
 
+> ✅ **已采纳（ADR-024，owner 2026-11-12 选 B）**：缺省值已切为
+> `benchmarkBreakoutThreshold=-0.5` + `defensiveSymbol='sh511260'`，
+> 新基线 `--check-baseline` = **`final=2,189,713.16 / cum=118.97% / cagr=10.57% / mdd=18.97% / trades=4680`**
+> （ADR-022 基线 `final=2,363,029.30 / cagr=11.65% / mdd=26.46% / trades=4657`；
+> 回退：显式传 `defensiveSymbol=''` + `benchmarkBreakoutThreshold=0`）。
+
 > §13.16 判定「B1/B2 路径否决」的根因是：**低相关资产（债券）进不了为股票设计的动量过滤**。
 > 本节测「**为防御腿单独设计一条不依赖标的动量的入场规则**」——
 > 即 **基准自身的趋势**作为切换信号（§12.6「加一层择时」的正经版本）。
@@ -1032,3 +1038,33 @@ BENCHMARK + POOL_ORDER`，**不含实验用的 `sh511260`** ⇒ 防御态下单�
 
 `--check-baseline` 仍 `final=2,363,029.30 / trades=4657`
 （缺省 `benchmarkBreakoutThreshold=0` = 不启用，基线路径不变）。
+
+### 13.18 基线切换：ADR-024 采纳后的锚点（2026-11-12）
+
+> owner 选定选项 B 后，`DUALMOMENTUM_DEFAULTS` 的缺省值从 ADR-022 基线切到
+> 「跑赢档 + vol(0.12) + 基准破位切防御(th=−0.5 + 十年国债 ETF)」。
+
+| 项 | DAS 锁定基线 | ADR-022（跑赢档） | **ADR-024（当前基线）** |
+|---|---|---|---|
+| `final` | 1,189,224.15 | 2,363,029.30 | **2,189,713.16** |
+| `cum` | 18.92% | 136.30% | **118.97%** |
+| `cagr` | 2.25% | 11.65% | **10.57%** |
+| `mdd` | 13.11% | 26.46% | **18.97%** |
+| `trades` | 1780 | 4657 | **4680** |
+| Calmar | 0.17 | 0.44 | **0.56** |
+| 超额 vs `sh510300` | −3.79pp | +5.63pp | **+4.55pp** |
+
+**回退方式**（显式传参即可，无需改代码）：
+
+```ts
+{ defensiveSymbol: '', benchmarkBreakoutThreshold: 0 }   // → 恢复 ADR-022 语义
+```
+
+**本次连带修复的三处工程问题**（详见 ADR-024 §6）：
+
+1. `dmDiagnose.loadPanel()` 漏装实验标的 ⇒ 防御态下单成交不了 ⇒ **静默退化成切现金**；
+2. `dmSweep.loadPanel()` **同样**漏装 ⇒ 切缺省后 `--check-baseline` 报出虚高的 `11.73% / 16.03%`；
+   ⇒ 两者共用新增的 `optimize/marketData.ts` 的 `collectStrategyExtraSymbols()`
+   （**跟随 `DUALMOMENTUM_DEFAULTS` 自动收集**），不会再各漏一次；
+3. `defensiveSymbol` 的 resolve 原为「空串回落默认值」⇒ **无法显式关闭**防御回退
+   ⇒ 改为「**键存在即用之**」。

@@ -18,6 +18,7 @@ import { loadUniversePanel } from '../universe/dynamicPanel.js';
 import { loadUniverseProvider } from '../universe/provider.js';
 import { loadCorporateActions } from '../corporateActions.js';
 import { createWufuRotationStrategy } from '../strategies/wufuRotation/index.js';
+import { DUALMOMENTUM_DEFAULTS } from '../strategies/dualmomentum/params.js';
 import type { BacktestData } from '../engine.js';
 import type { UniverseResolver } from '../universe/provider.js';
 
@@ -99,4 +100,35 @@ export async function loadSweepData(options: LoadSweepDataOptions): Promise<Swee
     divisor,
     topN,
   };
+}
+
+/**
+ * 收集「策略会下单、但不在固定池里」的标的（**装载面板必须包含它们**）。
+ *
+ * 🔴 **为什么必须自动收集**（2026-11-12 实测踩坑，ADR-024 §6）：
+ *   `dmSweep.loadPanel()` / `dmDiagnose.loadPanel()` 原本只装
+ *   `FIXED_ETF_POOL + GLOBAL_ETF_POOL + DEFENSIVE_ETF + BENCHMARK + POOL_ORDER`，
+ *   **不含** 防御回退标的（如 `sh511260`）⇒ 防御态下单**成交不了**
+ *   ⇒ 实际退化成**切现金**，指标照样算得出来、结论照样错
+ *   （首轮实测报出虚高的 CAGR 11.73% / MDD 16.03%，真值是 10.57% / 18.97%）。
+ *
+ * ⇒ 凡实验/默认参数里会下单的标的，都必须进装载清单。
+ *
+ * @param extraSymbols 额外要装的标的（如 dmDiagnose 从实验组收集的）
+ */
+export function collectStrategyExtraSymbols(extraSymbols: readonly string[] = []): string[] {
+  const out = new Set<string>();
+  for (const s of extraSymbols) if (s.trim() !== '') out.add(s.trim());
+  // 默认参数里的防御标的 + 池扩展标的（跟随 DUALMOMENTUM_DEFAULTS，改一处即生效）
+  const def = DUALMOMENTUM_DEFAULTS.defensiveSymbol.trim();
+  if (def !== '') out.add(def);
+  try {
+    const ext: unknown = JSON.parse(DUALMOMENTUM_DEFAULTS.poolExtension);
+    if (Array.isArray(ext)) {
+      for (const s of ext) if (typeof s === 'string' && s.trim() !== '') out.add(s.trim());
+    }
+  } catch {
+    /* 非法 JSON 忽略 */
+  }
+  return [...out];
 }

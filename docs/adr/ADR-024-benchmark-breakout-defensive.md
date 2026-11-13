@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| **状态** | 🟡 **机制已落地 + 实测完成；采纳与否待 owner 签字**（缺省参数**未改**） |
+| **状态** | ✅ **已接受并采纳**（2026-11-12，owner 选定**选项 B**；缺省值已切 + 已重跑基线） |
 | **落地** | `strategies/dualmomentum/params.ts`（`benchmarkBreakoutThreshold` / `benchmarkBreakoutHysteresis`）+ `strategies/dualmomentum/index.ts`（破位状态机）+ `optimize/dmDiagnose.ts`（装载层自动收集实验标的） |
 | **关联文档** | `docs/audit/dualmomentum-l1-alignment.md` §12.6（档 4 择时层）、§13.8（基准软化，**依据已更正**）、§13.16（B1/B2 否决与根因）、§13.17（本次实测） |
 | **取代** | 不取代 ADR-022（跑赢档基线）；**在 ADR-022 的基线上叠加一层 opt-in 开关** |
@@ -64,21 +64,40 @@
 
 ---
 
-## 3. 待 owner 裁决：目标函数的取舍
+## 3. owner 裁决：选项 **B**（采纳）
 
-本 ADR **不改任何默认值**。采纳与否是一个**目标函数层面的取舍**，必须由 owner 拍板：
+owner 于 2026-11-12 选定 **选项 B**：采纳破位切防御（`threshold=-0.5` + 十年国债 ETF `sh511260`）。
 
-| 选项 | 收益 | 代价 |
+| 选项 | 收益 | 代价 | 裁决 |
+|---|---|---|---|
+| A. 不采纳 | 维持 CAGR 11.65% / 超额 **+5.63pp** | Calmar 停在 0.44、MDD 26.46% | ❌ 未选 |
+| **B. 采纳 th=−0.5 + 债券** | MDD 26.46% → **18.97%**（−7.49pp）、Calmar 0.44 → **0.56**（**+27%**） | CAGR 11.65% → **10.57%**（−1.08pp）、超额 +5.63pp → **+4.55pp** | ✅ **已采纳** |
+
+> ⚠️ owner 已知悉并接受：超额从 +5.63pp 降到 +4.55pp（**仍跑赢 `sh510300`**），
+> 以 1.08pp CAGR 换 7.49pp MDD。
+
+### 3.1 采纳后的新基线锚点（重跑 `--check-baseline` 实测）
+
+```console
+$ DUCKDB_PATH=/opt/invol/quotes.duckdb \
+    node_modules/.bin/tsx apps/backend/src/services/backtest/optimize/dmSweep.ts --check-baseline
+BASELINE final=2189713.16 cum=118.97% cagr=10.57% mdd=18.97% trades=4680 equityDays=1891
+```
+
+| 项 | ADR-022 基线 | **ADR-024 新基线** |
 |---|---|---|
-| **A. 不采纳**（当前状态） | 维持 CAGR 11.65% / 超额 **+5.63pp** | Calmar 停在 0.44、MDD 26.46% |
-| **B. 采纳 th=−0.5 + 债券** | MDD 26.46% → **18.97%**（−7.49pp）、Calmar 0.44 → **0.56**（**+27%**） | CAGR 11.65% → **10.57%**（−1.08pp）、超额 +5.63pp → **+4.55pp** |
+| `final` | 2,363,029.30 | **2,189,713.16** |
+| `cum` | 136.30% | **118.97%** |
+| `cagr` | 11.65% | **10.57%** |
+| `mdd` | 26.46% | **18.97%** |
+| `trades` | 4657 | **4680** |
+| Calmar | 0.44 | **0.56** |
+| 超额 vs `sh510300` | +5.63pp | **+4.55pp** |
 
-> ⚠️ **关键**：ADR-022 定的目标函数是「**跑赢 `sh510300`**」（超额 +5.63pp）。
-> 选项 B 下超额**降到 +4.55pp** —— 仍跑赢，但**目标达成度下降**。
-> ⇒ 若 owner 的目标是「跑赢」且以超额为唯一尺度，**A 更优**；
-> 若目标是「跑赢 + 可接受的最大回撤」（风险调整后收益），**B 更优**（Calmar 是风险调整后的收益尺度）。
+### 3.2 回退方式
 
-**owner 选择后，本 ADR 补签字并把缺省值切过去 + 重跑 `--check-baseline` 锚新基线。**
+显式传 `defensiveSymbol=''` + `benchmarkBreakoutThreshold=0` 即恢复 ADR-022 基线语义
+（⚠️ `defensiveSymbol` 的 resolve 已改为「键存在即用之」——空串才能真正关闭，见 §6.3）。
 
 ---
 
@@ -111,6 +130,8 @@
 
 | # | 问题 | 处置 |
 |---|---|---|
+| 3 | **`dmSweep.loadPanel()` 同样漏装**（只装固定池）⇒ 切缺省后 `--check-baseline` 报出 `11.73% / 16.03%`（切现金），与 dmDiagnose 未修时一致 | 与 #1 一并修：新增 `optimize/marketData.ts` 的 `collectStrategyExtraSymbols()`，**跟随 `DUALMOMENTUM_DEFAULTS` 自动收集**防御/池扩展标的；`dmSweep` + `dmDiagnose` 共用 ⇒ 不会再各漏一次 |
+| 2 | `defensiveSymbol` 的 resolve 原为「空串回落默认值」⇒ **无法显式关闭**防御回退（ADR-022 对照组因此跑出错误数字） | 改为「**键存在即用之**」：显式传 `''` 即关闭 |
 | 1 | **`dmDiagnose.loadPanel()` 漏装实验标的** —— 只装 `FIXED_ETF_POOL + GLOBAL_ETF_POOL + DEFENSIVE_ETF + BENCHMARK + POOL_ORDER`，**不含** `sh511260` ⇒ 防御态下单成交不了 ⇒ **实际退化成「切现金」**，首轮实测报出虚高的 `CAGR 11.73% / MDD 16.03%` | 新增 `collectExperimentSymbols()`，**自动从 `BACKTEST_GROUPS` 收集**所有 `defensiveSymbol` / `poolExtension` 标的加入装载；修正后 `CAGR 10.57% / MDD 18.97%`，与独立复核（`loadSweepData` 全市场装载）**一致** |
 | 2 | §13.8 的「基准动量 1,891 天全 > 0」**与实测不符**（实测 52.1% 为负） | §13.17.1 更正记载；**结论**（基准软化零效果）经复测仍成立，但依据改为「soft 放行后仍过不了其余过滤条件」 |
 
@@ -123,5 +144,5 @@
 
 | 角色 | 决定 | 日期 |
 |---|---|---|
-| owner（目标函数取舍 + 是否切换缺省） | ⏳ **待定**（选项 A / B） | — |
-| 实施 agent（机制落地 + 实测 + ADR 起草） | ADR-024 机制已交付，缺省未改 | 2026-11-12 |
+| owner（目标函数取舍 + 是否切换缺省） | ✅ **选项 B（采纳）**，已知悉并接受超额 +5.63pp → +4.55pp | 2026-11-12 |
+| 实施 agent（机制落地 + 实测 + ADR 起草 + 缺省切换 + 重跑基线） | ADR-024 已落地，新锚点 `final=2189713.16 / 4680 笔` | 2026-11-12 |

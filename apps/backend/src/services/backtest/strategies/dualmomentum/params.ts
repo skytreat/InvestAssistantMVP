@@ -215,10 +215,13 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   symbolWeights: '{}',
   /** 缺省 '[]' = 只用 DAS 锁定 7 只池，基线不变 */
   poolExtension: '[]',
-  /** 缺省 '' = 无候选时保持现金，基线不变 */
-  defensiveSymbol: '',
-  /** 缺省 0 = 基准破位切防御关闭，基线不变 */
-  benchmarkBreakoutThreshold: 0,
+  // ── §13.17 / ADR-024：基准趋势破位 → 切防御（owner 2026-11-12 选 B 采纳）──
+  // 防御腿 = 十年国债 ETF（与 A 股池相关 −0.28，实测 §13.16 对比优于货币 ETF）
+  // 破位阈值 −0.5（样本期触发 69 天 / 切换 19 次）
+  // 效果：CAGR 11.65%→10.57%（−1.08pp）/ MDD 26.46%→18.97%（−7.49pp）/ Calmar 0.44→0.56
+  // 回退：显式传 defensiveSymbol='' + benchmarkBreakoutThreshold=0 即恢复 ADR-022 基线
+  defensiveSymbol: 'sh511260',
+  benchmarkBreakoutThreshold: -0.5,
   /** 缺省 0.3 = 切回股票需基准动量回升到 threshold+0.3 */
   benchmarkBreakoutHysteresis: 0.3,
 };
@@ -882,9 +885,12 @@ export function resolveDualMomentumParams(
     symbolWeights: normalizeSymbolWeightsJson(src, d.symbolWeights),
     // §13.16 B1/B2：缺省 '[]' = 只用 DAS 锁定 7 只池；防御回退缺省 '' = 无候选时保持现金
     poolExtension: normalizePoolExtensionJson(src, d.poolExtension),
+    // ⚠️ 「键存在即用之」：显式传 '' 表示**关闭防御回退**（否则空串会回落默认值，无法关闭）
     defensiveSymbol:
-      typeof src.defensiveSymbol === 'string' && src.defensiveSymbol.trim() !== ''
-        ? src.defensiveSymbol.trim()
+      src.defensiveSymbol !== undefined && src.defensiveSymbol !== null
+        ? typeof src.defensiveSymbol === 'string'
+          ? src.defensiveSymbol.trim()
+          : d.defensiveSymbol
         : d.defensiveSymbol,
     // §13.17 / ADR-024：基准破位切防御；缺省 0 = 关闭（0 表示「不启用」而非「WSM<0 即切」）
     benchmarkBreakoutThreshold: num(src, 'benchmarkBreakoutThreshold', d.benchmarkBreakoutThreshold),
