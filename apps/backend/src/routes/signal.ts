@@ -9,6 +9,7 @@ import {
   getTradeDate,
   resolveDefaultSignalTradeDate,
   resolveSignalCooldownBars,
+  resolveSignalScopeSets,
 } from '../services/signalService.js';
 import type { CooldownRowFields, SignalLinkFields } from '../services/signalService.js';
 import { batchGetSymbolNames } from '../services/marketData.js';
@@ -59,6 +60,7 @@ async function attachAssetNames<T extends object>(
  *   &plugin_id=rsi_oversold
  *   &direction=buy
  *   &exclude_risk=1               排除风险类信号（sub_category='risk'；Top5 用）
+ *   &scope=holdings|watch         T154/ADR-027 分组视图（缺省 = 全量；行级 +scope/is_cash 字段）
  *   &page=1&page_size=20
  *
  * T54：所有筛选值一律走预编译参数化绑定（`?` 占位），禁止把入参拼进 SQL 文本；
@@ -186,6 +188,33 @@ export async function registerSignalRoutes(app: FastifyInstance) {
         where.push(`(sub_category IS NULL OR sub_category <> 'risk')`);
       }
 
+      /**
+       * T154（ADR-027，SDD_v3 §10.4.4）：分组视图 scope
+       *
+       * - `scope=holdings` ⇒ 该用户净持仓 > 0 的标的（`calcAllPositions` core 口径，ADR-021 同源）；
+       * - `scope=watch`    ⇒ 自选（`user_asset_rel` watch）**且排除持仓组**（INV-S3-28 不双显）；
+       * - 缺省 = 现状全量（向后兼容，但每行仍回填 `scope` / `is_cash` 字段）。
+       *
+       * ⚠️ 组集合算出后 WHERE 追加 **1 次 `IN`**（SDD §5.3 批量约束）；
+       *    组为空 ⇒ `1 = 0`（0 行，不再查信号表数据）。
+       */
+      let requestedScope: 'holdings' | 'watch' | null = null;
+      const scopeRaw = q.scope;
+      if (scopeRaw !== undefined && scopeRaw !== '') {
+        if (scopeRaw !== 'holdings' && scopeRaw !== 'watch') {
+          return reply.code(400).send(fail(400, 'PARAM_INVALID', 'scope 只能是 holdings / watch'));
+        }
+        requestedScope = scopeRaw;
+        const sets = resolveSignalScopeSets(user.sub);
+        const target = sets[requestedScope];
+        if (target.length === 0) {
+          where.push('1 = 0');
+        } else {
+          where.push(`asset_code IN (${target.map(() => '?').join(',')})`);
+          params.push(...target);
+        }
+      }
+
       const whereSql = 'WHERE ' + where.join(' AND ');
       const count = (
         db.prepare(`SELECT COUNT(*) AS c FROM user_strategy_signal ${whereSql}`).get(...params) as {
@@ -247,8 +276,53 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       // 标的名称（名称(代码) 展示用；缺失时前端回退为代码）
       const named = await attachAssetNames(annotated);
 
+      /**
+       * T154（ADR-027）：行级 `scope`（该标的当前归属 holdings / watch / null）+
+       * `is_cash`（`asset_class='cash'`，无记录 = false，与 getAssetClass 回落 risk 同口径）。
+       *
+       * - 缺省查询：组集合算一次，按行回填归属；
+       * - `scope` 查询：WHERE 已保证本页全部行都在请求组内，直接按请求值回填（不重算）。
+       * 现金判定 **1 次 IN**（SDD §5.3 批量约束）。
+       */
+      const codeOfRow = (r: (typeof named)[number]): string =>
+        typeof r.asset_code === 'string' ? r.asset_code : '';
+      const holdingsSet = new Set<string>();
+      const watchSet = new Set<string>();
+      if (requestedScope === null) {
+        const sets = resolveSignalScopeSets(user.sub);
+        sets.holdings.forEach((c) => holdingsSet.add(c));
+        sets.watch.forEach((c) => watchSet.add(c));
+      }
+      const rowCodes = [...new Set(named.map(codeOfRow).filter((c) => c !== ''))];
+      const cashSet =
+        rowCodes.length > 0
+          ? new Set(
+              (
+                db
+                  .prepare(
+                    `SELECT symbol FROM asset_class WHERE asset_class = 'cash' AND symbol IN (${rowCodes
+                      .map(() => '?')
+                      .join(',')})`,
+                  )
+                  .all(...rowCodes) as Array<{ symbol: string }>
+              ).map((r) => r.symbol),
+            )
+          : new Set<string>();
+      const scopedRows = named.map((r) => {
+        const code = codeOfRow(r);
+        const scopeOf =
+          requestedScope !== null
+            ? requestedScope
+            : holdingsSet.has(code)
+              ? 'holdings'
+              : watchSet.has(code)
+                ? 'watch'
+                : null;
+        return { ...r, scope: scopeOf, is_cash: cashSet.has(code) };
+      });
+
       reply.send(
-        ok(named, {
+        ok(scopedRows, {
           pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
           // F 域 P0-1：把「实际生效的交易日 + 来源 + 行情最新日」下发，前端不再自己猜今天
           trade_date: effectiveTradeDate,
@@ -257,6 +331,8 @@ export async function registerSignalRoutes(app: FastifyInstance) {
           // F6：展示层冷却合并的窗口根数（前端据此写旁注）
           cooldown_bars: cooldownBars,
           display_dedupe: dedupe,
+          // T154：回显请求的 scope（null = 缺省全量）
+          scope: requestedScope,
         }),
       );
     } catch (err) {

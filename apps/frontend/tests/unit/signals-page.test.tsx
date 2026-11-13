@@ -6,6 +6,14 @@ import Signals from '../../src/pages/Signals';
 import { mockResponse, renderWithRouter } from '../helpers';
 import { COLORS } from '../../src/theme/tokens';
 import { useUserStore } from '../../src/store/user';
+import { useWatchStore } from '../../src/store/watch';
+
+// main #172：操作列「加自选」按钮文案随 useWatchStore（已自选 ⇒「已自选」）。
+// zustand 全局 store 不自动重置 —— CI shuffle 顺序下 watch 用例先跑会留脏状态，
+// 统一钉住干净状态（未自选 ⇒ 恒显「加自选」），避免跨文件顺序依赖。
+beforeEach(() => {
+  useWatchStore.setState({ codes: [], loaded: true, loading: false, pendingCode: null, message: null });
+});
 
 /**
  * T72 · Signals 页增强（页面级用例）
@@ -64,6 +72,8 @@ interface SignalFixture {
   linked_trade_id?: number | null;
   link_broken?: boolean;
   trade_date: string;
+  /** T154（ADR-027）：现金类标注（`asset_class='cash'`）*/
+  is_cash?: boolean;
 }
 
 /** 后端默认日期口径元信息（F 域 P0-1）：最近有信号日 —— 前端不再自己拼「今天」 */
@@ -128,6 +138,14 @@ function lastParams(): Record<string, unknown> {
   return last?.[1]?.params ?? {};
 }
 
+/**
+ * 取「数据行」（T154 分组视图后：分组头行只含 `<th scope="rowgroup">`、无 cell role，
+ * 按「含 cell role」过滤）
+ */
+function dataRows(): HTMLElement[] {
+  return screen.getAllByRole('row').filter((r) => within(r).queryAllByRole('cell').length > 0);
+}
+
 const BUY_ROW: SignalFixture = {
   id: 1,
   asset_code: 'sh600000',
@@ -154,7 +172,8 @@ describe('T72 ① · 进页自动加载', () => {
     const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
     // F1：分级 tab 默认「强」→ 参数里固定带 grade=strong（用户口径：默认只显强）
-    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
     expect(params).not.toHaveProperty('trade_date');
     // 「全部策略 / 全部方向」⇒ 不预设这些过滤条件
     expect(params).not.toHaveProperty('plugin_id');
@@ -372,13 +391,13 @@ describe('G5.5 · asset_code / start_date / end_date 筛选 + 升序', () => {
     renderWithRouter(<Signals />);
 
     await screen.findByRole('table');
-    const dataRows = screen.getAllByRole('row').slice(1);
-    // 列序：代码(0) 策略(1) 方向(2) 分级(3) 强度(4) 标签(5) 交易日期(6) 操作(7)
-    const dates = dataRows.map((r) => within(r).getAllByRole('cell')[6].textContent);
+    const dataRowsList = dataRows();
+    // 列序：代码(0) 策略(1) 方向(2) 分级(3) 强度(4) 标签(5) 交易日期(6) 状态(7) 操作(8)
+    const dates = dataRowsList.map((r) => within(r).getAllByRole('cell')[6].textContent);
     expect(dates).toEqual(['2026-10-01', '2026-10-12', '2026-10-20']);
 
-    // 前端**没有**按方向重排（后端给什么顺序就渲染什么顺序）
-    const directions = dataRows.map((r) => within(r).getAllByRole('cell')[2].textContent);
+    // 前端**没有**按方向重排（后端给什么顺序就渲染什么顺序；组内等强度稳定排序保持原序）
+    const directions = dataRowsList.map((r) => within(r).getAllByRole('cell')[2].textContent);
     expect(directions).toEqual(['▼ 卖出', '▲ 买入', '· 持仓']);
   });
 });
@@ -738,16 +757,109 @@ describe('标的名称 + K 线超链接', () => {
     installPagedMock([{ rows: [{ ...BUY_ROW, asset_name: '浦发银行' }], totalPages: 1, total: 1 }]);
     renderWithRouter(<Signals />);
 
-    const link = await screen.findByRole('link', { name: '浦发银行(sh600000)' });
-    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
+    // T154：分组头也渲染标的链接（同一标的 2 处），任一即可
+    const links = await screen.findAllByRole('link', { name: '浦发银行(sh600000)' });
+    expect(links.length).toBeGreaterThanOrEqual(1);
+    expect(links[0]).toHaveAttribute('href', '/kline?symbol=sh600000');
   });
 
   it('名称缺失时回退为代码，仍链接到 K 线页', async () => {
     installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
     renderWithRouter(<Signals />);
 
-    const link = await screen.findByRole('link', { name: 'sh600000' });
-    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
+    const links = await screen.findAllByRole('link', { name: 'sh600000' });
+    expect(links.length).toBeGreaterThanOrEqual(1);
+    expect(links[0]).toHaveAttribute('href', '/kline?symbol=sh600000');
+  });
+});
+
+/** T154（ADR-027，SDD_v3 §10.4.4）· 分组视图：组内聚合 + 组合优先综合结论 + 现金类标注 */
+describe('T154 · 分组视图组内聚合与综合结论', () => {
+  const COMBO_BUY = {
+    ...BUY_ROW,
+    id: 21,
+    plugin_id: 'combo:combo_1',
+    label: 'MACD金叉+放量',
+    strength: 0.55,
+    trade_date: '2026-10-13',
+  };
+  const COMBO_SELL = { ...COMBO_BUY, id: 22, direction: 'sell', label: '组合卖出' };
+
+  it('每标的一个 `<tbody>` + 分组头（`<th colSpan=9 scope=rowgroup>`，归属 + 现金类标注）', async () => {
+    installPagedMock([{ rows: [{ ...COMBO_BUY, is_cash: true }], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    const tbody = await screen.findByTestId('signals-group-sh600000');
+    expect(tbody.tagName).toBe('TBODY');
+    const header = within(tbody).getByTestId('signals-group-header-sh600000');
+    const rowgroup = within(header).queryByRole('rowgroup') as HTMLElement | null;
+    if (!rowgroup) {
+      // jsdom 下 role=rowgroup 的暴露不稳定 ⇒ 直接断言 DOM 结构
+      expect(header.querySelector('th[scope="rowgroup"][colspan="9"]')).not.toBeNull();
+    } else {
+      expect(rowgroup).toHaveAttribute('colSpan', '9');
+    }
+    expect(header).toHaveTextContent('持仓组');
+    expect(header).toHaveTextContent('现金类');
+  });
+
+  it('组内排序：组合行置顶，其余按强度降序（单条件 0.9 排在组合 0.55 之后）', async () => {
+    installPagedMock([
+      { rows: [BUY_ROW, { ...COMBO_BUY }], totalPages: 1, total: 2 }, // BUY_ROW strength=0.62
+    ]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByRole('table');
+    const pluginIds = dataRows().map((r) => within(r).getAllByRole('cell')[1].textContent);
+    expect(pluginIds[0]).toContain('combo:combo_1');
+    expect(pluginIds[1]).toContain('rsi_oversold');
+  });
+
+  it('综合结论：无组合 ⇒「无组合结论」（不得由单条件合成）', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    const conclusion = await screen.findByTestId('signals-group-conclusion-sh600000');
+    expect(conclusion).toHaveTextContent('无组合结论');
+  });
+
+  it('综合结论：同标的组合 buy+sell ⇒ 卖出优先（细则⑦）', async () => {
+    installPagedMock([{ rows: [{ ...COMBO_BUY }, COMBO_SELL], totalPages: 1, total: 2 }]);
+    renderWithRouter(<Signals />);
+
+    const conclusion = await screen.findByTestId('signals-group-conclusion-sh600000');
+    expect(conclusion).toHaveTextContent('◆ 综合结论：卖出');
+    expect(conclusion).toHaveTextContent('买卖冲突 ⇒ 卖出优先');
+  });
+
+  it('过期（置灰）组合行不参与结论：过期组合 buy + 当日组合 sell ⇒ 结论=卖出', async () => {
+    installPagedMock([
+      {
+        rows: [{ ...COMBO_BUY, trade_date: '2026-01-02', expires_at: '2026-01-05' }, COMBO_SELL],
+        totalPages: 1,
+        total: 2,
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    const conclusion = await screen.findByTestId('signals-group-conclusion-sh600000');
+    expect(conclusion).toHaveTextContent('◆ 综合结论：卖出');
+    // 过期行仍渲染（置灰不删）
+    expect(screen.getByTestId('signals-row-expired')).toBeInTheDocument();
+  });
+
+  it('切「自选组」⇒ 请求带 scope=watch（默认持仓组 ⇒ scope=holdings）', async () => {
+    const user = userEvent.setup();
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    await waitFor(() => expect(signalCalls()).toHaveLength(1));
+    expect(lastParams()).toMatchObject({ scope: 'holdings' });
+
+    await user.click(screen.getByTestId('signals-group-tab-watch'));
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
+    expect(lastParams()).toMatchObject({ scope: 'watch', page: 1 });
+    expect(screen.getByTestId('signals-group-tab-watch')).toHaveAttribute('aria-pressed', 'true');
   });
 });
 

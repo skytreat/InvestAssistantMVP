@@ -4,6 +4,14 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Signals from '../../src/pages/Signals';
 import { mockResponse, renderWithRouter } from '../helpers';
+import { useWatchStore } from '../../src/store/watch';
+
+// main #172：操作列新增「加自选」按钮（文案随 useWatchStore：已自选 ⇒「已自选」）。
+// zustand 全局 store 不自动重置 —— CI shuffle 顺序下 watch 用例先跑会留脏状态，
+// 使本文件的精确单元格文案断言随机失败。统一钉住干净状态（未自选 ⇒ 恒显「加自选」）。
+beforeEach(() => {
+  useWatchStore.setState({ codes: [], loaded: true, loading: false, pendingCode: null, message: null });
+});
 
 /**
  * T61 · Signals 前端用例（信号页的键盘可达性与键盘操作）
@@ -75,10 +83,19 @@ vi.mock('../../src/api/client', () => ({ api: { get: getMock } }));
 interface SignalFixture {
   id: number;
   symbol: string;
+  /** T154 起：后端字段名是 `asset_code`（`symbol` 是旧别名）*/
+  asset_code?: string;
   plugin_id: string;
+  plugin_category?: string;
   direction: string;
   label: string;
   trade_date: string;
+  strength?: number | null;
+  asset_name?: string | null;
+  /** F1：有效期（过期置灰）*/
+  expires_at?: string | null;
+  /** T154（ADR-027）：现金类标注（`asset_class='cash'`）*/
+  is_cash?: boolean;
 }
 
 /** 默认信号行（方向 buy → 表格显示「买入」）*/
@@ -119,6 +136,14 @@ function installApiMock(rows: SignalFixture[] = [DEFAULT_ROW]): void {
 /** 只看 `/signal` 的请求（`/market/latest-date` 不算在信号查询次数里）*/
 function signalCalls(): Array<[string, ApiGetConfig?]> {
   return getMock.mock.calls.filter(([url]) => url === '/signal');
+}
+
+/**
+ * 取「数据行」`<tr>`（T154 分组视图后：表头行 / 分组头行（只含 `<th scope="rowgroup">`，
+ * 无 cell role）都在 `<tr>` 里，按「含 cell role」过滤出真正的数据行）
+ */
+function dataRows(): HTMLElement[] {
+  return screen.getAllByRole('row').filter((r) => within(r).queryAllByRole('cell').length > 0);
 }
 
 /**
@@ -221,7 +246,8 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(signalCalls()[1]?.[0]).toBe('/signal');
     // F1：默认分级 tab = 强 → 固定带 grade=strong
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
   });
 
   it('「查询」按钮可用空格键触发', async () => {
@@ -302,11 +328,13 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(lastParams().direction).toBe('buy'));
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     expect(lastParams()).toEqual({
       page: 1,
       page_size: 50,
       grade: 'strong',
       dedupe: 1,
+      scope: 'holdings',
       trade_date: '2026-10-12',
       plugin_id: 'filter_v2',
       direction: 'buy',
@@ -322,8 +350,9 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     const params = lastParams();
-    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
+    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
     expect(params).not.toHaveProperty('trade_date');
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
@@ -347,7 +376,8 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1 });
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
   });
 });
 
@@ -397,9 +427,9 @@ describe('Signals · 结果表可读性', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await screen.findByRole('table');
-    const dataRows = screen.getAllByRole('row').slice(1);
-    expect(dataRows).toHaveLength(1);
-    const cells = within(dataRows[0])
+    const dataRowsList = dataRows();
+    expect(dataRowsList).toHaveLength(1);
+    const cells = within(dataRowsList[0])
       .getAllByRole('cell')
       .map((td) => td.textContent);
     // 方向 pill 内含方向符号（▲ 买入）；强度字段缺省 → 降级 `--`
@@ -434,15 +464,156 @@ describe('Signals · 结果表可读性', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await screen.findByRole('table');
-    const dataRows = screen.getAllByRole('row').slice(1);
-    expect(dataRows).toHaveLength(3);
+    const dataRowsList = dataRows();
+    expect(dataRowsList).toHaveLength(3);
 
     // 第 3 列是 direction（列序固定：标的代码 / 策略 / 方向 / 强度 / 标签 / 交易日期）
-    const directionCells = dataRows.map((row) => within(row).getAllByRole('cell')[2].textContent);
+    const directionCells = dataRowsList.map((row) => within(row).getAllByRole('cell')[2].textContent);
     expect(directionCells).toEqual(['▲ 买入', '▼ 卖出', '· 持仓']);
     // 原始英文枚举值不应直接上屏
     expect(directionCells).not.toContain('buy');
     expect(directionCells).not.toContain('sell');
     expect(directionCells).not.toContain('hold');
+  });
+});
+
+/** T154（ADR-027，SDD_v3 §10.4.4）· 信号分组视图：两 Tab + 组内聚合 + 组合优先综合结论 */
+describe('T154 · 分组视图（持仓组/自选组 + 组内聚合 + 综合结论）', () => {
+  beforeEach(() => {
+    getMock.mockReset();
+  });
+
+  const COMBO_ROW = {
+    id: 10,
+    symbol: 'sh600000',
+    asset_code: 'sh600000',
+    plugin_id: 'combo:combo_1',
+    plugin_category: 'monitor',
+    direction: 'buy',
+    label: 'MACD金叉+放量',
+    strength: 0.55,
+    // ⚠️ 与 installApiMock 的 meta trade_date（2026-10-12）一致，否则行被判「非当前展示日」置灰、不进结论
+    trade_date: '2026-10-12',
+  };
+  const SINGLE_ROW = {
+    id: 11,
+    symbol: 'sh600000',
+    asset_code: 'sh600000',
+    plugin_id: 'rsi_oversold',
+    plugin_category: 'monitor',
+    direction: 'buy',
+    label: 'RSI 超卖',
+    strength: 0.9,
+    trade_date: '2026-10-12',
+  };
+
+  it('默认「持仓组」tab（aria-pressed）+ 请求固定带 scope=holdings', async () => {
+    installApiMock([COMBO_ROW]);
+    renderWithRouter(<Signals />);
+
+    await waitForLoaded();
+    expect(screen.getByTestId('signals-group-tab-holdings')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('signals-group-tab-watch')).toHaveAttribute('aria-pressed', 'false');
+    expect(signalCalls()[0]?.[1]?.params).toMatchObject({ scope: 'holdings' });
+  });
+
+  it('切「自选组」→ scope=watch 且回到第 1 页（走筛选防抖重查）', async () => {
+    const user = userEvent.setup();
+    installApiMock([COMBO_ROW]);
+    renderWithRouter(<Signals />);
+
+    await waitForLoaded();
+    await user.click(screen.getByTestId('signals-group-tab-watch'));
+
+    await waitFor(() => expect(signalCalls()).toHaveLength(2));
+    expect(signalCalls()[1]?.[1]?.params).toMatchObject({ scope: 'watch', page: 1 });
+  });
+
+  it('每个标的独立 `<tbody>` + 分组头 `<th colSpan=9 scope=rowgroup>`；组合行置顶 + 其余按强度降序', async () => {
+    installApiMock([
+      { ...SINGLE_ROW }, // 单条件 strength=0.9
+      { ...COMBO_ROW }, // 组合 strength=0.55
+      {
+        ...COMBO_ROW,
+        id: 12,
+        direction: 'sell',
+        label: '组合卖出',
+      },
+    ]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByRole('table');
+    const tbody = screen.getByTestId('signals-group-sh600000');
+    expect(tbody.tagName).toBe('TBODY');
+    const header = within(tbody).getByTestId('signals-group-header-sh600000');
+    // ⚠️ jsdom 把 `<th scope="rowgroup">` 暴露为 role=rowheader（而非 rowgroup），按 DOM 属性断言
+    const rowgroup = header.querySelector('th[scope="rowgroup"]') as HTMLElement | null;
+    expect(rowgroup).not.toBeNull();
+    expect(rowgroup?.tagName).toBe('TH');
+    expect(rowgroup).toHaveAttribute('colSpan', '9');
+    expect(header).toHaveTextContent('持仓组');
+
+    // 组内数据行：组合行置顶（sell 优先于 buy 组合？否——排序按强度降序，两组合行 0.55 相同则稳定序），
+    // 单条件（0.9）排在组合行之后
+    const groupRows = dataRows();
+    const pluginIds = groupRows.map((r) => within(r).getAllByRole('cell')[1].textContent);
+    // 组合行（combo:combo_1 ×2）在前，单条件（rsi_oversold）在后
+    expect(pluginIds.length).toBe(3);
+    expect(pluginIds[0]).toContain('combo:combo_1');
+    expect(pluginIds[1]).toContain('combo:combo_1');
+    expect(pluginIds[2]).toContain('rsi_oversold');
+  });
+
+  it('综合结论只认组合行：无组合 ⇒「无组合结论」（不得由单条件合成）', async () => {
+    installApiMock([SINGLE_ROW]); // 只有单条件 strength=0.9，无组合
+    renderWithRouter(<Signals />);
+
+    await screen.findByRole('table');
+    const conclusion = await screen.findByTestId('signals-group-conclusion-sh600000');
+    expect(conclusion).toHaveTextContent('无组合结论');
+    // 单条件的 0.9 强度**不得**被合成进结论
+    expect(conclusion).not.toHaveTextContent('0.9');
+  });
+
+  it('买卖冲突 ⇒ 卖出优先（同标的组合行 buy+sell ⇒ 结论显示卖出）', async () => {
+    installApiMock([
+      { ...COMBO_ROW, direction: 'buy' },
+      { ...COMBO_ROW, id: 13, direction: 'sell', label: '组合卖出' },
+    ]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByRole('table');
+    const conclusion = await screen.findByTestId('signals-group-conclusion-sh600000');
+    expect(conclusion).toHaveTextContent('◆ 综合结论：卖出');
+    expect(conclusion).toHaveTextContent('卖出优先');
+  });
+
+  it('过期（置灰）组合行不参与综合结论：过期 buy + 当日 sell ⇒ 结论=卖出', async () => {
+    installApiMock([
+      { ...COMBO_ROW, direction: 'buy', trade_date: '2026-01-02', expires_at: '2026-01-05' }, // 已过期
+      { ...COMBO_ROW, id: 14, direction: 'sell', label: '组合卖出' },
+    ]);
+    renderWithRouter(<Signals />);
+
+    await screen.findByRole('table');
+    const conclusion = await screen.findByTestId('signals-group-conclusion-sh600000');
+    expect(conclusion).toHaveTextContent('◆ 综合结论：卖出');
+  });
+
+  it('现金类标的在分组头标「现金类」（is_cash 来自后端 asset_class）', async () => {
+    installApiMock([{ ...COMBO_ROW, is_cash: true, asset_name: '华宝添益' }]);
+    renderWithRouter(<Signals />);
+
+    const header = await screen.findByTestId('signals-group-header-sh600000');
+    expect(header).toHaveTextContent('现金类');
+    expect(header).toHaveTextContent('华宝添益');
+  });
+
+  it('组内空态（组 Tab 无信号）⇒「XX 组 · 无当日评估」（细则⑤）', async () => {
+    installApiMock([]);
+    renderWithRouter(<Signals />);
+
+    expect(await screen.findByTestId('signals-group-no-eval')).toHaveTextContent('持仓组 · 无当日评估');
+    expect(screen.getByTestId('signals-empty')).toBeInTheDocument();
   });
 });
