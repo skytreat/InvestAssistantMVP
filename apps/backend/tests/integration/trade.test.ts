@@ -669,12 +669,11 @@ describe('Trade · create_trade_all_types（SDD §12.5 F2：7 种交易类型逐
       expect(body.code).toBe(0);
       expect(body.code).toBe(0);
 
-      // ② 载荷正确：trade_id / position / hold_rel 三件套齐全
+      // ② 载荷正确：trade_id / position 二件套齐全（hold 派生关系已废弃，ADR-028）
       expect(body.data.trade_id, `${c.type} 必须返回 trade_id`).toBeGreaterThan(0);
       expect(body.data.position, `${c.type} 必须返回持仓快照`).toBeDefined();
       expect(typeof body.data.position.totalQuantity).toBe('number');
       expect(typeof body.data.position.avgCost).toBe('number');
-      expect(body.data.hold_rel, `${c.type} 必须返回 hold 关系同步结果`).toBeDefined();
 
       // ③ 落库后能查回，且字段逐项正确
       const row = await fetchRow(c.code, c.type);

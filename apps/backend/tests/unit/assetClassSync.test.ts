@@ -69,7 +69,7 @@ function seedBusiness(db: Database.Database) {
   const t = db.prepare(`INSERT INTO user_trade_record (user_id, asset_code) VALUES (1, ?)`);
   for (const s of ['sh511990', 'sh204001', 'sh510300', 'sh512130']) t.run(s);
   db.prepare(
-    `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (1, 'sh511990', 'hold')`,
+    `INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (1, 'sh511990', 'watch')`,
   ).run();
 }
 

@@ -88,7 +88,7 @@ export function getHoldingBeforeDate(
  * 1. fetchDividendEvents(exDate) — 拿当天所有除权事件
  * 2. 空 → 写 system_log level='SKIP' reason='无除权事件' → 返回空结果
  * 3. 遍历每个 event：
- *    a. 找持有该标的的用户（user_asset_rel WHERE asset_code=? AND rel_type='hold' AND is_deleted=0）
+ *    a. 找有过该标的交易的用户（user_trade_record WHERE asset_code=? AND is_deleted=0，ADR-028：不再读 hold 派生）
  *    b. 对每个用户：getHoldingBeforeDate(db, userId, symbol, exDate)
  *    c. 持仓=0 → holdingsSkipped++，continue
  *    d. cashPerShare > 0 → INSERT dividend（UNIQUE 冲突 → duplicatesSkipped++）
@@ -196,28 +196,15 @@ export async function importDividendEvents(exDate?: string): Promise<ImportResul
       for (const evt of evtList) {
         result.eventsProcessed++;
 
-        // a. 找持有该标的的用户
-        const holders = db
+        // a. 找有过该标的交易的用户（直接由 user_trade_record 决定）
+        const tradeUsers = db
           .prepare(
-            `SELECT DISTINCT user_id FROM user_asset_rel
-           WHERE asset_code = ? AND rel_type = 'hold' AND is_deleted = 0`,
+            `SELECT DISTINCT user_id FROM user_trade_record
+             WHERE asset_code = ? AND is_deleted = 0`,
           )
           .all(evt.symbol) as Array<{ user_id: number }>;
-
-        // 如果没有任何用户持有关联记录，仍然尝试扫描所有 user_trade_record 中有过该标的交易的用户
-        // （防御性：user_asset_rel 可能与 trade_record 不一致）
         const userIds = new Set<number>();
-        for (const h of holders) userIds.add(h.user_id);
-
-        if (userIds.size === 0) {
-          const tradeUsers = db
-            .prepare(
-              `SELECT DISTINCT user_id FROM user_trade_record
-             WHERE asset_code = ? AND is_deleted = 0`,
-            )
-            .all(evt.symbol) as Array<{ user_id: number }>;
-          for (const u of tradeUsers) userIds.add(u.user_id);
-        }
+        for (const u of tradeUsers) userIds.add(u.user_id);
 
         for (const userId of userIds) {
           // b. 计算持仓

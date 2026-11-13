@@ -187,60 +187,6 @@ export function localDateTimeToIso(s: string): string {
   return dt.toISOString();
 }
 
-/**
- * T58：同步 `user_asset_rel` 的 `rel_type='hold'` 关系
- *
- * 口径（以 `calcPosition` 的移动加权成本结果为准，与 GET /api/positions 同一口径）：
- * - 持仓 > 0 → 关系存在：缺则 INSERT，软删则恢复（`is_deleted=0`）
- * - 持仓 = 0（清仓）→ **软删**（`is_deleted=1`），不物理删除（AGENTS.md 硬约束）
- *
- * 幂等：先按 UNIQUE(user_id, asset_code, rel_type) 查现状，再决定 INSERT/UPDATE，
- * 重复调用不会产生第二行，也不会抛 UNIQUE。
- *
- * ✅ 与 `exDividendSync.getHoldingBeforeDate` 的口径差异**已由 T119 消除**：
- *    两处现在都把 `bonus` 计为 +quantity（core 移动加权已支持 bonus/dividend），
- *    「清仓后又有送转股」序列结论一致。
- */
-export function syncHoldRelation(
-  userId: number,
-  assetCode: string,
-): { action: string; totalQuantity: number } {
-  const db = ConfigStore.getInstance().db;
-  const totalQuantity = calcPosition(userId, assetCode).totalQuantity;
-  const shouldHold = totalQuantity > 0;
-
-  const run = db.transaction(() => {
-    const existing = db
-      .prepare(
-        'SELECT id, is_deleted FROM user_asset_rel WHERE user_id = ? AND asset_code = ? AND rel_type = ?',
-      )
-      .get(userId, assetCode, 'hold') as { id: number; is_deleted: number } | undefined;
-
-    if (shouldHold) {
-      if (!existing) {
-        db.prepare(`INSERT INTO user_asset_rel (user_id, asset_code, rel_type) VALUES (?, ?, 'hold')`).run(
-          userId,
-          assetCode,
-        );
-        return 'created';
-      }
-      if (existing.is_deleted === 1) {
-        db.prepare('UPDATE user_asset_rel SET is_deleted = 0 WHERE id = ?').run(existing.id);
-        return 'restored';
-      }
-      return 'kept';
-    }
-
-    if (existing && existing.is_deleted === 0) {
-      db.prepare('UPDATE user_asset_rel SET is_deleted = 1 WHERE id = ?').run(existing.id);
-      return 'soft_deleted';
-    }
-    return 'noop';
-  });
-
-  return { action: run(), totalQuantity };
-}
-
 export async function registerTradeRoutes(app: FastifyInstance) {
   // 录入交易
   app.post('/api/trade', async (request, reply) => {
@@ -407,9 +353,6 @@ export async function registerTradeRoutes(app: FastifyInstance) {
         message: `录入${tradeType} ${assetCode} qty=${body.quantity} price=${body.price}`,
       });
 
-      // T58：同步 hold 关系（清仓 → 软删；买入/加仓 → 建立或恢复）
-      const holdRel = syncHoldRelation(user.sub, assetCode);
-
       // ADR-026：手工录入也会带来**新标的**（可能正是逆回购/货币 ETF）⇒ 触发一次
       //   asset_class 增量初判（异步、不阻塞响应；候选为空时内部直接跳过，不扫行情层）。
       void runAssetClassSyncIfNeeded(db, request.log);
@@ -420,7 +363,6 @@ export async function registerTradeRoutes(app: FastifyInstance) {
           // F2：本次关联的信号 id（未关联为 null，供前端提示「已回填关联」）
           linked_signal_id: signalId,
           position: calcPosition(user.sub, assetCode),
-          hold_rel: holdRel,
         }),
       );
     } catch (err: any) {
@@ -683,17 +625,12 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     if (info.changes === 0) {
       return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     }
-    // T58：软删交易后同步 hold 关系（删掉的是买入 → 持仓归零 → 软删 hold）
-    const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
-      { asset_code: string } | undefined;
-    const holdRel = row ? syncHoldRelation(user.sub, row.asset_code) : null;
     writeSystemLog({
       logType: 'trade',
       level: 'INFO',
       message: `${user.username} 软删除交易 id=${tradeId}`,
-      detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send(ok({ hold_rel: holdRel }));
+    reply.send(ok({ success: true }));
   });
 
   // T39: 恢复软删除
@@ -722,17 +659,12 @@ export async function registerTradeRoutes(app: FastifyInstance) {
     if (info.changes === 0) {
       return reply.code(404).send(fail(404, 'NOT_FOUND', defaultMessage('NOT_FOUND')));
     }
-    // T58：恢复交易 → 持仓回升 → hold 关系恢复
-    const row = db.prepare('SELECT asset_code FROM user_trade_record WHERE id = ?').get(tradeId) as
-      { asset_code: string } | undefined;
-    const holdRel = row ? syncHoldRelation(user.sub, row.asset_code) : null;
     writeSystemLog({
       logType: 'trade',
       level: 'INFO',
       message: `${user.username} 恢复交易 id=${tradeId}`,
-      detail: holdRel ? JSON.stringify(holdRel) : undefined,
     });
-    reply.send(ok({ hold_rel: holdRel }));
+    reply.send(ok({ success: true }));
   });
 
   // 查询单个标的持仓
