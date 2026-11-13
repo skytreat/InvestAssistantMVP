@@ -379,8 +379,8 @@ function writeSettleDay(args: {
           Math.abs(fill.qty * fill.price),
           fill.fee,
           fill.slippageCost,
-          fill.reason ?? null,  // exit_reason：undefined → null（符合 CHECK）
-          null,                 // unfilled_reason
+          fill.reason ?? null, // exit_reason：undefined → null（符合 CHECK）
+          null, // unfilled_reason
           null,
           nowText,
           nowText,
@@ -401,7 +401,7 @@ function writeSettleDay(args: {
           0,
           0,
           0,
-          null,           // exit_reason
+          null, // exit_reason
           skip.reason,
           skip.detail ?? null,
           nowText,
@@ -420,7 +420,7 @@ function writeSettleDay(args: {
         0,
         0,
         0,
-        null,  // exit_reason
+        null, // exit_reason
         null,
         null,
         nowText,

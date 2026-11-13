@@ -230,21 +230,23 @@ export function paperSignalId(accountId: number, decisionDate: string, assetCode
  */
 function loadFilledOrders(db: Database.Database, accountId: number, replayStart: string) {
   const rows = db
-    .prepare(`
+    .prepare(
+      `
       SELECT asset_code, side, filled_qty, fill_price, fee, exit_reason, trade_date
       FROM paper_order
       WHERE account_id = ? AND status = 'filled' AND is_deleted = 0 AND trade_date >= ?
       ORDER BY trade_date ASC
-    `)
+    `,
+    )
     .all(accountId, replayStart) as Array<{
-      asset_code: string;
-      side: 'buy' | 'sell';
-      filled_qty: number;
-      fill_price: number;
-      fee: number;
-      exit_reason: string | null;
-      trade_date: string;
-    }>;
+    asset_code: string;
+    side: 'buy' | 'sell';
+    filled_qty: number;
+    fill_price: number;
+    fee: number;
+    exit_reason: string | null;
+    trade_date: string;
+  }>;
   return rows;
 }
 
@@ -353,7 +355,7 @@ export async function runPaperDecision(
   // A1：回放前先喂历史 filled 订单（用于 dualmomentum 的 entryDate/entryFillPrice/highWater/cooldown）
   const filledOrders = loadFilledOrders(db, accountId, replayStart);
   for (const o of filledOrders) {
-    if (!strategy.onFill) continue;  // wufu / combo / buy-and-hold 无 onFill，零影响
+    if (!strategy.onFill) continue; // wufu / combo / buy-and-hold 无 onFill，零影响
     strategy.onFill({
       date: o.trade_date,
       symbol: o.asset_code,
