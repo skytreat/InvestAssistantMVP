@@ -1,4 +1,4 @@
-# ADR-024 —— asset_class 增量初判（新标的补齐 + 冷却期改判 + 手工录入触发）
+# ADR-026 —— asset_class 增量初判（新标的补齐 + 冷却期改判 + 手工录入触发）
 
 | 项 | 值 |
 |---|---|
@@ -7,6 +7,7 @@
 | **关联偏差** | §13.2 **I-41**（新增） |
 | **关联文档** | SDD_v3 §2.3（初判触发口径增补）、`docs/deploy.md`（回填步骤） |
 | **取代** | 取代 T120 补线的「表非空即跳过」门槛（`runAssetClassSyncIfNeeded` 旧实现）；不取代 ADR-016 的现金类建模语义 |
+| **编号注记** | 2026-11-13 本稿曾以 ADR-024 起草，因 `main` 已被 DualMomentum 基准破位（ADR-024）/ 纸面回放（ADR-025）占用，顺延为 **ADR-026** |
 
 ---
 
@@ -42,7 +43,7 @@ CLI 全量 dry-run 实测 **7.3s**；若每次券商导入 / 手工录入都全�
    - `source='manual'` 与终态判定（`TERMINAL_RULE_HITS = repo_code / cash_etf_name / cash_etf_near_par`）
      ⇒ **永不候选**。
    - 候选为空 ⇒ 直接返回，不扫行情层。
-2. **写入口径（`runInitialClassification` ADR-024 版）**：
+2. **写入口径（`runInitialClassification` ADR-026 版）**：
    - 无记录 ⇒ INSERT（`source='rule'`）；
    - `source='manual'` ⇒ 永不覆盖（人工修正优先，rule_hit 保留可回溯）；
    - 终态判定 ⇒ 不动；
@@ -88,7 +89,7 @@ CLI 全量 dry-run 实测 **7.3s**；若每次券商导入 / 手工录入都全�
   - execute：首次写入 4 条；立即重跑 0 写入、default 行仅刷新 `updated_at`；
     冷却期外 rule/default 行改判 cash（UPDATE）；manual 行不被改判覆盖；
   - `runAssetClassSyncIfNeeded`：候选为空 ⇒ null（不扫行情层）；出现新业务标的 ⇒ 补判 1 条（旧版漏判场景）；
-- 单测：`asset_class.test.ts`：重跑时 rule/default 行进 `refreshed`（原断言「全部 skipped」已按 ADR-024 语义更新）；
+- 单测：`asset_class.test.ts`：重跑时 rule/default 行进 `refreshed`（原断言「全部 skipped」已按 ADR-026 语义更新）；
 - 集成：`trade.test.ts` 新增「POST /api/trade 触发 `runAssetClassSyncIfNeeded`」（spy）；
 - 本地 CLI：`npx tsx src/cli/assetClassSync.ts`（dry-run，42 标的，7.3s）行为不变；
 - 生产回填一次性操作（`docs/deploy.md`）：

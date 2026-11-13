@@ -1,12 +1,12 @@
 /**
- * asset_class 初判接线（T120 补充 → ADR-024 增量语义；SDD_v3 §2.3）
+ * asset_class 初判接线（T120 补充 → ADR-026 增量语义；SDD_v3 §2.3）
  *
  * 背景（2026-11-06 / 2026-11-13 实测）：
  * - T120 补线时 `runInitialClassification()` 全仓无调用点 ⇒ 真实业务库 `asset_class` 表 **0 行**
  *   ⇒ `getAssetClass()` 对全部标的回落 default=`risk` ⇒ 逆回购 / 货币 ETF 被计进风险资产分母；
  * - 旧门槛「表非空即跳过」⇒ 即使设 execute，第一次写入后**新标的不再初判、default 行永不复查**。
  *
- * **ADR-024 增量语义**：按「候选集合」执行 ——
+ * **ADR-026 增量语义**：按「候选集合」执行 ——
  * - 无 `asset_class` 行 ⇒ `new`（必判一次）；
  * - `source='rule'` 且 `rule_hit='default'` 且 `updated_at` 早于冷却期（`RECHECK_COOLDOWN_DAYS=7`）
  *   ⇒ `retry`（可改判：新上市标的攒够 K 线后 risk→cash；仍 default 仅刷新 `updated_at` 作冷却标记）；
@@ -85,7 +85,7 @@ export interface ClassifyPreviewRow {
   basis: string;
   trades: number;
   rels: number;
-  /** 本次是否会落库（新插入或改判）。ADR-024 后「已有行」也可能写（改判）；
+  /** 本次是否会落库（新插入或改判）。ADR-026 后「已有行」也可能写（改判）；
    *  manual / 终态 / 冷却期内的 default ⇒ false */
   willWrite: boolean;
 }
@@ -95,7 +95,7 @@ export interface AssetClassSyncResult {
   rows: ClassifyPreviewRow[];
   /** execute 模式实际写入条数（dry-run 恒为 0） */
   writtenCount: number;
-  /** execute 模式「复查但分类未变、仅刷新 updated_at」的条数（ADR-024 冷却标记） */
+  /** execute 模式「复查但分类未变、仅刷新 updated_at」的条数（ADR-026 冷却标记） */
   refreshedCount?: number;
   /** 表中已有、按幂等规则被跳过的 symbol（dry-run 下 = 已有记录的一律跳过） */
   skippedExisting: string[];
@@ -114,7 +114,7 @@ export interface AssetClassSyncResult {
 export const RECHECK_COOLDOWN_DAYS = 7;
 
 /**
- * 候选集合：**只挑「还没定论」的标的**，避免每次导入都全量重扫行情层（ADR-024）。
+ * 候选集合：**只挑「还没定论」的标的**，避免每次导入都全量重扫行情层（ADR-026）。
  *
  * 候选 = 业务层标的（`user_trade_record` ∪ `user_asset_rel`）且：
  * - 无 `asset_class` 行 ⇒ `reason='new'`（新出现的标的，必须判一次）；
@@ -250,7 +250,7 @@ async function computePreview(
     const input = inputByCode.get(u.symbol) ?? { code: u.symbol };
     const r = classifySymbol(input);
     const cur = existingBy.get(u.symbol);
-    // 已有且不可改判（manual / 终态 / 冷却期内的 default）⇒ 幂等跳过（ADR-024）
+    // 已有且不可改判（manual / 终态 / 冷却期内的 default）⇒ 幂等跳过（ADR-026）
     const locked =
       !!cur &&
       (cur.source === 'manual' || isTerminalRuleHit(cur.rule_hit) || String(cur.updated_at) >= cutoffAt);
@@ -294,7 +294,7 @@ async function computePreview(
 
 /**
  * 按模式同步：`off` 直接返回；`dry-run` 只出预览；`execute` 走 `runInitialClassification`
- * （ADR-024：新标的 INSERT；rule/default 可改判；manual/终态不覆盖）。
+ * （ADR-026：新标的 INSERT；rule/default 可改判；manual/终态不覆盖）。
  */
 export async function syncAssetClass(
   db: Database.Database,
@@ -383,7 +383,7 @@ export function renderSyncReport(
 }
 
 /**
- * 供「券商导入后 / 手工录入后 / CLI」等调用点使用（ADR-024 **增量语义**）：
+ * 供「券商导入后 / 手工录入后 / CLI」等调用点使用（ADR-026 **增量语义**）：
  *
  * 1. `mode=off` ⇒ 直接返回；
  * 2. **候选为空** ⇒ 直接返回（没有「还没定论」的标的 ⇒ 不扫行情层）；

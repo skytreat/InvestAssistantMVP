@@ -4,7 +4,7 @@
  * 用法（在 apps/backend 下）：
  *   npx tsx src/cli/assetClassSync.ts                      # dry-run，报告写 %TEMP%
  *   npx tsx src/cli/assetClassSync.ts --report <路径>       # dry-run + 指定报告路径
- *   npx tsx src/cli/assetClassSync.ts --execute             # 真落库（ADR-024：新标的插入 / rule-default 可改判 / manual 不覆盖）
+ *   npx tsx src/cli/assetClassSync.ts --execute             # 真落库（ADR-026：新标的插入 / rule-default 可改判 / manual 不覆盖）
  *   npx tsx src/cli/assetClassSync.ts --all                 # 全量审计业务层标的（默认只看候选）
  *
  * 环境变量：`SQLITE_DB_PATH`（默认 data/business.db）、`DUCKDB_PATH`（默认 data/quotes.duckdb）

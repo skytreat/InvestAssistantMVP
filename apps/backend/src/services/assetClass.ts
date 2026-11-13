@@ -18,7 +18,7 @@
  * - 逆回购 raw_kline_daily 收录：sh204001/002/003/004/007、sz131810/131811（204005/006/009、
  *   131812~131818 未收录 —— 已退市/停刊；样本若再遇到走人工修正，见 V3-B5）
  *
- * 人工修正（§2.4）：`setManualClass` 写 source='manual'，**规则重跑不得覆盖**（ADR-024：
+ * 人工修正（§2.4）：`setManualClass` 写 source='manual'，**规则重跑不得覆盖**（ADR-026：
  * runInitialClassification 只改 source='rule' 的行）；rule_hit 保留初判值 → 可回溯「当初是谁按什么规则判的」。
  */
 import type Database from 'better-sqlite3';
@@ -101,7 +101,7 @@ export function classifySymbol(input: ClassifyInput): ClassifyResult {
 }
 
 /**
- * 「终态」判定：命中现金规则的行**不再重扫行情层**（ADR-024）。
+ * 「终态」判定：命中现金规则的行**不再重扫行情层**（ADR-026）。
  *
  * - `repo_code` / `cash_etf_name` / `cash_etf_near_par`：证据已成立 ⇒ 终态；
  * - `source='manual'`：人工修正 ⇒ 永不被规则覆盖；
@@ -118,7 +118,7 @@ export function isTerminalRuleHit(ruleHit: string | null | undefined): boolean {
  * 批量初判落库：对每个标的取行情层窗口统计 + 名称（inputProvider 可注入，单测不碰 DuckDB），
  * 逐一走 classifySymbol。
  *
- * ⚠️ **写入口径（ADR-024）**：
+ * ⚠️ **写入口径（ADR-026）**：
  * - 无记录 ⇒ INSERT（`source='rule'`）；
  * - 已有记录且 `source='manual'` ⇒ **永不覆盖**（人工修正优先）；
  * - 已有记录且命中终态规则（`isTerminalRuleHit`）⇒ 不动（证据已成立，不重复扫）；
@@ -247,7 +247,7 @@ export async function collectClassifyInputs(codes: string[]): Promise<ClassifyIn
   });
 }
 
-/** 人工修正：source='manual'，保留初判 rule_hit（可回溯）；规则重跑（ADR-024）永不覆盖 manual 行 */
+/** 人工修正：source='manual'，保留初判 rule_hit（可回溯）；规则重跑（ADR-026）永不覆盖 manual 行 */
 export function setManualClass(db: Database.Database, userId: number, code: string, cls: AssetClass): void {
   const cur = db.prepare(`SELECT rule_hit FROM asset_class WHERE symbol = ?`).get(code) as
     { rule_hit: string | null } | undefined;

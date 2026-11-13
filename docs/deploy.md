@@ -190,9 +190,9 @@ sudo journalctl -u invest-assistant -f
 bash deploy/healthcheck.sh
 ```
 
-### asset_class 初判回填（ADR-024，一次性操作）
+### asset_class 初判回填（ADR-026，一次性操作）
 
-`invest-assistant.service` 已内置 `Environment=ASSET_CLASS_SYNC_MODE=execute`（ADR-024：
+`invest-assistant.service` 已内置 `Environment=ASSET_CLASS_SYNC_MODE=execute`（ADR-026：
 券商导入 / 手工录入后自动增量补齐 `asset_class`）。**首次上线本版本后需跑一次全量回填**，
 把历史业务标的判完（此后新标的自动补齐，无需再手动跑）：
 

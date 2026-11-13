@@ -132,7 +132,7 @@ describe('assetClassSync · dry-run（只读，不写库）', () => {
   });
 });
 
-describe('assetClassSync · execute（增量：改判 / 刷新 / 保护，ADR-024）', () => {
+describe('assetClassSync · execute（增量：改判 / 刷新 / 保护，ADR-026）', () => {
   let db: Database.Database;
   beforeEach(() => {
     db = makeDb();
@@ -226,7 +226,7 @@ describe('assetClassSync · execute（增量：改判 / 刷新 / 保护，ADR-02
   });
 });
 
-describe('assetClassSync · selectClassifyCandidates（增量候选，ADR-024）', () => {
+describe('assetClassSync · selectClassifyCandidates（增量候选，ADR-026）', () => {
   let db: Database.Database;
   beforeEach(() => {
     db = makeDb();
@@ -269,7 +269,7 @@ describe('assetClassSync · selectClassifyCandidates（增量候选，ADR-024）
   });
 });
 
-describe('assetClassSync · runAssetClassSyncIfNeeded（调用点守卫，ADR-024 增量语义）', () => {
+describe('assetClassSync · runAssetClassSyncIfNeeded（调用点守卫，ADR-026 增量语义）', () => {
   let db: Database.Database;
   const ORIGINAL = process.env[ASSET_CLASS_SYNC_ENV];
   const log = { info: () => {}, warn: () => {} };

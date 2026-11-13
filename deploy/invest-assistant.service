@@ -15,7 +15,7 @@ Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 Environment=NODE_ENV=production
-# ADR-024：asset_class 增量初判**落库**开关（默认 dry-run 只算不写）。
+# ADR-026：asset_class 增量初判**落库**开关（默认 dry-run 只算不写）。
 #   生产置 execute ⇒ 券商导入 / 手工录入后自动补齐「现金类」分类（逆回购/货币 ETF）。
 #   ⚠️ 首次上线仍需跑一次回填：`npx tsx src/cli/assetClassSync.ts --execute`（详见 docs/deploy.md）。
 Environment=ASSET_CLASS_SYNC_MODE=execute

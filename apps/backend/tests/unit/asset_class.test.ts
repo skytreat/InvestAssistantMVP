@@ -198,7 +198,7 @@ describe('T120 · 落库与人工修正（INV-S4-14~17）', () => {
     expect(getAssetClass(db, 'sh688001')).toBe('risk');
   });
 
-  it('重跑规则不覆盖已有记录（含 manual；ADR-024：rule/default 行可改判，计入 refreshed）', async () => {
+  it('重跑规则不覆盖已有记录（含 manual；ADR-026：rule/default 行可改判，计入 refreshed）', async () => {
     // 自包含：先写 sz000001（有窗口统计 ⇒ 判 cash），再重跑
     await runInitialClassification(db, ['sz000001', 'sz000002'], fakeProvider);
     setManualClass(db, uid, 'sz000001', 'risk');
