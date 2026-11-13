@@ -167,6 +167,13 @@ describe('T64 · 会话过期 → 跳登录页（保留原路径）', () => {
 
     inst.handler = async (cfg) => {
       if (cfg.url === '/auth/login') return okResponse(SESSION);
+      // 登录成功跳回 /trade 后，该页会发出正常的取数请求（「加自选」按钮的 /watch、
+      // 标的补全的 /symbols/*）—— 这些**不应**被当成会话过期（否则会 401 又弹回 /login）。
+      // 只有「模拟旧会话失效」的 /holding 才 401。
+      const url = String(cfg.url ?? '');
+      if (url.startsWith('/watch') || url.startsWith('/symbols/')) {
+        return okResponse([]);
+      }
       throw httpError(401, failResponse('UNAUTHORIZED', 'token 无效或已过期'));
     };
 

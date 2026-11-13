@@ -750,3 +750,15 @@ describe('标的名称 + K 线超链接', () => {
     expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
   });
 });
+
+describe('加自选（策略信号页每行可把标的沉淀成观察池）', () => {
+  it('每行「操作」列有「加自选」按钮（标的代码为该行的 asset_code）', async () => {
+    installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
+    renderWithRouter(<Signals />);
+
+    // 等信号行渲染 + WatchButton 挂载
+    const buttons = await screen.findAllByTestId('watch-toggle');
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons[0]).toHaveAttribute('data-code', 'sh600000');
+  });
+});

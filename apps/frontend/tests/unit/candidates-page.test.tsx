@@ -275,8 +275,9 @@ describe('T74 · 迁移到自选（T92：只打标记，不建关联）', () => 
     await waitFor(() => expect(screen.getByTestId('candidate-notice')).toBeInTheDocument());
     expect(screen.getByTestId('candidate-notice')).toHaveTextContent('不会自动加入自选');
 
-    // 自选分区里没有这一行（列表为空时展示空态，而不是表格）
-    const watchSection = screen.getByTestId('watch-list-panel');
+    // 切到「自选」Tab 查看分区（自选列表与候选池是两个独立 Tab）
+    await user.click(screen.getByRole('tab', { name: /自选/ }));
+    const watchSection = await screen.findByTestId('watch-list-panel');
     expect(within(watchSection).queryByText('sh600519')).not.toBeInTheDocument();
     expect(within(watchSection).getByTestId('watch-empty')).toBeInTheDocument();
 
@@ -309,12 +310,14 @@ describe('T74 · 空态 / 加载态 / 错误态', () => {
   });
 
   it('空态：候选池为空时给出引导文案', async () => {
+    const user = userEvent.setup();
     installMocks({ candidates: [] });
     renderWithRouter(<Candidates />);
 
     expect(await screen.findByTestId('candidate-empty')).toHaveTextContent('候选池为空');
-    // 自选分区也有自己的空态
-    expect(screen.getByTestId('watch-empty')).toHaveTextContent('自选列表为空');
+    // 自选分区（Tab）也有自己的空态
+    await user.click(screen.getByRole('tab', { name: /自选/ }));
+    expect(await screen.findByTestId('watch-empty')).toHaveTextContent('自选列表为空');
   });
 
   it('错误态：接口失败时展示错误文案 + 重新加载按钮', async () => {
@@ -323,6 +326,45 @@ describe('T74 · 空态 / 加载态 / 错误态', () => {
 
     expect(await screen.findByTestId('candidate-error')).toHaveTextContent('候选池查询失败');
     expect(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument();
+  });
+});
+
+describe('候选池 / 自选双 Tab（自选列表与候选池分区）', () => {
+  it('默认在「候选池」Tab；切到「自选」Tab 后显示自选列表，候选池表格隐藏', async () => {
+    const user = userEvent.setup();
+    installMocks({
+      candidates: [CANDIDATE],
+      watch: [{ id: 1, asset_code: 'sh600000', created_at: '2026-10-01 09:00:00' }],
+    });
+    renderWithRouter(<Candidates />);
+
+    // 默认候选池 Tab
+    expect(await screen.findByRole('table', { name: '候选池列表' })).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: '自选列表' })).not.toBeInTheDocument();
+
+    // 切到自选 Tab
+    await user.click(screen.getByRole('tab', { name: /自选/ }));
+    expect(await screen.findByRole('table', { name: '自选列表' })).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: '候选池列表' })).not.toBeInTheDocument();
+
+    // 切回候选池 Tab
+    await user.click(screen.getByRole('tab', { name: /候选池/ }));
+    expect(await screen.findByRole('table', { name: '候选池列表' })).toBeInTheDocument();
+  });
+
+  it('自选 Tab：点【移除】→ `DELETE /api/watch/:code`', async () => {
+    const user = userEvent.setup();
+    installMocks({
+      candidates: [],
+      watch: [{ id: 1, asset_code: 'sh600000', created_at: '2026-10-01 09:00:00' }],
+    });
+    renderWithRouter(<Candidates />);
+
+    await user.click(screen.getByRole('tab', { name: /自选/ }));
+    await user.click(await screen.findByTestId('watch-remove'));
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1));
+    expect(deleteMock.mock.calls[0]?.[0]).toBe('/watch/sh600000');
   });
 });
 
@@ -343,15 +385,18 @@ describe('T74 · 375px 表格不横向溢出（滚动容器结构契约）', () 
   });
 
   it('自选分区也是同样的滚动容器结构', async () => {
+    const user = userEvent.setup();
     installMocks({
       candidates: [CANDIDATE],
       watch: [{ id: 1, asset_code: 'sh600000', created_at: '2026-10-01 09:00:00' }],
     });
     renderWithRouter(<Candidates />);
 
+    // 自选表格在「自选」Tab 里（点击后才渲染）
+    await user.click(screen.getByRole('tab', { name: /自选/ }));
     await screen.findByRole('table', { name: '自选列表' });
     const regions = screen.getAllByTestId('scrollable-table');
-    expect(regions.length).toBeGreaterThanOrEqual(2);
+    expect(regions.length).toBeGreaterThanOrEqual(1);
     for (const region of regions) {
       expect(region).toHaveAttribute('role', 'region');
       expect(region).toHaveAttribute('tabindex', '0');

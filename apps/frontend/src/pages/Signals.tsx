@@ -14,6 +14,7 @@ import {
   SignalTradeStatusTag,
 } from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
+import WatchButton from '../components/WatchButton';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -1115,6 +1116,8 @@ export default function Signals() {
                                   录入交易
                                 </button>
                               ) : null}
+                              {/* 加自选：把这条信号对应的标的沉淀成观察池（共享 useWatchStore） */}
+                              <WatchButton assetCode={code} compact />
                             </div>
                           ) : null}
                         </td>

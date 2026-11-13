@@ -8,6 +8,7 @@ import { titleStyle } from '../theme/styles';
 import Spinner from '../components/Spinner';
 import Breadcrumbs from '../components/Breadcrumbs';
 import KlineParamPanel from '../components/KlineParamPanel';
+import WatchButton from '../components/WatchButton';
 import { MOBILE_TABBAR_HEIGHT, useIsMobile } from './_shared';
 import {
   buildChartBars,
@@ -793,6 +794,10 @@ export default function Kline() {
                   <span style={{ color: COLORS.textSecondary }}>{symbolName}</span>
                 </>
               )}
+              {/* 加入 / 移除自选（跨页面共享的 useWatchStore；已自选时按钮变「已自选 ✓」可点击移除） */}
+              <span style={{ marginLeft: SPACING.gapBase, display: 'inline-flex' }}>
+                <WatchButton assetCode={symbol} compact />
+              </span>
             </div>
             <KlineChart
               symbol={symbol}
