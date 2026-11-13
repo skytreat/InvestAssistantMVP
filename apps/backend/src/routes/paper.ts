@@ -9,6 +9,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { ConfigStore } from '../config/configStore.js';
 import { ok, fail } from '../lib/envelope.js';
+import { batchGetSymbolNames } from '../services/marketData.js';
 import { PaperStore } from '../services/paper/store.js';
 import { PaperError } from '../services/paper/errors.js';
 import {
@@ -48,6 +49,29 @@ function parseId(raw: string): number {
     throw new PaperError('PARAM_INVALID', 400, `非法 id: ${raw}`);
   }
   return id;
+}
+
+/**
+ * 为订单 / 持仓补标的中文名（行情层 `raw_symbol_name`，**1 次 IN 查询**）
+ *
+ * 与 `routes/review.ts` / `routes/signal.ts` 同口径：
+ * - 名称是**装饰信息** —— 行情库不可用 / 该标的无名称时 `assetName = null`，
+ *   前端回退为只显示代码，**不让整个纸面账户页 500**；
+ * - 名称覆盖率约 70%（`raw_symbol_name` 只有 8726 行），**查不到是常态**。
+ *
+ * ⚠️ 补名只在**路由层**做（不污染 `services/paper/*` 的纯 DB DTO），
+ *    业务层仍然只读 SQLite、不碰行情层。
+ */
+async function attachAssetNames<T extends { assetCode: string }>(
+  rows: readonly T[],
+): Promise<Array<T & { assetName: string | null }>> {
+  let names = new Map<string, string>();
+  try {
+    names = await batchGetSymbolNames(rows.map((r) => r.assetCode));
+  } catch {
+    // 行情库不可用 → 只显示代码
+  }
+  return rows.map((r) => ({ ...r, assetName: names.get(r.assetCode) ?? null }));
 }
 
 export async function registerPaperRoutes(app: FastifyInstance) {
@@ -179,11 +203,13 @@ export async function registerPaperRoutes(app: FastifyInstance) {
         : undefined;
       reply.send(
         ok(
-          listPaperOrders(store().db, user.sub, id, {
-            decisionDate: q.decisionDate,
-            statuses,
-            limit: q.limit ? Number(q.limit) : undefined,
-          }),
+          await attachAssetNames(
+            listPaperOrders(store().db, user.sub, id, {
+              decisionDate: q.decisionDate,
+              statuses,
+              limit: q.limit ? Number(q.limit) : undefined,
+            }),
+          ),
         ),
       );
     } catch (err) {
@@ -195,7 +221,7 @@ export async function registerPaperRoutes(app: FastifyInstance) {
     const user = (request as any).user;
     try {
       const id = parseId((request.params as { id: string }).id);
-      reply.send(ok(listPaperPositions(store().db, user.sub, id)));
+      reply.send(ok(await attachAssetNames(listPaperPositions(store().db, user.sub, id))));
     } catch (err) {
       return sendError(reply, err);
     }
@@ -218,7 +244,21 @@ export async function registerPaperRoutes(app: FastifyInstance) {
       const id = parseId((request.params as { id: string }).id);
       const q = request.query as { from?: string; to?: string };
       const report = await getPaperReport(store().db, user.sub, id, { from: q.from, to: q.to });
-      reply.send(ok(report));
+      // 补标的中文名（装饰信息）：影子期的目标清单 + 落账期的持仓
+      const enriched = { ...report };
+      if (report.shadow) {
+        enriched.shadow = {
+          ...report.shadow,
+          latestTargets: await attachAssetNames(report.shadow.latestTargets),
+        };
+      }
+      if (report.ledger) {
+        enriched.ledger = {
+          ...report.ledger,
+          positions: await attachAssetNames(report.ledger.positions),
+        };
+      }
+      reply.send(ok(enriched));
     } catch (err) {
       return sendError(reply, err);
     }

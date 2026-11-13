@@ -46,6 +46,8 @@ const TARGET_ORDER = {
   decisionDate: '2026-11-06',
   tradeDate: '2026-11-09',
   assetCode: 'sh600000',
+  /** 标的中文名（后端从行情层 `raw_symbol_name` 补；查不到时为 null ⇒ 只显示代码）*/
+  assetName: '浦发银行',
   intentKind: 'target',
   side: 'buy',
   targetWeight: 0.5,
@@ -163,8 +165,38 @@ describe('PA-14 纸面账户页', () => {
     renderWithRouter(<PaperAccount />, { initialEntries: ['/paper'] });
     expect(await screen.findByText('影子期（shadow）')).toBeInTheDocument();
     expect(screen.getByText(/模拟成交，非真实交易；/)).toBeInTheDocument();
-    expect(await screen.findByText('sh600000')).toBeInTheDocument();
+    expect(await screen.findByText('浦发银行(sh600000)')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '切换到落账期' })).toBeInTheDocument();
+  });
+
+  it('订单表标的列：显示「名称(代码)」并链接到该标的的 K 线图', async () => {
+    renderWithRouter(<PaperAccount />, { initialEntries: ['/paper'] });
+
+    const link = await screen.findByRole('link', { name: '浦发银行(sh600000)' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
+  });
+
+  it('订单表标的列：无中文名时回退显示代码（仍可点进 K 线）', async () => {
+    getMock.mockImplementation(async (url: string) => {
+      switch (url) {
+        case '/paper/accounts':
+          return mockResponse([SHADOW_ACCOUNT]);
+        case '/paper/accounts/1/report':
+          return mockResponse({
+            ...SHADOW_REPORT,
+            shadow: { ...SHADOW_REPORT.shadow, latestTargets: [{ ...TARGET_ORDER, assetName: null }] },
+          });
+        case '/paper/accounts/1/orders':
+          return mockResponse([{ ...TARGET_ORDER, assetName: null }]);
+        default:
+          return mockResponse([]);
+      }
+    });
+
+    renderWithRouter(<PaperAccount />, { initialEntries: ['/paper'] });
+
+    const link = await screen.findByRole('link', { name: 'sh600000' });
+    expect(link).toHaveAttribute('href', '/kline?symbol=sh600000');
   });
 
   it('切阶段：二次确认写明重置水位与不补记；确认后 POST 参数正确且成功可见', async () => {

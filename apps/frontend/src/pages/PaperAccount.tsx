@@ -4,6 +4,7 @@ import { isOkEnvelope } from '../api/envelope';
 import { extractErrorMessage } from '../api/errors';
 import ConfirmDialog from '../components/ConfirmDialog';
 import Spinner from '../components/Spinner';
+import AssetLink from '../components/AssetLink';
 import { COLORS, SPACING, TYPO } from '../theme/tokens';
 import {
   buttonDisabledStyle,
@@ -56,6 +57,8 @@ interface PaperOrderDto {
   decisionDate: string;
   tradeDate: string;
   assetCode: string;
+  /** 标的中文名（行情层 `raw_symbol_name`；查不到 / 行情库不可用时为 null ⇒ 只显示代码）*/
+  assetName?: string | null;
   intentKind: 'target' | 'liquidate';
   side: 'buy' | 'sell';
   targetWeight: number | null;
@@ -69,6 +72,8 @@ interface PaperOrderDto {
 
 interface PaperPositionDto {
   assetCode: string;
+  /** 标的中文名（装饰信息，取不到时为 null）*/
+  assetName?: string | null;
   qty: number;
   avgCost: number;
   costBasis: number;
@@ -453,7 +458,9 @@ export default function PaperAccount() {
                     <tbody>
                       {report.ledger.positions.map((p) => (
                         <tr key={p.assetCode}>
-                          <td style={tdStyle}>{p.assetCode}</td>
+                          <td style={tdStyle}>
+                            <AssetLink assetCode={p.assetCode} assetName={p.assetName} variant="inline" />
+                          </td>
                           <td style={tdStyle}>{money(p.qty)}</td>
                           <td style={tdStyle}>{p.avgCost.toFixed(4)}</td>
                           <td style={tdStyle}>{money(p.costBasis)}</td>
@@ -547,7 +554,10 @@ function OrderTable({ rows }: { rows: readonly PaperOrderDto[] }) {
             <tr key={o.id}>
               <td style={tdStyle}>{o.decisionDate}</td>
               <td style={tdStyle}>{o.tradeDate}</td>
-              <td style={tdStyle}>{o.assetCode}</td>
+              <td style={tdStyle}>
+                {/* 标的列：**名称(代码)**，整格链接到该标的的 K 线图（`/kline?symbol=`）*/}
+                <AssetLink assetCode={o.assetCode} assetName={o.assetName} variant="inline" />
+              </td>
               <td style={tdStyle}>{o.side === 'buy' ? '买入' : '卖出'}</td>
               <td style={tdStyle}>{ORDER_STATUS_LABEL[o.status]}</td>
               <td style={tdStyle}>{o.filledQty === 0 ? '—' : money(o.filledQty)}</td>

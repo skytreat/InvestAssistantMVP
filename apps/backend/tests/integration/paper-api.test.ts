@@ -208,6 +208,8 @@ describe('只读报告（PA-09）', () => {
     expect(orderList[0].status).toBe('shadow');
     expect(orderList[0].targetWeight).toBe(0.5);
     expect(orderList[0].tradeDate).toBe('2026-11-09');
+    // 标的中文名由路由层从行情层补（查不到 / 行情库不可用时为 null ⇒ 前端回退显示代码）
+    expect(orderList[0]).toHaveProperty('assetName');
 
     // 影子期这两张表恒空（§7.8：读了只会误导）
     const positions = await bundle.app.inject({
@@ -238,6 +240,7 @@ describe('只读报告（PA-09）', () => {
     expect(data.shadow.latestDecisionDate).toBe('2026-11-06');
     expect(data.shadow.latestTargets).toHaveLength(1);
     expect(data.shadow.latestTargets[0].assetCode).toBe('sh510300');
+    expect(data.shadow.latestTargets[0]).toHaveProperty('assetName');
     expect(data.shadow.orderCounts).toEqual({ shadow: 1 });
   });
 
