@@ -372,6 +372,59 @@ DualMomentum 的 L2 是**有状态**的（建仓日、高水位、冷却表）�
 > 本立项**只登记在此文件**；`docs/client/code_implementation_plan_v3.md` 有其它分支在改，
 > 正式条目待该分支合并后再安排。
 
+### 10.4 实施评估（2026-11-13 实测）
+
+> 评估目的：判断 §10 的改造是否可行、成本多少。**评估结论已推翻 §10.3 第 2 条的担忧**。
+
+#### 10.4.1 核心发现：`onFill` 是纯通知，不需要逐日行情
+
+`FillNotice`（`strategy/types.ts:120`）只需 `{date, symbol, side, qty, price, fee, reason}`，
+**全部来自成交本身** ⇒ 历史回放只需**成交序列**，**不需要逐日行情重放**。
+⇒ §10.3 第 2 条担心的「逐日带成交模拟 / 长生命周期账户重放数百个交易日」**不成立**。
+
+#### 10.4.2 历史成交序列**框架已经全有**
+
+| 事实 | 证据 |
+|---|---|
+| 结算时 `stepBacktestDay` 返回的 `fills` **带 `reason`** | `engine.ts:604-614`（把 `fill.reason` 喂给 `onFill`） |
+| 卖出 reason = `req.exitReasons[symbol]`（`'take-profit'`/`'stop-loss'`/`'momentum-decay'`/…） | `simulator.ts:334` |
+| 买入 reason = `t.reason`（`'candidate-top'`/`'holding-retained'`/…） | `simulator.ts:430` |
+| 纸面账户**确实有成交历史** | `paper_order`(status=`filled`) + `paper_position` |
+
+⇒ **唯一缺口是 `exit_reason` 没落库**（`paper_order` 只有 `unfilled_reason`＝未成交原因，不是退出原因）。
+
+#### 10.4.3 三条路线对比
+
+| 路线 | 改动 | 工作量 | 风险 |
+|---|---|---|---|
+| **A1 onFill 历史回放** | ① `paper_order` 加 `exit_reason` + 索引 `(account_id, status)`<br>② `settle.ts` 写回时落 `fill.reason`<br>③ `decision.ts` 回放前把历史 filled 订单翻译成 `FillNotice` 喂 `strategy.onFill()` | **4 文件 + 1 DDL**<br>**~0.5–1 人天** | **低** |
+| A2 策略状态持久化 | `paper_position` 加 `first_buy_date`/`high_water`/`cooldown_json` + **给 `Strategy` 接口加「恢复状态」钩子** | 1–2 人天 | 中（改公共接口 ⇒ 全部策略受影响；DDL 已定稿 ⇒ 需 ADR） |
+| A3 §10.3 原文「全量成交模拟」 | 逐日重放（含行情、成交、估值） | 高 | 与结算重复计算，易漂移 |
+
+#### 10.4.4 A1 的三个利好（实测确认）
+
+1. **对其它策略零影响** —— wufu / combo / buy-and-hold **都没有 `onFill`**（grep 实测）⇒
+   喂进去也没人接，不改它们的行为，**不需要「兼容审计」**（§10.3 第 3 条的担忧消解）。
+2. **历史序列连续无断层** —— shadow→ledger 切换时 `cash = initial_cash` + `DELETE FROM paper_position`
+   + `last_settled_date = NULL`（`accountService.ts:311-323`）⇒ 影子期历史决策**不影响**落账期。
+3. **性能可接受** —— 跑赢档年换手 24.4 ⇒ 8 年约 400~800 笔成交，每次决策重放 800 条 `onFill` 是毫秒级；
+   现成索引 `idx_paper_order_due(account_id, trade_date, status)` 可用，建议补 `(account_id, status)`。
+
+#### 10.4.5 唯一真实缺口
+
+**已存在的旧账户**其 `paper_order` 无 `exit_reason` ⇒ 历史卖出重建不出「止盈还是止损」⇒ 冷却仍不对；
+**新建账户不受影响**（从第一笔成交起就有 reason）。
+
+#### 10.4.6 收益 / 代价判定
+
+| | 内容 |
+|---|---|
+| **收益** | 解除 §9.3 核心禁令「纸面结果不得与回测互相校验」⇒ 四条 L2 规则全部恢复，双动量纸面成为**可信的实盘前演练** |
+| **代价** | ~1 人天 + 一个 ADR（改公共回放机制 + DDL）+ 回归验证「纸面 vs 回测逐位一致」 |
+| **判定** | 若双动量纸面定位为**实盘前演练环境** ⇒ **值得做 A1**；若只是「跑个影子看趋势」 ⇒ 现状已够用 |
+
+> 正式立项（ADR + 任务号）待 owner 裁决后安排。
+
 ## 11. 框架级待修项（2026-11-09 回测实测发现，不影响寻优）
 
 > 两条都不是 DualMomentum 的问题，而是 `apps/backend/src/services/backtest/` 的**框架公共路径**问题，
