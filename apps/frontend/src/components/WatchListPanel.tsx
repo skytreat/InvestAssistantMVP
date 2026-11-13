@@ -41,6 +41,10 @@ export interface WatchListPanelProps {
   loading: boolean;
   /** 错误文案（非 null 时展示降级提示）*/
   error: string | null;
+  /** 移除自选（传了才显示每行「移除」按钮；不传则保持只读） */
+  onRemove?: (assetCode: string) => void;
+  /** 正在操作中的标的代码（单行移除 loading，防双击） */
+  pending?: string | null;
 }
 
 /** 只取日期部分（`created_at` 是 `YYYY-MM-DD HH:MM:SS` 的本地时间串）*/
@@ -50,7 +54,7 @@ function datePart(value: string | null | undefined): string | null {
   return matched ? matched[1] : null;
 }
 
-export default function WatchListPanel({ rows, loading, error }: WatchListPanelProps) {
+export default function WatchListPanel({ rows, loading, error, onRemove, pending }: WatchListPanelProps) {
   const getAssetName = useAssetNames(rows.map((row) => row.asset_code));
   return (
     <div style={{ marginTop: SPACING.gapRelaxed }} data-testid="watch-list-panel">
@@ -96,21 +100,46 @@ export default function WatchListPanel({ rows, loading, error }: WatchListPanelP
                 <th scope="col" style={thStyle}>
                   加入日期
                 </th>
+                {onRemove ? (
+                  <th scope="col" style={thStyle}>
+                    操作
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, index) => (
-                <tr key={typeof row.id === 'number' ? row.id : `${row.asset_code}-${index}`}>
-                  <td style={thTdStyle}>
-                    <AssetLink
-                      assetCode={row.asset_code}
-                      assetName={getAssetName(row.asset_code)}
-                      variant="inline"
-                    />
-                  </td>
-                  <td style={thTdStyle}>{datePart(row.created_at) ?? datePart(row.watch_date) ?? '--'}</td>
-                </tr>
-              ))}
+              {rows.map((row, index) => {
+                const code = row.asset_code;
+                return (
+                  <tr key={typeof row.id === 'number' ? row.id : `${code}-${index}`}>
+                    <td style={thTdStyle}>
+                      <AssetLink assetCode={code} assetName={getAssetName(code)} variant="inline" />
+                    </td>
+                    <td style={thTdStyle}>{datePart(row.created_at) ?? datePart(row.watch_date) ?? '--'}</td>
+                    {onRemove ? (
+                      <td style={thTdStyle}>
+                        <button
+                          type="button"
+                          data-testid="watch-remove"
+                          disabled={pending === code}
+                          onClick={() => onRemove(code)}
+                          style={{
+                            padding: '2px 8px',
+                            fontSize: TYPO.captionSize,
+                            background: 'transparent',
+                            color: COLORS.danger,
+                            border: `1px solid ${COLORS.danger}`,
+                            borderRadius: 4,
+                            cursor: pending === code ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {pending === code ? '移除中…' : '移除'}
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </ScrollableTable>

@@ -28,6 +28,7 @@ import TradeTypeTabs from '../components/TradeTypeTabs';
 import TradeEstimatePanel from '../components/TradeEstimatePanel';
 import TradeReasonTags, { TRADE_REASON_TAGS } from '../components/TradeReasonTags';
 import SymbolAutocomplete from '../components/SymbolAutocomplete';
+import WatchButton from '../components/WatchButton';
 import {
   TRADE_TYPE_DIRECTION,
   estimateNewPosition,
@@ -402,6 +403,10 @@ export default function TradeInput() {
               股票代码
             </label>
             <SymbolAutocomplete id="trade-input-symbol" value={assetCode} onChange={setAssetCode} />
+            {/* 加自选：录入前顺手把这个标的沉淀成观察池（标的代码为空时按钮自动不渲染） */}
+            <span style={{ display: 'inline-flex', marginLeft: SPACING.gapBase }}>
+              <WatchButton assetCode={assetCode} compact />
+            </span>
           </div>
 
           <div style={rowStyle} data-testid="trade-form-row">

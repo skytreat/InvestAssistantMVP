@@ -73,6 +73,8 @@ export default function Candidates() {
   const [notice, setNotice] = useState<string | null>(null);
   /** 操作失败提示 */
   const [opError, setOpError] = useState<string | null>(null);
+  /** 当前分区（候选池 / 自选）—— 两个 Tab（自选列表与候选池分区展示，Requirements §5.7 #1） */
+  const [tab, setTab] = useState<'candidates' | 'watch'>('candidates');
 
   /** 拉取候选列表 */
   const loadCandidates = useCallback(async () => {
@@ -158,6 +160,18 @@ export default function Candidates() {
     }
   }, []);
 
+  const removeWatchOne = useCallback(async (assetCode: string): Promise<OpResult> => {
+    try {
+      const res = await api.delete(`/watch/${encodeURIComponent(assetCode)}`);
+      if (isOkEnvelope(res.data)) {
+        return { ok: true, message: '已移出自选' };
+      }
+      return { ok: false, message: res.data?.message ?? '移出自选失败' };
+    } catch (err) {
+      return { ok: false, message: extractErrorMessage(err, '移出自选失败') };
+    }
+  }, []);
+
   /** 行操作：迁移（只打标记）*/
   const handleMigrate = useCallback(
     async (assetCode: string) => {
@@ -213,6 +227,24 @@ export default function Candidates() {
       setPending(null);
     },
     [addWatchOne, loadWatch],
+  );
+
+  /** 自选 Tab：移除自选（软删，`DELETE /api/watch/:code`）*/
+  const handleRemoveWatch = useCallback(
+    async (assetCode: string) => {
+      setPending(assetCode);
+      setNotice(null);
+      setOpError(null);
+      const result = await removeWatchOne(assetCode);
+      if (result.ok) {
+        setNotice(result.message);
+        await loadWatch();
+      } else {
+        setOpError(result.message);
+      }
+      setPending(null);
+    },
+    [removeWatchOne, loadWatch],
   );
 
   // ── 批量操作 ────────────────────────────────────────────
@@ -301,55 +333,52 @@ export default function Candidates() {
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>候选池</h1>
 
+      {/*
+        两个 Tab：「候选池」与「自选」。
+        候选池与自选是**两个独立的关系类型**（Requirements §5.7 #1「独立于自选列表」），
+        故分开两个 Tab 展示，避免同一卡片里上下堆叠两块、迁移语义不清晰。
+      */}
+      <div
+        role="tablist"
+        aria-label="候选池 / 自选分区"
+        data-testid="candidates-tabs"
+        style={{
+          display: 'flex',
+          gap: SPACING.gapBase,
+          marginBottom: SPACING.gapBase,
+          borderBottom: `1px solid ${COLORS.borderSubtle}`,
+        }}
+      >
+        {(
+          [
+            { key: 'candidates', label: `候选池（${rows.length}）` },
+            { key: 'watch', label: `自选（${watchRows.length}）` },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.key}
+            role="tab"
+            type="button"
+            aria-selected={tab === t.key}
+            data-testid={`candidates-tab-${t.key}`}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: '6px 14px',
+              fontSize: TYPO.bodySize,
+              background: tab === t.key ? COLORS.brand : 'transparent',
+              color: tab === t.key ? COLORS.cardBg : COLORS.textSecondary,
+              border: 'none',
+              borderBottom: `2px solid ${tab === t.key ? COLORS.brand : 'transparent'}`,
+              cursor: 'pointer',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div style={cardStyle} aria-busy={loading}>
-        {/* ── 工具栏：迁移价格模式 + 批量操作 + 刷新 ── */}
-        <div style={toolbarStyle}>
-          <fieldset style={fieldsetStyle}>
-            <legend style={legendStyle}>迁移价格模式</legend>
-            <label htmlFor="candidate-price-mode-base" style={{ fontSize: TYPO.bodySize }}>
-              <input
-                id="candidate-price-mode-base"
-                type="radio"
-                name="candidate-price-mode"
-                value="base"
-                checked={priceMode === 'base'}
-                onChange={() => setPriceMode('base')}
-              />
-              复用基准价
-            </label>
-            <label htmlFor="candidate-price-mode-current" style={{ fontSize: TYPO.bodySize }}>
-              <input
-                id="candidate-price-mode-current"
-                type="radio"
-                name="candidate-price-mode"
-                value="current"
-                checked={priceMode === 'current'}
-                onChange={() => setPriceMode('current')}
-              />
-              使用现价
-            </label>
-          </fieldset>
-
-          <button
-            style={buttonStyle}
-            disabled={selected.length === 0 || batchBusy}
-            onClick={() => void handleBatchMigrate()}
-          >
-            批量迁移自选（{selected.length}）
-          </button>
-          <button
-            style={buttonStyle}
-            disabled={selected.length === 0 || batchBusy}
-            onClick={() => void handleBatchRemove()}
-          >
-            批量移除（{selected.length}）
-          </button>
-          <button style={buttonStyle} onClick={() => void loadCandidates()} disabled={loading}>
-            刷新
-          </button>
-        </div>
-
-        {/* 操作结果（成功 / 失败）—— `aria-live` 让读屏也能听到反馈 */}
+        {/* 操作结果（成功 / 失败）—— `aria-live` 让读屏也能听到反馈（两个 Tab 共用） */}
         <div aria-live="polite">
           {notice !== null && (
             <div
@@ -366,32 +395,88 @@ export default function Candidates() {
           )}
         </div>
 
-        <div style={{ marginTop: SPACING.gapBase }}>
-          <CandidateTable
-            rows={rows}
-            selected={selected}
-            onToggle={handleToggle}
-            onToggleAll={handleToggleAll}
-            onMigrate={(code) => void handleMigrate(code)}
-            onRemove={(code) => void handleRemove(code)}
-            onAddWatch={(code) => void handleAddWatch(code)}
-            pending={pending}
-            watchCodes={watchCodes}
-            loading={loading}
-            error={error}
-            onRetry={() => void loadCandidates()}
-          />
-        </div>
+        {tab === 'candidates' ? (
+          <>
+            {/* ── 工具栏：迁移价格模式 + 批量操作 + 刷新 ── */}
+            <div style={toolbarStyle}>
+              <fieldset style={fieldsetStyle}>
+                <legend style={legendStyle}>迁移价格模式</legend>
+                <label htmlFor="candidate-price-mode-base" style={{ fontSize: TYPO.bodySize }}>
+                  <input
+                    id="candidate-price-mode-base"
+                    type="radio"
+                    name="candidate-price-mode"
+                    value="base"
+                    checked={priceMode === 'base'}
+                    onChange={() => setPriceMode('base')}
+                  />
+                  复用基准价
+                </label>
+                <label htmlFor="candidate-price-mode-current" style={{ fontSize: TYPO.bodySize }}>
+                  <input
+                    id="candidate-price-mode-current"
+                    type="radio"
+                    name="candidate-price-mode"
+                    value="current"
+                    checked={priceMode === 'current'}
+                    onChange={() => setPriceMode('current')}
+                  />
+                  使用现价
+                </label>
+              </fieldset>
 
-        {/* ── 自选列表分区（候选池独立于自选，Requirements §5.7 #1）── */}
-        <WatchListPanel rows={watchRows} loading={watchLoading} error={watchError} />
+              <button
+                style={buttonStyle}
+                disabled={selected.length === 0 || batchBusy}
+                onClick={() => void handleBatchMigrate()}
+              >
+                批量迁移自选（{selected.length}）
+              </button>
+              <button
+                style={buttonStyle}
+                disabled={selected.length === 0 || batchBusy}
+                onClick={() => void handleBatchRemove()}
+              >
+                批量移除（{selected.length}）
+              </button>
+              <button style={buttonStyle} onClick={() => void loadCandidates()} disabled={loading}>
+                刷新
+              </button>
+            </div>
+
+            <div style={{ marginTop: SPACING.gapBase }}>
+              <CandidateTable
+                rows={rows}
+                selected={selected}
+                onToggle={handleToggle}
+                onToggleAll={handleToggleAll}
+                onMigrate={(code) => void handleMigrate(code)}
+                onRemove={(code) => void handleRemove(code)}
+                onAddWatch={(code) => void handleAddWatch(code)}
+                pending={pending}
+                watchCodes={watchCodes}
+                loading={loading}
+                error={error}
+                onRetry={() => void loadCandidates()}
+              />
+            </div>
+          </>
+        ) : (
+          <WatchListPanel
+            rows={watchRows}
+            loading={watchLoading}
+            error={watchError}
+            onRemove={(code) => void handleRemoveWatch(code)}
+            pending={pending}
+          />
+        )}
       </div>
 
       {/*
         候选池为空时的引导：去「条件选股」把选股结果一键加入候选池（PRD S3）。
         放在页面底部，避免与表格的空态抢焦点。
       */}
-      {rows.length === 0 && !loading && error === null && (
+      {tab === 'candidates' && rows.length === 0 && !loading && error === null && (
         <div style={{ marginTop: SPACING.gapBase }}>
           <button style={buttonStyle} onClick={() => navigate('/stockscan')}>
             去条件选股

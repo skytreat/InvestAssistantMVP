@@ -231,6 +231,15 @@ describe('T70 · K 线页数据链路', () => {
     expect(within(nav).getByText('sh600519')).toHaveAttribute('aria-current', 'page');
   });
 
+  it('标的标题区有「加自选」按钮（当前标的，点击可加入自选）', async () => {
+    const { default: Kline } = await import('../../src/pages/Kline');
+    renderWithRouter(<Kline />, { initialEntries: ['/kline?symbol=sh600519'] });
+
+    await screen.findByTestId('watch-toggle');
+    const button = screen.getByTestId('watch-toggle');
+    expect(button).toHaveAttribute('data-code', 'sh600519');
+  });
+
   it('T70: 消费 `?symbol=` query（修复必修 bug ②：从标的详情 Modal 跳过来要落到目标标的）', async () => {
     const { default: Kline } = await import('../../src/pages/Kline');
     renderWithRouter(<Kline />, { initialEntries: ['/kline?symbol=sh600519'] });

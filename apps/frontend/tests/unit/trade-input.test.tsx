@@ -71,6 +71,10 @@ beforeEach(() => {
 
   getMock.mockImplementation(async (url: string) => {
     if (url === '/symbols/search') return mockResponse([]);
+    if (url.startsWith('/watch')) {
+      // 自选列表（跨页面共享的 useWatchStore 懒加载）：默认空，不影响交易录入主流程
+      return mockResponse([]);
+    }
     if (url.startsWith('/holding/')) {
       if (mockState.holding === null)
         return mockResponse({ asset_code: 'sh600000', totalQuantity: 0, avgCost: 0 });
@@ -878,5 +882,20 @@ describe('F2 · 可选关联信号', () => {
   it('未填时提示说明关联后的展示效果', () => {
     renderPage();
     expect(screen.getByTestId('trade-signal-hint')).toHaveTextContent('关联后可在信号列表看到「已成交」');
+  });
+});
+
+describe('加自选（交易录入页选标的时）', () => {
+  it('标的代码为空时不渲染「加自选」按钮', () => {
+    renderPage();
+    expect(screen.queryByTestId('watch-toggle')).not.toBeInTheDocument();
+  });
+
+  it('填入标的代码后出现「加自选」按钮（data-code = 该代码）', async () => {
+    renderPage();
+    await fillAssetCode('sh600000');
+
+    const button = await screen.findByTestId('watch-toggle');
+    expect(button).toHaveAttribute('data-code', 'sh600000');
   });
 });
