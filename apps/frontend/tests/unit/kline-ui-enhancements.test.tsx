@@ -17,6 +17,7 @@ import { renderWithRouter, mockResponse } from '../helpers';
 import { installFakeCanvas, restoreFakeCanvas } from '../helpers/fakeCanvas';
 import KlineParamPanel from '../../src/components/KlineParamPanel';
 import KlineChart from '../../src/components/KlineChart';
+import { TYPO } from '../../src/theme/tokens';
 import { DEFAULT_INDICATOR_PARAMS } from '../../src/indicators/chartParams';
 import { buildChartBars, type RawBar } from '../../src/indicators/chartBars';
 import {
@@ -421,5 +422,66 @@ describe('图表全屏切换', () => {
     expect(container.style.height).toBe('560px');
     // 退出后必须重绘（尺寸复原）
     expect(exitFullscreen).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * ⑤ 浮层定位 + 全屏按钮可见性（2026-11-13）
+ * ------------------------------------------------------------------ */
+
+/**
+ * ⚠️ jsdom 没有 layout engine ⇒ 这里只钉**结构契约**（DOM 嵌套关系）与**样式字面量**：
+ *
+ * - 浮层（hover 浮窗 / 交易明细 / 全屏按钮）必须挂在**图表区容器**内 ——
+ *   图表区在「画线工具栏」**下方**，故浮层**永远不会盖住工具按钮**；
+ * - 全屏按钮必须是「实心品牌色 + 粗体」（旧实现是半透明黑底 + 11px 灰字，压在深色画布上几乎不可见）。
+ */
+describe('浮层定位与全屏按钮可见性', () => {
+  beforeAll(() => {
+    installFakeCanvas();
+  });
+  afterAll(() => {
+    restoreFakeCanvas();
+  });
+
+  function renderChart() {
+    return render(
+      <KlineChart
+        symbol="sh600000"
+        period="day"
+        bars={buildChartBars(RAW_BARS, 'day', [], DEFAULT_INDICATOR_PARAMS)}
+        dataSignature="sig"
+        params={DEFAULT_INDICATOR_PARAMS}
+        showMa
+        showTrades={false}
+        subIndicator="macd"
+      />,
+    );
+  }
+
+  it('画线工具栏在图表区**之外**，浮层（图标/浮窗）挂在图表区之内 ⇒ 不覆盖工具按钮', () => {
+    renderChart();
+
+    const toolbar = screen.getByTestId('kline-overlay-toolbar');
+    const area = screen.getByTestId('kline-chart-area');
+    const button = screen.getByTestId('kline-fullscreen-toggle');
+
+    // 工具栏是图表区的**兄弟**（在它上面）
+    expect(area.contains(toolbar)).toBe(false);
+    // 图表容器在图表区之内
+    expect(area.contains(screen.getByTestId('kline-chart-container'))).toBe(true);
+    // 全屏按钮浮在画布上（不压工具栏）
+    expect(area.contains(button)).toBe(true);
+  });
+
+  it('全屏按钮是「实心品牌色 + 粗体白字」（不再是半透明灰底小字）', () => {
+    renderChart();
+
+    const button = screen.getByTestId('kline-fullscreen-toggle');
+    expect(button.style.background).not.toBe('');
+    // 旧实现是 `rgba(0, 0, 0, 0.45)` 半透明底 ⇒ 断言现在**不是**半透明
+    expect(button.style.background).not.toContain('rgba');
+    expect(button.style.fontWeight).toBe('600');
+    expect(button.style.fontSize).toBe(TYPO.smallSize);
   });
 });
