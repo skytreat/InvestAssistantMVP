@@ -4,6 +4,14 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import Signals from '../../src/pages/Signals';
 import { mockResponse, renderWithRouter } from '../helpers';
+import { useWatchStore } from '../../src/store/watch';
+
+// main #172：操作列新增「加自选」按钮（文案随 useWatchStore：已自选 ⇒「已自选」）。
+// zustand 全局 store 不自动重置 —— CI shuffle 顺序下 watch 用例先跑会留脏状态，
+// 使本文件的精确单元格文案断言随机失败。统一钉住干净状态（未自选 ⇒ 恒显「加自选」）。
+beforeEach(() => {
+  useWatchStore.setState({ codes: [], loaded: true, loading: false, pendingCode: null, message: null });
+});
 
 /**
  * T61 · Signals 前端用例（信号页的键盘可达性与键盘操作）

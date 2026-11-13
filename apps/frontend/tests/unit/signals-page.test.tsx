@@ -6,6 +6,14 @@ import Signals from '../../src/pages/Signals';
 import { mockResponse, renderWithRouter } from '../helpers';
 import { COLORS } from '../../src/theme/tokens';
 import { useUserStore } from '../../src/store/user';
+import { useWatchStore } from '../../src/store/watch';
+
+// main #172：操作列「加自选」按钮文案随 useWatchStore（已自选 ⇒「已自选」）。
+// zustand 全局 store 不自动重置 —— CI shuffle 顺序下 watch 用例先跑会留脏状态，
+// 统一钉住干净状态（未自选 ⇒ 恒显「加自选」），避免跨文件顺序依赖。
+beforeEach(() => {
+  useWatchStore.setState({ codes: [], loaded: true, loading: false, pendingCode: null, message: null });
+});
 
 /**
  * T72 · Signals 页增强（页面级用例）
