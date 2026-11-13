@@ -124,11 +124,19 @@ function validateStrategyParams(
       case 'boolean':
         if (typeof value !== 'boolean') fail(`${name} 必须是 true / false`);
         break;
-      case 'string':
-        if (typeof value !== 'string' || value.trim() === '') {
+      case 'string': {
+        if (typeof value !== 'string') {
+          fail(`${name} 必须是字符串`);
+        }
+        const str = value as string;
+        // ⚠️ 「schema 缺省即空串」的字段（如 dualmomentum 的 `defensiveSymbol`：`''` = 未设置）
+        //    视为**未设置**放行 —— 否则建户时把 schema 缺省回填成参数就必然被自己的校验拒绝。
+        //    仅当 schema 的 default **不是**空串时，才要求非空（既有字段的校验强度不变）。
+        if (str.trim() === '' && field.default !== '') {
           fail(`${name} 必须是非空字符串`);
         }
         break;
+      }
       case 'select': {
         const options = field.options ?? [];
         if (typeof value !== 'string' || !options.includes(value)) {

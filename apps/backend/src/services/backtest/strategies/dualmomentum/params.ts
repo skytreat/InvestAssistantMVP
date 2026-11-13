@@ -124,6 +124,19 @@ export interface DualMomentumParams {
    * 存储为 JSON 字符串（schema default 须过纸面建户 string 校验）；`index.ts` 消费时 JSON.parse。
    */
   symbolWeights: string;
+  /**
+   * 候选池扩展（§13.16 B1/B2；缺省 `'[]'` = 只用 DAS 锁定 7 只池，基线逐位不变）。
+   * JSON 数组字符串，运行时**追加**到 `POOL_ORDER` 之后（不改 `l1/params.ts` 的对齐契约常量）。
+   * 用途：把债券/商品等**低相关**资产纳入候选（实测债券 ETF 与 A 股池相关 −0.12~−0.28）。
+   * 注意：扩展标的仍走**同一套 L1 过滤链**（MA + 动量区间 + 日涨跌），能否入选由信号决定。
+   */
+  poolExtension: string;
+  /**
+   * 防御回退标的（§13.16 B1；缺省 `''` = 无候选时保持现金，基线逐位不变）。
+   * 非空时：**候选为空**则全仓持有该标的（不再空仓），沿用框架既有 `defensive-fallback` 语义
+   * （与 `wufuRotation` 的 `defensiveEtf` 同款）。
+   */
+  defensiveSymbol: string;
 }
 
 export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
@@ -183,6 +196,10 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   trailingTakeProfitRequiresThreshold: false,
   /** 缺省 '{}' = 候选均分，基线不变；显式传 '{"sh518880":2}' 等才激活加权分配 */
   symbolWeights: '{}',
+  /** 缺省 '[]' = 只用 DAS 锁定 7 只池，基线不变 */
+  poolExtension: '[]',
+  /** 缺省 '' = 无候选时保持现金，基线不变 */
+  defensiveSymbol: '',
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -664,6 +681,21 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     description:
       'JSON 对象字符串，对入选候选的市值分配按权重归一（weight[s] / Σ 入选权重）；未出现标的视为 1；如 {"sh518880": 2} 黄金腿 2 倍份额',
   },
+  {
+    key: 'poolExtension',
+    label: '候选池扩展（§13.16 B1/B2；缺省空 = 锁定 7 只池）',
+    type: 'string',
+    default: DUALMOMENTUM_DEFAULTS.poolExtension,
+    description:
+      'JSON 数组字符串，运行时追加到 POOL_ORDER 之后（不改对齐契约常量）；用于纳入债券/商品等低相关资产，如 ["sh511260","sh511010"]',
+  },
+  {
+    key: 'defensiveSymbol',
+    label: '防御回退标的（§13.16 B1；缺省空 = 无候选时保持现金）',
+    type: 'string',
+    default: DUALMOMENTUM_DEFAULTS.defensiveSymbol,
+    description: '非空时，候选为空则全仓持有该标的（沿用框架 defensive-fallback 语义）；如 "sh511260"',
+  },
 ];
 
 function num(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
@@ -709,6 +741,28 @@ function normalizeSymbolWeightsJson(raw: Readonly<Record<string, unknown>>, fall
     if (Number.isFinite(n) && n > 0) out[k] = n;
   }
   return Object.keys(out).length > 0 ? JSON.stringify(out) : fallback;
+}
+
+/** 归一 poolExtension 为 JSON 数组字符串（接受 JSON 字符串 / 原生数组 / 缺省），非法值退化为 '[]'。 */
+function normalizePoolExtensionJson(raw: Readonly<Record<string, unknown>>, fallback: string): string {
+  const v = raw.poolExtension;
+  let candidate: unknown[] | null = null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    try {
+      const parsed: unknown = JSON.parse(v);
+      if (Array.isArray(parsed)) candidate = parsed;
+    } catch {
+      candidate = null;
+    }
+  } else if (Array.isArray(v)) {
+    candidate = v;
+  }
+  if (!candidate) return fallback; // 缺省 fallback='[]'
+  const out = candidate.filter(
+    (x): x is string => typeof x === 'string' && x.trim() !== '' && x.trim() !== x,
+  );
+  const dedup = [...new Set(out)];
+  return dedup.length > 0 ? JSON.stringify(dedup) : fallback;
 }
 
 /** 合并默认值 + 用户参数，并做最小合法性收敛（不抛错，避免回测因单个参数中断）。 */
@@ -785,6 +839,12 @@ export function resolveDualMomentumParams(
     ),
     // §13.15 A2：缺省 '{}' = 候选均分，基线不变；接受 JSON 字符串或对象两种形式，归一为 JSON 字符串
     symbolWeights: normalizeSymbolWeightsJson(src, d.symbolWeights),
+    // §13.16 B1/B2：缺省 '[]' = 只用 DAS 锁定 7 只池；防御回退缺省 '' = 无候选时保持现金
+    poolExtension: normalizePoolExtensionJson(src, d.poolExtension),
+    defensiveSymbol:
+      typeof src.defensiveSymbol === 'string' && src.defensiveSymbol.trim() !== ''
+        ? src.defensiveSymbol.trim()
+        : d.defensiveSymbol,
   };
 }
 

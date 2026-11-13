@@ -163,6 +163,18 @@ function maOrNull(value: number | undefined): number | null {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+/** 解析 poolExtension（JSON 数组字符串）→ 标的数组；非法值退化为空数组（= DAS 锁定池）。 */
+function parsePoolExtension(raw: string): string[] {
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+  } catch {
+    return [];
+  }
+}
+
 function calendarDaysBetween(from: string, to: string): number {
   const a = Date.parse(`${from}T00:00:00Z`);
   const b = Date.parse(`${to}T00:00:00Z`);
@@ -310,9 +322,12 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       }
 
       // ── 2) L1：逐标的指标 → 过滤 → 主槽降序排名 ──
+      // §13.16 B1/B2：池扩展（opt-in，缺省空 = 只用 DAS 锁定 7 只池，基线逐位不变）
+      const poolExtension = parsePoolExtension(p.poolExtension);
+      const pool = poolExtension.length > 0 ? [...POOL_ORDER, ...poolExtension] : POOL_ORDER;
       const dayBySymbol = new Map<string, SymbolDay>();
       const passed: { symbol: string; primary: number }[] = [];
-      for (const symbol of POOL_ORDER) {
+      for (const symbol of pool) {
         const day = readSymbolDay(ctx, symbol, lookback, asOf);
         dayBySymbol.set(symbol, day);
         if (day.bars.length === 0) continue; // 池内从未有过 bar ⇒ POOL_ABSENT
@@ -351,7 +366,7 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       let filtered = passed;
       if (wsmRelaxed || rsrsRelaxed || p.benchmarkGateMode === 'soft' || p.scoreMode === 'scored') {
         filtered = [];
-        for (const symbol of POOL_ORDER) {
+        for (const symbol of pool) {
           const day = dayBySymbol.get(symbol);
           if (!day || day.bars.length === 0) continue;
           const ind = calcIndicators(day.bars, p);
@@ -487,6 +502,22 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       }
 
       // ── 5) 买入预算（§3.4：cash_after_sells_est / N，单只不超过权益 cap）──
+      // §13.16 B1：防御回退（opt-in，缺省 '' = 无候选时保持现金，基线逐位不变）
+      // 语义沿用框架既有 `defensive-fallback`（与 wufuRotation 的 defensiveEtf 同款）：
+      // **候选为空**且设置了防御标的 ⇒ 清掉非防御持仓，全仓持有防御标的。
+      // ⚠️ 必须早于 sellProceeds 计算：防御清仓所得要计入可用现金。
+      const defensiveSymbol = p.defensiveSymbol;
+      const defensiveActive = defensiveSymbol !== '' && filtered.length === 0;
+      if (defensiveActive) {
+        for (const pos of positions) {
+          if (pos.symbol === defensiveSymbol) continue;
+          if (!sellAll.has(pos.symbol)) {
+            sellAll.set(pos.symbol, 'defensive-fallback');
+            exitReasons[pos.symbol] = 'defensive-fallback';
+          }
+        }
+      }
+
       const sellProceeds = [...sellAll.keys()].reduce((sum, symbol) => {
         const pos = posBySymbol.get(symbol);
         if (!pos) return sum;
@@ -496,6 +527,7 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         return sum + gross * (1 - p.slippage) - fee;
       }, 0);
       const cashAfterSells = ctx.cash + sellProceeds;
+
       // 档 2：目标敞口 = 现金可用额度 × exposureScale（缺省 1.0 = 基线「候选均分满仓」）
       const deployBudget = cashAfterSells * exposureScale;
       const capAmount = totalValue * effectiveCap;
@@ -555,6 +587,23 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
         if (selectedSet.has(pos.symbol) || sellAll.has(pos.symbol) || overweightTarget.has(pos.symbol))
           continue;
         targets.push({ symbol: pos.symbol, hold: true, reason: 'holding-retained' });
+      }
+
+      // §13.16 B1：防御回退目标（候选为空 ⇒ 全仓防御标的，吃满可用现金）
+      // 已持有防御标的时用 `hold: true`（避免 T→T+1 价格漂移被误判成减仓）；
+      // 未持有时用 `targetWeight: 1`（与 wufuRotation 的 defensive-fallback 同款）
+      if (defensiveActive) {
+        const holdsDefensive = posBySymbol.has(defensiveSymbol);
+        targets.push(
+          holdsDefensive
+            ? { symbol: defensiveSymbol, hold: true, reason: 'defensive-fallback' }
+            : {
+                symbol: defensiveSymbol,
+                targetNotional: deployBudget,
+                targetWeight: totalValue > 0 ? deployBudget / totalValue : 0,
+                reason: 'defensive-fallback',
+              },
+        );
       }
 
       ctx.tag('dm.selected', selected.map((s) => s.symbol).join(','));
