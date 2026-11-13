@@ -86,7 +86,7 @@ interface SignalFixture {
   asset_name?: string | null;
   /** F1：有效期（过期置灰）*/
   expires_at?: string | null;
-  /** T154（ADR-025）：现金类标注（`asset_class='cash'`）*/
+  /** T154（ADR-027）：现金类标注（`asset_class='cash'`）*/
   is_cash?: boolean;
 }
 
@@ -238,7 +238,7 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(signalCalls()[1]?.[0]).toBe('/signal');
     // F1：默认分级 tab = 强 → 固定带 grade=strong
-    // T154（ADR-025）：分组视图默认持仓组 → 固定带 scope=holdings
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
   });
 
@@ -320,7 +320,7 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(lastParams().direction).toBe('buy'));
-    // T154（ADR-025）：分组视图默认持仓组 → 固定带 scope=holdings
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     expect(lastParams()).toEqual({
       page: 1,
       page_size: 50,
@@ -342,7 +342,7 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
-    // T154（ADR-025）：分组视图默认持仓组 → 固定带 scope=holdings
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     const params = lastParams();
     expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
     expect(params).not.toHaveProperty('trade_date');
@@ -368,7 +368,7 @@ describe('Signals · 查询参数组装', () => {
     await user.click(screen.getByRole('button', { name: '查询' }));
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
-    // T154（ADR-025）：分组视图默认持仓组 → 固定带 scope=holdings
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
   });
 });
@@ -469,7 +469,7 @@ describe('Signals · 结果表可读性', () => {
   });
 });
 
-/** T154（ADR-025，SDD_v3 §10.4.4）· 信号分组视图：两 Tab + 组内聚合 + 组合优先综合结论 */
+/** T154（ADR-027，SDD_v3 §10.4.4）· 信号分组视图：两 Tab + 组内聚合 + 组合优先综合结论 */
 describe('T154 · 分组视图（持仓组/自选组 + 组内聚合 + 综合结论）', () => {
   beforeEach(() => {
     getMock.mockReset();

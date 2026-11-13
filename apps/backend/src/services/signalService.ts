@@ -73,7 +73,7 @@ export function resolveSignalSymbols(userId: number = SIGNAL_USER_ID): string[] 
 }
 
 /**
- * 信号域分组集合（T154 / ADR-025，SDD_v3 §10.4.4）：
+ * 信号域分组集合（T154 / ADR-027，SDD_v3 §10.4.4）：
  *
  * - `holdings`：`calcAllPositions(userId)`（core 移动加权口径，与 `/api/positions` 同源，
  *   ADR-021）净持仓 > 0 的标的；

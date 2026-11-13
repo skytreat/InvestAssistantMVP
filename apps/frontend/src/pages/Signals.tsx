@@ -117,9 +117,9 @@ interface SignalRow {
   adopted?: number | null;
   ignored?: number | null;
   trade_date?: string;
-  /** T154（ADR-025）：该标的当前归属组（holdings / watch / null = 两组之外）*/
+  /** T154（ADR-027）：该标的当前归属组（holdings / watch / null = 两组之外）*/
   scope?: string | null;
-  /** T154（ADR-025）：现金类标的（`asset_class='cash'`，无记录 = false）*/
+  /** T154（ADR-027）：现金类标的（`asset_class='cash'`，无记录 = false）*/
   is_cash?: boolean;
   [key: string]: unknown;
 }
@@ -163,7 +163,7 @@ const GRADE_TABS: Array<{ key: GradeTab; label: string }> = [
 ];
 
 /**
- * T154（ADR-025，SDD_v3 §10.4.4）：分组视图 tab
+ * T154（ADR-027，SDD_v3 §10.4.4）：分组视图 tab
  *
  * - 持仓组 = `calcAllPositions` 净持仓 > 0（ADR-021 同源）——**默认**；
  * - 自选组 = 自选（`user_asset_rel` watch）**且不在持仓组**（INV-S3-28 不双显）。
@@ -233,7 +233,7 @@ export default function Signals() {
    */
   const [gradeTab, setGradeTab] = useState<GradeTab>('strong');
   /**
-   * T154（ADR-025）：分组视图 tab，**默认持仓组**（用户口径：先回答「我持仓的每只标的今天有什么结论」）
+   * T154（ADR-027）：分组视图 tab，**默认持仓组**（用户口径：先回答「我持仓的每只标的今天有什么结论」）
    */
   const [groupTab, setGroupTab] = useState<GroupTab>('holdings');
 
@@ -415,7 +415,7 @@ export default function Signals() {
       if (gradeTab !== 'all') params.grade = gradeTab;
       // F6：展示层冷却合并去重（同策略+标的+方向窗口内合并，只影响展示，不影响生成）
       params.dedupe = 1;
-      // T154（ADR-025）：分组视图（持仓组/自选组；后端按组集合 IN 过滤，组内聚合由前端做）
+      // T154（ADR-027）：分组视图（持仓组/自选组；后端按组集合 IN 过滤，组内聚合由前端做）
       params.scope = groupTab;
 
       const res = await api.get('/signal', { params });
@@ -559,7 +559,7 @@ export default function Signals() {
   const today = todayInShanghai();
 
   /**
-   * T154（ADR-025）：分组视图的组内聚合（**展示层**规则，不改后端数据）
+   * T154（ADR-027）：分组视图的组内聚合（**展示层**规则，不改后端数据）
    *
    * - 按标的分组（每组一个 `<tbody>` + 分组头 `<th scope="rowgroup">`）；
    * - 组内排序：**组合行（`combo:<id>`）置顶**，其余按强度降序（null 垫底，稳定排序）；
@@ -909,7 +909,7 @@ export default function Signals() {
       </div>
 
       {/*
-        T154（ADR-025）：分组视图 tab（持仓组 / 自选组，默认持仓组）
+        T154（ADR-027）：分组视图 tab（持仓组 / 自选组，默认持仓组）
         ⚠️ 组内聚合（分组头 / 组合行置顶 / 综合结论）是**展示层**规则：
            综合结论只认组合行（combo:<id>），无组合 ⇒「无组合结论」，不得由单条件合成。
       */}
@@ -1140,7 +1140,7 @@ export default function Signals() {
           */
           <div data-testid="signals-empty" style={{ padding: 20, textAlign: 'center' }}>
             <div style={{ color: COLORS.neutral, fontSize: TYPO.bodySize }}>{emptyText}</div>
-            {/* T154（ADR-025 细则⑤）：组内无信号 = 无当日评估（「无信号 ≠ 持有」，不解读为持有指令） */}
+            {/* T154（ADR-027 细则⑤）：组内无信号 = 无当日评估（「无信号 ≠ 持有」，不解读为持有指令） */}
             <div
               data-testid="signals-group-no-eval"
               style={{ color: COLORS.textMuted, fontSize: TYPO.smallSize, marginTop: 4 }}
@@ -1266,7 +1266,7 @@ export default function Signals() {
                   </tr>
                 </thead>
                 {/*
-                  T154（ADR-025）：分组视图 —— 每标的一个 `<tbody>` + 分组头
+                  T154（ADR-027）：分组视图 —— 每标的一个 `<tbody>` + 分组头
                   （`<th colSpan scope="rowgroup">`：标的 + 归属 + 现金类标注 + 综合结论），
                   组内组合行置顶、其余按强度降序（`renderSignalRow` 渲染数据行）。
                 */}
@@ -1289,7 +1289,7 @@ export default function Signals() {
                           {g.isCash ? ' · 现金类' : ''}
                         </span>
                         {/*
-                          综合结论（ADR-025 §2.2）：只认组合行（combo:<id>）——
+                          综合结论（ADR-027 §2.2）：只认组合行（combo:<id>）——
                           无组合 ⇒「无组合结论」（不得由单条件投票合成）；买卖冲突 ⇒ 卖优先。
                         */}
                         <div data-testid={`signals-group-conclusion-${g.code}`}>

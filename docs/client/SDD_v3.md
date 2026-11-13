@@ -1023,7 +1023,7 @@ V3 **不改插件引擎**（50ms 预算、参数校验、沙箱约束全部沿�
   3. `resolveComboSymbols` 的两个分支实现 + 单测 / 集成测试；
   4. 回放侧无需改动（组合信号已按 `plugin_id = combo:<id>` 落库）。
 
-#### 10.4.4 信号域分组视图契约（T154，ADR-025）
+#### 10.4.4 信号域分组视图契约（T154，ADR-027）
 
 `GET /api/signal`（SDD §4.4 既有端点）新增可选参数与响应字段，**缺省行为不变（向后兼容）**：
 
@@ -1034,7 +1034,7 @@ V3 **不改插件引擎**（50ms 预算、参数校验、沙箱约束全部沿�
 | `scope=watch` 标的集 | `user_asset_rel`（`user_id`、`rel_type='watch'`、`is_deleted=0`）的 `asset_code`，**排除 holdings 集合**（去重不双显） |
 | SQL 形态 | 组集合算出后在 WHERE 追加 `asset_code IN (?, ...)`（**1 次 IN**，SDD §5.3 批量约束；组为空 ⇒ 直接返回 0 行，不查库） |
 | 响应行新增字段 | `scope`：`'holdings'` / `'watch'` / `null`（该标的当前归属；缺省查询也回填）；`is_cash`：`asset_class='cash'`（无记录 = false，与 `getAssetClass` 回落 risk 同口径） |
-| 综合结论 | **前端不做合成**：只认当日的 `plugin_id='combo:<id>'` 行；无组合行 ⇒ 显示「无组合结论」。投票细则（HOLD 不计、冷却/过期置灰不参与、买卖冲突卖优先）见 ADR-025 §2.2，均为**展示层规则**，不改变信号表数据 |
+| 综合结论 | **前端不做合成**：只认当日的 `plugin_id='combo:<id>'` 行；无组合行 ⇒ 显示「无组合结论」。投票细则（HOLD 不计、冷却/过期置灰不参与、买卖冲突卖优先）见 ADR-027 §2.2，均为**展示层规则**，不改变信号表数据 |
 | 组头 | 前端组装（`/api/positions` + 本端点 `is_cash`），**不新增聚合端点**（MVP 控制面；带市值/盈亏的组头属后续需求） |
 
 > ⚠️ 实现前必须实测：`calcAllPositions` 的返回形状与 `user_asset_rel.watch` 的软删口径

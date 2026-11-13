@@ -1,5 +1,5 @@
 /**
- * t154-signal-scope.test.ts —— T154（ADR-025，SDD_v3 §10.4.4）信号域分组视图
+ * t154-signal-scope.test.ts —— T154（ADR-027，SDD_v3 §10.4.4）信号域分组视图
  *
  * ① `resolveSignalScopeSets`：holdings = `calcAllPositions` 净持仓 > 0（ADR-021 同源）；
  *    watch = `user_asset_rel` watch **且排除 holdings**（INV-S3-28 不双显）；

@@ -60,7 +60,7 @@ async function attachAssetNames<T extends object>(
  *   &plugin_id=rsi_oversold
  *   &direction=buy
  *   &exclude_risk=1               排除风险类信号（sub_category='risk'；Top5 用）
- *   &scope=holdings|watch         T154/ADR-025 分组视图（缺省 = 全量；行级 +scope/is_cash 字段）
+ *   &scope=holdings|watch         T154/ADR-027 分组视图（缺省 = 全量；行级 +scope/is_cash 字段）
  *   &page=1&page_size=20
  *
  * T54：所有筛选值一律走预编译参数化绑定（`?` 占位），禁止把入参拼进 SQL 文本；
@@ -189,7 +189,7 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       }
 
       /**
-       * T154（ADR-025，SDD_v3 §10.4.4）：分组视图 scope
+       * T154（ADR-027，SDD_v3 §10.4.4）：分组视图 scope
        *
        * - `scope=holdings` ⇒ 该用户净持仓 > 0 的标的（`calcAllPositions` core 口径，ADR-021 同源）；
        * - `scope=watch`    ⇒ 自选（`user_asset_rel` watch）**且排除持仓组**（INV-S3-28 不双显）；
@@ -277,7 +277,7 @@ export async function registerSignalRoutes(app: FastifyInstance) {
       const named = await attachAssetNames(annotated);
 
       /**
-       * T154（ADR-025）：行级 `scope`（该标的当前归属 holdings / watch / null）+
+       * T154（ADR-027）：行级 `scope`（该标的当前归属 holdings / watch / null）+
        * `is_cash`（`asset_class='cash'`，无记录 = false，与 getAssetClass 回落 risk 同口径）。
        *
        * - 缺省查询：组集合算一次，按行回填归属；

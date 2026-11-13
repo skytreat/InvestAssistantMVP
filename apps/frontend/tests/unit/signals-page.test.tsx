@@ -64,7 +64,7 @@ interface SignalFixture {
   linked_trade_id?: number | null;
   link_broken?: boolean;
   trade_date: string;
-  /** T154（ADR-025）：现金类标注（`asset_class='cash'`）*/
+  /** T154（ADR-027）：现金类标注（`asset_class='cash'`）*/
   is_cash?: boolean;
 }
 
@@ -164,7 +164,7 @@ describe('T72 ① · 进页自动加载', () => {
     const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
     // F1：分级 tab 默认「强」→ 参数里固定带 grade=strong（用户口径：默认只显强）
-    // T154（ADR-025）：分组视图默认持仓组 → 固定带 scope=holdings
+    // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
     expect(params).not.toHaveProperty('trade_date');
     // 「全部策略 / 全部方向」⇒ 不预设这些过滤条件
@@ -765,7 +765,7 @@ describe('标的名称 + K 线超链接', () => {
   });
 });
 
-/** T154（ADR-025，SDD_v3 §10.4.4）· 分组视图：组内聚合 + 组合优先综合结论 + 现金类标注 */
+/** T154（ADR-027，SDD_v3 §10.4.4）· 分组视图：组内聚合 + 组合优先综合结论 + 现金类标注 */
 describe('T154 · 分组视图组内聚合与综合结论', () => {
   const COMBO_BUY = {
     ...BUY_ROW,
