@@ -189,12 +189,12 @@ describe('validator_deep — C8 行情更新执行时长（T107 改查 SQLite）
     mockMod.queryDuckDB.mockRestore();
   });
 
-  it('duration_s=300 → WARN（执行时长超阈值）', async () => {
+  it('duration_s=1500 → WARN（执行时长超阈值 1200s，ADR-023）', async () => {
     ConfigStore.getInstance().writeLog(
       'tdx2db_update',
       'SUCCESS',
-      '17:00 行情更新成功（耗时 300s）',
-      JSON.stringify({ state: 'SUCCESS', duration_s: 300 }),
+      '17:00 行情更新成功（耗时 1500s）',
+      JSON.stringify({ state: 'SUCCESS', duration_s: 1500 }),
       undefined,
       '2026-10-15',
     );

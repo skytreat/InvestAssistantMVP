@@ -34,6 +34,7 @@
 | [ADR-019](ADR-019-settings-strategy-merge.md) | 策略配置并入设置页（`/strategy/config` 删除，`/settings` 三 Tab），消除双份插件管理实现 | 2026-11-12 所有者裁决（PRD_v3 §4.1 / T148 偏差） | 前端合并：`PluginManager` / `ComboSection` + 4 个测试文件 |
 | [ADR-020](ADR-020-industry-source-revived.md) | 重新启用行业数据源（板块表 2026-11-06 回填，tdx_research L1 口径；选股/持仓/仪表盘三处接线） | 2026-11-12 实测（I-22「0 行」结论失效） | `stockscan.ts` / `trade.ts` / `portfolioRisk.ts` + 前后端测试 |
 | [ADR-021](ADR-021-signal-domain-position-source.md) | 信号标的域的「持仓」来源改为交易流水实时计算（不再依赖 `user_asset_rel` 派生关系） | 2026-11-12 生产事故（信号域恒空）→ §13.2 I-38 | `signalService.ts` + `t85b-signal-scope.test.ts` |
+| [ADR-023](ADR-023-c8-update-duration-threshold.md) | C8「行情更新执行时长」阈值 120s → 1200s（按生产实测 571s 放宽） | 2026-11-13 生产实测（每天必 WARN）→ §13.2 I-40 | `validator.ts` + Requirements §7.1 + SDD §5.7/§12.5 |
 | [ADR-022](ADR-022-dualmomentum-win-baseline.md) | DualMomentum 跑赢档成为正式基线（目标函数 = 跑赢 `sh510300`；7 项 opt-in 参数转缺省 + 重跑基线） | 2026-11-12 owner 签字（§13.10 纪律底线） | 本次落地：`strategies/dualmomentum/params.ts`（`DUALMOMENTUM_DEFAULTS`）+ 新锚点 `final=2363029.30 / trades=4657` |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。

@@ -747,7 +747,7 @@ export async function runPaperDailyStage(args: {
           if (!silent) {
             writeSystemLog({
               logType: 'paper_account',
-              level: 'warn',
+              level: 'WARN',
               message: `纸面账户结算未完成（account=${account.id}）`,
               detail: JSON.stringify(outcome),
             });
@@ -767,7 +767,7 @@ export async function runPaperDailyStage(args: {
       if (!silent) {
         writeSystemLog({
           logType: 'paper_account',
-          level: 'error',
+          level: 'ERROR',
           message: `纸面账户日更异常（account=${account.id}）`,
           detail: `${code}: ${message}`,
         });
@@ -778,7 +778,7 @@ export async function runPaperDailyStage(args: {
   if (!silent) {
     writeSystemLog({
       logType: 'paper_account',
-      level: summary.failed > 0 ? 'warn' : 'info',
+      level: summary.failed > 0 ? 'WARN' : 'INFO',
       message: '纸面账户日更完成',
       detail: `accounts=${summary.accounts} settled=${summary.settled} decisions=${summary.decisions} failed=${summary.failed}`,
     });

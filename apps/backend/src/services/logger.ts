@@ -2,6 +2,12 @@
 import { ConfigStore } from '../config/configStore.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
+import {
+  SYSTEM_LOG_LEVELS,
+  SYSTEM_LOG_TYPES,
+  type SystemLogLevel,
+  type SystemLogType,
+} from '../config/systemLogTypes.js';
 
 /** 降级日志文件的**默认**路径（可被 env `SYSTEM_LOG_FALLBACK_FILE` 覆盖）*/
 const DEFAULT_FALLBACK_FILE = '/var/log/invol/err.log';
@@ -19,8 +25,16 @@ export function getFallbackLogFile(): string {
 }
 
 export interface SystemLogEntry {
-  logType: string; // datacheck / signal_generate / dividend_import / backup / trigger_manual / startup
-  level: string; // INFO / WARN / ERROR / SKIP / SUCCESS
+  /**
+   * 日志类型 —— **必须是白名单内的字面量**（`SYSTEM_LOG_TYPES`）
+   *
+   * 🔴 2026-11-13：曾用 `string`，导致新增 `paper_account` 时编译期无感知、
+   *   运行时被 DB 的 CHECK 约束拒绝 ⇒ 日志静默降级到 journald（DB 里查不到）。
+   *   → 收紧为联合类型；白名单唯一真相源见 `config/systemLogTypes.ts`。
+   */
+  logType: SystemLogType;
+  /** INFO / WARN / ERROR / SKIP / SUCCESS —— **必须大写**（运行时也会归一化并告警） */
+  level: SystemLogLevel;
   message: string;
   detail?: string;
   checkItem?: string;
@@ -187,10 +201,13 @@ export function writeSystemLog(entry: SystemLogEntry): void {
   const safeMessage = maskCredential(maskAmount(maskUserId(message ?? '')));
   const safeDetail = detail ? maskCredential(maskAmount(maskUserId(detail))) : undefined;
 
-  // Level 校验
-  const ALLOWED_LEVELS = ['INFO', 'WARN', 'ERROR', 'SKIP', 'SUCCESS'];
+  // Level 校验（**运行时兜底**：类型系统已收紧，这里防 `any` 绕过）
+  const ALLOWED_LEVELS = SYSTEM_LOG_LEVELS;
   if (!ALLOWED_LEVELS.includes(level)) {
     console.warn('[writeSystemLog] 非法 level:', level, '允许:', ALLOWED_LEVELS);
+  }
+  if (!(SYSTEM_LOG_TYPES as readonly string[]).includes(logType)) {
+    console.warn('[writeSystemLog] 未知 log_type:', logType, '允许:', SYSTEM_LOG_TYPES);
   }
 
   // 缓冲模式：非关键等级进缓冲，WARN/ERROR 立即落库
@@ -313,8 +330,8 @@ export function readFallbackLogTail(n: number): FallbackLogTail {
 
 /** system_log 批量写入的一行（与 {@link SystemLogEntry} 同构，detail/checkItem 可缺省） */
 export interface BufferedLog {
-  logType: string;
-  level: string;
+  logType: SystemLogType;
+  level: SystemLogLevel;
   message: string;
   detail?: string;
   checkItem?: string;
