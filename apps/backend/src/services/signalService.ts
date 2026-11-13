@@ -20,11 +20,12 @@ export const SIGNAL_USER_ID = 1;
  *
  * 🔴 2026-11-12 口径修正（生产事故驱动；偏差登记见 code_implementation_plan_v2.md §13）：
  *   原口径把「持仓」取自 `user_asset_rel` 的 `rel_type='hold'` **派生关系**，
- *   而该派生关系只有**手工录入**路径（POST /api/trade → syncHoldRelation）会维护，
+ *   而该派生关系只有**手工录入**路径（POST /api/trade）会维护，
  *   **券商导入路径（brokerConfirm）从不写** ⇒ 生产 `user_asset_rel` 恒为 0 行
  *   ⇒ 17:02 每日信号生成恒定跳过（"信号域为空"），而用户明明有净持仓。
  *   ⇒ 改为：**持仓直接由 `user_trade_record` 实时计算**，
  *     口径 = core `calculateMovingWeightedCost`（与 GET /api/positions、插件持仓快照同源）。
+ *   （ADR-028：`hold` 派生关系已彻底废弃，`syncHoldRelation` 已移除，`user_asset_rel` 不再维护 `rel_type='hold'`）
  *
  * 口径：
  * - 自选：`user_asset_rel` 中 `rel_type='watch'` 且未软删

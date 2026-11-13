@@ -9,11 +9,12 @@
  *
  * 🔴 2026-11-12 口径修正（生产事故驱动）：
  *   原口径的「持仓」取自 `user_asset_rel` 的 `rel_type='hold'` **派生关系**，
- *   而该派生关系只有**手工录入**路径（POST /api/trade → syncHoldRelation）会维护，
+ *   而该派生关系只有**手工录入**路径（POST /api/trade）会维护，
  *   **券商导入路径（brokerConfirm）从不写** ⇒ 生产 `user_asset_rel` 恒为 0 行
  *   ⇒ 17:02 每日信号生成恒定跳过（"信号域为空"），而用户明明有 35 只净持仓。
  *   ⇒ 改为：**持仓由 `user_trade_record` 实时计算**（core 口径，与 /api/positions、
  *     插件持仓快照同源），派生关系不再参与任何决策。
+ *   （ADR-028：`hold` 派生关系已彻底废弃，`syncHoldRelation` 已移除）
  *
  * 本文件锁定的断言（对应 plan §12.7 G1.3b）：
  *   ① 信号标的域 = 用户自选 ∪ 持仓（持仓 = 交易流水算出的净持仓 > 0）
