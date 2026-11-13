@@ -75,11 +75,47 @@ type Disabled = ReadonlySet<Layer>;
 
 // ────────────────────────────── 面板装载（复刻 dmSweep.ts） ──────────────────────────────
 
+/**
+ * 收集各实验组用到的「防御回退标的 / 池扩展标的」。
+ *
+ * 🔴 **为什么必须自动收集**（2026-11-12 实测踩坑）：
+ *   `loadPanel` 原本只装 `FIXED_ETF_POOL + GLOBAL_ETF_POOL + DEFENSIVE_ETF + BENCHMARK + POOL_ORDER`，
+ *   **不含** `sh511260` 等实验用防御标的 ⇒ 防御态下单「成交不了」⇒ 实际退化成**切现金**，
+ *   实测报出 MDD 16.03% / CAGR 11.73%（而真实切债券是 18.97% / 10.57%）——**测的不是那个东西**。
+ *   ⇒ 凡是实验里会下单的标的，都必须进装载清单。
+ */
+function collectExperimentSymbols(): string[] {
+  const out = new Set<string>();
+  for (const g of BACKTEST_GROUPS) {
+    const def = g.overrides.defensiveSymbol;
+    if (typeof def === 'string' && def.trim() !== '') out.add(def.trim());
+    const ext = g.overrides.poolExtension;
+    if (typeof ext === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(ext);
+        if (Array.isArray(parsed)) {
+          for (const s of parsed) if (typeof s === 'string' && s.trim() !== '') out.add(s.trim());
+        }
+      } catch {
+        /* 非法 JSON 忽略 */
+      }
+    }
+  }
+  return [...out];
+}
+
 async function loadPanel(): Promise<BacktestData> {
   const calendar = await loadTradingCalendar();
   const loadStart = calendar.lastN(START, WARMUP)[0] ?? START;
   const extraSymbols = [
-    ...new Set([...FIXED_ETF_POOL, ...GLOBAL_ETF_POOL, DEFENSIVE_ETF, BENCHMARK_SYMBOL, ...POOL_ORDER]),
+    ...new Set([
+      ...FIXED_ETF_POOL,
+      ...GLOBAL_ETF_POOL,
+      DEFENSIVE_ETF,
+      BENCHMARK_SYMBOL,
+      ...POOL_ORDER,
+      ...collectExperimentSymbols(),
+    ]),
   ];
   const symbols = [...new Set([...extraSymbols, ...WEAK_PERIOD_INDEXES])];
 
@@ -686,6 +722,79 @@ const BACKTEST_GROUPS: { key: string; label: string; overrides: Record<string, u
       targetVol: 0.12,
       volWindow: 20,
       defensiveSymbol: 'sh511880',
+    },
+  },
+  // ── §13.17 / ADR-023：基准趋势破位 → 切防御（不依赖标的动量的独立入场规则）──
+  {
+    key: 'bt-breakout-05',
+    label: '跑赢档+vol+基准破位切防御(th -0.5)',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      defensiveSymbol: 'sh511260',
+      benchmarkBreakoutThreshold: -0.5,
+      benchmarkBreakoutHysteresis: 0.3,
+    },
+  },
+  {
+    key: 'bt-breakout-03',
+    label: '跑赢档+vol+基准破位切防御(th -0.3)',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      defensiveSymbol: 'sh511260',
+      benchmarkBreakoutThreshold: -0.3,
+      benchmarkBreakoutHysteresis: 0.3,
+    },
+  },
+  {
+    key: 'bt-breakout-money',
+    label: '跑赢档+vol+基准破位切防御(th -0.5, 货币ETF)',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'soft',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      defensiveSymbol: 'sh511880',
+      benchmarkBreakoutThreshold: -0.5,
+      benchmarkBreakoutHysteresis: 0.3,
+    },
+  },
+  {
+    key: 'bt-breakout-hard',
+    label: '跑赢档+vol+基准破位(th -0.5) + 基准门槛hard',
+    overrides: {
+      wsmMaxResearch: 100,
+      rsrsMaxResearch: 100,
+      benchmarkGateMode: 'hard',
+      scoreMode: 'scored',
+      minHoldDays: 20,
+      cashInterestRate: 0.02,
+      exposureMode: 'vol',
+      targetVol: 0.12,
+      volWindow: 20,
+      defensiveSymbol: 'sh511260',
+      benchmarkBreakoutThreshold: -0.5,
+      benchmarkBreakoutHysteresis: 0.3,
     },
   },
 ];

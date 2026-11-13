@@ -59,6 +59,11 @@ interface DualMomentumState {
   /** 冷却（交易日计数） */
   cooldown: Map<string, CooldownEntry>;
   warnedNoBenchmark: boolean;
+  /**
+   * 是否处于「基准破位切防御」状态（§13.17 / ADR-024）。
+   * 用于**迟滞**：切到防御后需基准动量回升到 `threshold + hysteresis` 以上才切回股票。
+   */
+  inBenchmarkBreakout: boolean;
 }
 
 /**
@@ -110,6 +115,7 @@ function createState(): DualMomentumState {
     highWater: new Map(),
     cooldown: new Map(),
     warnedNoBenchmark: false,
+    inBenchmarkBreakout: false,
   };
 }
 
@@ -253,6 +259,7 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       state.highWater.clear();
       state.cooldown.clear();
       state.warnedNoBenchmark = false;
+      state.inBenchmarkBreakout = false;
     },
 
     onFill(notice: FillNotice) {
@@ -507,7 +514,27 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       // **候选为空**且设置了防御标的 ⇒ 清掉非防御持仓，全仓持有防御标的。
       // ⚠️ 必须早于 sellProceeds 计算：防御清仓所得要计入可用现金。
       const defensiveSymbol = p.defensiveSymbol;
-      const defensiveActive = defensiveSymbol !== '' && filtered.length === 0;
+
+      // §13.17 / ADR-024：基准趋势破位 → 切防御（opt-in，缺省 threshold=0 = 关闭）
+      // 规则：基准主槽动量（WSM）< threshold ⇒ 强制切防御标的；
+      // 迟滞：已在防御态时，需回升到 threshold + hysteresis 才切回股票（抑制换手）。
+      const breakoutThreshold = p.benchmarkBreakoutThreshold;
+      const breakoutEnabled = breakoutThreshold !== 0 && defensiveSymbol !== '';
+      let breakoutActive = false;
+      if (breakoutEnabled) {
+        if (!state.inBenchmarkBreakout && benchmarkPrimary < breakoutThreshold) {
+          state.inBenchmarkBreakout = true;
+        } else if (
+          state.inBenchmarkBreakout &&
+          benchmarkPrimary >= breakoutThreshold + p.benchmarkBreakoutHysteresis
+        ) {
+          state.inBenchmarkBreakout = false;
+        }
+        breakoutActive = state.inBenchmarkBreakout;
+      }
+
+      // 防御态的两条触发路径（择时破位 / 无候选）合并处理
+      const defensiveActive = defensiveSymbol !== '' && (breakoutActive || filtered.length === 0);
       if (defensiveActive) {
         for (const pos of positions) {
           if (pos.symbol === defensiveSymbol) continue;
@@ -516,6 +543,8 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
             exitReasons[pos.symbol] = 'defensive-fallback';
           }
         }
+        // 防御态下防御标的独占仓位：撤销对它的超配减仓（否则会被按 33% cap 削掉）
+        overweightTarget.delete(defensiveSymbol);
       }
 
       const sellProceeds = [...sellAll.keys()].reduce((sum, symbol) => {
@@ -531,7 +560,10 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       // 档 2：目标敞口 = 现金可用额度 × exposureScale（缺省 1.0 = 基线「候选均分满仓」）
       const deployBudget = cashAfterSells * exposureScale;
       const capAmount = totalValue * effectiveCap;
-      const candidates = selected.filter((s) => !sellAll.has(s.symbol) && !overweightTarget.has(s.symbol));
+      // 防御态下不买任何候选（只持有防御标的）
+      const candidates = defensiveActive
+        ? []
+        : selected.filter((s) => !sellAll.has(s.symbol) && !overweightTarget.has(s.symbol));
       // §13.15 A2：按标的权重归一分配（缺省 '{}' = 均分，基线不变）；
       // p.symbolWeights 是 JSON 字符串，解析为对象后 weight[s] 未出现视为 1
       let weightMap: Readonly<Record<string, number>> = {};

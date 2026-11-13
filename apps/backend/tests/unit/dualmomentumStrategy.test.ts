@@ -501,6 +501,43 @@ describe('decide() 契约', () => {
     // 防御标的独占仓位（其余标的都不在 targets 里）
     expect(res!.targets.every((t) => t.symbol === 'sh511260')).toBe(true);
   });
+
+  it('基准破位切防御（§13.17 / ADR-024；opt-in）：threshold 缺省 0 = 关闭，基线路径不变', () => {
+    const strategy = createDualMomentumStrategy();
+    const params = { ...strategy.defaultParams, ...DECIDE_PARAMS };
+    // 缺省断言：破位阈值 0 = 不启用，迟滞 0.3
+    expect(params.benchmarkBreakoutThreshold).toBe(0);
+    expect(params.benchmarkBreakoutHysteresis).toBe(0.3);
+    strategy.init?.({ params });
+
+    const { ctx } = makeDecisionContext({ params });
+    const res = strategy.decide(ctx);
+    expect(res).not.toBeNull();
+    // 缺省不产生 defensive-fallback 退出
+    expect(Object.values(res!.exitReasons ?? {})).not.toContain('defensive-fallback');
+  });
+
+  it('基准破位切防御（§13.17；opt-in）：threshold<0 生效，无候选时全仓防御标的', () => {
+    const strategy = createDualMomentumStrategy();
+    // 阈值 -0.5 生效；用「无候选」保证进入防御态（不依赖基准行情构造）
+    const params = {
+      ...strategy.defaultParams,
+      ...DECIDE_PARAMS,
+      wsmMin: 999,
+      rsrsMin: 999,
+      defensiveSymbol: 'sh511260',
+      benchmarkBreakoutThreshold: -0.5,
+      benchmarkBreakoutHysteresis: 0.3,
+    };
+    strategy.init?.({ params });
+
+    const { ctx } = makeDecisionContext({ params });
+    const res = strategy.decide(ctx);
+    expect(res).not.toBeNull();
+    const defensiveTarget = res!.targets.find((t) => t.symbol === 'sh511260');
+    expect(defensiveTarget).toBeDefined();
+    expect(defensiveTarget!.reason).toBe('defensive-fallback');
+  });
 });
 
 describe('纸面绑定链路', () => {
