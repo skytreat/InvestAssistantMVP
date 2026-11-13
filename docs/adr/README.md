@@ -38,6 +38,7 @@
 | [ADR-024](ADR-024-benchmark-breakout-defensive.md) | 基准趋势破位 → 切防御（新策略语义；owner 选 B 采纳；Calmar 0.44→0.56，MDD −7.49pp，超额 +5.63→+4.55pp） | 2026-11-12 owner 签字（§13.16 根因 + §13.17 实测） | `strategies/dualmomentum/params.ts` / `index.ts` / `optimize/marketData.ts`（装载层共用收集）+ 新锚点 `final=2189713.16 / trades=4680` |
 | [ADR-025](ADR-025-paper-fill-replay-fidelity.md) | 纸面回放补全成交回报（`onFill` 历史回放）—— 解除「纸面不得与回测互校」禁令；采纳 A1 路线（`paper_order` 加 `exit_reason` + 结算落库 + 决策回放喂 `onFill`） | 2026-11-13 owner 签字（§10.4 实施评估） | **待排期**（plan_v3 并行分支合并后补任务号）：`paper/decision.ts` / `paper/settle.ts` / `store/paperSchema.ts` |
 | [ADR-022](ADR-022-dualmomentum-win-baseline.md) | DualMomentum 跑赢档成为正式基线（目标函数 = 跑赢 `sh510300`；7 项 opt-in 参数转缺省 + 重跑基线） | 2026-11-12 owner 签字（§13.10 纪律底线） | 本次落地：`strategies/dualmomentum/params.ts`（`DUALMOMENTUM_DEFAULTS`）+ 新锚点 `final=2363029.30 / trades=4657` |
+| [ADR-024](ADR-024-asset-class-incremental-classification.md) | asset_class 增量初判（新标的补齐 + 7 天冷却期改判 + 手工录入触发；生产默认 `execute` 回填） | 2026-11-13 owner 拍板「一次改好」→ §13.2 I-41 | `assetClass.ts` / `assetClassSync.ts` / `routes/trade.ts` / `cli/assetClassSync.ts` / `deploy/invest-assistant.service` + 回填步骤（`docs/deploy.md`） |
 
 **13 项阻断裁决覆盖情况**：B-1 ~ B-13 全部已裁决并归档（8 份 ADR）。
 

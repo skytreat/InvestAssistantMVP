@@ -190,6 +190,23 @@ sudo journalctl -u invest-assistant -f
 bash deploy/healthcheck.sh
 ```
 
+### asset_class 初判回填（ADR-024，一次性操作）
+
+`invest-assistant.service` 已内置 `Environment=ASSET_CLASS_SYNC_MODE=execute`（ADR-024：
+券商导入 / 手工录入后自动增量补齐 `asset_class`）。**首次上线本版本后需跑一次全量回填**，
+把历史业务标的判完（此后新标的自动补齐，无需再手动跑）：
+
+```bash
+cd /opt/invol/IA_Prod/app
+# 先 dry-run 看预览（只读，不写库）
+npx tsx src/cli/assetClassSync.ts
+# 确认后 execute（自动先 backup 业务库再写；--all 全量审计，缺省只扫「还没定论」的候选）
+npx tsx src/cli/assetClassSync.ts --execute
+```
+
+REPO_CODES 盲区（`204005/006/009`、`131812~131818`，行情层无 K 线）规则判不出，
+若业务样本中出现，用管理端 `setManualClass` 手工补 `cash`（V3-B5 既有登记）。
+
 ### DuckDB 行情更新
 
 ```bash

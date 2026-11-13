@@ -136,7 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_asset_class_kind ON asset_class(asset_class);
 
 ### 2.3 规则初判
 
-初判在**导入时**或**分类表为空时**按需触发，规则集如下（每条必须有可验证依据，不得仅凭名称关键词）：
+初判在**导入时或分类表为空时**按需触发（**2026-11-13 起按 ADR-024 增量候选语义**，见本节末注记），规则集如下（每条必须有可验证依据，不得仅凭名称关键词）：
 
 | 规则标识 | 判定 | 依据 |
 |---|---|---|
@@ -146,6 +146,14 @@ CREATE INDEX IF NOT EXISTS idx_asset_class_kind ON asset_class(asset_class);
 | `default` | 其余全部 → `risk` | 默认风险资产是安全侧（错了会让现金类混进风险指标） |
 
 **初判必须记录 `rule_hit`**，以便审计「为什么这个标的是现金类」。
+
+> **2026-11-13 增补（ADR-024 增量语义，取代上文「导入时或分类表为空时」的触发口径）**：
+> 触发点为**券商导入 / 手工录入成交**（`POST /api/trade`），按**候选集合**增量执行——
+> ① 无 `asset_class` 行 ⇒ 必判（`new`）；② `source='rule'` 且 `rule_hit='default'`（证据不足）
+> 且 `updated_at` 早于 **7 天冷却期** ⇒ 可**改判**（新上市标的攒够 K 线后 risk→cash）；
+> ③ `source='manual'` 与终态判定（`repo_code` / `cash_etf_name` / `cash_etf_near_par`）⇒ 永不重扫。
+> 仍为 `default` 的 rule 行只刷新 `updated_at`（冷却标记，不计写入）。
+> 候选为空不扫行情层；生产默认 `ASSET_CLASS_SYNC_MODE=execute`（`deploy/invest-assistant.service`）。
 
 ### 2.4 人工修正
 
