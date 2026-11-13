@@ -137,6 +137,23 @@ export interface DualMomentumParams {
    * （与 `wufuRotation` 的 `defensiveEtf` 同款）。
    */
   defensiveSymbol: string;
+  /**
+   * 基准趋势破位 → 切防御（§13.17 / ADR-024；缺省 `0` = 关闭，基线逐位不变）。
+   *
+   * 触发：**基准主槽动量（WSM）< 该阈值** ⇒ 强制清掉非防御持仓，全仓持有 `defensiveSymbol`。
+   * ⚠️ 阈值取**负数**（WSM < 0 表示基准趋势向下）；`0` = 不启用
+   * （实测 `sh000300` WSM < 0 占 52.1% 的天，阈值必须为负才有区分度）。
+   *
+   * 与 §13.8 否决的「基准软化」**机制不同**：软化只改**选股门槛**（不产生买卖动作），
+   * 本规则改的是**仓位**（切防御标的）。
+   */
+  benchmarkBreakoutThreshold: number;
+  /**
+   * 基准破位切换的**迟滞**（§13.17；缺省 0.3）。
+   * 切到防御后，需基准动量回升到 `threshold + hysteresis` 以上才切回股票，
+   * 避免阈值附近的信号抖动产生大量换手（§13.1 已证摩擦是主要成本）。
+   */
+  benchmarkBreakoutHysteresis: number;
 }
 
 export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
@@ -200,6 +217,10 @@ export const DUALMOMENTUM_DEFAULTS: Readonly<DualMomentumParams> = {
   poolExtension: '[]',
   /** 缺省 '' = 无候选时保持现金，基线不变 */
   defensiveSymbol: '',
+  /** 缺省 0 = 基准破位切防御关闭，基线不变 */
+  benchmarkBreakoutThreshold: 0,
+  /** 缺省 0.3 = 切回股票需基准动量回升到 threshold+0.3 */
+  benchmarkBreakoutHysteresis: 0.3,
 };
 
 export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
@@ -696,6 +717,26 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     default: DUALMOMENTUM_DEFAULTS.defensiveSymbol,
     description: '非空时，候选为空则全仓持有该标的（沿用框架 defensive-fallback 语义）；如 "sh511260"',
   },
+  {
+    key: 'benchmarkBreakoutThreshold',
+    label: '基准趋势破位阈值（§13.17 / ADR-024；缺省 0 = 关闭）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.benchmarkBreakoutThreshold,
+    min: -10,
+    max: 10,
+    step: 0.1,
+    description: '基准主槽动量（WSM）< 该值时强制切防御标的；取负数（如 -0.5）才启用；0 = 关闭',
+  },
+  {
+    key: 'benchmarkBreakoutHysteresis',
+    label: '基准破位切换迟滞（§13.17）',
+    type: 'number',
+    default: DUALMOMENTUM_DEFAULTS.benchmarkBreakoutHysteresis,
+    min: 0,
+    max: 5,
+    step: 0.1,
+    description: '切到防御后，基准动量需回升到 threshold+hysteresis 以上才切回股票（抑制换手）',
+  },
 ];
 
 function num(raw: Readonly<Record<string, unknown>>, key: string, fallback: number): number {
@@ -845,6 +886,12 @@ export function resolveDualMomentumParams(
       typeof src.defensiveSymbol === 'string' && src.defensiveSymbol.trim() !== ''
         ? src.defensiveSymbol.trim()
         : d.defensiveSymbol,
+    // §13.17 / ADR-024：基准破位切防御；缺省 0 = 关闭（0 表示「不启用」而非「WSM<0 即切」）
+    benchmarkBreakoutThreshold: num(src, 'benchmarkBreakoutThreshold', d.benchmarkBreakoutThreshold),
+    benchmarkBreakoutHysteresis: Math.max(
+      0,
+      num(src, 'benchmarkBreakoutHysteresis', d.benchmarkBreakoutHysteresis),
+    ),
   };
 }
 
