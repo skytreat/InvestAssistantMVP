@@ -86,8 +86,9 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/broker/reconcile', label: '券商对账', group: '券商', adminOnly: true },
   { to: '/settings', label: '设置', group: '策略与设置' },
   // V3.8 策略域 / 组合域（PRD_v3 §4/§5）
-  // 2026-11-12 起策略配置并入 /settings 页：组合策略在「组合策略」分区（?tab=combos）
-  { to: '/settings?tab=combos', label: '策略配置', group: '策略与设置' },
+  // 2026-11-13：策略配置**并入 /settings 页**（组合策略在页内「组合策略」Tab，深链 ?tab=combos 仍可用），
+  // 故**不再单列侧栏入口** —— 两个都指向 /settings 的 NavLink 会让 React Router 的 `isActive`
+  // 同时命中（isActive 只比 pathname、不比 search）⇒ 侧栏两处同时高亮。
   { to: '/strategy/effectiveness', label: '策略有效性', group: '策略与设置' },
   { to: '/portfolio/risk-check', label: '组合体检', group: '组合与管理' },
   { to: '/admin', label: '管理员', group: '组合与管理', adminOnly: true },

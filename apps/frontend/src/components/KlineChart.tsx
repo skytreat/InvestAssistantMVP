@@ -983,29 +983,94 @@ export default function KlineChart({
         )}
       </div>
 
+      {/*
+        🔴 **图表区容器**（`position: relative`）
+        —— 十字光标 hover 浮窗**必须定位在这里**（而不是外层 wrapper）：
+        外层 wrapper 的顶部是「画线工具栏」，浮窗若挂在 wrapper 上（`top: 8`）
+        会**盖住画线工具按钮**（窄屏时工具栏还会折行 ⇒ 盖得更狠）。
+        挂到图表区容器上 ⇒ 浮窗永远落在**画布左上角**，工具栏始终可点。
+      */}
       <div
-        ref={containerRef}
-        data-testid="kline-chart-container"
-        onClick={handleChartClick}
-        // 🔴 `role="figure"` —— 裸 `<div aria-label="K 线图">` 上挂 `aria-label` 会踩
-        //    axe 规则 `aria-prohibited-attr`（serious）：
-        //    「aria-label attribute cannot be used on "div" elements with no valid role attribute」。
-        //    `figure` 允许「作者提供的可访问名」，且**不会**把子节点整体设为 presentational
-        //    （不像 `role="img"`），故图表容器内部仍可保留自己的语义。
-        role="figure"
-        aria-label="K 线图"
+        data-testid="kline-chart-area"
         style={{
+          position: 'relative',
           width: '100%',
-          // 全屏时跟随 `wrapperRef`（:fullscreen ⇒ 100vh），退出后复原为 prop 高度
-          height: isFullscreen ? '100%' : height,
-          background: COLORS.chartBg,
-          border: `1px solid ${COLORS.chartBorder}`,
-          borderRadius: 4,
-          overflow: 'hidden',
-          touchAction: 'none',
-          boxSizing: 'border-box',
+          // 全屏时与图表容器同高（退出后随容器高度自适应）
+          height: isFullscreen ? '100%' : undefined,
         }}
-      />
+      >
+        <div
+          ref={containerRef}
+          data-testid="kline-chart-container"
+          onClick={handleChartClick}
+          // 🔴 `role="figure"` —— 裸 `<div aria-label="K 线图">` 上挂 `aria-label` 会踩
+          //    axe 规则 `aria-prohibited-attr`（serious）：
+          //    「aria-label attribute cannot be used on "div" elements with no valid role attribute」。
+          //    `figure` 允许「作者提供的可访问名」，且**不会**把子节点整体设为 presentational
+          //    （不像 `role="img"`），故图表容器内部仍可保留自己的语义。
+          role="figure"
+          aria-label="K 线图"
+          style={{
+            width: '100%',
+            // 全屏时跟随 `wrapperRef`（:fullscreen ⇒ 100vh），退出后复原为 prop 高度
+            height: isFullscreen ? '100%' : height,
+            background: COLORS.chartBg,
+            border: `1px solid ${COLORS.chartBorder}`,
+            borderRadius: 4,
+            overflow: 'hidden',
+            touchAction: 'none',
+            boxSizing: 'border-box',
+          }}
+        />
+
+        {/* 十字光标 hover 悬浮窗：当日 OHLCV + 指标值 + 当日信号（F-K6 / F-K8）*/}
+        <KlineHoverPanel
+          bar={hovered}
+          showMa={showMa}
+          subIndicator={subIndicator}
+          maPeriods={params.ma.periods}
+        />
+
+        {/* T152：点击交易圆点后的交易明细（移动端也通过点击打开）*/}
+        <KlineTradePanel bar={selectedTradeBar} onClose={closeTradePanel} />
+
+        {/*
+          全屏切换（浏览器 Fullscreen API）：Esc 退出由 `fullscreenchange` 同步布局
+
+          ⚠️ **样式必须是「实心品牌色 + 白字」** —— 旧实现是
+          `rgba(0,0,0,0.45)` 底 + `#888` 灰字 + 11px 小字，压在深色画布上**几乎看不见**。
+          现在改成实心蓝底 + 白字 + 阴影，图表右上角一眼可辨。
+
+          ⚠️ **挂在图表区容器里**（不是外层 wrapper）⇒ 按钮浮在**画布**右上角，
+          不会压住上方那排「画线」工具按钮（挂 wrapper 上时它与工具栏同高、会盖住右端的提示文字）。
+        */}
+        <button
+          type="button"
+          data-testid="kline-fullscreen-toggle"
+          aria-label={isFullscreen ? '退出全屏' : '全屏'}
+          aria-pressed={isFullscreen}
+          title={isFullscreen ? '退出全屏（Esc）' : '全屏查看'}
+          onClick={() => void toggleFullscreen()}
+          style={{
+            position: 'absolute',
+            top: 8,
+            // 让开右侧价格轴（约 60px 宽），避免按钮盖住刻度文字
+            right: 68,
+            zIndex: 20,
+            padding: '6px 14px',
+            fontSize: TYPO.smallSize,
+            fontWeight: 600,
+            color: COLORS.cardBg,
+            background: COLORS.brand,
+            border: 'none',
+            borderRadius: 4,
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.45)',
+            cursor: 'pointer',
+          }}
+        >
+          {isFullscreen ? '退出全屏' : '全屏'}
+        </button>
+      </div>
 
       {chartError && (
         <div
@@ -1024,42 +1089,6 @@ export default function KlineChart({
           当前环境不支持 Canvas，无法显示 K 线图（{chartError}）
         </div>
       )}
-
-      {/* 十字光标 hover 悬浮窗：当日 OHLCV + 指标值 + 当日信号（F-K6 / F-K8）*/}
-      <KlineHoverPanel
-        bar={hovered}
-        showMa={showMa}
-        subIndicator={subIndicator}
-        maPeriods={params.ma.periods}
-      />
-
-      {/* T152：点击交易圆点后的交易明细（移动端也通过点击打开）*/}
-      <KlineTradePanel bar={selectedTradeBar} onClose={closeTradePanel} />
-
-      {/* 全屏切换（浏览器 Fullscreen API）：Esc 退出由 `fullscreenchange` 同步布局 */}
-      <button
-        type="button"
-        data-testid="kline-fullscreen-toggle"
-        aria-label={isFullscreen ? '退出全屏' : '全屏'}
-        aria-pressed={isFullscreen}
-        onClick={() => void toggleFullscreen()}
-        style={{
-          position: 'absolute',
-          top: 6,
-          // 让开右侧价格轴（约 60px 宽），避免按钮盖住刻度文字
-          right: 68,
-          zIndex: 10,
-          padding: '2px 8px',
-          fontSize: TYPO.captionSize,
-          color: COLORS.chartText,
-          background: 'rgba(0, 0, 0, 0.45)',
-          border: `1px solid ${COLORS.chartBorder}`,
-          borderRadius: 4,
-          cursor: 'pointer',
-        }}
-      >
-        {isFullscreen ? '退出全屏' : '全屏'}
-      </button>
     </div>
   );
 }

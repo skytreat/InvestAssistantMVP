@@ -31,7 +31,7 @@
 | [ADR-016](ADR-016-cash-like-asset-modeling.md) | 现金类资产建模（逆回购为债权、货币 ETF 不按百分比计收益） | V3 §3.5 | T120/T127/T132 |
 | [ADR-017](ADR-017-v3-task-renumbering.md) | V3 任务编号整体顺延 T119~T137（解除与 v2 计划 T100~T111 的撞号） | 2026-10-24 实查 git 历史撞号 | plan_v3 全量 + traceability §7bis + ADR-013~016 关联行 |
 | [ADR-018](ADR-018-noop-quote-rerun.md) | 校验 WARN/ERROR 不再自动补跑（tdx2db 增量语义下为空操作），补跑改为可测 | 2026-11-12 结构性证明（§13.2 I-37；消解 I-36 ④） | 本次修复：`scheduler.ts` / `quoteRerun.ts` / `routes/admin.ts` |
-| [ADR-019](ADR-019-settings-strategy-merge.md) | 策略配置并入设置页（`/strategy/config` 删除，`/settings` 三 Tab），消除双份插件管理实现 | 2026-11-12 所有者裁决（PRD_v3 §4.1 / T148 偏差） | 前端合并：`PluginManager` / `ComboSection` + 4 个测试文件 |
+| [ADR-019](ADR-019-settings-strategy-merge.md) | 策略配置并入设置页（`/strategy/config` 删除，`/settings` 三 Tab），消除双份插件管理实现；**2026-11-13 增补：侧栏去掉「策略配置」别名入口**（只留「设置」，深链 `?tab=combos` 仍可用） | 2026-11-12 所有者裁决（PRD_v3 §4.1 / T148 偏差）；2026-11-13 增补裁决（NavLink `isActive` 双高亮） | 前端合并：`PluginManager` / `ComboSection` + 4 个测试文件；增补：`NAV_ITEMS` + `side-nav.test.tsx` |
 | [ADR-020](ADR-020-industry-source-revived.md) | 重新启用行业数据源（板块表 2026-11-06 回填，tdx_research L1 口径；选股/持仓/仪表盘三处接线） | 2026-11-12 实测（I-22「0 行」结论失效） | `stockscan.ts` / `trade.ts` / `portfolioRisk.ts` + 前后端测试 |
 | [ADR-021](ADR-021-signal-domain-position-source.md) | 信号标的域的「持仓」来源改为交易流水实时计算（不再依赖 `user_asset_rel` 派生关系） | 2026-11-12 生产事故（信号域恒空）→ §13.2 I-38 | `signalService.ts` + `t85b-signal-scope.test.ts` |
 | [ADR-023](ADR-023-c8-update-duration-threshold.md) | C8「行情更新执行时长」阈值 120s → 1200s（按生产实测 571s 放宽） | 2026-11-13 生产实测（每天必 WARN）→ §13.2 I-40 | `validator.ts` + Requirements §7.1 + SDD §5.7/§12.5 |
