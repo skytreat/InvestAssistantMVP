@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { COLORS, RADIUS, SPACING, TYPO } from '../theme/tokens';
 import SignalBadge from './SignalBadge';
+import { usePluginNames } from './usePluginNames';
 import {
   DIRECTION_LABEL,
   isSignalStale,
@@ -175,6 +176,9 @@ export function SignalMiniMenu({ position, priceDate, onTrade }: SignalMiniMenuP
   const hoverOpenedRef = useRef(false);
   /** 打开后要把焦点放到哪一项（`first` / `last` / 不放）*/
   const pendingFocusRef = useRef<'first' | 'last' | null>(null);
+
+  /** plugin_id → 中文 label（与策略设置页一致，来自 /strategy/plugins）*/
+  const { pluginNameOf } = usePluginNames();
 
   const effectivePriceDate = priceDate ?? position.priceDate ?? null;
   const stale = isSignalStale(signal, effectivePriceDate);
@@ -451,7 +455,7 @@ export function SignalMiniMenu({ position, priceDate, onTrade }: SignalMiniMenuP
         <div role="menu" aria-label="信号操作菜单" style={menuStyle}>
           {/* ① 信号信息（非交互 —— role="group" 是 role="menu" 的合法子角色）*/}
           <div role="group" aria-label="信号信息">
-            <div style={pluginStyle}>{signal.plugin_id}</div>
+            <div style={pluginStyle}>{pluginNameOf(signal.plugin_id, '—')}</div>
             {signal.label ? <div style={labelStyle}>{signal.label}</div> : null}
             <div style={metaStyle}>交易日 {signal.trade_date}</div>
             {stale ? (

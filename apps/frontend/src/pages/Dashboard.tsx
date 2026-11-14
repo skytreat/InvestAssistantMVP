@@ -14,6 +14,7 @@ import PositionDetailModal from '../components/PositionDetailModal';
 import ScrollableTable from '../components/ScrollableTable';
 import { SignalStrength } from '../components/SignalStrength';
 import { SignalGradeTag } from '../components/SignalPills';
+import { usePluginNames } from '../components/usePluginNames';
 import TodayActivityCard from '../components/TodayActivityCard';
 import TradeFormModal from '../components/TradeFormModal';
 import type { SignalTradeDraft } from '../components/SignalMiniMenu';
@@ -321,6 +322,8 @@ export default function Dashboard() {
   const [sigTradeDate, setSigTradeDate] = useState<string | null>(null);
   const [sigDateSource, setSigDateSource] = useState<SignalDateSource>('explicit');
   const [sigLatestQuoteDate, setSigLatestQuoteDate] = useState<string | null>(null);
+  /** plugin_id → 中文 label（与策略设置页一致，来自 /strategy/plugins）*/
+  const { pluginNameOf } = usePluginNames();
 
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
@@ -1123,7 +1126,7 @@ export default function Dashboard() {
                           <td style={thTdStyle}>
                             <AssetLink assetCode={s.asset_code} assetName={s.asset_name} variant="inline" />
                           </td>
-                          <td style={thTdStyle}>{s.plugin_id}</td>
+                          <td style={thTdStyle}>{pluginNameOf(s.plugin_id)}</td>
                           <td style={thTdStyle}>
                             <span
                               style={{

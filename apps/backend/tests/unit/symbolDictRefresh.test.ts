@@ -92,6 +92,38 @@ describe('symbol_dict · 全量刷新（源 = raw_symbol_name）', () => {
     expect(row.pinyin).toBe('');
   });
 
+  it('ETF 坏名（U+FFFD）命中覆盖表 → 入库为官方名称，且拼音基于官方名称', async () => {
+    const badName = '恒生中国企业ETF\uFFFD';
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh510900', name: badName }]);
+
+    await expect(syncSymbolDict()).resolves.toBe(1);
+
+    const row = db.prepare('SELECT symbol, name, pinyin FROM symbol_dict').get() as {
+      symbol: string;
+      name: string;
+      pinyin: string;
+    };
+    // 覆盖表键 = 标的代码，sh510900 的官方名 = 恒生中国企业ETF易方达
+    expect(row.name).toBe('恒生中国企业ETF易方达');
+    expect(row.name).not.toContain('\uFFFD');
+    expect(row.pinyin.length).toBeGreaterThan(0);
+  });
+
+  it('ETF 坏名（U+FFFD）未命中覆盖表 → 不入名称/拼音，避免把 FFFD 写进索引', async () => {
+    const badName = '未知坏名ETF\uFFFD';
+    queryDuckDBMock.mockResolvedValue([{ symbol: 'sh999999', name: badName }]);
+
+    await expect(syncSymbolDict()).resolves.toBe(1);
+
+    const row = db.prepare('SELECT symbol, name, pinyin FROM symbol_dict').get() as {
+      symbol: string;
+      name: string;
+      pinyin: string;
+    };
+    expect(row.name).toBe('');
+    expect(row.pinyin).toBe('');
+  });
+
   it('DuckDB 不可读时抛出，不返回 0 伪装成功', async () => {
     queryDuckDBMock.mockRejectedValue(new Error('duckdb locked'));
     await expect(syncSymbolDict()).rejects.toThrow('duckdb locked');

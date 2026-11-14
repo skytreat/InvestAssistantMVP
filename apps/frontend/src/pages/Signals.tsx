@@ -15,6 +15,7 @@ import {
 } from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
 import WatchButton from '../components/WatchButton';
+import { usePluginNames } from '../components/usePluginNames';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -259,6 +260,9 @@ export default function Signals() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
+
+  // ── 策略中文名映射（与策略设置页一致）──────────────────────────
+  const { pluginNameOf } = usePluginNames();
 
   // ── 后端默认日期口径（F 域 P0-1）────────────────────────────
   /** 实际生效的交易日（用户没选日期时由后端解析，前端只展示，不自己猜今天）*/
@@ -684,7 +688,7 @@ export default function Signals() {
           <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
         </td>
         <td style={thTdStyle}>
-          <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+          <code>{pluginNameOf(row.plugin_id)}</code>
           {category ? (
             <span style={{ color: COLORS.textMuted, fontSize: TYPO.captionSize }}> {category}</span>
           ) : null}
@@ -885,7 +889,7 @@ export default function Signals() {
                         <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
                       </td>
                       <td style={thTdStyle}>
-                        <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+                        <code>{pluginNameOf(row.plugin_id)}</code>
                       </td>
                       <td style={thTdStyle}>
                         <SignalDirectionPill
