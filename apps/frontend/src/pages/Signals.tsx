@@ -811,6 +811,110 @@ export default function Signals() {
       <h1 style={titleStyle}>策略信号</h1>
 
       {/*
+        F3：今日 Top 5 摘要区（**页面级结论区**，置于页首）
+
+        布局位置（2026-11-14 owner 指示，两轮）：
+        ① 第一轮：由分级 Tab 之后上移至分组 Tab 之前（消除「当前所选组的 Top 5」误读）；
+        ② 第二轮：继续上移至**筛选栏之上**（页首结论区）。
+
+        设计语义：Top 5 回答的是「**今天**最值得关注哪几条」——是页面的**结论**；
+        筛选栏 / 分组 Tab / 分级 Tab 是「设定范围 + 选择视图」的**明细区**控件。
+        「结论在前、明细在后」与本页组头设计同源（ADR-027：组头先答「该看什么」，
+        信号行是证据）。摘要自带「摘要交易日 X（…）」旁注 ⇒ 即使位于筛选栏上方
+        也不会孤悬（实际天数始终可见）；改「交易日期」后摘要原地更新（页首无需滚动）。
+
+        ⚠️ 摘要口径不变：全局 Top 5（不受分组/分级 Tab 影响）；只跟随**单日**字段
+        （`交易日期` 或后端默认解析日），起始/结束区间筛选**不影响**摘要。
+      */}
+      <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
+        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>今日 Top 5 摘要</div>
+        {top5TradeDate ? (
+          <div
+            data-testid="signals-top5-date-note"
+            style={{
+              fontSize: TYPO.smallSize,
+              color: COLORS.neutral,
+              marginTop: SPACING.gapTight,
+              marginBottom: SPACING.gapBase,
+            }}
+          >
+            {`摘要交易日 ${top5TradeDate}（${top5SourceLabel}）`}
+          </div>
+        ) : null}
+        {top5Loading ? (
+          <Spinner />
+        ) : top5Rows.length === 0 ? (
+          <div data-testid="signals-top5-empty" style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}>
+            该交易日暂无信号
+          </div>
+        ) : (
+          <ScrollableTable label="今日 Top 5 摘要表">
+            <table style={tableStyle} aria-label="今日 Top 5 摘要">
+              <thead>
+                <tr>
+                  <th scope="col" style={thStyle}>
+                    排名
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标的代码
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    策略
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    方向
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    分级
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    强度
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标签
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {top5Rows.map((row, i) => {
+                  const code = assetCodeOf(row);
+                  return (
+                    <tr key={typeof row.id === 'number' ? `top5-${row.id}` : `top5-${i}`}>
+                      <td style={thTdStyle}>{i + 1}</td>
+                      <td style={thTdStyle}>
+                        <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
+                      </td>
+                      <td style={thTdStyle}>
+                        <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalDirectionPill
+                          direction={typeof row.direction === 'string' ? row.direction : 'hold'}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        {/* F1：Top 5 可含中/弱，用分级 tag 保证「一眼看出不是强档」 */}
+                        <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalStrength
+                          value={typeof row.strength === 'number' ? row.strength : null}
+                          label={`${code} 信号强度`}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollableTable>
+        )}
+      </div>
+
+      {/*
         筛选栏（T72 ④⑤）
         ⚠️ **条件之间是 AND 关系**（后端 WHERE 逐条 append）——
            「交易日期」与「起始/结束日期」同时给会取交集。
@@ -921,103 +1025,6 @@ export default function Signals() {
         <button style={buttonStyle} onClick={handleQuery} disabled={loading} aria-busy={loading}>
           查询
         </button>
-      </div>
-
-      {/*
-        F3：今日 Top 5 摘要区（全局口径，**不受分组/分级 Tab 影响**，只跟随主列表的展示日期）
-
-        布局位置（2026-11-14 owner 指示）：摘要区放在**筛选栏之后、分组 Tab 之前** ——
-        原因：Top 5 是**全局**摘要（ADR-027「今日 Top5 全局不变」），它不随分组/分级 Tab
-        变化；放在分组 Tab **下面**（旧位置在分级 Tab 之后）会让人误以为
-        「这是当前所选组的 Top 5」。新位置下「影响摘要的控件（日期筛选）在摘要上方，
-        不影响摘要的控件（分组/分级）在摘要下方」，视觉语义与数据依赖一致。
-      */}
-      <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
-        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>今日 Top 5 摘要</div>
-        {top5TradeDate ? (
-          <div
-            data-testid="signals-top5-date-note"
-            style={{
-              fontSize: TYPO.smallSize,
-              color: COLORS.neutral,
-              marginTop: SPACING.gapTight,
-              marginBottom: SPACING.gapBase,
-            }}
-          >
-            {`摘要交易日 ${top5TradeDate}（${top5SourceLabel}）`}
-          </div>
-        ) : null}
-        {top5Loading ? (
-          <Spinner />
-        ) : top5Rows.length === 0 ? (
-          <div data-testid="signals-top5-empty" style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}>
-            该交易日暂无信号
-          </div>
-        ) : (
-          <ScrollableTable label="今日 Top 5 摘要表">
-            <table style={tableStyle} aria-label="今日 Top 5 摘要">
-              <thead>
-                <tr>
-                  <th scope="col" style={thStyle}>
-                    排名
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    标的代码
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    策略
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    方向
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    分级
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    强度
-                  </th>
-                  <th scope="col" style={thStyle}>
-                    标签
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {top5Rows.map((row, i) => {
-                  const code = assetCodeOf(row);
-                  return (
-                    <tr key={typeof row.id === 'number' ? `top5-${row.id}` : `top5-${i}`}>
-                      <td style={thTdStyle}>{i + 1}</td>
-                      <td style={thTdStyle}>
-                        <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
-                      </td>
-                      <td style={thTdStyle}>
-                        <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
-                      </td>
-                      <td style={thTdStyle}>
-                        <SignalDirectionPill
-                          direction={typeof row.direction === 'string' ? row.direction : 'hold'}
-                        />
-                      </td>
-                      <td style={thTdStyle}>
-                        {/* F1：Top 5 可含中/弱，用分级 tag 保证「一眼看出不是强档」 */}
-                        <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
-                      </td>
-                      <td style={thTdStyle}>
-                        <SignalStrength
-                          value={typeof row.strength === 'number' ? row.strength : null}
-                          label={`${code} 信号强度`}
-                        />
-                      </td>
-                      <td style={thTdStyle}>
-                        <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </ScrollableTable>
-        )}
       </div>
 
       {/*
