@@ -13,13 +13,16 @@ export function usePluginNames() {
   const [pluginNameMap, setPluginNameMap] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
-    let cancelled = false;
-    const req: unknown = api.get('/strategy/plugins');
-    if (!req || typeof (req as { then?: unknown }).then !== 'function') return;
+    const controller = new AbortController();
+    const req: unknown = api.get('/strategy/plugins', { signal: controller.signal });
+    if (!req || typeof (req as { then?: unknown }).then !== 'function') {
+      controller.abort();
+      return;
+    }
 
     (req as Promise<{ data: unknown }>)
       .then((res) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         const body: unknown = res.data;
         if (!isOkEnvelope(body)) return;
         const list = (body as { data?: unknown }).data as Array<{ id?: unknown; name?: unknown }> | undefined;
@@ -32,11 +35,11 @@ export function usePluginNames() {
         setPluginNameMap(next);
       })
       .catch(() => {
-        /* 失败不阻塞主流程 */
+        /* 失败 / abort 都不阻塞主流程 */
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, []);
 
