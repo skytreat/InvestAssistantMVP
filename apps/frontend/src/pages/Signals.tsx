@@ -924,73 +924,14 @@ export default function Signals() {
       </div>
 
       {/*
-        T154（ADR-027）：分组视图 tab（持仓组 / 自选组，默认持仓组）
-        ⚠️ 组内聚合（分组头 / 组合行置顶 / 综合结论）是**展示层**规则：
-           综合结论只认组合行（combo:<id>），无组合 ⇒「无组合结论」，不得由单条件合成。
+        F3：今日 Top 5 摘要区（全局口径，**不受分组/分级 Tab 影响**，只跟随主列表的展示日期）
+
+        布局位置（2026-11-14 owner 指示）：摘要区放在**筛选栏之后、分组 Tab 之前** ——
+        原因：Top 5 是**全局**摘要（ADR-027「今日 Top5 全局不变」），它不随分组/分级 Tab
+        变化；放在分组 Tab **下面**（旧位置在分级 Tab 之后）会让人误以为
+        「这是当前所选组的 Top 5」。新位置下「影响摘要的控件（日期筛选）在摘要上方，
+        不影响摘要的控件（分组/分级）在摘要下方」，视觉语义与数据依赖一致。
       */}
-      <div
-        role="group"
-        aria-label="信号分组视图"
-        data-testid="signals-group-tabs"
-        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
-      >
-        <span style={filterLabelStyle}>分组</span>
-        {GROUP_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            aria-pressed={groupTab === tab.key}
-            data-testid={`signals-group-tab-${tab.key}`}
-            onClick={() => setGroupTab(tab.key)}
-            style={{
-              ...buttonStyle,
-              background: groupTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
-              color: groupTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
-          默认持仓组；综合结论只认组合信号（无组合 ⇒ 无组合结论）
-        </span>
-      </div>
-
-      {/*
-        F1：分级 tab（PRD_v3 §4.2）
-        ⚠️ **默认只看强**（用户口径）；切 tab 走防抖即时重查，并回到第 1 页。
-      */}
-      <div
-        role="group"
-        aria-label="信号分级筛选"
-        data-testid="signals-grade-tabs"
-        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
-      >
-        <span style={filterLabelStyle}>分级</span>
-        {GRADE_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            aria-pressed={gradeTab === tab.key}
-            data-testid={`signals-grade-tab-${tab.key}`}
-            onClick={() => setGradeTab(tab.key)}
-            style={{
-              ...buttonStyle,
-              background: gradeTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
-              color: gradeTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
-          默认显示全部信号（含未分级的监控类）；过期信号置灰不删
-        </span>
-      </div>
-
-      {error && <div style={errorStyle}>{error}</div>}
-
-      {/* F3：今日 Top 5 摘要区（与主列表同屏，先回答「哪几条最值得看」） */}
       <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
         <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>今日 Top 5 摘要</div>
         {top5TradeDate ? (
@@ -1078,6 +1019,73 @@ export default function Signals() {
           </ScrollableTable>
         )}
       </div>
+
+      {/*
+        T154（ADR-027）：分组视图 tab（持仓组 / 自选组，默认持仓组）
+        ⚠️ 组内聚合（分组头 / 组合行置顶 / 综合结论）是**展示层**规则：
+           综合结论只认组合行（combo:<id>），无组合 ⇒「无组合结论」，不得由单条件合成。
+      */}
+      <div
+        role="group"
+        aria-label="信号分组视图"
+        data-testid="signals-group-tabs"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+      >
+        <span style={filterLabelStyle}>分组</span>
+        {GROUP_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            aria-pressed={groupTab === tab.key}
+            data-testid={`signals-group-tab-${tab.key}`}
+            onClick={() => setGroupTab(tab.key)}
+            style={{
+              ...buttonStyle,
+              background: groupTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
+              color: groupTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
+          默认持仓组；综合结论只认组合信号（无组合 ⇒ 无组合结论）
+        </span>
+      </div>
+
+      {/*
+        F1：分级 tab（PRD_v3 §4.2）
+        ⚠️ **默认只看强**（用户口径）；切 tab 走防抖即时重查，并回到第 1 页。
+      */}
+      <div
+        role="group"
+        aria-label="信号分级筛选"
+        data-testid="signals-grade-tabs"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+      >
+        <span style={filterLabelStyle}>分级</span>
+        {GRADE_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            aria-pressed={gradeTab === tab.key}
+            data-testid={`signals-grade-tab-${tab.key}`}
+            onClick={() => setGradeTab(tab.key)}
+            style={{
+              ...buttonStyle,
+              background: gradeTab === tab.key ? COLORS.brand : COLORS.bgPillNeutral,
+              color: gradeTab === tab.key ? COLORS.cardBg : COLORS.textPillNeutral,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+        <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
+          默认显示全部信号（含未分级的监控类）；过期信号置灰不删
+        </span>
+      </div>
+
+      {error && <div style={errorStyle}>{error}</div>}
 
       {/* V3.8 T149：操作反馈（采纳/忽略/关联） */}
       {actMsg && (
