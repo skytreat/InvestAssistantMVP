@@ -14,7 +14,7 @@
 - **主槽 / 次槽**：主槽负责排名与「多强」，次槽是一道趋势质量过滤。默认组合 `wsm_v2_rsrs` = 主槽 WSM V2 + 次槽 RSRS。
 - **宏观择时**：把每只标的的主槽动量与沪深300 指数的同口径动量比，跑不赢基准的不买。这是「双动量」里第二个「动量」的来源。
 
-在 MVP 里的位置：回测 CLI 支持 `buy-and-hold` / `wufu-rotation` / `dualmomentum` 三种策略，它是**继五福轮动之后的第二个轮动策略**，与五福同属新的 `Strategy` 适配器框架（`defineStrategy`），不是老的插件式 `Plugin`。信号侧（`BUILTINS` / `routes/signal.ts`）**不实现**。
+在 MVP 里的位置：回测 CLI 支持 `buy-and-hold` / `wufu-rotation` / `dualmomentum` 三种策略，它是**继五福轮动之后的第二个轮动策略**，与五福同属新的 `Strategy` 适配器框架（`defineStrategy`），不是老的插件式 `Plugin`。五福的说明见 `docs/client/wufu_rotation_strategy.md`。信号侧（`BUILTINS` / `routes/signal.ts`）**不实现**。
 
 代码入口：
 
