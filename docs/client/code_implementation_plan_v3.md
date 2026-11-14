@@ -99,8 +99,9 @@
 | **V3.10** | T153 | 组合 `cooldownBars` 生效（待决策：接入去重 / 移除字段） | T133/T148 | ⬜ |
 | **V3.11** | T154 | 信号页分组视图（持仓组/自选组两 Tab + 组内轻量聚合 + 组合优先综合结论） | T149/T120 | ⬜ |
 | | T155 | 组合未命中（NO_SIGNAL）留痕可查（单独立项，待 owner 裁决口径） | T154/T133 | ⬜ |
+| **V3.12** | T156 | 纸面回放补全成交回报（onFill 历史回放，ADR-025 A1；§9.3 禁令解除） | T135 纸面链路 | ✅ |
 
-**合计 36 个任务**（T119~T155；T139 manual_sheet 三方对账已移出 → V4 候选；T151/T152/T153 为后续增补；T154/T155 为 2026-11-13 增补，ADR-027）。
+**合计 37 个任务**（T119~T156；T139 manual_sheet 三方对账已移出 → V4 候选；T151/T152/T153 为后续增补；T154/T155 为 2026-11-13 增补，ADR-027；T156 为 2026-11-13 增补，ADR-025）。
 
 > ✅ **T131 状态说明（2026-11-08）**：C7 缺陷（`emotion_status` / `buy_reason` / `sell_reason` / `system_followed` 传入不落库）的修复见 PR #130，已合入 `main`（commit `46b25a7`）；并按 `docs/audit/acceptance-retest-c7-a5-2026-11-08.md` 在该 `main` 提交上复测通过。
 >
@@ -250,6 +251,19 @@
 | **T154** | 🟠 | 信号页分组视图（两 Tab + 轻量聚合 + 综合结论） | ① 后端 `GET /api/signal` 加 `scope=holdings\|watch`（组集合：holdings = `calcAllPositions` 净持仓 > 0，watch = `user_asset_rel` watch **且排除 holdings**；WHERE 追加 1 次 `IN`，组为空 ⇒ 0 行不查库；缺省行为不变）；响应行 +`scope`/`is_cash`（`asset_class='cash'`）；② 前端信号页两 Tab（默认持仓组）+ 组内 `<tbody>`/`<th colSpan scope="rowgroup">` 分组头（不带市值/盈亏、可标「现金类」）；组内组合行置顶、其余按 strength 降序；③ 综合结论只认 `combo:<id>` 行（无 ⇒「无组合结论」，前端零合成）；细则：HOLD 不计票 / 冷却·过期置灰不参与 / 采纳·忽略标状态仍参与 / 买卖冲突卖优先 / 无信号≠持有 / 非交易日「无当日评估」；④ 今日 Top5 全局不变 | ① `scope` 缺省响应与 T149 前契约逐字段一致（向后兼容）；② 两组标的集互斥且与 `/api/positions`、`user_asset_rel` 实测同锚点；③ 组头/排序/综合结论断言（含「无组合结论」「卖优先」）；④ `is_cash` 与 `asset_class` 表一致（PR-1/ADR-024 回填后自动生效）；⑤ IN 查询 1 次（spy 计数）；⑥ 已清仓标的历史信号两组均不出现（I-42 遗留） | 改公共文件 `routes/signal.ts` / `signalService.ts`（在途 PR 冲突时按公共文件纪律等合并）；`calcAllPositions` 返回形状须先实测 |
 | **T155** | 🟡 | 组合未命中留痕（单独立项） | 现状：组合 NO_SIGNAL/SKIP 只写 `system_log`，不落 `user_strategy_signal` ⇒ 页面「无组合结论」无法区分「跑了没命中」与「没跑」。T155 裁决：① 保持不落库、在 `GET /api/signal` 响应或独立端点暴露「已评估未命中」标记（读 system_log）；② 或把 NO_SIGNAL 落 `user_strategy_signal`（需评估唯一键/Top5/去重连锁，**默认不做**） | ① owner 裁决口径并回写 SDD_v3；② 页面能区分「无组合结论（未跑）」与「已评估未命中」；③ 不破坏「信号表只存成立信号」的既有语义（若选①则天然成立） | 依赖 T154 的页面结构；改动 `comboStrategy` 落库链路属公共文件纪律范围 |
 
+### V3.12 阶段 —— 纸面回放保真（2026-11-13 增补，ADR-025）
+
+> 来源：**ADR-025**（§10.4 评估采纳 A1 路线）+ §9.3 禁令解除。决策全文见 **ADR-025**，
+> 评估与根因见 **`docs/audit/dualmomentum-l1-alignment.md` §9 / §10.4 / §11.4（F-3）**。
+
+| 任务 | 优先级 | 名称 | 做什么 | 验收点 | 卡点/风险 |
+|---|---|---|---|---|---|
+| **T156** | 🟢 | 纸面回放补全成交回报（onFill 历史回放） | A1 三件事：① `paper_order` 加 `exit_reason` 列（幂等 ALTER）+ 索引 `(account_id, status)`；② `settle.ts` 写回时把 `fill.reason` 落库；③ `decision.ts` 回放前把历史 `filled` 订单（按 `trade_date` 升序）翻译成 `FillNotice` 喂 `strategy.onFill()`。配套：`loadFilledOrders` export 供单测；E2E 验证（`paper-a1-fill-replay.test.ts` 6 用例：loadFilledOrders 序列 + 喂 onFill 后建仓日/止盈判定恢复） | ① `typecheck`/`lint` 全绿；② `paper-settle.test.ts` 全过；③ 全量 backend 测试无**新增**失败（既有 12 个与本任务无关）；④ E2E 证明喂 onFill 后 dualmomentum `entryDate`/止盈判定与回测口径一致 | 公共回放路径改动（`decision.ts` 影响全部内置策略）：实测 wufu/combo/buy-and-hold **无 `onFill`** ⇒ 喂了没人接、零影响，回归须覆盖全部内置策略；旧账户无 `exit_reason` ⇒ 冷却仍不完整（新建账户不受影响，不回填）；**冷却 L1 过滤在 research 档（soft/scored）路径被绕过**（`index.ts:375-394` 不判 cooling）⇒ 本任务只恢复「建仓日/止盈」L2 路径，冷却 L1 生效待另立项 |
+
+> ✅ **T156 状态说明（2026-11-13）**：实施见 **PR #179**（已合入 `main`，commit `dbea4a3`）；
+> E2E 验证见 **PR #180**（`paper-a1-fill-replay.test.ts`）。冷却 L1 在 research 档路径被绕过的问题
+> 登记为后续待办（见上「卡点/风险」末条），非 T156 范围。
+
 ---
 
 ## 4. 阶段出口门槛
@@ -372,3 +386,4 @@
 | 2026-11-09 | V3.8b | **PA-10 文档登记**：SDD_v3 新增 §10.4.1 组合策略契约、§10.4.2 组合统计与插件统计分列、§10.4.3 跨境两档 fail-closed、§11.1.7 组合策略配置 DDL；T148 状态由 ⬜ 更正为 ✅（PR #135）；登记 V3-B9（组合冷却未生效）、V3-B10（`snapshot_json` 无写入方）、V3-B11（`stats.combo` 注释与实现不符） |
 | 2026-11-09 | V3.8c | **PA-10 收尾**：新增 T153（V3.10，组合 `cooldownBars` 生效，待决策 A/B，不预设实现）；`snapshot_json` 无写入方**并入 T134（不单独立项）**，T134 状态由 ✅ 调整为 ⚠️ 部分；V3-B9 处置指向 T153，V3-B10 处置明确并入 T134；任务总数 33→34 |
 | 2026-11-13 | V3.11 | **信号域分组视图（ADR-027）**：新增 T154（信号页持仓组/自选组两 Tab + 组内轻量聚合 + 组合优先综合结论；Requirements §4.5 INV-S3-28~31、PRD_v3 §4.2 增补、SDD_v3 §10.4.4 同步登记）+ T155（组合未命中留痕，单独立项待 owner 裁决）；任务总数 34→36；已清仓标的历史信号两 Tab 不显示登记为 plan_v2 §13.2 **I-42** |
+| 2026-11-13 | V3.12 | **纸面回放保真（ADR-025 A1）**：新增 T156（纸面回放补全成交回报：`paper_order` 加 `exit_reason` + `settle.ts` 落库 + `decision.ts` 回放喂 `onFill`；§9.3 禁令解除）；实施 PR #179（`dbea4a3`）+ E2E PR #180；任务总数 36→37；**遗留**：冷却 L1 过滤在 research 档（soft/scored）路径被绕过（`index.ts:375-394` 不判 cooling），登记为后续待办（非 T156 范围） |
