@@ -637,19 +637,20 @@ export async function batchGetLatestAndPrevClose(
 }
 
 /**
- * 标的名称兜底：tdx2db 写 raw_symbol_name 时末字可能含 U+FFFD 替换符（15.4% ETF 坏名），
- * 优先查覆盖表 etf-name-overrides.json，查不到则视为缺失（返回 null，前端回退显示代码）。
+ * 标的名称兜底：tdx2db 写 raw_symbol_name 时末字可能被截断为 U+FFFD 替换符（15.4% ETF 坏名），
+ * 坏名按**标的代码**查覆盖表 etf-name-overrides.json（键 = symbol，值 = 官方名），
+ * 查不到则视为缺失（返回 null，前端回退显示代码）。
  */
 import { ETF_NAME_OVERRIDES } from '../data/etf-name-overrides.js';
 
 const FFFD = '\uFFFD';
 
-function sanitizeSymbolName(raw: string | null | undefined): string | null {
+function sanitizeSymbolName(symbol: string, raw: string | null | undefined): string | null {
   if (!raw) return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
   if (trimmed.includes(FFFD)) {
-    return ETF_NAME_OVERRIDES.get(trimmed) ?? null;
+    return ETF_NAME_OVERRIDES.get(symbol) ?? null;
   }
   return trimmed;
 }
@@ -684,7 +685,7 @@ export async function batchGetSymbolNames(symbols: string[]): Promise<Map<string
 
   for (const row of rows) {
     // 空名等同「没查到」→ 不进 Map（调用方取不到即为 null）
-    const name = sanitizeSymbolName(row.name);
+    const name = sanitizeSymbolName(row.symbol, row.name);
     if (name) result.set(row.symbol, name);
   }
 

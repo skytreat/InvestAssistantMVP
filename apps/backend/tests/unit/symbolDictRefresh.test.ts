@@ -92,7 +92,7 @@ describe('symbol_dict · 全量刷新（源 = raw_symbol_name）', () => {
     expect(row.pinyin).toBe('');
   });
 
-  it('ETF 坏名（U+FFFD）命中覆盖表 → 入库为安全名称，且拼音基于安全名称', async () => {
+  it('ETF 坏名（U+FFFD）命中覆盖表 → 入库为官方名称，且拼音基于官方名称', async () => {
     const badName = '恒生中国企业ETF\uFFFD';
     queryDuckDBMock.mockResolvedValue([{ symbol: 'sh510900', name: badName }]);
 
@@ -103,7 +103,8 @@ describe('symbol_dict · 全量刷新（源 = raw_symbol_name）', () => {
       name: string;
       pinyin: string;
     };
-    expect(row.name).toBe('恒生中国企业ETF');
+    // 覆盖表键 = 标的代码，sh510900 的官方名 = 恒生中国企业ETF易方达
+    expect(row.name).toBe('恒生中国企业ETF易方达');
     expect(row.name).not.toContain('\uFFFD');
     expect(row.pinyin.length).toBeGreaterThan(0);
   });
