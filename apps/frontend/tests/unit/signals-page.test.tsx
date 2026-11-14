@@ -171,9 +171,9 @@ describe('T72 ① · 进页自动加载', () => {
     expect(signalCalls()[0]?.[0]).toBe('/signal');
     const params = signalCalls()[0]?.[1]?.params ?? {};
     // 🔴 F 域 P0-1：不再硬编码 todayStr()，日期口径由后端解析（最近有信号日 → 最近行情日 → 今天）
-    // F1：分级 tab 默认「强」→ 参数里固定带 grade=strong（用户口径：默认只显强）
+    // F1（2026-11-14 owner 裁决 / T156）：分级默认档 = **全部** ⇒ 请求里**不带** grade 参数
     // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
-    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
+    expect(params).toEqual({ page: 1, page_size: 50, dedupe: 1, scope: 'holdings' });
     expect(params).not.toHaveProperty('trade_date');
     // 「全部策略 / 全部方向」⇒ 不预设这些过滤条件
     expect(params).not.toHaveProperty('plugin_id');
@@ -567,20 +567,26 @@ describe('F3 · 今日 Top 5 摘要区', () => {
   });
 });
 
-/** F1 · 信号分级（PRD_v3 §4.2：默认只显强 / 过期置灰不删 / 标注生成于 X 天前） */
+/** F1 · 信号分级（PRD_v3 §4.2：默认显示全部 / 过期置灰不删 / 标注生成于 X 天前） */
 describe('F1 · 信号分级', () => {
-  it('默认只显强：进页请求带 grade=strong；切「全部」后不再带', async () => {
+  it('默认显示全部：进页请求**不带** grade；切「强」后才带 grade=strong', async () => {
     installPagedMock([{ rows: [BUY_ROW], totalPages: 1, total: 1 }]);
     const user = userEvent.setup();
     renderWithRouter(<Signals />);
 
     await waitFor(() => expect(signalCalls()).toHaveLength(1));
-    expect(screen.getByTestId('signals-grade-tab-strong')).toHaveAttribute('aria-pressed', 'true');
-    expect(signalCalls()[0]?.[1]?.params).toMatchObject({ grade: 'strong' });
+    // 🔴 2026-11-14 owner 裁决（T156）：默认档 = 全部 ⇒ 不下推 grade 过滤
+    expect(screen.getByTestId('signals-grade-tab-all')).toHaveAttribute('aria-pressed', 'true');
+    expect(signalCalls()[0]?.[1]?.params).not.toHaveProperty('grade');
+
+    await user.click(screen.getByTestId('signals-grade-tab-strong'));
+
+    await waitFor(() => expect(signalCalls().length).toBeGreaterThanOrEqual(2));
+    expect(signalCalls()[1]?.[1]?.params).toMatchObject({ grade: 'strong' });
 
     await user.click(screen.getByTestId('signals-grade-tab-all'));
 
-    await waitFor(() => expect(signalCalls().length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(signalCalls().length).toBeGreaterThanOrEqual(3));
     const params = lastParams();
     expect(params).not.toHaveProperty('grade');
     expect(screen.getByTestId('signals-grade-tab-all')).toHaveAttribute('aria-pressed', 'true');

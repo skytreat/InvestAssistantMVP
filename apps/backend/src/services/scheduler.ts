@@ -8,7 +8,14 @@ import { runAllChecks, hasQuoteDataOn } from './validator.js';
 import { executeAllPlugins, normalizeSubCategory } from './pluginEngine.js';
 import { importDividendEvents } from './exDividendSync.js';
 import { writeSystemLog } from './logger.js';
-import { persistSignals, getTradeDate, resolveSignalSymbols, SIGNAL_USER_ID } from './signalService.js';
+import {
+  persistSignals,
+  getTradeDate,
+  resolveSignalSymbols,
+  assignSignalGrades,
+  assignSignalCooldowns,
+  SIGNAL_USER_ID,
+} from './signalService.js';
 import { resolveTargetTradeDate, resolveLatestQuoteDate } from './marketData.js';
 import { isDuckDBWriteSentinelPresent } from '../db/duckdb.js';
 import { runFullBackup } from './backup.js';
@@ -492,12 +499,37 @@ export function registerCronJobs(app: FastifyInstance): void {
                 totalSkipped += persist.skipped;
                 totalErrors += persist.errors;
               }
+              /**
+               * 🔴 T156（2026-11-14 生产实测修复）：**实时链路必须给当日信号定级 + 标冷却窗口**
+               *
+               * 缺陷现场（2026-11-14 arm 生产实测）：`user_strategy_signal` 38 条信号
+               * `grade` / `expires_at` **全为 NULL** ⇒ 信号页「分级」默认档
+               * （强/中/弱 → `WHERE grade = 'strong'`）把**全部行滤掉**
+               * ⇒ 持仓组 / 自选组两 Tab 全空（而策略有效性页因无分级过滤仍显示 38 条）。
+               *
+               * 根因：`assignSignalGrades` / `assignSignalCooldowns` **只被回放链路**
+               * （`signalReplay.ts`）调用，17:02 实时链路与 admin 手动触发**都没调**
+               * ⇒ 函数本身有单测（假绿），**调用点缺失**。
+               *
+               * 口径与回放链路**完全一致**（同一函数、同一 user、同一 tradeDate、幂等）：
+               * - 只写 `grade` / `expires_at` / `cooldown_until` 三列，不增删信号行；
+               * - `strength IS NULL` 的行（监控类，如 `position_risk_alert`）**保持未分级**，
+               *   这是 `assignSignalGrades` 的既定口径（无强度不定档）。
+               */
+              const gradeResult = await assignSignalGrades(tradeDate, SIGNAL_USER_ID);
+              const cooldownResult = await assignSignalCooldowns(tradeDate, SIGNAL_USER_ID);
+
               writeSystemLog({
                 logType: 'signal_generate',
                 level:
                   totalErrors > 0 || result.stats.error > 0 || result.stats.timeout > 0 ? 'WARN' : 'SUCCESS',
-                message: `信号生成完成: signals=${result.signals.length} inserted=${totalInserted} skipped=${totalSkipped} persist_errors=${totalErrors}`,
-                detail: JSON.stringify({ stats: result.stats, tradeDate }),
+                message: `信号生成完成: signals=${result.signals.length} inserted=${totalInserted} skipped=${totalSkipped} persist_errors=${totalErrors} graded=${gradeResult.graded}(强${gradeResult.strong}/中${gradeResult.medium}/弱${gradeResult.weak}) cooldown_until=${cooldownResult.cooldownUntil}`,
+                detail: JSON.stringify({
+                  stats: result.stats,
+                  tradeDate,
+                  grade: gradeResult,
+                  cooldown: cooldownResult,
+                }),
               });
 
               // T26: 双口径资产快照写入（SDD §5.1 17:02 信号生成最后一步）

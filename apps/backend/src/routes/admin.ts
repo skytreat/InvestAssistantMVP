@@ -7,6 +7,8 @@ import {
   persistSignals,
   getTradeDate,
   resolveSignalSymbols,
+  assignSignalGrades,
+  assignSignalCooldowns,
   SIGNAL_USER_ID,
 } from '../services/signalService.js';
 import { writeSystemLog, readFallbackLogTail } from '../services/logger.js';
@@ -98,12 +100,23 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         totalInserted += persist.inserted;
         totalSkipped += persist.skipped;
       }
+      /**
+       * 🔴 T156（2026-11-14 生产实测修复）：手动触发同样必须**定级 + 标冷却窗口**。
+       *
+       * 与 17:02 实时链路、回放链路**同一函数同一口径**（幂等，只写 3 列）。
+       * 修复前：手动触发生成的信号 `grade` 恒为 NULL ⇒ 信号页分级默认档（强/中/弱）
+       * 过滤掉全部行 ⇒ 生产实测两 Tab 全空。
+       */
+      const gradeResult = await assignSignalGrades(tradeDate, SIGNAL_USER_ID);
+      const cooldownResult = await assignSignalCooldowns(tradeDate, SIGNAL_USER_ID);
       reply.send(
         ok({
           stats: result.stats,
           inserted: totalInserted,
           skipped: totalSkipped,
           trade_date: tradeDate,
+          graded: gradeResult,
+          cooldown_until: cooldownResult.cooldownUntil,
         }),
       );
     } catch (err) {
