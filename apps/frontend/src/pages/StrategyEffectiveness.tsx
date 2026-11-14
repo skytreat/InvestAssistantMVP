@@ -6,6 +6,7 @@ import { COLORS, TYPO } from '../theme/tokens';
 import { buttonStyle, cardStyle, errorStyle, pageContainerStyle, titleStyle } from './_shared';
 import Spinner from '../components/Spinner';
 import AssetLink from '../components/AssetLink';
+import { usePluginNames } from '../components/usePluginNames';
 
 /**
  * StrategyEffectiveness.tsx —— 策略有效性页 `/strategy/effectiveness`（V3.8 T150 · PRD_v3 §4.3）
@@ -184,23 +185,7 @@ export default function StrategyEffectiveness() {
   const [pluginFilter, setPluginFilter] = useState('');
   const [assetFilter, setAssetFilter] = useState('');
   /** plugin_id → 中文 label（与策略设置页一致，来自 /strategy/plugins）*/
-  const [pluginNameMap, setPluginNameMap] = useState<Map<string, string>>(new Map());
-  const pluginNameOf = (id: unknown): string =>
-    typeof id === 'string' ? (pluginNameMap.get(id) ?? id) : '—';
-
-  useEffect(() => {
-    api
-      .get('/strategy/plugins')
-      .then((res) => {
-        if (isOkEnvelope(res.data)) {
-          const list = res.data.data as Array<{ id: string; name: string }>;
-          setPluginNameMap(new Map(list.map((p) => [p.id, p.name])));
-        }
-      })
-      .catch(() => {
-        /* 失败不阻塞主流程 */
-      });
-  }, []);
+  const { pluginNameOf } = usePluginNames();
 
   // ── F4 Step B：有效性统计筛选 ────────────────────────────────────────────
   const [report, setReport] = useState<EffectivenessReport | null>(null);
@@ -575,7 +560,7 @@ export default function StrategyEffectiveness() {
                         '—'
                       )}
                     </td>
-                    <td style={tdStyle}>{pluginNameOf(s.plugin_id)}</td>
+                    <td style={tdStyle}>{pluginNameOf(s.plugin_id, '—')}</td>
                     <td style={tdStyle}>{s.direction ?? '—'}</td>
                     <td style={tdStyle}>{s.trade_date ?? '—'}</td>
                     <td style={tdStyle}>{s.adopted ? '已采纳' : s.ignored ? '已忽略' : '未标注'}</td>

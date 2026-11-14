@@ -15,6 +15,7 @@ import {
 } from '../components/SignalPills';
 import { SignalStrength } from '../components/SignalStrength';
 import WatchButton from '../components/WatchButton';
+import { usePluginNames } from '../components/usePluginNames';
 import { useUserStore } from '../store/user';
 import {
   pageContainerStyle,
@@ -261,24 +262,7 @@ export default function Signals() {
   const [total, setTotal] = useState(0);
 
   // ── 策略中文名映射（与策略设置页一致）──────────────────────────
-  /** plugin_id → 中文 label（来自 /strategy/plugins，与 PluginManager 同源）*/
-  const [pluginNameMap, setPluginNameMap] = useState<Map<string, string>>(new Map());
-  useEffect(() => {
-    api
-      .get('/strategy/plugins')
-      .then((res) => {
-        if (isOkEnvelope(res.data)) {
-          const list = res.data.data as Array<{ id: string; name: string }>;
-          setPluginNameMap(new Map(list.map((p) => [p.id, p.name])));
-        }
-      })
-      .catch(() => {
-        /* 失败不阻塞主流程 */
-      });
-  }, []);
-  /** 渲染策略列：中文名优先，缺省回退 plugin_id */
-  const pluginNameOf = (id: unknown): string =>
-    typeof id === 'string' ? (pluginNameMap.get(id) ?? id) : '--';
+  const { pluginNameOf } = usePluginNames();
 
   // ── 后端默认日期口径（F 域 P0-1）────────────────────────────
   /** 实际生效的交易日（用户没选日期时由后端解析，前端只展示，不自己猜今天）*/

@@ -14,6 +14,7 @@ import PositionDetailModal from '../components/PositionDetailModal';
 import ScrollableTable from '../components/ScrollableTable';
 import { SignalStrength } from '../components/SignalStrength';
 import { SignalGradeTag } from '../components/SignalPills';
+import { usePluginNames } from '../components/usePluginNames';
 import TodayActivityCard from '../components/TodayActivityCard';
 import TradeFormModal from '../components/TradeFormModal';
 import type { SignalTradeDraft } from '../components/SignalMiniMenu';
@@ -322,9 +323,7 @@ export default function Dashboard() {
   const [sigDateSource, setSigDateSource] = useState<SignalDateSource>('explicit');
   const [sigLatestQuoteDate, setSigLatestQuoteDate] = useState<string | null>(null);
   /** plugin_id → 中文 label（与策略设置页一致，来自 /strategy/plugins）*/
-  const [pluginNameMap, setPluginNameMap] = useState<Map<string, string>>(new Map());
-  const pluginNameOf = (id: unknown): string =>
-    typeof id === 'string' ? (pluginNameMap.get(id) ?? id) : '--';
+  const { pluginNameOf } = usePluginNames();
 
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
@@ -546,18 +545,6 @@ export default function Dashboard() {
         setSigLoading(false);
       }
     })();
-
-    api
-      .get('/strategy/plugins')
-      .then((res) => {
-        if (isOkEnvelope(res.data)) {
-          const list = res.data.data as Array<{ id: string; name: string }>;
-          setPluginNameMap(new Map(list.map((p) => [p.id, p.name])));
-        }
-      })
-      .catch(() => {
-        /* 失败不阻塞主流程 */
-      });
 
     if (role === 'admin') {
       (async () => {
