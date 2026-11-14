@@ -224,11 +224,26 @@ export function paperSignalId(accountId: number, decisionDate: string, assetCode
 }
 
 /**
- * 加载历史 filled 订单（用于回放 strategy.onFill）
+ * 加载历史 filled 订单（用于回放 strategy.onFill，ADR-025 A1）
  *
- * 只返回 `replayStart` 之后的成交（影子期的成交不参与回放）
+ * 只返回 `replayStart` 之后的成交（影子期的成交不参与回放）。
+ * 按 `trade_date` 升序，保证 onFill 喂给策略的顺序与回测一致。
+ *
+ * 供单测直接断言回放序列；`runPaperDecision` 内部也调用它。
  */
-function loadFilledOrders(db: Database.Database, accountId: number, replayStart: string) {
+export function loadFilledOrders(
+  db: Database.Database,
+  accountId: number,
+  replayStart: string,
+): Array<{
+  asset_code: string;
+  side: 'buy' | 'sell';
+  filled_qty: number;
+  fill_price: number;
+  fee: number;
+  exit_reason: string | null;
+  trade_date: string;
+}> {
   const rows = db
     .prepare(
       `
