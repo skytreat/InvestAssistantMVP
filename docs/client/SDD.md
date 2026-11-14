@@ -1568,6 +1568,8 @@ sequenceDiagram
             FastifyCron->>SQLite: INSERT system_log level WARN or ERROR
         end
     end
+    FastifyCron->>SQLite: UPDATE user strategy signal 定级 grade + expires_at（仅 strength 非空行）
+    FastifyCron->>SQLite: UPDATE user strategy signal 冷却窗口 cooldown_until
     FastifyCron->>SQLite: INSERT user asset stat 双口径快照
 
     Note over Fastify,FastifyCron: 17:03 触发除权导入
@@ -1646,6 +1648,35 @@ systemctl status tdx2db.service --no-pager --lines=0
 ```
 
 **交易日判断兜底**：如果 DuckDB 里没有交易日历表，用 A 股规则硬编码（周末 + 法定节假日跳过）。
+
+#### 5.1.2 信号生成的「落库 → 定级 → 冷却」三步契约（T157，2026-11-14 生产实测修复）
+
+> 🔴 **生产事故（2026-11-14 arm 实测）**：信号页「持仓组 / 自选组」两 Tab 全空，
+> 而策略有效性页显示 38 条信号。取证链：浏览器实况请求 `GET /api/signal?...&grade=strong&scope=holdings`
+> → **0 行**；去掉 `grade` → 38 行；生产库 38 条信号 `grade` / `expires_at` **全 NULL**。
+> 根因：`assignSignalGrades` / `assignSignalCooldowns` **只被区间回放链路调用**，
+> 17:02 实时链路与 admin 手动触发**都没调** ⇒ 函数有单测（假绿）但**调用点缺失**。
+
+**契约（§5.1 时序图 17:02 段）**：
+
+| 步骤 | 动作 | 写入列 | 幂等 | 失败处理 |
+|---|---|---|---|---|
+| ① 生成 | `executeAllPlugins({ symbols })` → `persistSignals(...)` | 新增信号行（`INSERT OR IGNORE`） | 是（`UNIQUE(user_id, asset_code, plugin_id, trade_date)`） | 插件级 WARN/ERROR，不阻塞其余插件 |
+| ② **定级** | `assignSignalGrades(tradeDate, userId)` | `grade` / `expires_at` | 是（同日同集合 ⇒ 同分档） | **必须执行**；失败写 `system_log` WARN，**不影响已落库信号** |
+| ③ **冷却** | `assignSignalCooldowns(tradeDate, userId)` | `cooldown_until` | 是 | 同上 |
+
+**规则**：
+
+1. ② 与 ③ 在 **17:02 实时链路**与 **`POST /api/admin/run-signal` 手动触发**两条路径上**都必须调用**，
+   口径与区间回放链路（`signalReplay.ts`）**完全一致**（同函数、同 user、同 `tradeDate`）。
+2. 定档只处理 **`strength IS NOT NULL`** 的行；监控类信号（如 `position_risk_alert`，
+   `sub_category='risk'`）**无强度 ⇒ 保持未分级（`grade IS NULL`）**，这是既定口径，不得硬塞进强/中/弱。
+3. ② ③ **只写 `grade` / `expires_at` / `cooldown_until` 三列**，不增删信号行、不改其它列 ⇒ 对生成/交易链路无副作用。
+4. 历史缺口回填用 CLI `apps/backend/src/cli/assignSignalGrades.ts`（**默认 dry-run**，`--execute` 才落库且先自动 `db.backup()`），
+   其预览与落库**同源**（`computeSignalGrades` 只读计算 = `assignSignalGrades` 落库结果）。
+5. **回归门槛**：既有 `f1-signal-grade.test.ts` 只测函数本身 ⇒ **不足以防此类回归**；
+   调用点由 `tests/unit/signalGradeWiring.test.ts`（17:02 cron 段）与
+   `tests/integration/signalGradeWiring.test.ts`（admin 手动触发段）钉死。
 
 [**实现位置**：管理员端点暴露在 `apps/backend/src/routes/admin.ts`，**端点名为 `POST /api/admin/datacheck/trigger`（§4.4 唯一权威命名）**，同时被 Fastify cron 复用；两者触发的是同一个编排逻辑，单独执行某段与批量执行的耗时口径相同。落地任务 **T90**（当前代码为 `/api/admin/run-datacheck`，待改名）。]
 

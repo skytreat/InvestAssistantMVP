@@ -450,6 +450,53 @@ export interface GradeResult {
 }
 
 /**
+ * 定档计划（**只读**，供 dry-run 预览与回填 CLI 使用）
+ *
+ * ⚠️ 与 `assignSignalGrades` **同一取数口径 + 同一排序 + 同一分档函数**
+ *    （`SELECT ... WHERE strength IS NOT NULL ORDER BY strength DESC, id ASC` + `gradeSignalStrengths`），
+ *    故预览结果 = 实际落库结果。
+ *
+ * `expires_at` 不在本结构里：它依赖**交易日历**（`nthTradingDayAfter`，需行情库），
+ * 是异步计算，故只在写库路径（`assignSignalGrades`）里补。
+ */
+export interface GradePlan {
+  tradeDate: string;
+  /** 逐行定档结果（`strength IS NOT NULL` 的行才有） */
+  rows: Array<{ id: number; strength: number; grade: SignalGrade }>;
+  strong: number;
+  medium: number;
+  weak: number;
+}
+
+/** 只读计算某交易日全部信号的定档结果（不写库） */
+export function computeSignalGrades(tradeDate: string, userId: number = SIGNAL_USER_ID): GradePlan {
+  const db = ConfigStore.getInstance().db;
+  const rows = db
+    .prepare(
+      `SELECT id, strength FROM user_strategy_signal
+       WHERE user_id = ? AND trade_date = ? AND is_deleted = 0 AND strength IS NOT NULL
+       ORDER BY strength DESC, id ASC`,
+    )
+    .all(userId, tradeDate) as Array<{ id: number; strength: number }>;
+
+  const plan: GradePlan = { tradeDate, rows: [], strong: 0, medium: 0, weak: 0 };
+  if (rows.length === 0) return plan;
+
+  const grades = gradeSignalStrengths(
+    rows.map((r) => {
+      const n = Number(r.strength);
+      return Number.isFinite(n) ? n : 0;
+    }),
+  );
+  rows.forEach((row, i) => {
+    const grade = grades[i];
+    plan.rows.push({ id: row.id, strength: Number(row.strength), grade });
+    plan[grade] += 1;
+  });
+  return plan;
+}
+
+/**
  * 给某一交易日的全部信号回填 `grade` + `expires_at`（F1）
  *
  * 口径：
@@ -466,23 +513,16 @@ export async function assignSignalGrades(
   userId: number = SIGNAL_USER_ID,
 ): Promise<GradeResult> {
   const db = ConfigStore.getInstance().db;
-  const rows = db
-    .prepare(
-      `SELECT id, strength FROM user_strategy_signal
-       WHERE user_id = ? AND trade_date = ? AND is_deleted = 0 AND strength IS NOT NULL
-       ORDER BY strength DESC, id ASC`,
-    )
-    .all(userId, tradeDate) as Array<{ id: number; strength: number }>;
+  // 取数 + 分档口径统一走 `computeSignalGrades`（dry-run 预览与写库同源）
+  const plan = computeSignalGrades(tradeDate, userId);
 
-  const result: GradeResult = { graded: 0, strong: 0, medium: 0, weak: 0 };
-  if (rows.length === 0) return result;
-
-  const grades = gradeSignalStrengths(
-    rows.map((r) => {
-      const n = Number(r.strength);
-      return Number.isFinite(n) ? n : 0;
-    }),
-  );
+  const result: GradeResult = {
+    graded: plan.rows.length,
+    strong: plan.strong,
+    medium: plan.medium,
+    weak: plan.weak,
+  };
+  if (plan.rows.length === 0) return result;
 
   const expiryByGrade: Record<SignalGrade, string> = {
     strong: await nthTradingDayAfter(tradeDate, GRADE_TTL_TRADING_DAYS.strong),
@@ -494,11 +534,8 @@ export async function assignSignalGrades(
     'UPDATE user_strategy_signal SET grade = ?, expires_at = ? WHERE id = ? AND user_id = ?',
   );
   const tx = db.transaction(() => {
-    rows.forEach((row, i) => {
-      const grade = grades[i];
-      stmt.run(grade, expiryByGrade[grade], row.id, userId);
-      result.graded += 1;
-      result[grade] += 1;
+    plan.rows.forEach((row) => {
+      stmt.run(row.grade, expiryByGrade[row.grade], row.id, userId);
     });
   });
   tx();

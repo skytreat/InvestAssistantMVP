@@ -207,6 +207,27 @@ npx tsx src/cli/assetClassSync.ts --execute
 REPO_CODES 盲区（`204005/006/009`、`131812~131818`，行情层无 K 线）规则判不出，
 若业务样本中出现，用管理端 `setManualClass` 手工补 `cash`（V3-B5 既有登记）。
 
+### 信号定级 / 冷却回填（ADR-029，一次性操作）
+
+> 背景：2026-11-14 生产实测发现**实时链路从不写 `grade` / `expires_at` / `cooldown_until`**
+> （定级函数只被区间回放链路调用）⇒ 信号页分级默认档把全部行滤掉、持仓组/自选组两 Tab 全空。
+> 本版本起 17:02 实时链路与 admin 手动触发**已补齐**定级/冷却；**上线本版本时需跑一次历史回填**，
+> 把上线前生成的信号补上档位与有效期。
+
+```bash
+cd /opt/invol/IA_Prod/app
+# 先 dry-run 看预览（只读，不写库；默认处理库里所有有信号的交易日）
+npx tsx src/cli/assignSignalGrades.ts
+# 只看某几天
+npx tsx src/cli/assignSignalGrades.ts --from 2026-11-12 --to 2026-11-13
+# 确认后 execute（自动先 backup 业务库再写）
+npx tsx src/cli/assignSignalGrades.ts --execute
+```
+
+> ⚠️ 监控类信号（如 `position_risk_alert`，`sub_category='risk'`）**无 strength ⇒ 保持未分级**，
+> 这是既定口径（无强度不定档），回填后它们仍只在「全部」档可见。
+> 回填口径与在线链路**同源**（`computeSignalGrades` 只读预览 = `assignSignalGrades` 落库结果）。
+
 ### DuckDB 行情更新
 
 ```bash

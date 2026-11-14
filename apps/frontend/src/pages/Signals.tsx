@@ -231,7 +231,22 @@ export default function Signals() {
   /**
    * F1：分级 tab，**默认只看强**（用户口径：默认只显强；全部/中/弱/已过期按需切换）
    */
-  const [gradeTab, setGradeTab] = useState<GradeTab>('strong');
+  /**
+   * F1 分级 tab 的**默认档**
+   *
+   * 🔴 T156（2026-11-14 owner 裁决 + 生产实测）：默认档由「强」改为「**全部**」。
+   *
+   * 变更依据（生产实测，arm 2026-11-14）：
+   * - 监控类信号（`position_risk_alert`，sub_category='risk'）**按设计无 strength**
+   *   ⇒ `assignSignalGrades` 不给它们定档 ⇒ `grade` 恒为 NULL
+   *   ⇒ 「强/中/弱」三档（`WHERE grade = ?`）**永远看不到它们**；
+   * - 2026-11-14 实测生产 38 条信号里 **32 条是这类监控信号**（浮亏触止损），
+   *   默认档取「强」⇒ 信号页（含 ADR-027 持仓组 / 自选组两 Tab）**全空**，
+   *   而策略有效性页因无分级过滤仍显示 38 条 ⇒ 同一系统两处口径打架。
+   *
+   * ⚠️ 「强/中/弱」三档仍可手动选择；未分级（监控类）信号在「全部」档可见。
+   */
+  const [gradeTab, setGradeTab] = useState<GradeTab>('all');
   /**
    * T154（ADR-027）：分组视图 tab，**默认持仓组**（用户口径：先回答「我持仓的每只标的今天有什么结论」）
    */
@@ -969,7 +984,7 @@ export default function Signals() {
           </button>
         ))}
         <span style={{ fontSize: TYPO.smallSize, color: COLORS.textMuted }}>
-          默认只看强信号；过期信号置灰不删
+          默认显示全部信号（含未分级的监控类）；过期信号置灰不删
         </span>
       </div>
 

@@ -245,9 +245,9 @@ describe('Signals · 键盘可达性与键盘操作', () => {
     // 进页自动加载已发过一次 → 这里应是第 2 次
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     expect(signalCalls()[1]?.[0]).toBe('/signal');
-    // F1：默认分级 tab = 强 → 固定带 grade=strong
+    // F1（2026-11-14 owner 裁决 / T156）：默认分级 tab = 全部 ⇒ 不带 grade 参数
     // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, dedupe: 1, scope: 'holdings' });
   });
 
   it('「查询」按钮可用空格键触发', async () => {
@@ -332,7 +332,6 @@ describe('Signals · 查询参数组装', () => {
     expect(lastParams()).toEqual({
       page: 1,
       page_size: 50,
-      grade: 'strong',
       dedupe: 1,
       scope: 'holdings',
       trade_date: '2026-10-12',
@@ -352,7 +351,7 @@ describe('Signals · 查询参数组装', () => {
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
     const params = lastParams();
-    expect(params).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
+    expect(params).toEqual({ page: 1, page_size: 50, dedupe: 1, scope: 'holdings' });
     expect(params).not.toHaveProperty('trade_date');
     expect(params).not.toHaveProperty('plugin_id');
     expect(params).not.toHaveProperty('direction');
@@ -377,7 +376,7 @@ describe('Signals · 查询参数组装', () => {
 
     await waitFor(() => expect(signalCalls()).toHaveLength(2));
     // T154（ADR-027）：分组视图默认持仓组 → 固定带 scope=holdings
-    expect(lastParams()).toEqual({ page: 1, page_size: 50, grade: 'strong', dedupe: 1, scope: 'holdings' });
+    expect(lastParams()).toEqual({ page: 1, page_size: 50, dedupe: 1, scope: 'holdings' });
   });
 });
 
