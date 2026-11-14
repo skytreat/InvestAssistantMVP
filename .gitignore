@@ -19,6 +19,7 @@ npm-debug.log*
 *.db‑shm
 backup/
 data/
+!apps/backend/src/data/
 *.duckdb
 
 # env

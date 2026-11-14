@@ -260,6 +260,26 @@ export default function Signals() {
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
+  // ── 策略中文名映射（与策略设置页一致）──────────────────────────
+  /** plugin_id → 中文 label（来自 /strategy/plugins，与 PluginManager 同源）*/
+  const [pluginNameMap, setPluginNameMap] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    api
+      .get('/strategy/plugins')
+      .then((res) => {
+        if (isOkEnvelope(res.data)) {
+          const list = res.data.data as Array<{ id: string; name: string }>;
+          setPluginNameMap(new Map(list.map((p) => [p.id, p.name])));
+        }
+      })
+      .catch(() => {
+        /* 失败不阻塞主流程 */
+      });
+  }, []);
+  /** 渲染策略列：中文名优先，缺省回退 plugin_id */
+  const pluginNameOf = (id: unknown): string =>
+    typeof id === 'string' ? (pluginNameMap.get(id) ?? id) : '--';
+
   // ── 后端默认日期口径（F 域 P0-1）────────────────────────────
   /** 实际生效的交易日（用户没选日期时由后端解析，前端只展示，不自己猜今天）*/
   const [resolvedDate, setResolvedDate] = useState<string | null>(null);
@@ -684,7 +704,7 @@ export default function Signals() {
           <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
         </td>
         <td style={thTdStyle}>
-          <code>{typeof row.plugin_id === 'string' ? row.plugin_id : '--'}</code>
+          <code>{pluginNameOf(row.plugin_id)}</code>
           {category ? (
             <span style={{ color: COLORS.textMuted, fontSize: TYPO.captionSize }}> {category}</span>
           ) : null}
@@ -809,6 +829,110 @@ export default function Signals() {
   return (
     <div style={pageContainerStyle}>
       <h1 style={titleStyle}>策略信号</h1>
+
+      {/*
+        F3：今日 Top 5 摘要区（**页面级结论区**，置于页首）
+
+        布局位置（2026-11-14 owner 指示，两轮）：
+        ① 第一轮：由分级 Tab 之后上移至分组 Tab 之前（消除「当前所选组的 Top 5」误读）；
+        ② 第二轮：继续上移至**筛选栏之上**（页首结论区）。
+
+        设计语义：Top 5 回答的是「**今天**最值得关注哪几条」——是页面的**结论**；
+        筛选栏 / 分组 Tab / 分级 Tab 是「设定范围 + 选择视图」的**明细区**控件。
+        「结论在前、明细在后」与本页组头设计同源（ADR-027：组头先答「该看什么」，
+        信号行是证据）。摘要自带「摘要交易日 X（…）」旁注 ⇒ 即使位于筛选栏上方
+        也不会孤悬（实际天数始终可见）；改「交易日期」后摘要原地更新（页首无需滚动）。
+
+        ⚠️ 摘要口径不变：全局 Top 5（不受分组/分级 Tab 影响）；只跟随**单日**字段
+        （`交易日期` 或后端默认解析日），起始/结束区间筛选**不影响**摘要。
+      */}
+      <div style={cardStyle} aria-busy={top5Loading} data-testid="signals-top5-summary">
+        <div style={{ ...cardTitleStyle, border: 'none', margin: 0, padding: 0 }}>今日 Top 5 摘要</div>
+        {top5TradeDate ? (
+          <div
+            data-testid="signals-top5-date-note"
+            style={{
+              fontSize: TYPO.smallSize,
+              color: COLORS.neutral,
+              marginTop: SPACING.gapTight,
+              marginBottom: SPACING.gapBase,
+            }}
+          >
+            {`摘要交易日 ${top5TradeDate}（${top5SourceLabel}）`}
+          </div>
+        ) : null}
+        {top5Loading ? (
+          <Spinner />
+        ) : top5Rows.length === 0 ? (
+          <div data-testid="signals-top5-empty" style={{ color: COLORS.textMuted, fontSize: TYPO.bodySize }}>
+            该交易日暂无信号
+          </div>
+        ) : (
+          <ScrollableTable label="今日 Top 5 摘要表">
+            <table style={tableStyle} aria-label="今日 Top 5 摘要">
+              <thead>
+                <tr>
+                  <th scope="col" style={thStyle}>
+                    排名
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标的代码
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    策略
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    方向
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    分级
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    强度
+                  </th>
+                  <th scope="col" style={thStyle}>
+                    标签
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {top5Rows.map((row, i) => {
+                  const code = assetCodeOf(row);
+                  return (
+                    <tr key={typeof row.id === 'number' ? `top5-${row.id}` : `top5-${i}`}>
+                      <td style={thTdStyle}>{i + 1}</td>
+                      <td style={thTdStyle}>
+                        <AssetLink assetCode={code} assetName={row.asset_name} variant="inline" />
+                      </td>
+                      <td style={thTdStyle}>
+                        <code>{pluginNameOf(row.plugin_id)}</code>
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalDirectionPill
+                          direction={typeof row.direction === 'string' ? row.direction : 'hold'}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        {/* F1：Top 5 可含中/弱，用分级 tag 保证「一眼看出不是强档」 */}
+                        <SignalGradeTag grade={typeof row.grade === 'string' ? row.grade : null} />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalStrength
+                          value={typeof row.strength === 'number' ? row.strength : null}
+                          label={`${code} 信号强度`}
+                        />
+                      </td>
+                      <td style={thTdStyle}>
+                        <SignalLabelTag label={typeof row.label === 'string' ? row.label : null} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollableTable>
+        )}
+      </div>
 
       {/*
         筛选栏（T72 ④⑤）

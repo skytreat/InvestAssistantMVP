@@ -11,6 +11,9 @@
 import { ConfigStore } from '../config/configStore.js';
 import { queryDuckDB } from '../db/duckdb.js';
 import { pinyin } from 'pinyin-pro';
+import { ETF_NAME_OVERRIDES } from '../data/etf-name-overrides.js';
+
+const FFFD = '\uFFFD';
 
 export interface SymbolDictRow {
   symbol: string;
@@ -59,8 +62,12 @@ export async function syncSymbolDict(): Promise<number> {
       const symbol = r.symbol;
       const code6 = symbol.replace(/^[a-z]+/i, '');
       const market = symbol.slice(0, 2);
-      const name = r.name ?? '';
-      upsert.run(symbol, code6, name, toPinyinInitials(name), market, 'risk');
+      const rawName = r.name ?? '';
+      const name = rawName.trim() || '';
+      const pinyin = name && !name.includes('\uFFFD') ? toPinyinInitials(name) : '';
+      // 坏名（含 U+FFFD）优先查覆盖表；未命中则不入索引（前端回退显示代码）
+      const sanitized = name.includes(FFFD) ? (ETF_NAME_OVERRIDES.get(name) ?? '') : name;
+      upsert.run(symbol, code6, sanitized, pinyin, market, 'risk');
       n++;
     }
   });

@@ -321,6 +321,10 @@ export default function Dashboard() {
   const [sigTradeDate, setSigTradeDate] = useState<string | null>(null);
   const [sigDateSource, setSigDateSource] = useState<SignalDateSource>('explicit');
   const [sigLatestQuoteDate, setSigLatestQuoteDate] = useState<string | null>(null);
+  /** plugin_id → 中文 label（与策略设置页一致，来自 /strategy/plugins）*/
+  const [pluginNameMap, setPluginNameMap] = useState<Map<string, string>>(new Map());
+  const pluginNameOf = (id: unknown): string =>
+    typeof id === 'string' ? (pluginNameMap.get(id) ?? id) : '--';
 
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [logLoading, setLogLoading] = useState(false);
@@ -542,6 +546,18 @@ export default function Dashboard() {
         setSigLoading(false);
       }
     })();
+
+    api
+      .get('/strategy/plugins')
+      .then((res) => {
+        if (isOkEnvelope(res.data)) {
+          const list = res.data.data as Array<{ id: string; name: string }>;
+          setPluginNameMap(new Map(list.map((p) => [p.id, p.name])));
+        }
+      })
+      .catch(() => {
+        /* 失败不阻塞主流程 */
+      });
 
     if (role === 'admin') {
       (async () => {
@@ -1123,7 +1139,7 @@ export default function Dashboard() {
                           <td style={thTdStyle}>
                             <AssetLink assetCode={s.asset_code} assetName={s.asset_name} variant="inline" />
                           </td>
-                          <td style={thTdStyle}>{s.plugin_id}</td>
+                          <td style={thTdStyle}>{pluginNameOf(s.plugin_id)}</td>
                           <td style={thTdStyle}>
                             <span
                               style={{
