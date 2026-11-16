@@ -642,7 +642,10 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     type: 'select',
     default: DUALMOMENTUM_DEFAULTS.benchmarkGateMode,
     options: ['hard', 'soft'],
-    description: 'hard = DAS 基线；soft = 仅基准动量 > 0 时启用第 9 步（§12.5 第 2 条）；ADR-022 后缺省 soft',
+    description:
+      'hard = DAS 基线；soft = 仅基准动量 > 0 时启用第 9 步（§12.5 第 2 条）；ADR-022 后缺省 soft。' +
+      "⚠️ 实测：本值当前**不生效**——`resolveDualMomentumParams` 会把 'hard' 回落为 'soft'（见 ADR-030 §2.2）；" +
+      '⚠️ 且 `soft` / `scored` 会令策略走「档 3 重建路径」，该路径**不判** MA 多头 / 停牌 / 涨跌停 / 日涨跌幅 / 冷却（ADR-030 §2.1）',
   },
   {
     key: 'scoreMode',
@@ -651,7 +654,9 @@ export const DUALMOMENTUM_PARAM_SCHEMA: ParamField[] = [
     default: DUALMOMENTUM_DEFAULTS.scoreMode,
     options: ['and', 'scored'],
     description:
-      'and = DAS 基线（次槽 + 基准 AND）；scored = 次槽降为打分不拦截（§12.5 第 3 条）；ADR-022 后缺省 scored',
+      'and = DAS 基线（次槽 + 基准 AND）；scored = 次槽降为打分不拦截（§12.5 第 3 条）；ADR-022 后缺省 scored。' +
+      "⚠️ 实测：本值当前**不生效**——`resolveDualMomentumParams` 会把 'and' 回落为 'scored'（见 ADR-030 §2.2）；" +
+      '⚠️ 且 `scored` 会令策略走「档 3 重建路径」，该路径**不判** MA 多头 / 停牌 / 涨跌停 / 日涨跌幅 / 冷却（ADR-030 §2.1）',
   },
   {
     key: 'momentumDecayExit',
@@ -866,6 +871,11 @@ export function resolveDualMomentumParams(
     wsmMaxResearch: Math.max(d.wsmMax, num(src, 'wsmMaxResearch', d.wsmMaxResearch)),
     rsrsMaxResearch: Math.max(d.rsrsMax, num(src, 'rsrsMaxResearch', d.rsrsMaxResearch)),
     // 缺省回落到 d（DEFAULTS）——ADR-022 后缺省 = 'soft' / 'scored'
+    // ⚠️ **回落使显式传入的 'hard' / 'and' 不生效**：`d` 已是 'soft' / 'scored'，
+    //    故除 `'soft'` / `'scored'` 外的一切取值（含 'hard' / 'and'）都回落到 d ⇒ 两者等价。
+    //    ⇒ 策略**无条件**走「档 3 重建路径」（该路径不判 MA / 停牌 / 涨跌停 / 日涨跌幅 / 冷却）。
+    //    ⇒ ADR-022 §4 承诺的「显式传回旧值即可复原 DAS 语义」**当前不成立**。
+    //    规格冲突与处置路线见 **ADR-030**（§2.2 / §2.6 / §6.2 第 4 项：修 `resolve` 属行为变更，须裁决后另开实施 ADR）。
     benchmarkGateMode: src.benchmarkGateMode === 'soft' ? 'soft' : d.benchmarkGateMode,
     scoreMode: src.scoreMode === 'scored' ? 'scored' : d.scoreMode,
     momentumDecayExit: bool(src, 'momentumDecayExit', d.momentumDecayExit),

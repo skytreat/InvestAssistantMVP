@@ -366,8 +366,20 @@ function createDualMomentumStrategy(): ReturnType<typeof defineStrategy> {
       // 稳定降序：并列保持 POOL_ORDER（JS sort 自 ES2019 起稳定）
       passed.sort((a, b) => b.primary - a.primary);
 
-      // ── 档 3：放宽上界 / 基准软化 / 评分制（全部缺省 = DAS 锁定语义，逐位不变）──
-      // 触发条件：任一研究开关偏离缺省。缺省时走基线路径（`filtered = passed`）。
+      // ── 档 3：放宽上界 / 基准软化 / 评分制 ──
+      // ⚠️ **本路径只判 3 个条件**（动量区间用 research 上界 / 次槽 / 基准门槛），
+      //    **不判**完整过滤链（`evaluateL1Filters`，`l1/decisions.ts`）里的
+      //    `SUSPENDED` / `COOLDOWN` / `AT_LIMIT` / `DAILY_CHANGE` / `BELOW_MA20` / `MA_NOT_BULLISH`
+      //    ⇒ **MA 趋势过滤、停牌、涨跌停、日涨跌幅、冷却在此路径下均不生效**。
+      //
+      // 🔴 **触发条件是四个 OR，且缺省全部为真**（ADR-022/024 后）：
+      //    `wsmMaxResearch > wsmMax`（100 > 5）、`rsrsMaxResearch > rsrsMax`（100 > 2）、
+      //    `benchmarkGateMode === 'soft'`、`scoreMode === 'scored'`。
+      //    `resolveDualMomentumParams`（`params.ts`）还会把显式传入的 `'hard'` / `'and'`
+      //    **回落**为 `'soft'` / `'scored'` ⇒ **本路径无条件生效、无法关闭**。
+      //
+      // 📌 规格冲突与处置路线见 **ADR-030**（2026-11-13 登记，待 owner 裁决 A/B/C）。
+      //    ⚠️ 本注释为「事实陈述」，不代表该行为已被规格认可。
       const wsmRelaxed = p.wsmMaxResearch > p.wsmMax;
       const rsrsRelaxed = p.rsrsMaxResearch > p.rsrsMax;
       let filtered = passed;
